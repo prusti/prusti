@@ -46,12 +46,27 @@ impl<'vir: 'a, 'a, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         let mut inv = Vec::new();
         let start = &cfpcs.statements[0];
         let state = &start.states[EvalStmtPhase::PreOperands];
-        let loop_invariant_place_capabilities =
+        let mut loop_invariant_place_capabilities =
             cfpcs.loop_invariant_place_capabilities(loop_place_usages, ctxt);
+        // For a place the loop only writes, the PCG passes only the `W` part
+        // of its held capability into the loop and frames the `R` part around
+        // it, which cannot be encoded: the invariant holds the whole value.
+        for (place, capability) in loop_invariant_place_capabilities.iter_mut() {
+            let held = state.place_capability(*place, self.pcg_ctxt());
+            if let Some(held) = held.filter(|_| capability.is_write()) {
+                assert!(held >= CapabilityKind::Write, "{place:?} held at {held:?}");
+                *capability = held;
+            }
+        }
 
         for (place, capability) in loop_invariant_place_capabilities.iter() {
+            if self.is_spec_only_local(place.local) {
+                continue;
+            }
             if capability.is_write() {
-                continue; // No permissions are encoded for places with write capabilities currently
+                // A place without a value holds its `Uninit` token.
+                inv.push(self.place_uninit(*place)?);
+                continue;
             }
             let (place_res, _snap, _, _) = self.encode_place_with_snap(*place)?;
             let ty = (*place).ty(self.pcg_ctxt());
