@@ -105,6 +105,9 @@ pub struct TyUseImpureBoxData<'vir> {
 pub struct TyUseImpureStructData<'vir> {
     args: GArgsTy<'vir>,
     ref_to_pred: PredicateIdn<'vir, (vir::Ref, vir::ManyTyVal, vir::ManyCSnap)>,
+    /// The `Uninit` token predicate of the struct; for a variant, that of
+    /// its enum, which is exchanged through the variant's methods instead.
+    ref_to_uninit: PredicateIdn<'vir, (vir::Ref, vir::ManyTyVal, vir::ManyCSnap)>,
     impure: <ImpureTyDatas as TyDatas<'vir>>::StructData,
     box_data: Option<TyUseImpureBoxData<'vir>>,
 }
@@ -242,13 +245,16 @@ impl<'a, 'vir> TyUseImpureWalker<'a, 'vir> {
                 TySpecifics::StructLike(self.encode_structlike(
                     data,
                     ty.1.ref_to_pred,
+                    ty.1.ref_to_uninit,
                     ty.0.params,
                     box_data,
                 )?)
             }
-            TySpecifics::EnumLike(data) => {
-                TySpecifics::EnumLike(self.encode_enumlike(data, ty.0.params)?)
-            }
+            TySpecifics::EnumLike(data) => TySpecifics::EnumLike(self.encode_enumlike(
+                data,
+                ty.1.ref_to_uninit,
+                ty.0.params,
+            )?),
             TySpecifics::Builtin(..) => TySpecifics::mk_builtin(()),
         };
         let data = TyUseImpureData {
@@ -298,6 +304,7 @@ impl<'a, 'vir> TyUseImpureWalker<'a, 'vir> {
         &mut self,
         data: &StructData<'vir, (RustTyDatas, ImpureTyDatas)>,
         ref_to_pred: PredicateIdn<'vir, (vir::Ref, vir::ManyTyVal, vir::ManyCSnap)>,
+        ref_to_uninit: PredicateIdn<'vir, (vir::Ref, vir::ManyTyVal, vir::ManyCSnap)>,
         params: GParams<'vir>,
         box_data: Option<TyUseImpureBoxData<'vir>>,
     ) -> EncResult<'vir, StructData<'vir, UseImpureTyDatas>> {
@@ -316,6 +323,7 @@ impl<'a, 'vir> TyUseImpureWalker<'a, 'vir> {
         let data = TyUseImpureStructData {
             args: self.args_t,
             ref_to_pred,
+            ref_to_uninit,
             impure: *data.1,
             box_data,
         };
@@ -325,6 +333,7 @@ impl<'a, 'vir> TyUseImpureWalker<'a, 'vir> {
     fn encode_enumlike(
         &mut self,
         data: &EnumData<'vir, (RustTyDatas, ImpureTyDatas)>,
+        ref_to_uninit: PredicateIdn<'vir, (vir::Ref, vir::ManyTyVal, vir::ManyCSnap)>,
         params: GParams<'vir>,
     ) -> EncResult<'vir, EnumData<'vir, UseImpureTyDatas>> {
         let discr_ty = self
@@ -359,8 +368,13 @@ impl<'a, 'vir> TyUseImpureWalker<'a, 'vir> {
             .variants
             .iter()
             .map(|variant| {
-                let structlike =
-                    self.encode_structlike(&variant.inner, variant.1.predicate, params, None)?;
+                let structlike = self.encode_structlike(
+                    &variant.inner,
+                    variant.1.predicate,
+                    ref_to_uninit,
+                    params,
+                    None,
+                )?;
                 Ok(VariantData::new((), structlike))
             })
             .collect::<EncResult<'vir, Vec<_>>>()?;
@@ -387,6 +401,20 @@ impl<'vir> TyUseImpureData<'vir> {
             self.args.get_ty(),
             self.args.get_const(),
             self_new_snap,
+        ))))
+    }
+
+    /// Generates a call to `method_drop`, exchanging the place's predicate for
+    /// its `Uninit` token.
+    pub fn apply_method_drop<'tcx>(
+        &self,
+        vcx: &'vir vir::VirCtxt<'tcx>,
+        self_ref: vir::ExprRef<'vir>,
+    ) -> vir::Stmt<'vir> {
+        vcx.alloc(vir::StmtData::new(vcx.alloc((self.impure.method_drop)(
+            self_ref,
+            self.args.get_ty(),
+            self.args.get_const(),
         ))))
     }
 
@@ -421,6 +449,16 @@ impl<'vir> TyUseImpureData<'vir> {
 
     pub fn snapshot(&self) -> vir::TypeSnap<'vir> {
         self.impure.ref_to_snap.result()
+    }
+
+    /// The `Uninit` token of a place of this type.
+    pub fn uninit_pred<'tcx>(
+        &self,
+        vcx: &'vir vir::VirCtxt<'tcx>,
+        self_ref: vir::ExprRef<'vir>,
+    ) -> vir::ExprBool<'vir> {
+        let app = (self.impure.ref_to_uninit)(self_ref, self.args.get_ty(), self.args.get_const());
+        vcx.mk_predicate_app_expr(app(None))
     }
 }
 
@@ -464,6 +502,49 @@ impl<'vir> TyData<'vir, UseImpureTyDatas> {
             },
             _ => Vec::new(),
         })
+    }
+
+    /// Statements exchanging the `Uninit` token of the place for the tokens of
+    /// its fields (`unfold`) or back. An array is only folded, at a constant
+    /// index, which drops its other elements. Returns `None` when there is no
+    /// such exchange: for an enum place that is not downcast to a variant,
+    /// whose exchange happens at the variant, and for a token that cannot be split, i.e. an array that
+    /// is unfolded or folded at a non-constant index, or a type without fields
+    /// such as an opaque type.
+    pub fn uninit_repack(
+        &self,
+        variant: Option<abi::VariantIdx>,
+        self_ref: vir::ExprRef<'vir>,
+        index: Option<vir::ExprInt<'vir>>,
+        unfold: bool,
+    ) -> Option<Vec<vir::Stmt<'vir>>> {
+        let struct_data = if let Some(variant) = variant {
+            &self.expect_variant(variant).inner
+        } else {
+            match &self.specifics {
+                TySpecifics::StructLike(data) => data,
+                TySpecifics::ArrayLike(array) if !unfold => {
+                    let index = index?;
+                    let call = (array.data.impure.method_uninit_fold_index)(
+                        index,
+                        self_ref,
+                        self.args.get_ty(),
+                        self.args.get_const(),
+                    );
+                    let call = vir::with_vcx(|vcx| vcx.alloc(vir::StmtData::new(vcx.alloc(call))));
+                    return Some(
+                        array
+                            .element_caster
+                            .cast_uninit_to_callee_ctx(array.ref_to_index_ref(self_ref, index))
+                            .into_iter()
+                            .chain([call])
+                            .collect(),
+                    );
+                }
+                _ => return None,
+            }
+        };
+        Some(struct_data.apply_uninit_repack(self_ref, unfold))
     }
 
     /// Fold the predicate (including generic casts).
@@ -638,6 +719,52 @@ impl<'vir> TyUseImpureStruct<'vir> {
     pub fn box_address(&self, self_ref: vir::ExprRef<'vir>) -> vir::ExprRef<'vir> {
         assert!(self.data.impure.box_data.is_some(), "expected box");
         self.fields.last().unwrap().field_ref(self_ref)
+    }
+
+    fn apply_uninit_repack(
+        &self,
+        self_ref: vir::ExprRef<'vir>,
+        unfold: bool,
+    ) -> Vec<vir::Stmt<'vir>> {
+        let (args_ty, args_const) = (self.args.get_ty(), self.args.get_const());
+        let exchange = vir::with_vcx(|vcx| match self.impure.uninit_methods {
+            Some(methods) => {
+                let method = if unfold { methods.unfold } else { methods.fold };
+                vcx.alloc(vir::StmtData::new(
+                    vcx.alloc(method(self_ref, args_ty, args_const)),
+                ))
+            }
+            None => {
+                let token = (self.ref_to_uninit)(self_ref, args_ty, args_const)(None);
+                if unfold {
+                    vcx.mk_unfold_stmt(token)
+                } else {
+                    vcx.mk_fold_stmt(token)
+                }
+            }
+        });
+        // The exchanged parts are stated at the types of the struct's own
+        // parameters, so they are cast between those and the caller's types.
+        // The fields of a box other than its value (the last field) keep their
+        // predicates; every other field holds its token.
+        let first_uninit_field = match self.impure.box_data {
+            Some(_) => self.fields.len() - 1,
+            None => 0,
+        };
+        let casts = self.fields.iter().enumerate().filter_map(|(idx, field)| {
+            let field_ref = field.field_ref(self_ref);
+            match (idx < first_uninit_field, unfold) {
+                (true, true) => field.caster.cast_to_caller_ctx(field_ref),
+                (true, false) => field.caster.cast_to_callee_ctx(field_ref),
+                (false, true) => field.caster.cast_uninit_to_caller_ctx(field_ref),
+                (false, false) => field.caster.cast_uninit_to_callee_ctx(field_ref),
+            }
+        });
+        if unfold {
+            std::iter::once(exchange).chain(casts).collect()
+        } else {
+            casts.chain([exchange]).collect()
+        }
     }
 
     fn ref_to_pred_app(

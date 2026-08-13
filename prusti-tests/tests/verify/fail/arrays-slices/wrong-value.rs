@@ -39,3 +39,16 @@ fn exhausted_inclusive_subslice_len(a: &[i32], r: core::ops::RangeInclusive<usiz
         assert!(s.len() > 0); //~ERROR: might not hold
     }
 }
+
+#[requires(i < 4 && j < 3)]
+fn nested_borrow(a: &mut [[i32; 3]; 4], i: usize, j: usize) {
+    let r = &mut a[i][j];
+    *r = 5;
+    assert!(a[i][j] == 6); //~ERROR: might not hold
+}
+
+#[requires(i < 4 && j < 3)]
+#[after_expiry(a[i][j] == before_expiry(*result) + 1)] //~ERROR: pledge in the postcondition might not hold
+fn get_nested(a: &mut [[i32; 3]; 4], i: usize, j: usize) -> &mut i32 {
+    &mut a[i][j]
+}
