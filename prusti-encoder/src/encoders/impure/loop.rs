@@ -49,6 +49,9 @@ impl<'vir: 'a, 'a, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         let loop_invariant_place_capabilities =
             cfpcs.loop_invariant_place_capabilities(loop_place_usages, ctxt);
 
+        // The `(type, address, snapshot)` sources of the interior-mutability
+        // QP invariant, collected over the kept places below.
+        let mut im_sources = Vec::new();
         for (place, capability) in loop_invariant_place_capabilities.iter() {
             if self.is_spec_only_local(place.local) {
                 continue;
@@ -64,6 +67,12 @@ impl<'vir: 'a, 'a, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             let ty_out = self.deps.require_dep::<TyUseImpureEnc>(task).unwrap();
             let pred = ty_out.ref_to_pred(self.vcx, place_res.expr.expect_predicate(), None);
             inv.push(pred);
+            im_sources.push((
+                task,
+                ty.ty,
+                place_res.expr.expect_predicate(),
+                ty_out.ref_to_snap(place_res.expr.expect_predicate()),
+            ));
             // gets all the lifetime projections of the place
             // for example, if we add an invariant for x and x is a reference, then we also want to add
             // an invariant for *x
@@ -80,6 +89,15 @@ impl<'vir: 'a, 'a, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                     )
                 }));
             }
+        }
+
+        // Write permission to the interior-mutable objects reachable from the
+        // kept places must be re-established on every iteration, like at a
+        // function boundary (the loop body starts from the invariants alone).
+        if let Some(qps) =
+            crate::encoders::ty::interior_mut::boundary_im_qps(self.vcx, self.deps, &im_sources)?
+        {
+            inv.push(qps);
         }
 
         for (inputs, outputs) in self.get_abstraction_edges(state.borrow_pcg().graph()) {
