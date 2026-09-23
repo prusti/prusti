@@ -1525,6 +1525,9 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 let tmp = self.new_tmp(ty_out.snapshot());
                 self.stmt(self.vcx.mk_pure_assign_stmt(tmp, snap_val));
                 if matches!(operand, mir::Operand::Move(_)) {
+                    // The value's interior-mutable objects are keyed by
+                    // identities in its snapshot, so they travel with the
+                    // snapshot: nothing to transfer.
                     let place_ref = result.expr.expect_predicate();
                     self.stmt(ty_out.apply_method_drop(self.vcx, place_ref));
                 }
