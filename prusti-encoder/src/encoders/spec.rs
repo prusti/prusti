@@ -1,10 +1,13 @@
 use std::cell::RefCell;
 
-use prusti_interface::specs::{
-    specifications::SpecQuery,
-    typed::{
-        self, DefSpecificationMap, ExternSpecKind, Pledge, ProcedureSpecification,
-        SpecificationItem,
+use prusti_interface::{
+    environment::EnvQuery,
+    specs::{
+        specifications::SpecQuery,
+        typed::{
+            self, DefSpecificationMap, ExternSpecKind, Pledge, ProcedureSpecification,
+            SpecificationItem,
+        },
     },
 };
 use prusti_rustc_interface::{middle::ty, span::def_id::DefId};
@@ -153,6 +156,40 @@ pub fn is_type_trusted(ty: ty::Ty) -> bool {
         }),
         _ => false,
     }
+}
+
+/// A call to a trait method whose statically known impl carries its own
+/// specification (an `extern_spec`) goes directly to the impl: such a
+/// contract may read the heap (e.g. through a `&mut` result), so it cannot be
+/// stated by the axioms of the trait method's stub.
+pub fn resolve_specced_trait_call<'tcx>(
+    caller_def_id: DefId,
+    def_id: DefId,
+    substs: ty::GenericArgsRef<'tcx>,
+) -> (DefId, ty::GenericArgsRef<'tcx>) {
+    vir::with_vcx(|vcx| {
+        if vcx.tcx().trait_of_assoc(def_id).is_none() {
+            return (def_id, substs);
+        }
+        let (resolved, resolved_substs) =
+            EnvQuery::new(vcx.tcx()).resolve_method_call(caller_def_id, def_id, substs);
+        if resolved == def_id {
+            return (def_id, substs);
+        }
+        let has_extern_spec = with_proc_spec(
+            SpecQuery::GetProcKind(
+                resolved,
+                ty::GenericArgs::identity_for_item(vcx.tcx(), resolved),
+            ),
+            |proc_spec| proc_spec.extern_spec.is_some(),
+        )
+        .unwrap_or(false);
+        if has_extern_spec {
+            (resolved, resolved_substs)
+        } else {
+            (def_id, substs)
+        }
+    })
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
