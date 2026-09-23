@@ -9,6 +9,7 @@ use prusti_rustc_interface::{
 
 use crate::{
     environment::{EnvDiagnostic, EnvName, EnvQuery, Environment},
+    specs::TypeSpecRefs,
     PrustiError,
 };
 use prusti_rustc_interface::{data_structures::fx::FxHashMap, middle::ty::GenericArgsRef};
@@ -99,6 +100,9 @@ pub struct ExternSpecResolver<'tcx> {
 
     /// Maps real functions to Prusti-generated fake functions with specifications.
     pub extern_fn_map: FxHashMap<ExternSpecDeclaration, DefId>,
+    /// The specifications declared on external types (e.g. their drop
+    /// contracts), keyed by the type.
+    pub(super) extern_ty_map: FxHashMap<DefId, TypeSpecRefs>,
 
     /// Duplicate specifications detected, keyed by the `DefId` of the function
     /// to be specified.
@@ -114,6 +118,7 @@ impl<'tcx> ExternSpecResolver<'tcx> {
             env_name: env.name,
             env_query: env.query,
             extern_fn_map: FxHashMap::default(),
+            extern_ty_map: FxHashMap::default(),
             spec_duplicates: FxHashMap::default(),
             errors: vec![],
         }
