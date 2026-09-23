@@ -2190,6 +2190,11 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             kind: PureKind::SpecBlock(spec_block),
         })?;
         use vir::Reify;
+        let addrs: FxHashMap<mir::Local, _> = enc_output
+            .inputs
+            .iter()
+            .map(|local| (*local, self.local_defs[*local].local_ex))
+            .collect();
         let mut locals: FxHashMap<mir::Local, vir::ExprSnap<'vir>> = FxHashMap::default();
         for local in enc_output.inputs {
             let place: Place = local.into();
@@ -2219,7 +2224,12 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             .expr
             .reify(
                 self.vcx,
-                (self.def_id, self.vcx.alloc(locals), vir::OldLabel::None),
+                (
+                    self.def_id,
+                    self.vcx.alloc(locals),
+                    vir::OldLabel::None,
+                    self.vcx.alloc(addrs),
+                ),
             )
             .downcast_ty();
         Ok(expr)
