@@ -198,6 +198,19 @@ mod private_shared {
     #[derive(Clone, Copy)]
     pub struct Real(());
 
+    impl Real {
+        /// Write (full) permission amount, i.e. Viper `write` (`1/1`).
+        #[cfg(feature = "prusti")]
+        pub const WRITE: Real = Real::from(1isize);
+        #[cfg(not(feature = "prusti"))]
+        pub const WRITE: Real = Real(());
+        /// No permission, i.e. Viper `none` (`0/1`).
+        #[cfg(feature = "prusti")]
+        pub const NONE: Real = Real::from(0isize);
+        #[cfg(not(feature = "prusti"))]
+        pub const NONE: Real = Real(());
+    }
+
     __dummy_from_impls__!(Real: isize, f32, f64);
     #[cfg(feature = "prusti")]
     __dummy_from_impls__!(Real: f16, f128);
