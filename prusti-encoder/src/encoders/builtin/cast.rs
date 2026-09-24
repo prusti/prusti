@@ -107,6 +107,10 @@ impl TaskEncoder for MirBuiltinCastEnc {
             mir::CastKind::PtrToPtr => "p2p",
             mir::CastKind::IntToFloat => "i2f",
             mir::CastKind::FloatToInt => "f2i",
+            mir::CastKind::PointerCoercion(
+                ty::adjustment::PointerCoercion::MutToConstPointer,
+                ..,
+            ) => "mut2const",
             other => todo!("cast kind {other:?}"),
         };
         // The unsize cast/methods don't depend on the pointee type (the methods
@@ -178,7 +182,13 @@ impl TaskEncoder for MirBuiltinCastEnc {
                         MirBuiltinCastOutput::Simple(fn_idn),
                     )
                 }
-                mir::CastKind::PtrToPtr => {
+                // `*mut T` to `*const T` keeps the address and metadata, like
+                // a pointer-to-pointer cast.
+                mir::CastKind::PtrToPtr
+                | mir::CastKind::PointerCoercion(
+                    ty::adjustment::PointerCoercion::MutToConstPointer,
+                    _,
+                ) => {
                     let e_op_ty = op_ty.expect_raw();
                     let e_res_ty = res_ty.expect_raw();
                     let expr = e_res_ty.prim_to_snap(
