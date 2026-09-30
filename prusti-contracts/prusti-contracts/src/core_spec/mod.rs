@@ -4,6 +4,7 @@ pub mod cell;
 pub mod default;
 pub mod eq;
 pub mod float;
+pub mod option;
 pub mod result;
 pub mod slice;
 pub mod ref_cell;
