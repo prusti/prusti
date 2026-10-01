@@ -223,6 +223,12 @@ impl<T: ?Sized> DerefMut for RefMut<'_, T> {
     // by the borrow of the value: only what it points to changes.
     #[after_expiry(*self === *old(&*self)
         && Ghost::new_ref(refmut_value(&*self)) == before_expiry(Ghost::new_ref(&*result)))]
+    // Nor does it touch the borrow flag the guard refers to. Stated for the
+    // count a `borrow_mut` guard has (not as `== old(..)`: a heap read under
+    // `old` in a pledge is evaluated separately in the callee's wand and at
+    // the apply, so the two wands would not match).
+    #[requires(refmut_count(&*self) == -1)]
+    #[after_expiry(refmut_count(&*self) == -1)]
     fn deref_mut<'a>(&'a mut self) -> &'a mut T;
 }
 

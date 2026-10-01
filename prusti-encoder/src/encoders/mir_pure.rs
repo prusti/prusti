@@ -1004,9 +1004,20 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                                     // (`qp_to_map`): evaluate it in the same
                                     // state as the call it feeds, mirroring
                                     // the snapshot wrapping in
-                                    // `encode_place_with_ref`.
+                                    // `encode_place_with_ref` (including its
+                                    // reify-time label, e.g. a pledge's call
+                                    // pre-state).
                                     if self.old_mode {
-                                        map = self.vcx.mk_old_expr(map);
+                                        let inner = map;
+                                        map = self.vcx.mk_lazy_expr(
+                                            "old_mode_wrap",
+                                            inner.ty(),
+                                            Box::new(move |vcx, lctx: ExprInput<'vir>| {
+                                                use vir::Reify;
+                                                let reified = inner.reify(vcx, lctx);
+                                                vcx.mk_old(reified, lctx.2).kind
+                                            }),
+                                        );
                                     }
                                     if self.rel0_mode {
                                         map = self.vcx.mk_rel_expr(map, 0);
