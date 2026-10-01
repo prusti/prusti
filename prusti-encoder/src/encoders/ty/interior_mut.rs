@@ -569,19 +569,19 @@ pub(crate) fn im_boundary_maps<'vir, E: TaskEncoder>(
     let unions = deps.require_dep::<MapUnionEnc>(())?;
     let param_im = deps.require_ref::<TyInteriorMutEnc>(RustTyDecomposition::param())?;
     let im0_snap = deps.require_dep::<Im0SnapEnc>(())?;
-    // The leaves grouped by the type of their objects' holder (a reference
-    // leaf by its referent type): leaves of one group may alias (two `&Cell`
-    // arguments), so their maps are merged with the shared union; leaves of
-    // different groups hold distinct objects, or objects deliberately shared
-    // between holders of different types with amounts that SUM to the whole
-    // (a `RefCell` and its `Ref` guards), and get a QP each. Each QP is
-    // then over exactly the map a contract's read of that source requires.
-    let mut groups: Vec<(
-        RustTyDecomposition<'vir>,
-        Option<vir::ExprMap<'vir>>,
-        Option<vir::ExprMap<'vir>>,
-        usize,
-    )> = Vec::new();
+    // The leaves' maps of one level are merged with the shared union into a
+    // single QP. Leaves may reach the same object: two `&Cell` arguments, or
+    // a `RefCell` and one of its guards, which reaches the cell's borrow flag
+    // through a reference. Such an object has the same amount from each leaf
+    // and is granted once: summed, the extra chunk would keep a stale value
+    // after the object is written, and Silicon's merge of the two chunks
+    // equates their snapshots. The deliberate fractional splits of an object
+    // (a `RefCell`'s share of its value, level 1, and its guards' shares,
+    // level 0) lie in different levels, whose QPs add up.
+    let mut merged0: Option<vir::ExprMap<'vir>> = None;
+    let mut merged1: Option<vir::ExprMap<'vir>> = None;
+    let mut parts0 = Vec::new();
+    let mut parts1 = Vec::new();
     let mut lets0 = Vec::new();
     let mut lets1 = Vec::new();
     let mut src_lets = Vec::new();
@@ -620,18 +620,6 @@ pub(crate) fn im_boundary_maps<'vir, E: TaskEncoder>(
         for (ty, addr, snap) in leaves {
             let idx = leaf_idx;
             leaf_idx += 1;
-            let group_key = match ty.ty.ref_data() {
-                Some(ref_data) => ref_data.referent.decompose_normalize(ty.args),
-                None => ty,
-            };
-            let group = match groups.iter().position(|g| g.0 == group_key) {
-                Some(g) => g,
-                None => {
-                    groups.push((group_key, None, None, 0));
-                    groups.len() - 1
-                }
-            };
-            groups[group].3 += 1;
             let (r, s, t) = im0_source_triple(deps, ty, addr, snap)?;
             // The source's snapshot may be a heap read (`&mut` sources): bound
             // once per level, like the maps.
@@ -648,10 +636,11 @@ pub(crate) fn im_boundary_maps<'vir, E: TaskEncoder>(
                 unions.disjoint.call()(o, sh)
             };
             let u0 = bind(&mut lets0, format!("im_perms0_{idx}"), tys.perm_map, u0);
-            groups[group].1 = Some(match groups[group].1 {
+            merged0 = Some(match merged0 {
                 None => u0,
                 Some(m) => unions.shared.call()(m, u0),
             });
+            parts0.push(u0);
             // Each source's level-1 amounts read level-0 state through the
             // source's OWN canonical map, `im0_snap(r, s, T)` — the same triple
             // that keys the pair. The map argument is then a function of the
@@ -687,33 +676,26 @@ pub(crate) fn im_boundary_maps<'vir, E: TaskEncoder>(
                 unions.disjoint.call()(o, sh)
             };
             let u1 = bind(&mut lets1, format!("im_perms1_{idx}"), tys.perm_map, u1);
-            groups[group].2 = Some(match groups[group].2 {
+            merged1 = Some(match merged1 {
                 None => u1,
                 Some(m) => unions.shared.call()(m, u1),
             });
+            parts1.push(u1);
         }
     }
-    let mut m0 = Vec::new();
-    let mut m1 = Vec::new();
-    for (g, (_, g0, g1, leaves)) in groups.into_iter().enumerate() {
-        if let Some(m) = g0 {
-            m0.push(if leaves > 1 {
-                bind(&mut lets0, format!("im_perms0_g{g}"), tys.perm_map, m)
-            } else {
-                m
-            });
-        }
-        if let Some(m) = g1 {
-            m1.push(if leaves > 1 {
-                bind(&mut lets1, format!("im_perms1_g{g}"), tys.perm_map, m)
-            } else {
-                m
-            });
-        }
-    }
+    let m0 = merged0.map(|m| match parts0.len() {
+        1 => m,
+        _ => bind(&mut lets0, "im_perms0_g0".to_string(), tys.perm_map, m),
+    });
+    let m1 = merged1.map(|m| match parts1.len() {
+        1 => m,
+        _ => bind(&mut lets1, "im_perms1_g0".to_string(), tys.perm_map, m),
+    });
     Ok(ImBoundaryMaps {
         m0,
         m1,
+        parts0,
+        parts1,
         lets0,
         lets1,
         src_lets,
@@ -758,11 +740,14 @@ fn im_source_leaves<'vir, E: TaskEncoder>(
 }
 
 /// The level-0 and level-1 boundary permission maps (see
-/// [`im_boundary_maps`]), one per group, referring to `let`-bound names
-/// that `qp0`/`qp1` bind around the QPs.
+/// [`im_boundary_maps`]), referring to `let`-bound names that `qp0`/`qp1`
+/// bind around the QPs.
 pub(crate) struct ImBoundaryMaps<'vir> {
-    m0: Vec<vir::ExprMap<'vir>>,
-    m1: Vec<vir::ExprMap<'vir>>,
+    m0: Option<vir::ExprMap<'vir>>,
+    m1: Option<vir::ExprMap<'vir>>,
+    /// The leaves' maps merged into `m0`/`m1`.
+    parts0: Vec<vir::ExprMap<'vir>>,
+    parts1: Vec<vir::ExprMap<'vir>>,
     lets0: Vec<(vir::LocalDecl<'vir, vir::Map>, vir::ExprMap<'vir>)>,
     lets1: Vec<(vir::LocalDecl<'vir, vir::Map>, vir::ExprMap<'vir>)>,
     src_lets: Vec<(vir::LocalDecl<'vir, vir::PSnap>, vir::ExprPSnap<'vir>)>,
@@ -785,19 +770,31 @@ impl<'vir> ImBoundaryMaps<'vir> {
         })
     }
 
+    /// The QPs over `merged` (the merge of `parts`) and `extra`, with an
+    /// [`im_union_part_lemma`] per part.
     fn qps<E: TaskEncoder>(
         vcx: &'vir vir::VirCtxt<'vir>,
         deps: &mut task_encoder::TaskEncoderDependencies<'vir, E>,
-        maps: impl Iterator<Item = vir::ExprMap<'vir>>,
+        merged: Option<vir::ExprMap<'vir>>,
+        parts: &[vir::ExprMap<'vir>],
+        extra: Option<vir::ExprMap<'vir>>,
     ) -> Result<vir::ExprBool<'vir>, EncodeFullError<'vir, E>> {
+        let tys = ImTys::new(deps);
         let mut qps = Vec::new();
-        for m in maps {
+        for m in merged.iter().copied().chain(extra) {
             qps.push(im_quant_perm(vcx, deps, m)?);
+        }
+        if let Some(merged) = merged
+            && parts.len() > 1
+        {
+            for part in parts {
+                qps.push(im_union_part_lemma(vcx, &tys, *part, merged));
+            }
         }
         Ok(vcx.mk_conj(&qps))
     }
 
-    /// The level-0 QPs (one per group, plus one over `extra` if given),
+    /// The level-0 QPs (one over the sources, plus one over `extra` if given),
     /// under their `let`s.
     pub(crate) fn qp0<E: TaskEncoder>(
         &self,
@@ -805,7 +802,7 @@ impl<'vir> ImBoundaryMaps<'vir> {
         deps: &mut task_encoder::TaskEncoderDependencies<'vir, E>,
         extra: Option<vir::ExprMap<'vir>>,
     ) -> Result<vir::ExprBool<'vir>, EncodeFullError<'vir, E>> {
-        let qps = Self::qps(vcx, deps, self.m0.iter().copied().chain(extra))?;
+        let qps = Self::qps(vcx, deps, self.m0, &self.parts0, extra)?;
         Ok(self.wrap(&self.lets0, qps))
     }
 
@@ -817,12 +814,50 @@ impl<'vir> ImBoundaryMaps<'vir> {
         deps: &mut task_encoder::TaskEncoderDependencies<'vir, E>,
         extra: Option<vir::ExprMap<'vir>>,
     ) -> Result<Option<vir::ExprBool<'vir>>, EncodeFullError<'vir, E>> {
-        if self.m1.is_empty() && extra.is_none() {
+        if self.m1.is_none() && extra.is_none() {
             return Ok(None);
         }
-        let qps = Self::qps(vcx, deps, self.m1.iter().copied().chain(extra))?;
+        let qps = Self::qps(vcx, deps, self.m1, &self.parts1, extra)?;
         Ok(Some(self.wrap(&self.lets1, qps)))
     }
+}
+
+/// A read of one source's state requires permission over that source's own
+/// map, a part of the map a boundary QP is over. The union functions' axioms
+/// relate the two only through a two-term trigger (the union application and
+/// the part's domain membership), which does not reliably fire inside
+/// Silicon's permission checks: their receiver is universally quantified, and
+/// Z3 gives up with incomplete quantifiers although the same check over a
+/// fixed receiver is proved. So, for a part `p` of a shared-union map
+/// `merged`:
+/// forall k :: { k in domain(p) }
+///   k in domain(p) ==> k in domain(merged) && merged[k] == p[k]
+pub(crate) fn im_union_part_lemma<'vir>(
+    vcx: &'vir vir::VirCtxt<'vir>,
+    tys: &ImTys<'vir>,
+    part: vir::ExprMap<'vir>,
+    merged: vir::ExprMap<'vir>,
+) -> vir::ExprBool<'vir> {
+    let k = vcx.mk_local_decl("k", tys.key.ty);
+    let k_ex = vcx.mk_local_ex(k);
+    let in_part = vcx.mk_set_in_expr(k_ex, vcx.mk_map_domain_expr(part));
+    let in_merged = vcx.mk_set_in_expr(k_ex, vcx.mk_map_domain_expr(merged));
+    let amounts = vcx.mk_eq_expr(
+        vcx.mk_map_lookup_expr(merged, k_ex)
+            .downcast_ty::<vir::Perm>(),
+        vcx.mk_map_lookup_expr(part, k_ex)
+            .downcast_ty::<vir::Perm>(),
+    );
+    vcx.mk_forall_expr(
+        vcx.alloc_slice(&[k]),
+        vcx.alloc_slice(&[vcx.mk_trigger(&[in_part])]),
+        vcx.mk_bin_op_expr(
+            vir::BinOpKind::Implies,
+            in_part,
+            vcx.mk_conj(&[in_merged, amounts]),
+        )
+        .downcast_ty(),
+    )
 }
 
 /// The address argument of a source's `_IM_N` applications: `null`. The
