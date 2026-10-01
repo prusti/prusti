@@ -234,6 +234,7 @@ impl TaskEncoder for TyInteriorMutUseEnc {
         TyInteriorMutEnc::emit_outputs(program);
         QpToMapEnc::emit_outputs(program);
         MapUnionEnc::emit_outputs(program);
+        ImParamCongruenceEnc::emit_outputs(program);
         MapRestrictEnc::emit_outputs(program);
         Im0SnapEnc::emit_outputs(program);
         Im0JoinEnc::emit_outputs(program);
@@ -2364,6 +2365,126 @@ impl TaskEncoder for MapUnionEnc {
                 None,
             );
             Ok((domain, MapUnionFns { disjoint, shared }))
+        })
+    }
+
+    fn emit_outputs<'vir>(program: &mut task_encoder::Program<'vir>) {
+        for domain in Self::all_outputs_local_no_errors(program) {
+            program.add_domain(domain);
+        }
+    }
+}
+
+/// The level-1 congruence for type parameters. The level-1 maps of a value
+/// depend on the level-0 value map only through the values of the value's
+/// own level-0 objects. Concrete types get this from the per-type axioms of
+/// `InteriorMutGenericsEnc`; for a type parameter it is needed wherever a
+/// generic body moves the objects of a parameter-typed value between states
+/// (e.g. across the two sides of a wand): the value maps evaluated in those
+/// states are different terms whenever the parameter-typed referents change,
+/// since those are held in the same predicate as the objects.
+///
+/// The axiom only fires for types marked with `im_tparam`, which a generic
+/// method body assumes for its own type parameters: stated for all types,
+/// its case split makes marginal permission checks elsewhere (e.g. the
+/// contract of `Cell::swap`) fail.
+pub(crate) struct ImParamCongruenceEnc;
+
+pub(crate) type ImTyParamMarker<'vir> = vir::FunctionIdn<'vir, vir::TyVal, vir::Bool>;
+
+impl TaskEncoder for ImParamCongruenceEnc {
+    task_encoder::encoder_cache!(ImParamCongruenceEnc);
+    const ENCODER_NAME: &'static str = "interior mutability type parameter congruence encoder";
+    type TaskDescription<'vir> = ();
+    type OutputFullDependency<'vir> = ImTyParamMarker<'vir>;
+    type OutputFullLocal<'vir> = vir::Domain<'vir>;
+
+    fn task_to_key<'vir>(task: &Self::TaskDescription<'vir>) -> Self::TaskKey<'vir> {
+        *task
+    }
+
+    fn do_encode_full<'vir>(
+        _task_key: &Self::TaskKey<'vir>,
+        deps: &mut task_encoder::TaskEncoderDependencies<'vir, Self>,
+    ) -> task_encoder::EncodeFullResult<'vir, Self> {
+        deps.emit_output_ref((), ())?;
+        let tys = ImTys::new(deps);
+        let unions = deps.require_dep::<MapUnionEnc>(())?;
+        let param_im = deps.require_ref::<TyInteriorMutEnc>(RustTyDecomposition::param())?;
+        vir::with_vcx(|vcx| {
+            let marker: ImTyParamMarker<'vir> = vir::FunctionIdn::new(
+                vir::vir_format_identifier!(vcx, "im_tparam"),
+                vir::TYPE_TYVAL,
+                vir::TYPE_BOOL,
+            );
+            // forall addr, snap, m1, m2, T ::
+            //   { IM_1(addr, snap, m1, T), IM_1(addr, snap, m2, T), im_tparam(T) }
+            //   (forall k :: { k in domain(u0) } k in domain(u0) ==> m1[k] == m2[k])
+            //   ==> IM_1(addr, snap, m1, T) == IM_1(addr, snap, m2, T)
+            // where u0 = im_map_union_disjoint(IM_0(addr, snap, T)._2_0, .._2_1).
+            let addr = vcx.mk_local_decl("addr", vir::TYPE_REF);
+            let snap = vcx.mk_local_decl("snap", vir::TYPE_PSNAP);
+            let m1 = vcx.mk_local_decl("m1", tys.snap_map);
+            let m2 = vcx.mk_local_decl("m2", tys.snap_map);
+            let t = vcx.mk_local_decl("T", vir::TYPE_TYVAL);
+            let k = vcx.mk_local_decl("k", tys.key.ty);
+            let addr_ex = vcx.mk_local_ex(addr);
+            let snap_ex = vcx.mk_local_ex(snap).upcast_ty();
+            let k_ex = vcx.mk_local_ex(k);
+            let ts = vcx.alloc_slice(&[vcx.mk_local_ex(t)]);
+            let app = |m: vir::LocalDecl<'vir, vir::Map>| {
+                param_im.l1.call()(addr_ex, snap_ex, vcx.mk_local_ex(m), ts, &[])
+            };
+            let (o0, sh0) = tys.split(param_im.l0.call()(addr_ex, snap_ex, ts, &[]));
+            let in_u0 = vcx.mk_set_in_expr(
+                k_ex,
+                vcx.mk_map_domain_expr(unions.disjoint.call()(o0, sh0)),
+            );
+            let lookup = |m: vir::LocalDecl<'vir, vir::Map>| {
+                vcx.mk_map_lookup_expr(vcx.mk_local_ex(m), k_ex)
+                    .downcast_ty::<vir::PSnap>()
+            };
+            let agree = vcx.mk_forall_expr(
+                vcx.alloc_slice(&[k]),
+                vcx.alloc_slice(&[vcx.mk_trigger(&[in_u0])]),
+                vcx.mk_bin_op_expr(
+                    vir::BinOpKind::Implies,
+                    in_u0,
+                    vcx.mk_eq_expr(lookup(m1), lookup(m2)),
+                )
+                .downcast_ty(),
+            );
+            let congruence = vcx.mk_forall_expr(
+                vcx.alloc_slice(&[
+                    addr.as_dyn(),
+                    snap.as_dyn(),
+                    m1.as_dyn(),
+                    m2.as_dyn(),
+                    t.as_dyn(),
+                ]),
+                vcx.alloc_slice(&[vcx.mk_trigger(&[
+                    app(m1).as_dyn(),
+                    app(m2).as_dyn(),
+                    marker.call()(vcx.mk_local_ex(t)).as_dyn(),
+                ])]),
+                vcx.mk_bin_op_expr(
+                    vir::BinOpKind::Implies,
+                    agree,
+                    vcx.mk_eq_expr(app(m1), app(m2)),
+                )
+                .downcast_ty(),
+            );
+            let domain = vcx.mk_domain(
+                vir::ViperIdent::new("def_im_tparam"),
+                &[],
+                vcx.alloc_slice(&[vcx.mk_domain_axiom(
+                    vir::ViperIdent::new("ax_im_tparam_l1_congruence"),
+                    congruence,
+                )]),
+                vcx.alloc_slice(&[vcx.mk_domain_function(marker, false, None)]),
+                None,
+            );
+            Ok((domain, marker))
         })
     }
 

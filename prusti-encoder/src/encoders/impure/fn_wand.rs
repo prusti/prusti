@@ -488,6 +488,7 @@ impl<'vir> WandEncOutput<'vir> {
         let ctx_params = self.g_params(vcx, call_ctx);
         let mut pairs: [Vec<vir::Expr<'vir, vir::Pair>>; IM_LEVELS] = [vec![], vec![]];
         let mut sources = Vec::new();
+        let mut source_locals = FxHashSet::default();
         // Whether the sources' level-1 QP is emitted, decided on the
         // identity types (see `im_boundary_maps`).
         let mut level1 = false;
@@ -506,8 +507,8 @@ impl<'vir> WandEncOutput<'vir> {
             // the term shape of the boundary QPs that put its permissions in
             // the caller's state. A mutable reference's referent value is
             // read from the heap, which keys the referent's objects: only
-            // where the referent is held when the side is evaluated (the
-            // right-hand side, inhaled at apply). The path decision is on
+            // where the referent is held when the side is evaluated
+            // (`referents_held`). The path decision is on
             // the identity signature; the expression on the call-context one
             // (its terms substitute cleanly: the reference triples involve
             // no generic casts).
@@ -517,6 +518,14 @@ impl<'vir> WandEncOutput<'vir> {
                 _ => false,
             };
             if heap_read {
+                // A reference contributes its referent's objects once, even
+                // if it has several lifetime projections in the shape (e.g.
+                // the `'a` of `&'a mut T` and those of `T` itself): a
+                // repeated source would be combined with itself by the shared
+                // union, which the solver cannot see through.
+                if !source_locals.insert(g.mir_local()) {
+                    continue;
+                }
                 let decomp = RustTyDecomposition::from_ty(g.ty(ctx_sig), ctx_params);
                 sources.push((decomp, vcx.mk_null(), snap));
                 level1 |= !crate::encoders::ty::interior_mut::provably_no_level1_interior_mut(
@@ -632,7 +641,9 @@ impl<'vir> WandEncOutput<'vir> {
         // what they hold stays with the caller. So are the outputs that are
         // nested lifetimes of the inputs (the `'b` of a `&'a mut RefMut<'b,
         // T>` argument): their objects sit behind the blocked referent,
-        // which the wand's right-hand side returns.
+        // which the wand's right-hand side returns. The result's referent is
+        // part of the left-hand side itself, so its objects are keyed by its
+        // held value, as on the right-hand side.
         let lhs_im_nodes = wand_data
             .lhs
             .iter()
@@ -648,7 +659,7 @@ impl<'vir> WandEncOutput<'vir> {
                     lhs_im_nodes.into_iter(),
                     call_ctx,
                     pledge_args,
-                    false,
+                    true,
                 )
             })
             .flatten();

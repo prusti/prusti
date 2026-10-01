@@ -21,8 +21,8 @@ use crate::encoders::{
             trait_impls::TraitImplEnc,
         },
         interior_mut::{
-            BOUNDARY_IM0_MAP, ImTys, MapUnionEnc, TyInteriorMutUseEnc, im_boundary_maps, im_frame,
-            im0_snap_sources, merge_pairs,
+            BOUNDARY_IM0_MAP, ImParamCongruenceEnc, ImTys, MapUnionEnc, TyInteriorMutUseEnc,
+            im_boundary_maps, im_frame, im0_snap_sources, merge_pairs,
         },
     },
 };
@@ -618,6 +618,15 @@ impl TaskEncoder for MethodEnc {
                     );
                     if always_live.contains(local) {
                         start_stmts.push(vcx.mk_inhale_stmt(local_defs[local].impure_uninit));
+                    }
+                }
+                // The body may move the interior-mutable objects of values of
+                // its type parameters between states (see
+                // `ImParamCongruenceEnc`).
+                if !arg_ims.is_empty() || im_qp_post.is_some() {
+                    let tparam = deps.require_dep::<ImParamCongruenceEnc>(())?;
+                    for ty in generics.ty_exprs() {
+                        start_stmts.push(vcx.mk_inhale_stmt(tparam.call()(*ty)));
                     }
                 }
                 // This will be overwritten later.
