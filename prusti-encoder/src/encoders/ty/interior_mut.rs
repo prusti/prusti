@@ -1690,30 +1690,28 @@ impl<'vir> TyInteriorMutField<'_, 'vir> {
     ) -> Result<ImPair<'vir>, EncodeFullError<'vir, TyInteriorMutEnc>> {
         let discr_snap = data.1.0.snap_to_discr_snap.call()(self.snap.downcast_ty());
         let vcx = self.vcx;
-        let folded = data
+        let mut variants = data
             .variants
             .iter()
             .map(|variant| {
                 let inner = self.all_in_struct(&variant.inner)?;
                 Ok((self.vcx.mk_eq_expr(discr_snap, variant.1.0.discr), inner))
             })
-            .reduce(|acc, e| {
-                let (cond, pair) = acc?;
-                let (next_cond, next_pair): (_, ImPair) = e?;
-                Ok((
-                    next_cond,
-                    ImPair {
-                        owned: vcx.mk_ternary_expr(cond, pair.owned, next_pair.owned),
-                        shared: vcx.mk_ternary_expr(cond, pair.shared, next_pair.shared),
-                    },
-                ))
-            });
-        match folded {
-            Some(pair) => Ok(pair?.1),
+            .collect::<Result<Vec<(_, ImPair)>, _>>()?;
+        // `d == v1 ? p1 : (d == v2 ? p2 : .. pn)`: the last variant is the
+        // innermost else.
+        let Some((_, last)) = variants.pop() else {
             // An uninhabited enum (e.g. `Never`) has no values and therefore
             // no interior-mutable objects.
-            None => Ok(self.empty_pair()),
-        }
+            return Ok(self.empty_pair());
+        };
+        Ok(variants
+            .into_iter()
+            .rev()
+            .fold(last, |rest, (cond, pair)| ImPair {
+                owned: vcx.mk_ternary_expr(cond, pair.owned, rest.owned),
+                shared: vcx.mk_ternary_expr(cond, pair.shared, rest.shared),
+            }))
     }
 }
 
