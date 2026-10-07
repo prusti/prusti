@@ -6,6 +6,7 @@ pub mod float;
 pub mod panicking;
 pub mod result;
 pub mod slice;
+pub mod ops;
 
 pub use eq::PureEq;
 
