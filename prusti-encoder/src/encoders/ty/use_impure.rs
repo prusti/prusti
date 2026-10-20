@@ -414,6 +414,22 @@ impl<'vir> TyData<'vir, UseImpureTyDatas> {
         self.data.inhabited.inhabited()
     }
 
+    /// The predicate of the given variant, or of the whole type.
+    pub fn variant_ref_to_pred(
+        &self,
+        variant: Option<abi::VariantIdx>,
+        self_ref: vir::ExprRef<'vir>,
+    ) -> vir::ExprBool<'vir> {
+        vir::with_vcx(|vcx| match variant {
+            Some(variant) => vcx.mk_predicate_app_expr(
+                self.expect_variant(variant)
+                    .inner
+                    .ref_to_pred_app(self_ref, None),
+            ),
+            None => self.data.ref_to_pred(vcx, self_ref, None),
+        })
+    }
+
     /// Fold the predicate (including generic casts).
     pub fn fold(
         &self,
@@ -544,6 +560,22 @@ impl<'vir> TyUseImpureArray<'vir> {
         index: vir::ExprGenInt<'vir, Curr, Next>,
     ) -> vir::ExprGenRef<'vir, Curr, Next> {
         self.data.impure.ref_to_index_ref.call()(self_ref, index, self.args.get_ty())
+    }
+
+    /// The predicate of the array without its element at `index`, which
+    /// folding the element back consumes.
+    pub fn ref_to_index_frame_pred(
+        &self,
+        self_ref: vir::ExprRef<'vir>,
+        index: vir::ExprInt<'vir>,
+    ) -> vir::ExprBool<'vir> {
+        let pred_app = (self.data.impure.index_predicate)(
+            self_ref,
+            index,
+            self.args.get_ty(),
+            self.args.get_const(),
+        )(None);
+        vir::with_vcx(|vcx| vcx.mk_predicate_app_expr(pred_app))
     }
 }
 

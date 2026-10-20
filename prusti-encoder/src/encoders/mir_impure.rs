@@ -4,16 +4,19 @@ use pcg::{
     action::{BorrowPcgAction, PcgAction, PcgActions},
     borrow_pcg::{
         action::BorrowPcgActionKind,
-        borrow_pcg_edge::BorrowPcgEdge,
+        borrow_pcg_edge::{BlockedNode, BorrowPcgEdge},
         borrow_pcg_expansion::BorrowPcgExpansion,
         edge::{
-            abstraction::{AbstractionEdge, FunctionCallOrLoop},
+            abstraction::{
+                AbstractionEdge, FunctionCallOrLoop, function::FunctionCallAbstractionEdgeMetadata,
+            },
             borrow_flow::BorrowFlowEdgeKind,
             kind::BorrowPcgEdgeKind,
         },
+        edge_data::EdgeData,
         region_projection::PlaceOrConst,
         state::BorrowsState,
-        unblock_graph::BorrowPcgUnblockAction,
+        unblock_graph::{BorrowPcgUnblockAction, UnblockGraph},
     },
     coupling::PcgCoupledEdgeKind,
     free_pcs::{RepackGuide, RepackOp},
@@ -260,6 +263,13 @@ impl<'vir> From<vir::ExprSnap<'vir>> for EncodedRvalue<'vir> {
             post_assign_folds: None,
         }
     }
+}
+
+/// A place that is (un)folded, see [`ImpureEncVisitor::folded_place`].
+struct FoldedPlace<'vir> {
+    address: vir::ExprRef<'vir>,
+    ty: mir::PlaceTy<'vir>,
+    label: Option<vir::OldLabel<'vir>>,
 }
 
 enum EncodeRvalueError<'vir, E: TaskEncoder> {
@@ -563,13 +573,13 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         }
     }
 
-    pub(crate) fn fold_or_unfold(
+    /// The address of `base`, read at its own label or else at `label`. `None`
+    /// for a place behind a shared reference, which is never (un)folded.
+    fn folded_place(
         &mut self,
         base: MaybeLabelledPlace<'vir>,
-        fold_or_unfold: FoldOrUnfold,
-        expansion: Option<&BorrowPcgExpansion>,
         label: Option<&'vir str>,
-    ) -> EncodeResult<'vir, (), E> {
+    ) -> EncodeResult<'vir, Option<FoldedPlace<'vir>>, E> {
         let place = base.place();
         let label = if let MaybeLabelledPlace::Labelled(snap) = base {
             Some(self.get_location_label(snap.at()))
@@ -579,7 +589,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
 
         // We don't want to unfold because for immutable refs we only use snapshot read/writes
         if place.is_shared_ref(self.pcg_ctxt()) || place.projects_shared_ref(self.pcg_ctxt()) {
-            return Ok(());
+            return Ok(None);
         }
 
         let ref_p = self.encode_place(place)?;
@@ -588,6 +598,28 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         let ref_p = self
             .vcx
             .maybe_apply_label(ref_p.expr.expect_predicate(), label);
+        Ok(Some(FoldedPlace {
+            address: ref_p,
+            ty: place_ty,
+            label,
+        }))
+    }
+
+    pub(crate) fn fold_or_unfold(
+        &mut self,
+        base: MaybeLabelledPlace<'vir>,
+        fold_or_unfold: FoldOrUnfold,
+        expansion: Option<&BorrowPcgExpansion>,
+        label: Option<&'vir str>,
+    ) -> EncodeResult<'vir, (), E> {
+        let Some(FoldedPlace {
+            address: ref_p,
+            ty: place_ty,
+            label,
+        }) = self.folded_place(base, label)?
+        else {
+            return Ok(());
+        };
         let data = self.ty_use_impure(place_ty.ty);
 
         let index = expansion
@@ -602,15 +634,8 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         Ok(())
     }
 
-    fn pcs_handle_edge(
-        &mut self,
-        borrows_state: &BorrowsState<'_, 'vir>,
-        edge: &BorrowPcgEdge<'vir>,
-        edge_action: EdgeAction,
-        label: Option<&'vir str>,
-        edge_to_loop: bool,
-        to_skip: &mut Vec<mir::BasicBlock>,
-    ) -> EncodeResult<'vir, (), E> {
+    /// The condition under which `edge` is valid, `None` if it always is.
+    fn edge_condition(&mut self, edge: &BorrowPcgEdge<'vir>) -> Option<vir::ExprBool<'vir>> {
         let conditions = edge.conditions();
 
         // For each block `b` where the edge is only valid if control flow
@@ -631,7 +656,20 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             .collect::<Vec<_>>();
         // For each block `b` where the edge validity depends on the successor taken from `b`,
         // every successor must be valid.
-        let cond = self.vcx.mk_conj(self.vcx.alloc_slice(&cond_conjuncts));
+        (!cond_conjuncts.is_empty())
+            .then(|| self.vcx.mk_conj(self.vcx.alloc_slice(&cond_conjuncts)))
+    }
+
+    fn pcs_handle_edge(
+        &mut self,
+        borrows_state: &BorrowsState<'_, 'vir>,
+        edge: &BorrowPcgEdge<'vir>,
+        edge_action: EdgeAction,
+        label: Option<&'vir str>,
+        edge_to_loop: bool,
+        to_skip: &mut Vec<mir::BasicBlock>,
+    ) -> EncodeResult<'vir, (), E> {
+        let cond = self.edge_condition(edge);
         let stmts = self.block(|self_| {
             self_.pcs_handle_edge_conditionless(
                 borrows_state,
@@ -642,15 +680,14 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 to_skip,
             )
         })?;
-        if stmts.is_empty()
-            || stmts
+        let Some(cond) = cond.filter(|_| {
+            !stmts
                 .iter()
                 .all(|stmt| matches!(stmt.kind, vir::StmtKindData::Comment(_)))
-            || cond_conjuncts.is_empty()
-        {
+        }) else {
             self.stmts(stmts);
             return Ok(());
-        }
+        };
         let stmts = self.vcx.alloc_slice(&stmts);
         self.stmt(self.vcx.mk_if_stmt(cond, stmts, &[]));
         Ok(())
@@ -773,42 +810,8 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                     return Ok(());
                 }
                 to_skip.push(call.location().block);
-                // TODO: this applies *all* the wands for the referenced
-                //   function call; instead we should figure out which
-                //   wand it is based on the edge info.
-                // TODO: closures
-                let wands = self.deps.require_dep::<WandEnc>(WandEncTask {
-                    data: call.function_data().unwrap(),
-                })?;
-                let bb = &self.body[call.location().block];
-                let terminator = bb.terminator.as_ref().unwrap();
-                match &terminator.kind {
-                    mir::TerminatorKind::Call {
-                        func,
-                        args,
-                        destination,
-                        ..
-                    } => {
-                        // Calls not encoded as impure method calls create no
-                        // wands (e.g., a Viper function application).
-                        if self.wandless_calls.contains(&call.location().block) {
-                            return Ok(());
-                        }
-                        let (_, caller_substs, _) = self.get_call_data(func);
-
-                        let (_, dest_snap, _, _) =
-                            self.encode_place_with_snap((*destination).into())?;
-                        let wand_args =
-                            std::iter::once(Ok(dest_snap))
-                                .chain(args.iter().map(|operand| {
-                                    self.encode_operand_snap_immediate(&operand.node)
-                                }))
-                                .collect::<EncodeResult<'vir, Vec<_>, E>>()?;
-                        let (label_pre, label_post) = self.call_labels[&call.location().block];
-                        let call_ctx = self.gargs(caller_substs);
-                        wands.apply_wands(&wand_args, label_pre, label_post, call_ctx, self);
-                    }
-                    _ => unreachable!(),
+                for wand in self.call_wands(call)? {
+                    self.stmt(self.vcx.mk_apply_stmt(wand));
                 }
             }
             BorrowPcgEdgeKind::Abstraction(at @ AbstractionEdge::Loop(_)) => {
@@ -830,6 +833,49 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         Ok(())
     }
 
+    /// The wands that a call produced (instantiated at the call).
+    fn call_wands(
+        &mut self,
+        call: &FunctionCallAbstractionEdgeMetadata<'vir>,
+    ) -> EncodeResult<'vir, Vec<vir::Wand<'vir>>, E> {
+        // TODO: this applies *all* the wands for the referenced
+        //   function call; instead we should figure out which
+        //   wand it is based on the edge info.
+        // TODO: closures
+        let wands = self.deps.require_dep::<WandEnc>(WandEncTask {
+            data: call.function_data().unwrap(),
+        })?;
+        let bb = &self.body[call.location().block];
+        let terminator = bb.terminator.as_ref().unwrap();
+        match &terminator.kind {
+            mir::TerminatorKind::Call {
+                func,
+                args,
+                destination,
+                ..
+            } => {
+                // Calls not encoded as impure method calls create no
+                // wands (e.g., a Viper function application).
+                if self.wandless_calls.contains(&call.location().block) {
+                    return Ok(Vec::new());
+                }
+                let (_, caller_substs, _) = self.get_call_data(func);
+
+                let (_, dest_snap, _, _) = self.encode_place_with_snap((*destination).into())?;
+                let wand_args = std::iter::once(Ok(dest_snap))
+                    .chain(
+                        args.iter()
+                            .map(|operand| self.encode_operand_snap_immediate(&operand.node)),
+                    )
+                    .collect::<EncodeResult<'vir, Vec<_>, E>>()?;
+                let (label_pre, label_post) = self.call_labels[&call.location().block];
+                let call_ctx = self.gargs(caller_substs);
+                Ok(wands.call_wands(&wand_args, label_pre, label_post, call_ctx, self))
+            }
+            _ => unreachable!(),
+        }
+    }
+
     pub(crate) fn pcs_unblock_actions(
         &mut self,
         borrows_state: &BorrowsState<'_, 'vir>,
@@ -848,6 +894,221 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             )?;
         }
         Ok(())
+    }
+
+    /// The proof script of a package giving back the nodes of `rhs`, each with
+    /// the resources it is given back as: unblocking the nodes, after asserting
+    /// the footprint of the wand. Statements in the script only see resources
+    /// in the package state, and a resource of the state outside is only moved
+    /// there when consumed. Asserting the footprint first moves it there before
+    /// any statement, which may need it earlier (e.g. to read the address of a
+    /// `Box` that is folded).
+    pub(crate) fn pcs_package_script<N: Into<BlockedNode<'vir>>>(
+        &mut self,
+        borrows_state: &BorrowsState<'_, 'vir>,
+        rhs: Vec<(N, Vec<vir::ExprBool<'vir>>)>,
+        label: &'vir str,
+    ) -> EncodeResult<'vir, Vec<vir::Stmt<'vir>>, E> {
+        let mut footprint = Vec::new();
+        let mut unblock = Vec::new();
+        for (node, resources) in rhs {
+            let node = node.into();
+            let ug = UnblockGraph::for_node(node, borrows_state, self.pcg_ctxt());
+            let actions = ug.actions(self.pcg_ctxt()).unwrap();
+            // Where nothing unblocks the node, it is given back as it is.
+            if !resources.is_empty() {
+                let resources = self.vcx.mk_conj(&resources);
+                footprint.extend(self.unless_unblocked(node, None, &actions, resources));
+            }
+            footprint.extend(self.pcs_unblock_footprint(&actions, label)?);
+            unblock.extend(self.block(|visitor| {
+                visitor.pcs_unblock_actions(borrows_state, &actions, Some(label))
+            })?);
+        }
+        let mut script = Vec::new();
+        if !footprint.is_empty() {
+            script.push(self.vcx.mk_assert_stmt(self.vcx.mk_conj(&footprint)));
+        }
+        script.extend(unblock);
+        Ok(script)
+    }
+
+    /// The resources that unblocking with `actions` takes from the state
+    /// outside the package: the children of folds that `actions` do not
+    /// unblock, the other parts of the folded predicates (see `fold_residue`),
+    /// and the wands that are applied, each under the condition of its edge.
+    fn pcs_unblock_footprint(
+        &mut self,
+        actions: &[BorrowPcgUnblockAction<'vir>],
+        label: &'vir str,
+    ) -> EncodeResult<'vir, Vec<vir::ExprBool<'vir>>, E> {
+        let mut footprint = Vec::new();
+        let mut calls = Vec::new();
+        for action in actions {
+            let edge = action.edge();
+            let parts = match edge.kind() {
+                BorrowPcgEdgeKind::Deref(deref) => {
+                    self.fold_footprint(edge, deref.blocked_place(), None, actions, label)?
+                }
+                BorrowPcgEdgeKind::BorrowPcgExpansion(expansion)
+                    if let PcgNode::Place(base) = expansion.base() =>
+                {
+                    self.fold_footprint(edge, base, Some(expansion), actions, label)?
+                }
+                BorrowPcgEdgeKind::Coupled(PcgCoupledEdgeKind(
+                    FunctionCallOrLoop::FunctionCall(call_edge),
+                )) => {
+                    // As in `pcs_handle_edge`, the wands of a call are applied
+                    // once for all its edges.
+                    let call = call_edge.metadata();
+                    if calls.contains(&call.location().block) {
+                        continue;
+                    }
+                    calls.push(call.location().block);
+                    let wands = self.call_wands(call)?;
+                    wands
+                        .into_iter()
+                        .map(|wand| self.vcx.mk_wand_expr(wand))
+                        .collect()
+                }
+                BorrowPcgEdgeKind::Abstraction(at @ AbstractionEdge::Loop(_)) => {
+                    let edge = at.clone().into_singleton_coupled_edge();
+                    vec![
+                        self.vcx
+                            .mk_wand_expr(self.applied_wand(&edge, Some(label))?),
+                    ]
+                }
+                _ => Vec::new(),
+            };
+            if parts.is_empty() {
+                continue;
+            }
+            let parts = self.vcx.mk_conj(&parts);
+            footprint.push(match self.edge_condition(edge) {
+                Some(cond) => self
+                    .vcx
+                    .mk_bin_op_expr(vir::BinOpKind::Implies, cond, parts)
+                    .downcast_ty(),
+                None => parts,
+            });
+        }
+        Ok(footprint)
+    }
+
+    /// The resources that folding `base` along `edge` takes from the state
+    /// outside the package: its children, unless (or except under the
+    /// conditions where) `actions` unblock them, and the other parts of its
+    /// predicate.
+    fn fold_footprint(
+        &mut self,
+        edge: &BorrowPcgEdge<'vir>,
+        base: MaybeLabelledPlace<'vir>,
+        expansion: Option<&BorrowPcgExpansion>,
+        actions: &[BorrowPcgUnblockAction<'vir>],
+        label: &'vir str,
+    ) -> EncodeResult<'vir, Vec<vir::ExprBool<'vir>>, E> {
+        let Some(folded) = self.folded_place(base, Some(label))? else {
+            return Ok(Vec::new());
+        };
+        let mut parts = self.fold_residue(&folded, expansion);
+        let ctxt = self.pcg_ctxt();
+        for child in edge.blocked_by_nodes(ctxt) {
+            let PcgNode::Place(place) = child else {
+                continue;
+            };
+            let Some(place) = self.folded_place(place, Some(label))? else {
+                continue;
+            };
+            let data = self.ty_use_impure(place.ty.ty);
+            let pred = data.variant_ref_to_pred(place.ty.variant_index, place.address);
+            parts.extend(self.unless_unblocked(child.into(), Some(edge), actions, pred));
+        }
+        Ok(parts)
+    }
+
+    /// `resource` under the conditions where none of `actions` unblock `node`,
+    /// `None` if one always does (or does whenever `edge` is valid).
+    fn unless_unblocked(
+        &mut self,
+        node: BlockedNode<'vir>,
+        edge: Option<&BorrowPcgEdge<'vir>>,
+        actions: &[BorrowPcgUnblockAction<'vir>],
+        resource: vir::ExprBool<'vir>,
+    ) -> Option<vir::ExprBool<'vir>> {
+        let ctxt = self.pcg_ctxt();
+        let unblocking = actions
+            .iter()
+            .map(|action| action.edge())
+            .filter(|unblocking| unblocking.blocks_node(node, ctxt))
+            .collect::<Vec<_>>();
+        if let Some(edge) = edge
+            && unblocking
+                .iter()
+                .any(|unblocking| unblocking.conditions() == edge.conditions())
+        {
+            return None;
+        }
+        let unblocked_under = unblocking
+            .into_iter()
+            .map(|unblocking| self.edge_condition(unblocking))
+            .collect::<Option<Vec<_>>>()?;
+        if unblocked_under.is_empty() {
+            return Some(resource);
+        }
+        let unblocked = self.vcx.mk_disj(&unblocked_under);
+        let outside = self
+            .vcx
+            .mk_unary_op_expr(vir::UnOpKind::Not, unblocked.upcast_ty())
+            .downcast_ty();
+        Some(
+            self.vcx
+                .mk_bin_op_expr(vir::BinOpKind::Implies, outside, resource)
+                .downcast_ty(),
+        )
+    }
+
+    /// The parts of a predicate that folding it consumes besides the places it
+    /// is expanded into: the discriminant of an enum, the rest of an array
+    /// whose element is folded back, and the fields of a `Box` besides its
+    /// value.
+    fn fold_residue(
+        &mut self,
+        folded: &FoldedPlace<'vir>,
+        expansion: Option<&BorrowPcgExpansion>,
+    ) -> Vec<vir::ExprBool<'vir>> {
+        let place_ty = folded.ty;
+        if place_ty.variant_index.is_some() {
+            return Vec::new();
+        }
+        let data = self.ty_use_impure(place_ty.ty);
+        match place_ty.ty.kind() {
+            ty::TyKind::Adt(adt, _) if adt.is_enum() => {
+                let data = data.expect_enumlike();
+                let discr = data.discr(folded.address);
+                vec![data.discr_ty().ref_to_pred(self.vcx, discr, None)]
+            }
+            ty::TyKind::Adt(adt, args) if adt.is_box() => {
+                let fields = adt.non_enum_variant().fields.iter_enumerated();
+                fields
+                    .map(|(idx, field)| {
+                        let field_ref = data.expect_structlike()[idx].field_ref(folded.address);
+                        let field_ty = field.ty(self.vcx.tcx(), args).skip_normalization();
+                        self.ty_use_impure(field_ty)
+                            .ref_to_pred(self.vcx, field_ref, None)
+                    })
+                    .collect()
+            }
+            ty::TyKind::Array(..) | ty::TyKind::Slice(..) => expansion
+                .and_then(|expansion| expansion.guide())
+                .and_then(|guide| self.expansion_index(guide))
+                .map(|index| {
+                    data.expect_array()
+                        .ref_to_index_frame_pred(folded.address, index)
+                })
+                .into_iter()
+                .collect(),
+            _ => Vec::new(),
+        }
     }
 
     fn pcg_actions(
