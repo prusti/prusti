@@ -69,8 +69,7 @@ impl<'vir: 'a, 'a, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 .with_inherent_region(ctxt)
                 .generalized_lifetime_projections(ctxt);
             for proj in projs {
-                let Some(proj) =
-                    projection_for_pcg_projection(proj, ty.ty, task, self.vcx.tcx())
+                let Some(proj) = projection_for_pcg_projection(proj, ty.ty, task, self.vcx.tcx())
                 else {
                     continue;
                 };
