@@ -14,6 +14,7 @@ mod data;
 mod rust_ty;
 pub mod interpretation;
 pub mod interior_mut;
+pub mod im;
 
 pub use data::TySpecifics;
 pub use inhabited::TyInhabitedEnc;

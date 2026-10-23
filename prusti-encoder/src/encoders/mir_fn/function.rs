@@ -69,12 +69,17 @@ fn field_projection_body<'vir>(
     {
         let ret_use =
             deps.require_dep::<TyUsePureEnc>(RustTyDecomposition::from_ty(ret_ty, params))?;
-        let unit = RustTyDecomposition::from_ty(vcx.tcx().types.unit, params);
-        let metadata = deps
-            .require_dep::<TyUsePureEnc>(unit)?
-            .zst_to_snap()
-            .unwrap()
-            .upcast_ty();
+        // A field that may be unsized is the struct's tail, and a pointer to it
+        // carries the struct's metadata.
+        let metadata = if cur_ty.is_sized(vcx.tcx(), params.typing_env()) {
+            let unit = RustTyDecomposition::from_ty(vcx.tcx().types.unit, params);
+            deps.require_dep::<TyUsePureEnc>(unit)?
+                .zst_to_snap()
+                .unwrap()
+                .upcast_ty()
+        } else {
+            ref_data.metadata_access(arg.downcast_ty())
+        };
         return Ok(Ok(ret_use
             .expect_immref()
             .prim_to_snap(addr, metadata, snap)

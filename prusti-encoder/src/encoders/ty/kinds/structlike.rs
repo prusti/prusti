@@ -100,11 +100,68 @@ pub(crate) fn ty_impure<'vir>(
     deps: &mut TaskEncoderDependencies<'vir, TyImpureEnc>,
     builder: &mut PredicateBuilder<'vir>,
 ) -> Result<StructData<'vir, ImpureTyDatas>, EncodeFullError<'vir, TyImpureEnc>> {
+    if let RustTySpecial::UnsafeCell = task_key.0.special {
+        return unsafe_cell_impure(data, deps, builder);
+    }
     let (data, _, snap_expr) = ty_impure_variant("", task_key, data, deps, builder, None)?;
 
     // Ref-to-snap
     builder.mk_snap_function(Some(snap_expr), &[]);
     Ok(data)
+}
+
+/// An `UnsafeCell<T>`'s predicate is only its place component (abstract): the
+/// contents are an interior location. Its shallow snapshot has `im_unset(T)`
+/// in the slot.
+fn unsafe_cell_impure<'vir>(
+    data: &StructData<'vir, (RustTyDatas, PureTyDatas)>,
+    deps: &mut TaskEncoderDependencies<'vir, TyImpureEnc>,
+    builder: &mut PredicateBuilder<'vir>,
+) -> Result<StructData<'vir, ImpureTyDatas>, EncodeFullError<'vir, TyImpureEnc>> {
+    let unset = deps.require_dep::<crate::encoders::ty::im::ImUnsetEnc>(())?;
+    let field_accessors = data
+        .fields
+        .iter()
+        .map(|field| TyImpureFieldData {
+            ref_to_field_ref: match field.1.ref_to_field_ref {
+                TyPureFieldRef::Constant(ref_to_field_ref) => ref_to_field_ref,
+                TyPureFieldRef::Dynamic(_) => unreachable!("an `UnsafeCell` has no dynamic field"),
+            },
+        })
+        .collect::<Vec<_>>();
+    builder.mk_predicate("", None);
+    let vcx = builder.vcx;
+    let shallow = data.1.field_snaps_to_snap.call()(&[unset.call()(builder.params.ty_exprs()[0])
+        .upcast_ty()]);
+    let post = vcx.mk_eq_expr(vcx.mk_result(builder.csnap_type()), shallow);
+    let wildcard = vcx.mk_wildcard();
+    builder.mk_snap_function_amount(None, &[post], Some(wildcard));
+    // The contents are not part of the predicate: the `Uninit` token stands
+    // for the cell alone, and has no field tokens to repack into.
+    let ref_self_decl = builder.ref_self_decl();
+    let ref_self = vcx.mk_local_ex(ref_self_decl);
+    let params = builder.params.clone();
+    let self_uninit = builder.uninit_pred_expr(ref_self);
+    let uninit_args = (ref_self_decl.ty(), params.ty_args(), params.const_args());
+    let [method_uninit_expand, method_uninit_collapse] =
+        ["$uninit_expand", "$uninit_collapse"].map(|name| {
+            builder.inner.method(
+                name,
+                uninit_args,
+                &[],
+                (ref_self_decl, params.ty_decls(), params.const_decls()),
+                &[self_uninit],
+                &[self_uninit],
+            )
+        });
+    Ok(StructData::new(
+        TyImpureStructData {
+            box_data: None,
+            method_uninit_expand,
+            method_uninit_collapse,
+        },
+        field_accessors,
+    ))
 }
 
 pub(super) type ImpureVariant<'vir> = (

@@ -642,19 +642,17 @@ impl<'tcx> TySpecifics<'tcx, RustTyDatas> {
 
         match ty.kind() {
             ty::TyKind::Adt(adt, _) if adt.is_unsafe_cell() => {
-                // The contents live in the interior-mutability heap; the
-                // snapshot holds only a ghost identity (a thin pointer), by
-                // which the interior-mutable objects of holders (`Cell`,
-                // `RefCell`, ...) are keyed. It is copied by moves, so the
-                // keys are stable under moves.
-                let id_ty =
-                    vir::with_vcx(|vcx| ty::Ty::new_imm_ptr(vcx.tcx(), vcx.tcx().types.unit));
+                // The contents are an interior location: they are not part of
+                // the `UnsafeCell`'s predicate, which is only the place
+                // component. The snapshot has a slot for them, which holds
+                // `im_unset` in shallow snapshots and the contents in deep
+                // ones.
                 TySpecifics::mk_structlike(
                     (),
                     vec![RustFieldData {
-                        name: symbol::Symbol::intern("id"),
+                        name: symbol::Symbol::intern("value"),
                         fid: abi::FieldIdx::from_usize(0),
-                        ty: LazyRustTy(id_ty),
+                        ty: LazyRustTy(Self::new_param_ty(0)),
                         address: RustFieldAddress::Constant,
                     }],
                 )
@@ -762,7 +760,10 @@ impl<'tcx> TySpecifics<'tcx, RustTyDatas> {
             TySpecifics::mk_opaque(())
         } else if vir::with_vcx(|vcx| {
             EnvQuery::new(vcx.tcx()).is_adt_in_crate(adt, "prusti_contracts")
-        }) {
+        }) && matches!(
+            adt.non_enum_variant().name.as_str(),
+            "Int" | "Real" | "Set" | "Multiset" | "Seq" | "Map" | "Ghost"
+        ) {
             match adt.non_enum_variant().name.to_string().as_str() {
                 "Int" => Self::Builtin(RustBuiltinData::Int),
                 "Real" => Self::Builtin(RustBuiltinData::Real),
