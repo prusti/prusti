@@ -376,6 +376,9 @@ pub enum RustFieldAddress {
     /// Stored in the struct's value (the value of a `Box`, at its pointer):
     /// only a function of the struct's snapshot.
     Dynamic,
+    /// Not stored: only part of the snapshot (arbitrary in shallow ones), like
+    /// an `#[im_shares]` struct's shared value.
+    Slot,
 }
 
 impl<'tcx> RustFieldData<'tcx> {
@@ -833,10 +836,22 @@ impl<'tcx> TySpecifics<'tcx, RustTyDatas> {
                             ty: LazyRustTy(Self::new_param_ty(0)),
                             address: RustFieldAddress::Dynamic,
                         });
-                    } else if let Some((ptr, pointee)) =
-                        crate::encoders::ty::im::ptr_holds_field(adt.did())
+                    }
+                    if let Some(shared) = crate::encoders::ty::im::shares_slot_ty(adt.did()) {
+                        // The shared value (`@shares`), read in deep snapshots.
+                        data.fields.push(RustFieldData {
+                            name: symbol::Symbol::intern("@shares"),
+                            fid: abi::FieldIdx::from_usize(data.fields.len()),
+                            ty: LazyRustTy(shared),
+                            address: RustFieldAddress::Slot,
+                        });
+                    }
+                    if !adt.is_box()
+                        && let Some((ptr, pointee)) =
+                            crate::encoders::ty::im::ptr_holds_field(adt.did())
                     {
-                        // The held pointee, named `*FIELD` after its pointer.
+                        // The held pointee, named `*FIELD` after its pointer
+                        // (the last field, like a `Box`'s value).
                         let ptr_name = adt.non_enum_variant().fields[ptr].name;
                         data.fields.push(RustFieldData {
                             name: symbol::Symbol::intern(&format!("*{ptr_name}")),

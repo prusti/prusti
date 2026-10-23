@@ -47,6 +47,28 @@ fn has_marker(did: DefId, name: &str) -> bool {
     })
 }
 
+/// The type of the shared value of an `#[im_shares]` struct `did` (a shared
+/// reference), in the struct's own generics.
+pub(crate) fn shares_slot_ty<'tcx>(did: DefId) -> Option<ty::Ty<'tcx>> {
+    if !is_im_sharer(did) {
+        return None;
+    }
+    let (_, _, method) = im_amounts(did)
+        .into_iter()
+        .find(|(kind, ..)| matches!(kind, ImAmountKind::Shares { .. }))?;
+    vir::with_vcx(|vcx| {
+        // The annotation method's impl has the struct's generics.
+        let output = vcx
+            .tcx()
+            .fn_sig(method)
+            .instantiate_identity()
+            .skip_normalization()
+            .skip_binder()
+            .output();
+        Some(vcx.tcx().erase_and_anonymize_regions(output))
+    })
+}
+
 /// The pointer field of the struct `did` whose pointee it holds
 /// (`#[ptr_holds]`): its index and the pointee type.
 pub(crate) fn ptr_holds_field<'tcx>(did: DefId) -> Option<(abi::FieldIdx, ty::Ty<'tcx>)> {
@@ -609,6 +631,7 @@ fn folded<'vir, E: TaskEncoder>(
 struct SharedTarget<'vir> {
     ty: RustTyDecomposition<'vir>,
     addr: vir::ExprRef<'vir>,
+    metadata: vir::ExprSnap<'vir>,
     snap: vir::ExprSnap<'vir>,
     dependent: bool,
 }
@@ -657,6 +680,7 @@ fn shared_target<'vir, E: TaskEncoder>(
     Ok(Some(SharedTarget {
         ty: data.referent.decompose_normalize(target_ty.args),
         addr: ref_data.addr_access(target_c),
+        metadata: ref_data.metadata_access(target_c),
         snap: ref_data.value_access(target_c),
         dependent,
     }))
@@ -989,6 +1013,16 @@ fn deep_with<'vir, E: TaskEncoder>(
                     // A held pointee (of a `Box` or a `#[ptr_holds]`) is
                     // shallow.
                     crate::encoders::ty::RustFieldAddress::Dynamic => proj.read(snap_c),
+                    // The shared value, deep.
+                    crate::encoders::ty::RustFieldAddress::Slot => {
+                        let shared = shared.as_ref().unwrap();
+                        let deep = deep_with(deps, shared.ty, shared.addr, shared.snap, true)?;
+                        let slot_ty = field.decompose_normalize(ty.args);
+                        deps.require_dep::<TyUsePureEnc>(slot_ty)?
+                            .expect_immref()
+                            .prim_to_snap(shared.addr, shared.metadata, deep)
+                            .upcast_ty()
+                    }
                 });
             }
             let mut value = variant.field_snaps_to_snap(field_snaps).upcast_ty();

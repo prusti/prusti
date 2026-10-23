@@ -754,6 +754,28 @@ pub(crate) fn project_field_path<'vir, E: TaskEncoder>(
         if !adt.is_struct() {
             return Ok(Err(format!("`{ty}` is not a struct")));
         }
+        // `@shares`: the shared value of an `#[im_shares]` struct.
+        if name == "@shares" {
+            let Some(shared_ty) = crate::encoders::ty::im::shares_slot_ty(adt.did()) else {
+                return Ok(Err(format!("`{ty}` shares nothing")));
+            };
+            let decomp = super::RustTyDecomposition::from_ty(ty, params);
+            let idx = decomp
+                .ty
+                .expect_structlike()
+                .fields
+                .iter()
+                .position(|f| f.address == super::RustFieldAddress::Slot)
+                .unwrap();
+            let ty_use = deps.require_dep::<TyUsePureEnc>(decomp)?;
+            let proj = ty_use.expect_variant_opt(None).fields[idx];
+            snap = proj.read(snap.downcast_ty());
+            addr = proj.field_ref(addr);
+            ty = ty::EarlyBinder::bind(vcx.tcx(), shared_ty)
+                .instantiate(vcx.tcx(), substs)
+                .skip_normalization();
+            continue;
+        }
         // `*FIELD`: the pointee held by a `#[ptr_holds]` struct.
         if let Some(ptr_name) = name.strip_prefix('*') {
             let decomp = super::RustTyDecomposition::from_ty(ty, params);

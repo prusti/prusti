@@ -954,6 +954,22 @@ pub fn refmut_cell<'b, T: ?Sized>(_r: &RefMut<'b, T>) -> &'b RefCell<T> {
     unimplemented!()
 }
 
+/// The `RefCell` a `Ref` borrows from, with its current value.
+#[pure]
+#[trusted]
+#[field_projection(@shares)]
+pub fn ref_refcell<'b, T: ?Sized>(_r: &Ref<'b, T>) -> &'b RefCell<T> {
+    unimplemented!()
+}
+
+/// The `RefCell` a `RefMut` borrows from, with its current value.
+#[pure]
+#[trusted]
+#[field_projection(@shares)]
+pub fn refmut_refcell<'b, T: ?Sized>(_r: &RefMut<'b, T>) -> &'b RefCell<T> {
+    unimplemented!()
+}
+
 /// The borrow flag a `Ref` points to.
 #[pure]
 #[trusted]

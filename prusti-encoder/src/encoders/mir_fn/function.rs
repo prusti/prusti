@@ -30,11 +30,13 @@ fn field_projection_body<'vir>(
     path: &[String],
     arg: vir::ExprSnap<'vir>,
 ) -> Result<Result<vir::ExprSnap<'vir>, String>, task_encoder::EncodeFullError<'vir, FunctionEnc>> {
-    let sig = vcx
-        .tcx()
-        .fn_sig(def_id)
-        .instantiate_identity()
-        .skip_binder();
+    // Erased (rather than bound) regions, to compare with the field's type.
+    let sig = vcx.tcx().instantiate_bound_regions_with_erased(
+        vcx.tcx()
+            .fn_sig(def_id)
+            .instantiate_identity()
+            .skip_normalization(),
+    );
     let Some(ref_ty) = sig.inputs().first().copied() else {
         return Ok(Err("the function takes no argument".to_string()));
     };

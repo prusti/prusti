@@ -71,7 +71,8 @@ pub(super) fn ty_pure_variant<'vir>(
         .enumerate()
         .map(|(idx, (read, field))| {
             let ref_to_field_ref = match field.address {
-                RustFieldAddress::Constant => {
+                // A slot's address is never used.
+                RustFieldAddress::Constant | RustFieldAddress::Slot => {
                     let args = (ref_self_decl.ty(), params.ty_args(), params.const_args());
                     let params = (ref_self_decl, params.ty_decls(), params.const_decls());
                     TyPureFieldRef::Constant(builder.function(
@@ -245,11 +246,12 @@ pub(crate) fn ty_impure_variant<'vir>(
             .iter()
             .zip(&field_accessors)
             .zip(&data.fields)
+            .filter(|(_, field_data)| field_data.0.address != RustFieldAddress::Slot)
             .map(
                 |((field, TyImpureFieldData { ref_to_field_ref }), field_data)| {
                     let amount = match field_data.0.address {
                         RustFieldAddress::Dynamic => held.map(|(_, amount)| amount),
-                        RustFieldAddress::Constant => None,
+                        RustFieldAddress::Constant | RustFieldAddress::Slot => None,
                     };
                     field.ref_to_pred(
                         builder.vcx,
@@ -270,14 +272,25 @@ pub(crate) fn ty_impure_variant<'vir>(
     let mut snap_args: Vec<&'vir vir::ExprGenData<'vir, (), !, vir::Snap>> = fields
         .iter()
         .zip(&field_accessors)
-        .map(|(field, TyImpureFieldData { ref_to_field_ref })| {
-            field.ref_to_snap(ref_to_field_ref(
-                ref_self,
-                builder.params.ty_exprs(),
-                builder.params.const_exprs(),
-            ))
-        })
-        .collect::<Vec<_>>();
+        .zip(&data.fields)
+        .map(
+            |((field, TyImpureFieldData { ref_to_field_ref }), field_data)| {
+                Ok(match field_data.0.address {
+                    // A slot is arbitrary in the shallow snapshot.
+                    RustFieldAddress::Slot => deps
+                        .require_ref::<TyUsePureEnc>(field_data.0.decompose(task_key.0.params))?
+                        .arbitrary_to_snap(),
+                    RustFieldAddress::Constant | RustFieldAddress::Dynamic => {
+                        field.ref_to_snap(ref_to_field_ref(
+                            ref_self,
+                            builder.params.ty_exprs(),
+                            builder.params.const_exprs(),
+                        ))
+                    }
+                })
+            },
+        )
+        .collect::<Result<Vec<_>, _>>()?;
     // A held pointee is read only where its amount is positive (Silicon
     // cannot always tell inside the snapshot function).
     if let Some((_, amount)) = held {

@@ -2392,6 +2392,11 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                         leaf_places,
                         place_capabilities,
                     )?,
+                    // As in the shallow snapshot.
+                    RustFieldAddress::Slot => self
+                        .deps
+                        .require_ref::<TyUsePureEnc>(field_ty)?
+                        .arbitrary_to_snap(),
                 };
                 field_snaps.push(field_snap);
             }
