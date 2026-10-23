@@ -310,6 +310,48 @@ fn rc_weak<T: ?Sized, A: Allocator>(r: &Rc<T, A>) -> usize {
     rc_inner(r).weak.get()
 }
 
+/// The pointer of a dangling `Weak` (`Weak::new`), which no allocation has.
+#[pure]
+#[trusted]
+fn weak_dangling<T: ?Sized>() -> NonNull<RcInner<T>> {
+    unimplemented!()
+}
+
+/// The allocation a `Weak` points to, with its current value (meaningful
+/// unless it dangles).
+#[pure]
+#[trusted]
+#[field_projection(@shares)]
+fn weak_inner<T: ?Sized, A: Allocator>(_w: &Weak<T, A>) -> &RcInner<T> {
+    unimplemented!()
+}
+
+/// The pointer of a `Weak`: its allocation's identity (with `===`).
+#[pure]
+#[trusted]
+#[field_projection(ptr)]
+fn weak_ptr<T: ?Sized, A: Allocator>(_w: &Weak<T, A>) -> NonNull<RcInner<T>> {
+    unimplemented!()
+}
+
+/// Whether a `Weak` dangles (comes from `Weak::new`).
+#[pure]
+fn weak_dangles<T: ?Sized, A: Allocator>(w: &Weak<T, A>) -> bool {
+    Ghost::new_ref(&weak_ptr(w)) == Ghost::new_ref(&weak_dangling::<T>())
+}
+
+/// The strong count of a (not dangling) `Weak`'s allocation.
+#[pure_unstable]
+fn weak_strong<T: ?Sized, A: Allocator>(w: &Weak<T, A>) -> usize {
+    weak_inner(w).strong.get()
+}
+
+/// The weak count of a (not dangling) `Weak`'s allocation.
+#[pure_unstable]
+fn weak_weak<T: ?Sized, A: Allocator>(w: &Weak<T, A>) -> usize {
+    weak_inner(w).weak.get()
+}
+
 /// Calculate layout for `RcInner<T>` using the inner value's layout
 fn rc_inner_layout_for_value_layout(layout: Layout) -> Layout {
     // Calculate layout using the given value layout.
@@ -431,6 +473,7 @@ impl<T> Rc<T> {
     #[trusted]
     #[ensures(rc_strong(&result) == 1 && rc_weak(&result) == 1)]
     #[ensures(*result === value)]
+    #[ensures(!(rc_ptr(&result) === weak_dangling::<T>()))]
     pub fn new(value: T) -> Rc<T> {
         // There is an implicit weak pointer owned by all the strong
         // pointers, which ensures that the weak destructor never frees
@@ -600,6 +643,10 @@ impl<T: ?Sized, A: Allocator> Rc<T, A> {
     /// ```
     #[must_use = "this returns a new `Weak` pointer, \
                   without modifying the original `Rc`"]
+    #[trusted]
+    #[ensures(weak_ptr(&result) === rc_ptr(this))]
+    #[ensures(rc_strong(this) == old(rc_strong(this)))]
+    #[ensures(rc_weak(this) == old(rc_weak(this)) + 1)]
     pub fn downgrade(this: &Self) -> Weak<T, A>
     where
         A: AllocatorClone,
@@ -883,6 +930,11 @@ impl<T: ?Sized, A: Allocator> fmt::Pointer for Rc<T, A> {
 /// The typical way to obtain a `Weak` pointer is to call [`Rc::downgrade`].
 ///
 /// [`upgrade`]: Weak::upgrade
+// A `Weak` holds nothing, and reaches its allocation's atom unless it
+// dangles; the allocation then also counts it (and the strong pointers' one).
+#[im_shares(RcInner<T>, at = pointee(ptr), for '_, if = !weak_dangles(self))]
+#[im_assume(weak_dangles(self)
+    || weak_weak(self) >= 1 + if weak_strong(self) > 0 { 1 } else { 0 })]
 pub struct Weak<
     T: ?Sized,
     A: Allocator = Global,
@@ -918,6 +970,8 @@ impl<T> Weak<T> {
     /// ```
     #[inline]
     #[must_use]
+    #[trusted]
+    #[ensures(weak_dangles(&result))]
     pub const fn new() -> Weak<T> {
         Weak { ptr: NonNull::without_provenance(NonZeroUsize::MAX), alloc: Global }
     }
@@ -1020,6 +1074,14 @@ impl<T: ?Sized, A: Allocator> Weak<T, A> {
     /// ```
     #[must_use = "this returns a new `Rc`, \
                   without modifying the original weak pointer"]
+    #[trusted]
+    #[ensures(match &result {
+        Some(r) => !weak_dangles(self) && old(weak_strong(self)) > 0
+            && rc_ptr(r) === weak_ptr(self)
+            && rc_strong(r) == old(weak_strong(self)) + 1
+            && rc_weak(r) == old(weak_weak(self)),
+        None => weak_dangles(self) || weak_strong(self) == 0,
+    })]
     pub fn upgrade(&self) -> Option<Rc<T, A>>
     where
         A: AllocatorClone,
@@ -1040,6 +1102,9 @@ impl<T: ?Sized, A: Allocator> Weak<T, A> {
     ///
     /// If `self` was created using [`Weak::new`], this will return 0.
     #[must_use]
+    #[pure_unstable]
+    #[trusted]
+    #[ensures(result == if weak_dangles(self) { 0 } else { weak_strong(self) })]
     pub fn strong_count(&self) -> usize {
         if let Some(inner) = self.inner() { inner.strong() } else { 0 }
     }
@@ -1339,7 +1404,18 @@ fn data_offset_alignment(alignment: Alignment) -> usize {
 impl<T: ?Sized, A: Allocator> Drop for Rc<T, A> {
     #[ensures(rc_ptr(self) === old(rc_ptr(self)))]
     #[ensures(rc_strong(self) == old(rc_strong(self)) - 1)]
+    // The last strong pointer releases the strong pointers' weak one.
+    #[ensures(rc_weak(self) == old(rc_weak(self))
+        - if old(rc_strong(self)) == 1 { 1 } else { 0 })]
     #[ensures(**self === *old(&**self))]
+    fn drop(&mut self);
+}
+
+#[extern_spec]
+impl<T: ?Sized, A: Allocator> Drop for Weak<T, A> {
+    #[ensures(weak_ptr(self) === old(weak_ptr(self)))]
+    #[ensures(!weak_dangles(self) ==> weak_weak(self) == old(weak_weak(self)) - 1)]
+    #[ensures(!weak_dangles(self) ==> weak_strong(self) == old(weak_strong(self)))]
     fn drop(&mut self);
 }
 

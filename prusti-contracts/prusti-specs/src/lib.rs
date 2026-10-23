@@ -1058,9 +1058,9 @@ pub fn field_projection(attr: TokenStream, tokens: TokenStream) -> TokenStream {
 ///   them;
 /// - `#[ptr_holds(FIELD, AMOUNT)]`: the value holds `AMOUNT` (computed without
 ///   `self`) of the pointee of the raw-pointer field `FIELD`;
-/// - `#[im_shares(TYPE, at = EXPR, for 'LT [, dependent])]`: the value reaches
-///   the atom (and, with `dependent`, the dependent atom) of the `TYPE` that
-///   `EXPR: &'LT TYPE` refers to;
+/// - `#[im_shares(TYPE, at = EXPR, for 'LT [, dependent] [, if = COND])]`: the
+///   value reaches the atom (and, with `dependent`, the dependent atom) of the
+///   `TYPE` that `EXPR: &'LT TYPE` refers to (where `COND: bool` holds);
 /// - `#[im_assume(EXPR)]`: a trusted fact about the live values (`bool`).
 pub fn im_type_attribute(name: &str, attr: TokenStream, tokens: TokenStream) -> TokenStream {
     let item: syn::ItemStruct = match syn::parse2(tokens.clone()) {
@@ -1072,6 +1072,7 @@ pub fn im_type_attribute(name: &str, attr: TokenStream, tokens: TokenStream) -> 
     };
     let span = item.span();
     let mut marker_value = None;
+    let mut extra_method: Option<syn::ImplItemMethod> = None;
     let method: Option<syn::ImplItemMethod> = match name {
         "im_opaque" => None,
         "ptr_holds" => {
@@ -1152,17 +1153,38 @@ pub fn im_type_attribute(name: &str, attr: TokenStream, tokens: TokenStream) -> 
                 let _: syn::Token![for] = input.parse()?;
                 let lifetime: syn::Lifetime = input.parse()?;
                 let mut dependent = false;
-                if input.parse::<Option<syn::Token![,]>>()?.is_some() {
+                let mut condition = None;
+                while input.parse::<Option<syn::Token![,]>>()?.is_some() {
+                    if input.parse::<Option<syn::Token![if]>>()?.is_some() {
+                        let _: syn::Token![=] = input.parse()?;
+                        condition = Some(input.parse::<syn::Expr>()?);
+                        continue;
+                    }
                     let flag: syn::Ident = input.parse()?;
                     if flag != "dependent" {
-                        return Err(syn::Error::new(flag.span(), "expected `dependent`"));
+                        return Err(syn::Error::new(
+                            flag.span(),
+                            "expected `dependent` or `if = EXPR`",
+                        ));
                     }
                     dependent = true;
                 }
-                Ok((ty, expr, lifetime, dependent))
+                Ok((ty, expr, lifetime, dependent, condition))
             };
-            let (ty, expr, lifetime, dependent) =
+            let (ty, expr, lifetime, dependent, condition) =
                 handle_result!(syn::parse::Parser::parse2(parser, attr));
+            // `if = EXPR`: the value reaches the atom only where EXPR holds.
+            extra_method = condition.map(|condition| {
+                parse_quote_spanned! {span=>
+                    #[doc(hidden)]
+                    #[allow(non_snake_case, dead_code)]
+                    #[prusti::im_amount = "shares_if"]
+                    #[::prusti_contracts::pure]
+                    fn prusti_im_shares_if(&self) -> bool {
+                        #condition
+                    }
+                }
+            });
             let kind = if dependent {
                 "shares dependent"
             } else {
@@ -1218,6 +1240,7 @@ pub fn im_type_attribute(name: &str, attr: TokenStream, tokens: TokenStream) -> 
         quote_spanned! {span=>
             impl #impl_generics #ident #ty_generics #where_clause {
                 #method
+                #extra_method
             }
         }
     });

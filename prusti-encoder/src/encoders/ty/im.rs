@@ -134,6 +134,7 @@ pub(crate) enum ImAmountKind {
     Dependent,
     Holds,
     Shares { dependent: bool },
+    SharesIf,
     Assume,
 }
 
@@ -172,6 +173,7 @@ pub(crate) fn im_amounts(did: DefId) -> Vec<(ImAmountKind, Option<abi::FieldIdx>
                         (ImAmountKind::Shares { dependent: true }, None)
                     }
                     (Some("assume"), None) => (ImAmountKind::Assume, None),
+                    (Some("shares_if"), None) => (ImAmountKind::SharesIf, None),
                     _ => panic!("malformed interior-mutability annotation `{kind}`"),
                 };
                 out.push((kind, field, *item));
@@ -559,6 +561,9 @@ pub(crate) struct FpEntry<'vir> {
     pub(crate) reached: bool,
     /// Reached through a shared reference: may alias other shared entries.
     shared: bool,
+    /// Where the atom is reached (a conditional `#[im_shares]`), if not
+    /// always.
+    condition: Option<vir::ExprBool<'vir>>,
 }
 
 impl<'vir> FpEntry<'vir> {
@@ -567,8 +572,13 @@ impl<'vir> FpEntry<'vir> {
     }
 
     fn amount(&self) -> vir::ExprPerm<'vir> {
-        self.amount
-            .unwrap_or_else(|| vir::with_vcx(|vcx| vcx.mk_full_perm()))
+        vir::with_vcx(|vcx| {
+            let amount = self.amount.unwrap_or_else(|| vcx.mk_full_perm());
+            match self.condition {
+                Some(condition) => vcx.mk_ternary_expr(condition, amount, vcx.mk_no_perm()),
+                None => amount,
+            }
+        })
     }
 
     /// The permission to the atom.
@@ -670,6 +680,8 @@ struct SharedTarget<'vir> {
     metadata: vir::ExprSnap<'vir>,
     snap: vir::ExprSnap<'vir>,
     dependent: bool,
+    /// Where the struct shares the target (`if = COND`), if not always.
+    condition: Option<vir::ExprBool<'vir>>,
 }
 
 fn shared_target<'vir, E: TaskEncoder>(
@@ -713,12 +725,28 @@ fn shared_target<'vir, E: TaskEncoder>(
     let TySpecifics::ImmRef(data) = &target_ty.ty.specifics else {
         unreachable!("`#[im_shares]` returns a shared reference")
     };
+    let condition = match im_amounts(did)
+        .into_iter()
+        .find(|(kind, ..)| *kind == ImAmountKind::SharesIf)
+    {
+        Some((_, _, method)) => {
+            let func = deps.require_dep::<FunctionCallEnc>(CallTaskDescription::new(
+                ty.args.context(),
+                ty.args.args(),
+                method,
+            ))?;
+            // `bool` is represented natively.
+            Some(func.call_pure(vec![self_ref]).downcast_ty())
+        }
+        None => None,
+    };
     Ok(Some(SharedTarget {
         ty: data.referent.decompose_normalize(target_ty.args),
         addr: ref_data.addr_access(target_c),
         metadata: ref_data.metadata_access(target_c),
         snap: ref_data.value_access(target_c),
         dependent,
+        condition,
     }))
 }
 
@@ -745,6 +773,7 @@ fn footprint_into<'vir, E: TaskEncoder>(
             amount: None,
             reached,
             shared,
+            condition: None,
         };
         out.push(entry);
         if let Some(dependent) = atoms.dependent
@@ -763,6 +792,7 @@ fn footprint_into<'vir, E: TaskEncoder>(
     if let Some(shared) = shared_target(deps, ty, addr, snap)? {
         // A value of the struct reaches the shared atoms instead of those of
         // its own fields.
+        let start = out.len();
         footprint_into(
             deps,
             shared.ty,
@@ -773,6 +803,14 @@ fn footprint_into<'vir, E: TaskEncoder>(
             shared.dependent,
             out,
         )?;
+        if let Some(condition) = shared.condition {
+            for entry in &mut out[start..] {
+                entry.condition = Some(match entry.condition {
+                    Some(inner) => vir::with_vcx(|vcx| vcx.mk_conj(&[condition, inner])),
+                    None => condition,
+                });
+            }
+        }
         return Ok(());
     }
     match &ty.ty.specifics {
@@ -815,6 +853,38 @@ fn footprint_into<'vir, E: TaskEncoder>(
                 out,
             )?;
         }
+        // The atoms of the fields of the variant the value is.
+        TySpecifics::EnumLike(data) => {
+            let ty_use = deps.require_dep::<TyUsePureEnc>(ty)?;
+            let snap_c = snap.downcast_ty();
+            for variant in &data.variants {
+                let start = out.len();
+                let variant_use = ty_use.expect_variant_opt(Some(variant.data.vid));
+                for (idx, field) in variant.inner.fields.iter().enumerate() {
+                    let proj = &variant_use.fields[idx];
+                    footprint_into(
+                        deps,
+                        field.decompose_normalize(ty.args),
+                        proj.field_ref(addr),
+                        proj.read(snap_c),
+                        reached,
+                        shared,
+                        with_dependent,
+                        out,
+                    )?;
+                }
+                if out.len() == start {
+                    continue;
+                }
+                let is = is_variant(deps, ty, data, variant.data, snap_c)?;
+                for entry in &mut out[start..] {
+                    entry.condition = Some(match entry.condition {
+                        Some(inner) => vir::with_vcx(|vcx| vcx.mk_conj(&[is, inner])),
+                        None => is,
+                    });
+                }
+            }
+        }
         // The referent's value is not in the snapshot: it is read from its
         // predicate (held next to the reference) in the current state.
         TySpecifics::MutRef(data) => {
@@ -847,6 +917,25 @@ fn footprint_into<'vir, E: TaskEncoder>(
     Ok(())
 }
 
+/// Whether the value of the enum `ty` with snapshot `snap` is `variant`.
+fn is_variant<'vir, E: TaskEncoder>(
+    deps: &mut TaskEncoderDependencies<'vir, E>,
+    ty: RustTyDecomposition<'vir>,
+    data: &crate::encoders::ty::data::EnumData<'vir, crate::encoders::ty::RustTyDatas>,
+    variant: crate::encoders::ty::rust_ty::RustVariantData,
+    snap: vir::ExprCSnap<'vir>,
+) -> Result<vir::ExprBool<'vir>, EncodeFullError<'vir, E>> {
+    let ty_use = deps.require_dep::<TyUsePureEnc>(ty)?;
+    let discr = ty_use.expect_enumlike().snap_to_discr_snap(snap);
+    let discr_ty = deps.require_dep::<crate::encoders::ty::pure::TyPureEnc>(
+        RustTyDecomposition::from_prim_ty(data.data.discr).ty,
+    )?;
+    let discr_prim = *discr_ty.expect_primitive();
+    let value =
+        discr_prim.prim_to_snap(discr_prim.expr_from_bits(data.data.discr, variant.discr_val));
+    Ok(vir::with_vcx(|vcx| vcx.mk_eq_expr(discr, value)))
+}
+
 /// The permissions to `entries`. Owned entries are distinct from every other
 /// entry (assumed on inhale); entries reached through shared references are
 /// granted once per key.
@@ -861,7 +950,12 @@ pub(crate) fn footprint_assertion<'vir>(entries: &[FpEntry<'vir>]) -> vir::ExprB
                     continue;
                 };
                 if entry.shared && earlier.shared {
-                    perm = vcx.mk_ternary_expr(same, vcx.mk_no_perm(), perm);
+                    // Granted by the earlier entry, where that one is.
+                    let granted = match earlier.condition {
+                        Some(condition) => vcx.mk_conj(&[same, condition]),
+                        None => same,
+                    };
+                    perm = vcx.mk_ternary_expr(granted, vcx.mk_no_perm(), perm);
                 } else {
                     distinct.push(
                         vcx.mk_unary_op_expr(vir::UnOpKind::Not, same.upcast_ty())
@@ -1091,6 +1185,10 @@ fn deep_with<'vir, E: TaskEncoder>(
                 for entry in entries.iter().rev() {
                     value = vcx.mk_unfolding_expr(entry.app(vcx.mk_wildcard()), value);
                 }
+                // Where nothing is shared, the value is shallow.
+                if let Some(condition) = shared.condition {
+                    value = vcx.mk_ternary_expr(condition, value, snap);
+                }
             }
             Ok(value)
         }
@@ -1104,6 +1202,37 @@ fn deep_with<'vir, E: TaskEncoder>(
             Ok(ref_use
                 .prim_to_snap(r_addr, ref_use.metadata_access(snap_c), value)
                 .upcast_ty())
+        }
+        // The variant the value is, with deep fields.
+        TySpecifics::EnumLike(data) => {
+            let ty_use = deps.require_dep::<TyUsePureEnc>(ty)?;
+            let snap_c = snap.downcast_ty();
+            let mut value = snap;
+            for variant in &data.variants {
+                let fields = &variant.inner.fields;
+                if !fields
+                    .iter()
+                    .any(|f| reaches_im(f.decompose_normalize(ty.args)))
+                {
+                    continue;
+                }
+                let variant_use = ty_use.expect_variant_opt(Some(variant.data.vid));
+                let mut field_snaps = Vec::with_capacity(fields.len());
+                for (idx, field) in fields.iter().enumerate() {
+                    let proj = &variant_use.fields[idx];
+                    field_snaps.push(deep_with(
+                        deps,
+                        field.decompose_normalize(ty.args),
+                        proj.field_ref(addr),
+                        proj.read(snap_c),
+                        true,
+                    )?);
+                }
+                let deep = variant_use.field_snaps_to_snap(field_snaps).upcast_ty();
+                let is = is_variant(deps, ty, data, variant.data, snap_c)?;
+                value = vcx.mk_ternary_expr(is, deep, value);
+            }
+            Ok(value)
         }
         _ => Ok(snap),
     }
@@ -1128,6 +1257,11 @@ pub(crate) fn reaches_im(ty: RustTyDecomposition<'_>) -> bool {
             TySpecifics::ImmRef(data) | TySpecifics::MutRef(data) => {
                 go(data.referent.decompose_normalize(ty.args), seen)
             }
+            TySpecifics::EnumLike(data) => data
+                .variants
+                .iter()
+                .flat_map(|variant| variant.inner.fields.iter())
+                .any(|f| go(f.decompose_normalize(ty.args), seen)),
             _ => false,
         }
     }
