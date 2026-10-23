@@ -147,6 +147,7 @@ pub fn test_entrypoint<'tcx>(
     program.header("interior mutability");
     TyInteriorMutUseEnc::emit_outputs(&mut program);
     encoders::ty::im::ImUnsetEnc::emit_outputs(&mut program);
+    encoders::ty::im::ImOpaqueEnc::emit_outputs(&mut program);
 
     if config::simplify_encoding() {
         program.simplify();

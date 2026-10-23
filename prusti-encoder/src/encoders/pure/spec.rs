@@ -14,7 +14,7 @@ use prusti_rustc_interface::{
 };
 
 use rustc_hash::FxHashMap;
-use task_encoder::{EncodeFullResult, TaskEncoder, TaskEncoderDependencies};
+use task_encoder::{EncodeFullError, EncodeFullResult, TaskEncoder, TaskEncoderDependencies};
 use vir::{CastType, HasType, Reify};
 
 use crate::encoders::{
@@ -294,10 +294,19 @@ impl TaskEncoder for MirSpecEnc {
             };
 
             let local_iter = (1..=local_defs.arg_count).map(mir::Local::from);
+            // Specifications see deep values: the contents of the interior
+            // locations the arguments reach fill their `UnsafeCell` slots.
+            let deep = |deps: &mut TaskEncoderDependencies<'vir, Self>,
+                        local: mir::Local,
+                        snap: vir::ExprSnap<'vir>|
+             -> Result<vir::ExprSnap<'vir>, EncodeFullError<'vir, Self>> {
+                let def = &local_defs[local];
+                crate::encoders::ty::im::deep_snap(deps, def.ty, def.local_ex, snap)
+            };
             let all_args: FxHashMap<mir::Local, _> = match enc_mode {
                 MirSpecEncMode::Impure => local_iter
-                    .map(|local| (local, local_defs[local].impure_snap))
-                    .collect(),
+                    .map(|local| Ok((local, deep(deps, local, local_defs[local].impure_snap)?)))
+                    .collect::<Result<_, _>>()?,
                 MirSpecEncMode::PureWithResult => {
                     let result_ty = local_defs[mir::RETURN_PLACE].local_snap.ty();
                     local_iter
@@ -356,14 +365,28 @@ impl TaskEncoder for MirSpecEnc {
 
             let post_args = match enc_mode {
                 MirSpecEncMode::Impure => {
-                    let post_args: FxHashMap<mir::Local, vir::ExprSnap<'vir>> = pre_args
-                        .iter()
-                        .map(|(local, arg)| (*local, vcx.mk_old_expr(arg)))
-                        .chain([(
-                            (local_defs.arg_count + 1).into(),
-                            local_defs[mir::RETURN_PLACE].impure_snap,
-                        )])
-                        .collect();
+                    // The arguments' shallow snapshots are those of the
+                    // pre-state. The contents reached through a reference
+                    // argument are those of the post-state; a by-value
+                    // argument's own contents are consumed by the call, so
+                    // they are those of the pre-state.
+                    let mut post_args: FxHashMap<mir::Local, vir::ExprSnap<'vir>> =
+                        FxHashMap::default();
+                    for local in (1..=local_defs.arg_count).map(mir::Local::from) {
+                        let snap = local_defs[local].impure_snap;
+                        let post = match local_defs[local].ty.ty.specifics {
+                            crate::encoders::ty::TySpecifics::ImmRef(_)
+                            | crate::encoders::ty::TySpecifics::MutRef(_) => {
+                                deep(deps, local, vcx.mk_old_expr(snap))?
+                            }
+                            _ => vcx.mk_old_expr(deep(deps, local, snap)?),
+                        };
+                        post_args.insert(local, post);
+                    }
+                    post_args.insert(
+                        (local_defs.arg_count + 1).into(),
+                        deep(deps, mir::RETURN_PLACE, local_defs[mir::RETURN_PLACE].impure_snap)?,
+                    );
                     vcx.alloc(post_args)
                 }
                 MirSpecEncMode::PureWithResult | MirSpecEncMode::PureWithoutResult => all_args,

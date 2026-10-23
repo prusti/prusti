@@ -1356,11 +1356,27 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
             local_kind == mir::LocalKind::Arg || local_kind == mir::LocalKind::ReturnPointer
         };
 
+        // A deep value reads the contents of interior locations, so unlike a
+        // pinned snapshot it depends on the state it is evaluated in.
+        let deep_old = should_wrap
+            && self.old_mode
+            && self.impure_context
+            && crate::encoders::ty::im::reaches_im(RustTyDecomposition::from_ty(
+                place_ty.ty,
+                self.context,
+            ));
         let expr = if should_wrap {
             self.vcx.mk_lazy_expr(
                 vir::vir_format!(self.vcx, "wrapped in {:?}", place.local),
                 self.get_ty_for_local(place.local),
-                Box::new(move |_vcx, lctx: ExprInput<'vir>| lctx.1[&place.local].kind),
+                Box::new(move |vcx, lctx: ExprInput<'vir>| {
+                    let arg = lctx.1[&place.local];
+                    if deep_old {
+                        vcx.mk_old(arg, lctx.2).kind
+                    } else {
+                        arg.kind
+                    }
+                }),
             )
         } else {
             self.mk_local_ex(place.local, curr_ver[&place.local])

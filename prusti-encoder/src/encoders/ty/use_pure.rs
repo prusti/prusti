@@ -670,6 +670,16 @@ impl<'vir> TyUsePureStruct<'vir> {
         }
         self.pure.field_snaps_to_snap.call()(&snaps)
     }
+
+    /// Like [`Self::field_snaps_to_snap`], for field snapshots already in the
+    /// type's own (generic) context.
+    pub fn field_snaps_to_snap_generic<Curr, Next>(
+        &self,
+        snaps: Vec<vir::ExprGenSnap<'vir, Curr, Next>>,
+    ) -> vir::ExprGenCSnap<'vir, Curr, Next> {
+        assert_eq!(snaps.len(), self.fields.len());
+        self.pure.field_snaps_to_snap.call()(&snaps)
+    }
 }
 
 impl<'vir> TyUsePureField<'vir> {

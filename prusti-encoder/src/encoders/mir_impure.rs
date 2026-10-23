@@ -1758,6 +1758,73 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         (func_def_id, caller_substs, is_pure)
     }
 
+    /// For each operand that `rvalue` moves (in field order): the contents of
+    /// its inline interior locations, read into temporaries. Their atoms are
+    /// exhaled: they move to the assigned place (see [`Self::im_give_moved`]).
+    fn im_take_moved(
+        &mut self,
+        rvalue: &mir::Rvalue<'vir>,
+    ) -> EncodeResult<'vir, Vec<vir::ExprSnap<'vir>>, E> {
+        let operands: Vec<&mir::Operand<'vir>> = match rvalue {
+            mir::Rvalue::Use(operand, _) => vec![operand],
+            mir::Rvalue::Aggregate(box kind, operands)
+                if matches!(kind, mir::AggregateKind::Adt(..) | mir::AggregateKind::Tuple) =>
+            {
+                operands.iter().collect()
+            }
+            _ => return Ok(Vec::new()),
+        };
+        let mut contents = Vec::new();
+        for operand in operands {
+            let mir::Operand::Move(place) = operand else {
+                continue;
+            };
+            let place = Place::from(*place);
+            let ty = (*place).ty(self.local_decls, self.vcx.tcx()).ty;
+            let ty = RustTyDecomposition::from_ty(ty, self.def_id);
+            if !crate::encoders::ty::im::reaches_im(ty) {
+                continue;
+            }
+            let (result, snap, _, _) = self.encode_place_with_snap(place)?;
+            let entries = crate::encoders::ty::im::footprint(self.deps, ty, result.expr.address, snap)?;
+            for entry in entries.into_iter().filter(|e| !e.reached) {
+                for content in entry.contents(self.deps)? {
+                    let tmp = self.new_tmp(content.ty());
+                    self.stmt(self.vcx.mk_pure_assign_stmt(tmp, content));
+                    contents.push(tmp);
+                }
+                self.stmt(self.vcx.mk_exhale_stmt(entry.acc()));
+            }
+        }
+        Ok(contents)
+    }
+
+    /// The inline interior locations of the place `dest` of type `ty`, just
+    /// assigned a moved value: their atoms, with the moved `contents`.
+    fn im_give_moved(
+        &mut self,
+        ty: ty::Ty<'vir>,
+        dest: vir::ExprRef<'vir>,
+        contents: Vec<vir::ExprSnap<'vir>>,
+    ) -> EncodeResult<'vir, (), E> {
+        let ty_out = self.ty_use_impure(ty);
+        let ty = RustTyDecomposition::from_ty(ty, self.def_id);
+        let snap = ty_out.ref_to_snap(dest);
+        let entries = crate::encoders::ty::im::footprint(self.deps, ty, dest, snap)?;
+        let mut moved = contents.into_iter();
+        for entry in entries.into_iter().filter(|e| !e.reached) {
+            let mut conjs = vec![entry.acc()];
+            for content in entry.contents(self.deps)? {
+                let Some(value) = moved.next() else {
+                    break;
+                };
+                conjs.push(self.vcx.mk_eq_expr(content, value));
+            }
+            self.stmt(self.vcx.mk_inhale_stmt(self.vcx.mk_conj(&conjs)));
+        }
+        Ok(())
+    }
+
     fn new_tmp<T: CompType>(&mut self, ty: vir::Type<'vir, T>) -> vir::Expr<'vir, T> {
         let name = vir::vir_format!(self.vcx, "_tmp{}", self.tmp_ctr);
         let local = vir::vir_local_decl! { self.vcx; [name] : [ty] };
@@ -2537,6 +2604,9 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                         .expr
                         .expect_predicate();
 
+                    // A moved value's inline interior locations move with it.
+                    let moved_contents = self.im_take_moved(rvalue)?;
+
                     // The snapshot of the value that we are assigning.
                     let rval_enc = self.encode_rvalue(rvalue, span, &captured);
 
@@ -2549,6 +2619,9 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                                 dest_ty_out.apply_method_assign(self.vcx, proj_enc, rval_enc.expr);
                             self.stmt(method_assign_app);
                             self.stmts(rval_enc.post_fold_stmts(proj_enc));
+                            if !moved_contents.is_empty() {
+                                self.im_give_moved(dest_ty.ty, proj_enc, moved_contents)?;
+                            }
                         }
                         Err(_) => {
                             self.vcx.with_span(span, |vcx| {

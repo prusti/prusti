@@ -272,10 +272,24 @@ impl TaskEncoder for MethodEnc {
                         .resolve_trait_calls(false),
                     span,
                 )?;
+                // A `#[pure_unstable]` function sees deep values.
                 let arg_snaps = (1..arg_count)
                     .map(mir::Local::from)
-                    .map(|arg_idx| vcx.mk_old_expr(arg_defs[arg_idx].impure_snap))
-                    .collect::<Vec<_>>();
+                    .map(|arg_idx| {
+                        let arg = &arg_defs[arg_idx];
+                        let snap = if pure_func.is_pure_unstable() {
+                            crate::encoders::ty::im::deep_snap(
+                                deps,
+                                arg.ty,
+                                arg.local_ex,
+                                arg.impure_snap,
+                            )?
+                        } else {
+                            arg.impure_snap
+                        };
+                        Ok(vcx.mk_old_expr(snap))
+                    })
+                    .collect::<Result<Vec<_>, EncodeFullError<'vir, MethodEnc>>>()?;
                 let app = if pure_func.is_pure_unstable() {
                     // The callee reads the interior-mutability value `Map`:
                     // materialize it from the arguments in the pre-state.
@@ -733,6 +747,43 @@ impl TaskEncoder for MethodEnc {
             } else {
                 None
             };
+
+            // The IM footprints (address-keyed atoms): the call receives the
+            // atoms of everything it is given, and returns those of the
+            // result and of everything behind references in the arguments.
+            let mut fp_pre = Vec::new();
+            let mut fp_post = Vec::new();
+            for arg_idx in (1..arg_count).map(mir::Local::from) {
+                let arg = &arg_defs[arg_idx];
+                if !crate::encoders::ty::im::reaches_im(arg.ty) {
+                    continue;
+                }
+                let entries =
+                    crate::encoders::ty::im::footprint(deps, arg.ty, arg.local_ex, arg.impure_snap)?;
+                fp_pre.extend(entries.iter().copied());
+                let old_entries = crate::encoders::ty::im::footprint(
+                    deps,
+                    arg.ty,
+                    arg.local_ex,
+                    vcx.mk_old_expr(arg.impure_snap),
+                )?;
+                fp_post.extend(old_entries.into_iter().filter(|e| e.reached));
+            }
+            if crate::encoders::ty::im::reaches_im(arg_defs[mir::RETURN_PLACE].ty) {
+                let result = &arg_defs[mir::RETURN_PLACE];
+                fp_post.extend(crate::encoders::ty::im::footprint(
+                    deps,
+                    result.ty,
+                    result.local_ex,
+                    result.impure_snap,
+                )?);
+            }
+            if !fp_pre.is_empty() {
+                pres.push(crate::encoders::ty::im::footprint_assertion(&fp_pre));
+            }
+            if !fp_post.is_empty() {
+                posts.push(crate::encoders::ty::im::footprint_assertion(&fp_post));
+            }
 
             // Add the functional specification as the last pre- and
             // postconditions, after the IM QPs that grant the permissions
