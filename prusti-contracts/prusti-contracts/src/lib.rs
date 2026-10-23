@@ -116,6 +116,12 @@ pub use prusti_contracts_proc_macros::ptr_holds;
 /// with `dependent`, its dependent atom) without owning it.
 pub use prusti_contracts_proc_macros::im_shares;
 
+/// `#[im_assume(EXPR)]` on a struct: a trusted fact about every live value of
+/// it (a `bool` computed from `self`'s deep value), e.g. that a guard's
+/// borrow flag records it. Assumed where its interior-mutable state is
+/// re-read after a call.
+pub use prusti_contracts_proc_macros::im_assume;
+
 /// A macro for marking a function as pure but with a result that additionally
 /// depends on the current values of the interior-mutable objects reachable
 /// from its arguments (so it may change between two calls with equal

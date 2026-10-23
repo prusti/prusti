@@ -909,10 +909,12 @@ const fn is_reading(x: BorrowCounter) -> bool {
 }
 
 /// The share of a `RefCell`'s contents each `Ref` holds, and the pin holds.
+/// The flag can reach `isize::MAX` shared borrows, and the `RefCell` keeps a
+/// share even then.
 #[pure]
 #[ensures(Real::NONE < result && result < Real::WRITE)]
 pub fn ref_token() -> Real {
-    Real::WRITE / (Real::from(isize::MAX) + Real::WRITE)
+    Real::WRITE / (Real::from(isize::MAX) + Real::WRITE + Real::WRITE)
 }
 
 /// The borrow flag of a `RefCell`: `0` = free, `n > 0` = `n` shared borrows,
@@ -1619,6 +1621,7 @@ const impl Clone for BorrowRef<'_> {
 // not its dependent one (the pin), which it can never need: while it lives,
 // the flag is positive.
 #[ptr_holds(value, ref_token())]
+#[im_assume(ref_count(self) >= 1)]
 #[im_shares(RefCell<T>, at = container_of(borrow.borrow, borrow), for 'b)]
 pub struct Ref<'b, T: ?Sized + 'b> {
     // NB: we use a pointer instead of `&'b T` to avoid `noalias` violations, because a
@@ -1728,6 +1731,7 @@ impl<'b> BorrowRefMut<'b> {
 // A `RefMut` holds all of the contents, and reaches both of the `RefCell`'s
 // atoms: dropping it unlends the contents, which the pin then needs.
 #[ptr_holds(value, Real::WRITE)]
+#[im_assume(refmut_count(self) == -1)]
 #[im_shares(RefCell<T>, at = container_of(borrow.borrow, borrow), for 'b, dependent)]
 pub struct RefMut<'b, T: ?Sized + 'b> {
     // NB: we use a pointer instead of `&'b mut T` to avoid `noalias` violations, because a
@@ -1767,6 +1771,8 @@ impl<T: ?Sized> Drop for Ref<'_, T> {
     #[ensures(ref_flag(self) as *const Cell<BorrowCounter>
         == old(ref_flag(self) as *const Cell<BorrowCounter>))]
     #[ensures(ref_count(self) == old(ref_count(self)) - 1)]
+    #[ensures(&**self as *const T == old(&**self as *const T))]
+    #[ensures(**self === *old(&**self))]
     fn drop(&mut self);
 }
 
@@ -1775,6 +1781,8 @@ impl<T: ?Sized> Drop for RefMut<'_, T> {
     #[ensures(refmut_flag(self) as *const Cell<BorrowCounter>
         == old(refmut_flag(self) as *const Cell<BorrowCounter>))]
     #[ensures(refmut_count(self) == old(refmut_count(self)) + 1)]
+    #[ensures(&**self as *const T == old(&**self as *const T))]
+    #[ensures(**self === *old(&**self))]
     fn drop(&mut self);
 }
 

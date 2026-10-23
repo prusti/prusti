@@ -1839,6 +1839,38 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
 
     /// Whether `place` holds exclusive capability when the current block's
     /// terminator is reached.
+    /// Re-reads the guards held in `locals` against the atoms they share (see
+    /// [`crate::encoders::ty::im::guard_reread`]), after a call returned
+    /// those atoms. With `live`, the guards are still alive, so their
+    /// `#[im_assume]` facts hold (not so for a guard that was just dropped).
+    fn guard_rereads(
+        &mut self,
+        locals: impl IntoIterator<Item = mir::Local>,
+        live: bool,
+    ) -> EncodeResult<'vir, (), E> {
+        for local in locals {
+            let ty = RustTyDecomposition::from_ty(self.local_decls[local].ty, self.def_id);
+            let addr = self.local_defs[local].local_ex;
+            if live
+                && let Some(fact) = crate::encoders::ty::im::guard_assumption(self.deps, ty, addr)?
+            {
+                self.stmt(self.vcx.mk_inhale_stmt(fact));
+            }
+            if let Some(reread) = crate::encoders::ty::im::guard_reread(self.deps, ty, addr)? {
+                self.stmt(self.vcx.mk_assert_stmt(reread));
+            }
+        }
+        Ok(())
+    }
+
+    /// The locals held whole (exclusively) before the current terminator.
+    fn terminator_exclusive_locals(&self) -> Vec<mir::Local> {
+        self.local_decls
+            .indices()
+            .filter(|local| self.terminator_holds_exclusive(mir::Place::from(*local)))
+            .collect()
+    }
+
     fn terminator_holds_exclusive(&self, place: mir::Place<'vir>) -> bool {
         let cfpcs = self
             .current_fpcs
@@ -1906,6 +1938,9 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         self.stmt(self.vcx.mk_inhale_stmt(unit.uninit_pred(self.vcx, dest)));
         self.stmts(contract.call(vec![tmp], dest));
         self.stmts(p_ref_ty.unfold(None, tmp, None, None, Some(vir::OldLabel::Label(borrowed))));
+        if place.projection.is_empty() {
+            self.guard_rereads([place.local], false)?;
+        }
         Ok(())
     }
 
@@ -2952,6 +2987,21 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                                 self.stmt(self.vcx.mk_inhale_stmt(uninit));
                             }
                         }
+                        // The guards the caller still holds (and the one the
+                        // call may have returned) are re-read.
+                        let moved = args
+                            .iter()
+                            .filter_map(|arg| match &arg.node {
+                                mir::Operand::Move(place) => Some(place.local),
+                                _ => None,
+                            })
+                            .collect::<Vec<_>>();
+                        let mut held = self.terminator_exclusive_locals();
+                        held.retain(|local| !moved.contains(local));
+                        if destination.projection.is_empty() {
+                            held.push(destination.local);
+                        }
+                        self.guard_rereads(held, true)?;
                         let label_post = self.new_label("post");
                         self.call_labels
                             .insert(location.block, (label_pre, label_post));

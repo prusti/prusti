@@ -96,6 +96,12 @@ pub fn im_shares(_attr: TokenStream, tokens: TokenStream) -> TokenStream {
 
 #[cfg(not(feature = "prusti"))]
 #[proc_macro_attribute]
+pub fn im_assume(_attr: TokenStream, tokens: TokenStream) -> TokenStream {
+    tokens
+}
+
+#[cfg(not(feature = "prusti"))]
+#[proc_macro_attribute]
 pub fn trusted(_attr: TokenStream, tokens: TokenStream) -> TokenStream {
     tokens
 }
@@ -271,6 +277,12 @@ pub fn ptr_holds(attr: TokenStream, tokens: TokenStream) -> TokenStream {
 #[proc_macro_attribute]
 pub fn im_shares(attr: TokenStream, tokens: TokenStream) -> TokenStream {
     prusti_specs::im_type_attribute("im_shares", attr.into(), tokens.into()).into()
+}
+
+#[cfg(feature = "prusti")]
+#[proc_macro_attribute]
+pub fn im_assume(attr: TokenStream, tokens: TokenStream) -> TokenStream {
+    prusti_specs::im_type_attribute("im_assume", attr.into(), tokens.into()).into()
 }
 
 #[cfg(feature = "prusti")]

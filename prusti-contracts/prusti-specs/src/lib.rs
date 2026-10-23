@@ -1060,7 +1060,8 @@ pub fn field_projection(attr: TokenStream, tokens: TokenStream) -> TokenStream {
 ///   `self`) of the pointee of the raw-pointer field `FIELD`;
 /// - `#[im_shares(TYPE, at = EXPR, for 'LT [, dependent])]`: the value reaches
 ///   the atom (and, with `dependent`, the dependent atom) of the `TYPE` that
-///   `EXPR: &'LT TYPE` refers to.
+///   `EXPR: &'LT TYPE` refers to;
+/// - `#[im_assume(EXPR)]`: a trusted fact about the live values (`bool`).
 pub fn im_type_attribute(name: &str, attr: TokenStream, tokens: TokenStream) -> TokenStream {
     let item: syn::ItemStruct = match syn::parse2(tokens.clone()) {
         Ok(item) => item,
@@ -1113,6 +1114,18 @@ pub fn im_type_attribute(name: &str, attr: TokenStream, tokens: TokenStream) -> 
                 #[::prusti_contracts::pure_unstable]
                 fn #fn_name(&self) -> ::prusti_contracts::Real {
                     #amount
+                }
+            })
+        }
+        "im_assume" => {
+            let expr: syn::Expr = handle_result!(syn::parse2(attr));
+            Some(parse_quote_spanned! {span=>
+                #[doc(hidden)]
+                #[allow(non_snake_case, dead_code)]
+                #[prusti::im_amount = "assume"]
+                #[::prusti_contracts::pure_unstable]
+                fn prusti_im_assume(&self) -> bool {
+                    #expr
                 }
             })
         }

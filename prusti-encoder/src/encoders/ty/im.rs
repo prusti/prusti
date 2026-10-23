@@ -85,6 +85,7 @@ pub(crate) enum ImAmountKind {
     Dependent,
     Holds,
     Shares { dependent: bool },
+    Assume,
 }
 
 /// The annotation methods of the struct `did`: their kind, the field they
@@ -121,6 +122,7 @@ pub(crate) fn im_amounts(did: DefId) -> Vec<(ImAmountKind, Option<abi::FieldIdx>
                     (Some("shares"), Some("dependent")) => {
                         (ImAmountKind::Shares { dependent: true }, None)
                     }
+                    (Some("assume"), None) => (ImAmountKind::Assume, None),
                     _ => panic!("malformed interior-mutability annotation `{kind}`"),
                 };
                 out.push((kind, field, *item));
@@ -355,6 +357,49 @@ fn call_amount<'vir, E: TaskEncoder>(
     addr: vir::ExprRef<'vir>,
     snap: vir::ExprSnap<'vir>,
 ) -> Result<vir::ExprPerm<'vir>, EncodeFullError<'vir, E>> {
+    // `Real` is represented natively as Viper `Perm`.
+    Ok(call_annotation(deps, method, ty, addr, snap)?.downcast_ty())
+}
+
+/// The `#[im_assume]` fact of a value of type `ty` at `addr`, whose
+/// predicate is held: its annotation method on its deep value.
+pub(crate) fn guard_assumption<'vir, E: TaskEncoder>(
+    deps: &mut TaskEncoderDependencies<'vir, E>,
+    ty: RustTyDecomposition<'vir>,
+    addr: vir::ExprRef<'vir>,
+) -> Result<Option<vir::ExprBool<'vir>>, EncodeFullError<'vir, E>> {
+    let Some(did) = ty.ty.im_annotated.or(ty.ty.im_opaque) else {
+        return Ok(None);
+    };
+    let Some((_, _, method)) = im_amounts(did)
+        .into_iter()
+        .find(|(kind, ..)| *kind == ImAmountKind::Assume)
+    else {
+        return Ok(None);
+    };
+    let snap = deps.require_dep::<TyUseImpureEnc>(ty)?.ref_to_snap(addr);
+    let deep = deep_snap(deps, ty, addr, snap)?;
+    let fact = call_annotation(deps, method, ty, addr, deep)?;
+    let bool_ty =
+        RustTyDecomposition::from_ty(vir::with_vcx(|vcx| vcx.tcx().types.bool), ty.args.context());
+    let bool_use = deps.require_dep::<TyUsePureEnc>(bool_ty)?;
+    Ok(Some(
+        bool_use
+            .expect_primitive()
+            .snap_to_prim(fact.downcast_ty())
+            .downcast_ty(),
+    ))
+}
+
+/// The result of the annotation method `method` of the struct `ty` for the
+/// value at `addr` with (deep) snapshot `snap`.
+fn call_annotation<'vir, E: TaskEncoder>(
+    deps: &mut TaskEncoderDependencies<'vir, E>,
+    method: DefId,
+    ty: RustTyDecomposition<'vir>,
+    addr: vir::ExprRef<'vir>,
+    snap: vir::ExprSnap<'vir>,
+) -> Result<vir::ExprSnap<'vir>, EncodeFullError<'vir, E>> {
     let self_ref = self_ref_snap(deps, method, ty, addr, snap)?;
     let func = deps.require_dep::<FunctionCallEnc>(CallTaskDescription::new(
         ty.args.context(),
@@ -369,8 +414,7 @@ fn call_amount<'vir, E: TaskEncoder>(
     } else {
         func.call_pure(vec![self_ref])
     };
-    // `Real` is represented natively as Viper `Perm`.
-    Ok(amount.downcast_ty())
+    Ok(amount)
 }
 
 /// The amount of its pointee a `#[ptr_holds]` struct `did` holds (the
@@ -775,6 +819,78 @@ pub(crate) fn footprint_assertion<'vir>(entries: &[FpEntry<'vir>]) -> vir::ExprB
         }
         vcx.mk_conj(&conjs)
     })
+}
+
+/// The re-read of a guard at `addr` (a `#[ptr_holds]` sharer, whose
+/// predicate is held) against the shared atom (which is held): where the
+/// pointee it holds is the contents of an `#[im_perm]` of the atom, and
+/// the atom holds some of them, the two are the same. Viper derives this
+/// when both predicates are unfolded, but not across a call that returned
+/// the atom (the paper's stability of a token's value).
+pub(crate) fn guard_reread<'vir, E: TaskEncoder>(
+    deps: &mut TaskEncoderDependencies<'vir, E>,
+    ty: RustTyDecomposition<'vir>,
+    addr: vir::ExprRef<'vir>,
+) -> Result<Option<vir::ExprBool<'vir>>, EncodeFullError<'vir, E>> {
+    let vcx = vir::with_vcx(|vcx| vcx);
+    if !matches!(ty.ty.special, crate::encoders::ty::RustTySpecial::Holds(..)) {
+        return Ok(None);
+    }
+    let guard = deps.require_dep::<TyUseImpureEnc>(ty)?;
+    let Some(shared) = shared_target(deps, ty, addr, guard.ref_to_snap(addr))? else {
+        return Ok(None);
+    };
+    let Some(did) = shared.ty.ty.im_opaque else {
+        return Ok(None);
+    };
+    let atoms = deps.require_ref::<ImOpaqueEnc>(did)?;
+    let args = deps.require_dep::<GArgsTyEnc>(shared.ty.args)?;
+    let held_addr = guard
+        .expect_structlike()
+        .fields
+        .last()
+        .unwrap()
+        .field_ref(addr);
+    let held_ty = ty
+        .ty
+        .expect_structlike()
+        .fields
+        .last()
+        .unwrap()
+        .decompose_context(ty.ty.params, ty.args);
+    let held = deps
+        .require_dep::<TyUseImpureEnc>(held_ty)?
+        .ref_to_snap(held_addr);
+    let mut conjs = Vec::new();
+    for (kind, field, method) in im_amounts(did) {
+        if kind != ImAmountKind::Perm {
+            continue;
+        }
+        let contents = contents_of(deps, shared.ty, shared.addr, field.unwrap())?;
+        let amount = atoms.amount(method).call()(shared.addr, args.get_ty(), args.get_const());
+        let same = vcx.mk_conj(&[
+            vcx.mk_eq_expr(held_addr, contents.addr),
+            vcx.mk_bin_op_expr(vir::BinOpKind::CmpGt, amount, vcx.mk_no_perm())
+                .downcast_ty(),
+        ]);
+        conjs.push(
+            vcx.mk_bin_op_expr(
+                vir::BinOpKind::Implies,
+                same,
+                vcx.mk_eq_expr(held, contents.snap()),
+            )
+            .downcast_ty(),
+        );
+    }
+    if conjs.is_empty() {
+        return Ok(None);
+    }
+    let atom =
+        atoms.atom.call()(shared.addr, args.get_ty(), args.get_const())(Some(vcx.mk_wildcard()));
+    Ok(Some(vcx.mk_unfolding_expr(
+        guard.ref_to_pred_app(addr, Some(vcx.mk_wildcard())),
+        vcx.mk_unfolding_expr(atom, vcx.mk_conj(&conjs)),
+    )))
 }
 
 /// The deep snapshot of a value of type `ty` at `addr` with shallow snapshot
