@@ -9,7 +9,7 @@ use crate::encoders::ty::{
         float::FloatDomain,
     },
     pure::{TyPurePrimData, TyPurePrimDataKind},
-    use_pure::TyUsePureEnc,
+    use_pure::{TyUsePureEnc, TyUsePureRaw},
 };
 
 /// Encodes the builtin MIR binary operations (e.g. `Add`, `Sub`, `Mul`, `Div`,
@@ -101,8 +101,9 @@ impl TaskEncoder for MirBuiltinBinOpEnc {
             let lhs = vcx.mk_local_ex(lhs_decl);
             let rhs = vcx.mk_local_ex(rhs_decl);
             let (pres, body) = match lhs_ty_data.specifics {
-                TySpecifics::Raw(..) => {
-                    let body = Self::handle_bin_op_raw(vcx, lhs, rhs, op)?;
+                TySpecifics::Raw(raw) => {
+                    let ptr_addr = deps.require_dep::<PtrAddrEnc>(())?;
+                    let body = Self::handle_bin_op_raw(vcx, raw, ptr_addr, lhs, rhs, op)?;
                     (Vec::new(), body)
                 }
                 TySpecifics::Primitive(
@@ -336,18 +337,31 @@ impl MirBuiltinBinOpEnc {
         }
     }
 
+    /// Raw pointers compare by their integer addresses (and metadata), not
+    /// by their Viper `Ref`s, which also carry provenance: pointers to
+    /// different allocations at a reused address are equal.
     fn handle_bin_op_raw<'vir>(
         vcx: &'vir vir::VirCtxt<'vir>,
+        raw: TyUsePureRaw<'vir>,
+        ptr_addr: PtrAddr<'vir>,
         lhs: vir::ExprCSnap<'vir>,
         rhs: vir::ExprCSnap<'vir>,
         op: mir::BinOp,
     ) -> EncodeResult<'vir, vir::ExprCSnap<'vir>> {
         use mir::BinOp::*;
+        let eq = || {
+            vcx.mk_conj(&[
+                vcx.mk_eq_expr(
+                    ptr_addr.call()(raw.address_access(lhs)),
+                    ptr_addr.call()(raw.address_access(rhs)),
+                ),
+                vcx.mk_eq_expr(raw.metadata_access(lhs), raw.metadata_access(rhs)),
+            ])
+        };
         match op {
-            Eq => Ok(vcx.mk_eq_expr(lhs, rhs).upcast_ty()),
+            Eq => Ok(eq().upcast_ty()),
             Ne => {
-                let eq = vcx.mk_eq_expr(lhs, rhs).upcast_ty();
-                let ne = vcx.mk_unary_op_expr(vir::UnOpKind::Not, eq);
+                let ne = vcx.mk_unary_op_expr(vir::UnOpKind::Not, eq().upcast_ty());
                 Ok(ne.downcast_ty::<vir::Bool>().upcast_ty())
             }
             // We do not encode addresses as Ints yet
@@ -487,5 +501,62 @@ impl MirBuiltinBinOpEnc {
         // `let wrapped_val == (val ..) in $tuple`
         let inner_let = vcx.mk_let_expr(wrapped_val_decl, wrapped_val_exp, tuple);
         Ok(vcx.mk_let_expr(val_decl, val_exp, inner_let))
+    }
+}
+
+/// `ptr_addr(Ref): Int`, the integer address of a pointer. Viper `Ref`s
+/// carry provenance, so different `Ref`s may have the same address.
+pub struct PtrAddrEnc;
+
+pub type PtrAddr<'vir> = FunctionIdn<'vir, vir::Ref, vir::Int>;
+
+impl TaskEncoder for PtrAddrEnc {
+    task_encoder::encoder_cache!(PtrAddrEnc);
+    const ENCODER_NAME: &'static str = "pointer address encoder";
+    type TaskDescription<'vir> = ();
+    type OutputFullDependency<'vir> = PtrAddr<'vir>;
+    type OutputFullLocal<'vir> = vir::Domain<'vir>;
+
+    fn task_to_key<'vir>(task: &Self::TaskDescription<'vir>) -> Self::TaskKey<'vir> {
+        *task
+    }
+
+    fn do_encode_full<'vir>(
+        _task_key: &Self::TaskKey<'vir>,
+        deps: &mut TaskEncoderDependencies<'vir, Self>,
+    ) -> EncodeFullResult<'vir, Self> {
+        deps.emit_output_ref((), ())?;
+        vir::with_vcx(|vcx| {
+            let ptr_addr: PtrAddr<'vir> = FunctionIdn::new(
+                vir::vir_format_identifier!(vcx, "ptr_addr"),
+                vir::TYPE_REF,
+                vir::TYPE_INT,
+            );
+            let r = vcx.mk_local_decl("r", vir::TYPE_REF);
+            let app = ptr_addr.call()(vcx.mk_local_ex(r));
+            // Only the null pointer is at address 0.
+            let axiom = vir::expr! {
+                forall [r] :: {[app]}
+                    [vcx.mk_eq_expr(
+                        vcx.mk_eq_expr(app, vcx.mk_int::<0>()),
+                        vcx.mk_eq_expr(vcx.mk_local_ex(r), vcx.mk_null()),
+                    )]
+            };
+            let domain = vcx.mk_domain(
+                vir::ViperIdent::new("def_ptr_addr"),
+                &[],
+                vcx.alloc_slice(&[vcx
+                    .mk_domain_axiom(vir::vir_format_identifier!(vcx, "ax_ptr_addr_null"), axiom)]),
+                vcx.alloc_slice(&[vcx.mk_domain_function(ptr_addr, false, None)]),
+                None,
+            );
+            Ok((domain, ptr_addr))
+        })
+    }
+
+    fn emit_outputs<'vir>(program: &mut task_encoder::Program<'vir>) {
+        for domain in Self::all_outputs_local_no_errors(program) {
+            program.add_domain(domain);
+        }
     }
 }

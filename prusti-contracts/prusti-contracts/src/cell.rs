@@ -1159,8 +1159,8 @@ impl<T: ?Sized> RefCell<T> {
     #[requires(0 <= refcell_count(self) && refcell_count(self) < isize::MAX)]
     #[ensures(refcell_count(self) == old(refcell_count(self)) + 1)]
     #[ensures(ref_flag(&result) as *const Cell<BorrowCounter>
-        == refcell_flag(self) as *const Cell<BorrowCounter>)]
-    #[ensures(&*result as *const T == im_get(&self.value) as *const T)]
+        === refcell_flag(self) as *const Cell<BorrowCounter>)]
+    #[ensures(&*result as *const T === im_get(&self.value) as *const T)]
     #[ensures(*result === *refcell_value(self))]
     #[ensures(*refcell_value(self) === *old(refcell_value(self)))]
     pub const fn borrow(&self) -> Ref<'_, T> {
@@ -1262,8 +1262,8 @@ impl<T: ?Sized> RefCell<T> {
     #[requires(refcell_count(self) == 0)]
     #[ensures(refcell_count(self) == -1)]
     #[ensures(refmut_flag(&result) as *const Cell<BorrowCounter>
-        == refcell_flag(self) as *const Cell<BorrowCounter>)]
-    #[ensures(&*result as *const T == im_get(&self.value) as *const T)]
+        === refcell_flag(self) as *const Cell<BorrowCounter>)]
+    #[ensures(&*result as *const T === im_get(&self.value) as *const T)]
     #[ensures(*result === *old(refcell_value(self)))]
     pub const fn borrow_mut(&self) -> RefMut<'_, T> {
         match self.try_borrow_mut() {
@@ -1676,8 +1676,8 @@ impl<'b, T: ?Sized> Ref<'b, T> {
     #[requires(ref_count(orig) < isize::MAX)]
     #[ensures(ref_count(orig) == old(ref_count(orig)) + 1)]
     #[ensures(ref_flag(&result) as *const Cell<BorrowCounter>
-        == ref_flag(orig) as *const Cell<BorrowCounter>)]
-    #[ensures(&*result as *const T == &**orig as *const T)]
+        === ref_flag(orig) as *const Cell<BorrowCounter>)]
+    #[ensures(&*result as *const T === &**orig as *const T)]
     #[ensures(*result === **orig)]
     pub const fn clone(orig: &Ref<'b, T>) -> Ref<'b, T> {
         Ref {
@@ -1785,9 +1785,9 @@ const impl<T: ?Sized> DerefMut for RefMut<'_, T> {
 #[extern_spec]
 impl<T: ?Sized> Drop for Ref<'_, T> {
     #[ensures(ref_flag(self) as *const Cell<BorrowCounter>
-        == old(ref_flag(self) as *const Cell<BorrowCounter>))]
+        === old(ref_flag(self) as *const Cell<BorrowCounter>))]
     #[ensures(ref_count(self) == old(ref_count(self)) - 1)]
-    #[ensures(&**self as *const T == old(&**self as *const T))]
+    #[ensures(&**self as *const T === old(&**self as *const T))]
     #[ensures(**self === *old(&**self))]
     fn drop(&mut self);
 }
@@ -1795,9 +1795,9 @@ impl<T: ?Sized> Drop for Ref<'_, T> {
 #[extern_spec]
 impl<T: ?Sized> Drop for RefMut<'_, T> {
     #[ensures(refmut_flag(self) as *const Cell<BorrowCounter>
-        == old(refmut_flag(self) as *const Cell<BorrowCounter>))]
+        === old(refmut_flag(self) as *const Cell<BorrowCounter>))]
     #[ensures(refmut_count(self) == old(refmut_count(self)) + 1)]
-    #[ensures(&**self as *const T == old(&**self as *const T))]
+    #[ensures(&**self as *const T === old(&**self as *const T))]
     #[ensures(**self === *old(&**self))]
     fn drop(&mut self);
 }

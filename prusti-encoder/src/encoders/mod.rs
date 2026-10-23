@@ -19,7 +19,8 @@ pub use body::{encodes_body, impure_body, impure_body_with_facts, pure_body, spe
 pub use builtin::{
     MetadataCastAxiomEnc, MetadataCastEnc, MirBuiltinBinOpEnc, MirBuiltinBinOpTask,
     MirBuiltinUnOpEnc, MirBuiltinUnOpTask, MirBuiltinUseCastEnc, MirBuiltinUseCastTask, Mode,
-    PrustiBuiltin, PrustiBuiltinEnc, PrustiBuiltinTask, SpecBuiltin, UninitEnc, ValueCastAxiomEnc,
+    PrustiBuiltin, PrustiBuiltinEnc, PrustiBuiltinTask, PtrAddrEnc, SpecBuiltin, UninitEnc,
+    ValueCastAxiomEnc,
     ValueCastEnc,
 };
 pub use r#const::ConstEnc;

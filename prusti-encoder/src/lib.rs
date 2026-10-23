@@ -99,6 +99,7 @@ pub fn test_entrypoint<'tcx>(
     program.header("MIR builtins");
     crate::encoders::MirBuiltinUnOpEnc::emit_outputs(&mut program);
     crate::encoders::MirBuiltinBinOpEnc::emit_outputs(&mut program);
+    crate::encoders::PtrAddrEnc::emit_outputs(&mut program);
     crate::encoders::MirBuiltinUseCastEnc::emit_outputs(&mut program);
     // Unsize casts call `metadata_cast`; the `&mut` methods call
     // `value_cast`. Both domains must be emitted too.
