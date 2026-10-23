@@ -28,6 +28,11 @@ fn check_modulo() {
     prusti_assert!(id(-10) % 3 == -1);
     prusti_assert!(id(-10) % -3 == -1);
 
+    // Smoke test
+    assert!(false); //~ ERROR: might not hold
+}
+
+fn check_modulo_small_dividends() {
     assert!(id(3) % 3 == 0);
     assert!(id(2) % 3 == 2);
     assert!(id(1) % 3 == 1);
