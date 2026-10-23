@@ -250,9 +250,10 @@
 // std's `debug_refcell` feature does not exist here.
 #![allow(unexpected_cfgs)]
 
+use crate::*;
 use core::cmp::Ordering;
 use core::fmt::{self, Debug, Display};
-use core::marker::{Destruct, PhantomData};
+use core::marker::PhantomData;
 use core::mem::{self, ManuallyDrop};
 use core::ops::{self, Deref, DerefMut};
 use core::ptr::{self, NonNull};
@@ -298,9 +299,25 @@ pub use core::cell::UnsafeCell;
 /// ```
 ///
 /// See the [module-level documentation](self) for more.
+#[im_opaque]
+#[im_perm(value, Real::WRITE)]
 #[repr(transparent)]
 pub struct Cell<T: ?Sized> {
     value: UnsafeCell<T>,
+}
+
+/// The contents of an `UnsafeCell`: its slot in the deep snapshot.
+#[pure_unstable]
+#[trusted]
+#[field_projection(value)]
+pub fn im_get<T: ?Sized>(_c: &UnsafeCell<T>) -> &T {
+    unimplemented!()
+}
+
+/// The current value of a `Cell`.
+#[pure_unstable]
+pub fn cell_value<T: ?Sized>(c: &Cell<T>) -> &T {
+    im_get(&c.value)
 }
 
 unsafe impl<T: ?Sized> Send for Cell<T> where T: Send {}
@@ -388,6 +405,8 @@ impl<T> Cell<T> {
     /// let c = Cell::new(5);
     /// ```
     #[inline]
+    #[trusted]
+    #[ensures(*cell_value(&result) === value)]
     pub const fn new(value: T) -> Cell<T> {
         Cell { value: UnsafeCell::new(value) }
     }
@@ -404,10 +423,9 @@ impl<T> Cell<T> {
     /// c.set(10);
     /// ```
     #[inline]
-    pub const fn set(&self, val: T)
-    where
-        T: [const] Destruct,
-    {
+    #[trusted]
+    #[ensures(*cell_value(self) === val)]
+    pub fn set(&self, val: T) {
         self.replace(val);
     }
 
@@ -434,6 +452,9 @@ impl<T> Cell<T> {
     /// assert_eq!(5, c2.get());
     /// ```
     #[inline]
+    #[trusted]
+    #[ensures(*cell_value(self) === *old(cell_value(other)))]
+    #[ensures(*cell_value(other) === *old(cell_value(self)))]
     pub fn swap(&self, other: &Self) {
         // This function documents that it *will* panic, and intrinsics::is_nonoverlapping doesn't
         // do the check in const, so trying to use it here would be inviting unnecessary fragility.
@@ -475,6 +496,9 @@ impl<T> Cell<T> {
     /// assert_eq!(cell.get(), 10);
     /// ```
     #[inline]
+    #[trusted]
+    #[ensures(result === *old(cell_value(self)))]
+    #[ensures(*cell_value(self) === val)]
     pub const fn replace(&self, val: T) -> T {
         // SAFETY: This can cause data races if called from a separate thread,
         // but `Cell` is `!Sync` so this won't happen.
@@ -493,6 +517,8 @@ impl<T> Cell<T> {
     ///
     /// assert_eq!(five, 5);
     /// ```
+    #[trusted]
+    #[ensures(result === *old(cell_value(&self)))]
     pub const fn into_inner(self) -> T {
         self.value.into_inner()
     }
@@ -511,6 +537,9 @@ impl<T: Copy> Cell<T> {
     /// let five = c.get();
     /// ```
     #[inline]
+    #[pure_unstable]
+    #[trusted]
+    #[ensures(result === *cell_value(self))]
     pub const fn get(&self) -> T {
         // SAFETY: This can cause data races if called from a separate thread,
         // but `Cell` is `!Sync` so this won't happen.
@@ -529,11 +558,7 @@ impl<T: Copy> Cell<T> {
     /// assert_eq!(c.get(), 6);
     /// ```
     #[inline]
-    pub const fn update(&self, f: impl [const] FnOnce(T) -> T)
-    where
-        // FIXME(const-hack): `Copy` should imply `const Destruct`
-        T: [const] Destruct,
-    {
+    pub fn update(&self, f: impl FnOnce(T) -> T) {
         let old = self.get();
         self.set(f(old));
     }
@@ -579,6 +604,9 @@ impl<T: ?Sized> Cell<T> {
     /// assert_eq!(c.get(), 6);
     /// ```
     #[inline]
+    #[trusted]
+    #[ensures(*result === *old(cell_value(self)))]
+    #[after_expiry(Ghost::new_ref(cell_value(&*self)) == before_expiry(Ghost::new_ref(&*result)))]
     pub const fn get_mut(&mut self) -> &mut T {
         self.value.get_mut()
     }
@@ -617,10 +645,10 @@ impl<T: Default> Cell<T> {
     /// assert_eq!(five, 5);
     /// assert_eq!(c.into_inner(), 0);
     /// ```
-    pub const fn take(&self) -> T
-    where
-        T: [const] Default,
-    {
+    #[trusted]
+    #[ensures(result === *old(cell_value(self)))]
+    #[ensures(*cell_value(self) === T::default())]
+    pub fn take(&self) -> T {
         self.replace(Default::default())
     }
 }
