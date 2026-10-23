@@ -924,7 +924,23 @@ pub fn closure(tokens: TokenStream) -> TokenStream {
 }
 
 pub fn refine_trait_spec(_attr: TokenStream, tokens: TokenStream) -> TokenStream {
-    let mut impl_block: syn::ItemImpl = handle_result!(syn::parse2(tokens));
+    // `syn` cannot parse a `const impl` (a const trait impl): parse it without
+    // the `const`, which is put back on the output.
+    let mut trees = tokens.into_iter().collect::<Vec<_>>();
+    let mut attrs_end = 0;
+    while matches!(&trees[attrs_end..], [TokenTree::Punct(p), TokenTree::Group(_), ..] if p.as_char() == '#')
+    {
+        attrs_end += 2;
+    }
+    let constness = match &trees[attrs_end..] {
+        [TokenTree::Ident(c), TokenTree::Ident(i), ..] if c == "const" && i == "impl" => {
+            Some(trees.remove(attrs_end))
+        }
+        _ => None,
+    };
+    let mut impl_block: syn::ItemImpl =
+        handle_result!(syn::parse2(trees.into_iter().collect::<TokenStream>()));
+    let impl_attrs = std::mem::take(&mut impl_block.attrs);
     let impl_generics = &impl_block.generics;
 
     let trait_path: syn::TypePath = match &impl_block.trait_ {
@@ -1007,9 +1023,10 @@ pub fn refine_trait_spec(_attr: TokenStream, tokens: TokenStream) -> TokenStream
     impl_block.items = new_items;
     quote_spanned! {impl_block.span()=>
         #(#generated_spec_items)*
+        #(#impl_attrs)*
         #[prusti::refine_trait_spec]
         #[prusti::specs_version = #SPECS_VERSION]
-        #impl_block
+        #constness #impl_block
     }
 }
 
@@ -1039,8 +1056,8 @@ pub fn field_projection(attr: TokenStream, tokens: TokenStream) -> TokenStream {
 ///   the `UnsafeCell` field `FIELD`;
 /// - `#[im_dependent(FIELD, AMOUNT)]`: the dependent atom holds `AMOUNT` of
 ///   them;
-/// - `#[ptr_holds(FIELD, AMOUNT)]`: the value holds `AMOUNT` of the pointee of
-///   the raw-pointer field `FIELD`;
+/// - `#[ptr_holds(FIELD, AMOUNT)]`: the value holds `AMOUNT` (computed without
+///   `self`) of the pointee of the raw-pointer field `FIELD`;
 /// - `#[im_shares(TYPE, at = EXPR, for 'LT [, dependent])]`: the value reaches
 ///   the atom (and, with `dependent`, the dependent atom) of the `TYPE` that
 ///   `EXPR: &'LT TYPE` refers to.
@@ -1053,9 +1070,33 @@ pub fn im_type_attribute(name: &str, attr: TokenStream, tokens: TokenStream) -> 
         }
     };
     let span = item.span();
+    let mut marker_value = None;
     let method: Option<syn::ImplItemMethod> = match name {
         "im_opaque" => None,
-        "im_perm" | "im_dependent" | "ptr_holds" => {
+        "ptr_holds" => {
+            let parser = |input: syn::parse::ParseStream| {
+                let field: syn::Ident = input.parse()?;
+                let _: syn::Token![,] = input.parse()?;
+                let amount: syn::Expr = input.parse()?;
+                Ok((field, amount))
+            };
+            let (field, amount) = handle_result!(syn::parse::Parser::parse2(parser, attr));
+            let kind = format!("holds {field}");
+            let fn_name = syn::Ident::new(&format!("prusti_{name}_{field}"), span);
+            marker_value = Some(field.to_string());
+            // The amount is part of the struct's predicate, so it cannot
+            // depend on the value.
+            Some(parse_quote_spanned! {span=>
+                #[doc(hidden)]
+                #[allow(non_snake_case, dead_code)]
+                #[prusti::im_amount = #kind]
+                #[::prusti_contracts::pure]
+                fn #fn_name() -> ::prusti_contracts::Real {
+                    #amount
+                }
+            })
+        }
+        "im_perm" | "im_dependent" => {
             let parser = |input: syn::parse::ParseStream| {
                 let field: syn::Ident = input.parse()?;
                 let _: syn::Token![,] = input.parse()?;
@@ -1100,16 +1141,45 @@ pub fn im_type_attribute(name: &str, attr: TokenStream, tokens: TokenStream) -> 
             };
             let (ty, expr, lifetime, dependent) =
                 handle_result!(syn::parse::Parser::parse2(parser, attr));
-            let kind = if dependent { "shares dependent" } else { "shares" };
-            Some(parse_quote_spanned! {span=>
-                #[doc(hidden)]
-                #[allow(non_snake_case, dead_code)]
-                #[prusti::im_amount = #kind]
-                #[::prusti_contracts::pure]
-                fn prusti_im_shares(&self) -> &#lifetime #ty {
-                    #expr
-                }
-            })
+            let kind = if dependent {
+                "shares dependent"
+            } else {
+                "shares"
+            };
+            // `at = container_of(PATH, FIELD)` is the method's own definition
+            // (rather than a call of a `#[container_of]` function, which the
+            // encoder would see through one more function).
+            let container_of = match &expr {
+                syn::Expr::Call(call) => match &*call.func {
+                    syn::Expr::Path(func) if func.path.is_ident("container_of") => Some(call),
+                    _ => None,
+                },
+                _ => None,
+            };
+            if let Some(call) = container_of {
+                let args = call.args.iter().collect::<Vec<_>>();
+                Some(parse_quote_spanned! {span=>
+                    #[doc(hidden)]
+                    #[allow(non_snake_case, dead_code)]
+                    #[prusti::im_amount = #kind]
+                    #[::prusti_contracts::pure]
+                    #[::prusti_contracts::trusted]
+                    #[::prusti_contracts::container_of(#(#args),*)]
+                    fn prusti_im_shares(&self) -> &#lifetime #ty {
+                        unimplemented!()
+                    }
+                })
+            } else {
+                Some(parse_quote_spanned! {span=>
+                    #[doc(hidden)]
+                    #[allow(non_snake_case, dead_code)]
+                    #[prusti::im_amount = #kind]
+                    #[::prusti_contracts::pure]
+                    fn prusti_im_shares(&self) -> &#lifetime #ty {
+                        #expr
+                    }
+                })
+            }
         }
         _ => unreachable!("unknown interior-mutability attribute `{name}`"),
     };
@@ -1123,10 +1193,32 @@ pub fn im_type_attribute(name: &str, attr: TokenStream, tokens: TokenStream) -> 
             }
         }
     });
+    let marker = match marker_value {
+        Some(value) => quote_spanned! {span=> #[prusti::#marker = #value] },
+        None => quote_spanned! {span=> #[prusti::#marker] },
+    };
     quote_spanned! {span=>
-        #[prusti::#marker]
+        #marker
         #item
         #method
+    }
+}
+
+/// `#[container_of(a.b, f)]`: marks a body-less spec function returning
+/// `&S` as the `S` whose field `f` the reference at the (possibly private)
+/// field path `a.b` of its first argument's referent points to.
+pub fn container_of(attr: TokenStream, tokens: TokenStream) -> TokenStream {
+    let value: String = attr.to_string().split_whitespace().collect();
+    if value.split(',').count() != 2 {
+        return syn::Error::new(
+            attr.span(),
+            "the `#[container_of]` attribute takes a field path and a field, such as `a.b, f`",
+        )
+        .to_compile_error();
+    }
+    quote_spanned! {tokens.span()=>
+        #[prusti::container_of = #value]
+        #tokens
     }
 }
 

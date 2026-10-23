@@ -251,13 +251,15 @@
 #![allow(unexpected_cfgs)]
 
 use crate::*;
-use core::cmp::Ordering;
-use core::fmt::{self, Debug, Display};
-use core::marker::PhantomData;
-use core::mem::{self, ManuallyDrop};
-use core::ops::{self, Deref, DerefMut};
-use core::ptr::{self, NonNull};
-use core::range;
+use core::{
+    cmp::Ordering,
+    fmt::{self, Debug, Display},
+    marker::PhantomData,
+    mem::{self, ManuallyDrop},
+    ops::{self, Deref, DerefMut},
+    ptr::{self, NonNull},
+    range,
+};
 
 pub use core::cell::UnsafeCell;
 
@@ -408,7 +410,9 @@ impl<T> Cell<T> {
     #[trusted]
     #[ensures(*cell_value(&result) === value)]
     pub const fn new(value: T) -> Cell<T> {
-        Cell { value: UnsafeCell::new(value) }
+        Cell {
+            value: UnsafeCell::new(value),
+        }
     }
 
     /// Sets the contained value.
@@ -792,6 +796,17 @@ impl<T: CloneFromCell> Cell<T> {
 /// A mutable memory location with dynamically checked borrow rules
 ///
 /// See the [module-level documentation](self) for more.
+// The atom holds the flag `Cell`'s atom (folded) and, while the flag is
+// `n >= 0`, a source of the contents with `n + 1` tokens split off: one per
+// `Ref` and one held by the dependent atom (the pin) while the flag is not
+// negative. While mutably borrowed, the `RefMut` holds all of the contents.
+#[im_opaque]
+#[im_perm(value, if self.borrow.get() >= 0 {
+    Real::WRITE - (Real::from(self.borrow.get()) + Real::WRITE) * ref_token()
+} else {
+    Real::NONE
+})]
+#[im_dependent(value, if self.borrow.get() >= 0 { ref_token() } else { Real::NONE })]
 pub struct RefCell<T: ?Sized> {
     borrow: Cell<BorrowCounter>,
     // Stores the location of the earliest currently active borrow.
@@ -838,7 +853,11 @@ pub struct BorrowMutError {
 impl Display for BorrowMutError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         #[cfg(feature = "debug_refcell")]
-        let res = write!(f, "RefCell already borrowed; a previous borrow was at {}", self.location);
+        let res = write!(
+            f,
+            "RefCell already borrowed; a previous borrow was at {}",
+            self.location
+        );
 
         #[cfg(not(feature = "debug_refcell"))]
         let res = Display::fmt("RefCell already borrowed", f);
@@ -889,6 +908,78 @@ const fn is_reading(x: BorrowCounter) -> bool {
     x > UNUSED
 }
 
+/// The share of a `RefCell`'s contents each `Ref` holds, and the pin holds.
+#[pure]
+#[ensures(Real::NONE < result && result < Real::WRITE)]
+pub fn ref_token() -> Real {
+    Real::WRITE / (Real::from(isize::MAX) + Real::WRITE)
+}
+
+/// The borrow flag of a `RefCell`: `0` = free, `n > 0` = `n` shared borrows,
+/// `-1` = mutably borrowed.
+#[pure_unstable]
+pub fn refcell_count<T: ?Sized>(c: &RefCell<T>) -> isize {
+    c.borrow.get()
+}
+
+/// The contents of a `RefCell` (meaningful while the flag is not negative).
+#[pure_unstable]
+pub fn refcell_value<T: ?Sized>(c: &RefCell<T>) -> &T {
+    im_get(&c.value)
+}
+
+/// The borrow flag of a `RefCell`.
+#[pure]
+#[trusted]
+#[field_projection(borrow)]
+pub fn refcell_flag<T: ?Sized>(_c: &RefCell<T>) -> &Cell<BorrowCounter> {
+    unimplemented!()
+}
+
+/// The `RefCell` a `Ref` borrows from (its address).
+#[pure]
+#[trusted]
+#[container_of(borrow.borrow, borrow)]
+pub fn ref_cell<'b, T: ?Sized>(_r: &Ref<'b, T>) -> &'b RefCell<T> {
+    unimplemented!()
+}
+
+/// The `RefCell` a `RefMut` borrows from (its address).
+#[pure]
+#[trusted]
+#[container_of(borrow.borrow, borrow)]
+pub fn refmut_cell<'b, T: ?Sized>(_r: &RefMut<'b, T>) -> &'b RefCell<T> {
+    unimplemented!()
+}
+
+/// The borrow flag a `Ref` points to.
+#[pure]
+#[trusted]
+#[field_projection(borrow.borrow)]
+pub fn ref_flag<'b, T: ?Sized>(_r: &Ref<'b, T>) -> &'b Cell<BorrowCounter> {
+    unimplemented!()
+}
+
+/// The borrow flag a `RefMut` points to.
+#[pure]
+#[trusted]
+#[field_projection(borrow.borrow)]
+pub fn refmut_flag<'b, T: ?Sized>(_r: &RefMut<'b, T>) -> &'b Cell<BorrowCounter> {
+    unimplemented!()
+}
+
+/// The borrow flag as seen through a `Ref`.
+#[pure_unstable]
+pub fn ref_count<'b, T: ?Sized>(r: &Ref<'b, T>) -> isize {
+    ref_flag(r).get()
+}
+
+/// The borrow flag as seen through a `RefMut`.
+#[pure_unstable]
+pub fn refmut_count<'b, T: ?Sized>(r: &RefMut<'b, T>) -> isize {
+    refmut_flag(r).get()
+}
+
 impl<T> RefCell<T> {
     /// Creates a new `RefCell` containing `value`.
     ///
@@ -900,6 +991,9 @@ impl<T> RefCell<T> {
     /// let c = RefCell::new(5);
     /// ```
     #[inline]
+    #[trusted]
+    #[ensures(refcell_count(&result) == 0)]
+    #[ensures(*refcell_value(&result) === value)]
     pub const fn new(value: T) -> RefCell<T> {
         RefCell {
             value: UnsafeCell::new(value),
@@ -921,6 +1015,9 @@ impl<T> RefCell<T> {
     /// let five = c.into_inner();
     /// ```
     #[inline]
+    #[trusted]
+    #[requires(refcell_count(&self) == 0)]
+    #[ensures(result === *old(refcell_value(&self)))]
     pub const fn into_inner(self) -> T {
         // Since this function takes `self` (the `RefCell`) by value, the
         // compiler statically verifies that it is not currently borrowed.
@@ -947,6 +1044,11 @@ impl<T> RefCell<T> {
     /// ```
     #[inline]
     #[track_caller]
+    #[trusted]
+    #[requires(refcell_count(self) == 0)]
+    #[ensures(refcell_count(self) == 0)]
+    #[ensures(result === *old(refcell_value(self)))]
+    #[ensures(*refcell_value(self) === t)]
     pub const fn replace(&self, t: T) -> T {
         mem::replace(&mut self.borrow_mut(), t)
     }
@@ -1035,6 +1137,14 @@ impl<T: ?Sized> RefCell<T> {
     /// ```
     #[inline]
     #[track_caller]
+    #[trusted]
+    #[requires(0 <= refcell_count(self) && refcell_count(self) < isize::MAX)]
+    #[ensures(refcell_count(self) == old(refcell_count(self)) + 1)]
+    #[ensures(ref_flag(&result) as *const Cell<BorrowCounter>
+        == refcell_flag(self) as *const Cell<BorrowCounter>)]
+    #[ensures(&*result as *const T == im_get(&self.value) as *const T)]
+    #[ensures(*result === *refcell_value(self))]
+    #[ensures(*refcell_value(self) === *old(refcell_value(self)))]
     pub const fn borrow(&self) -> Ref<'_, T> {
         match self.try_borrow() {
             Ok(b) => b,
@@ -1076,7 +1186,8 @@ impl<T: ?Sized> RefCell<T> {
                 {
                     // `borrowed_at` is always the *first* active borrow
                     if b.borrow.get() == 1 {
-                        self.borrowed_at.replace(Some(core::panic::Location::caller()));
+                        self.borrowed_at
+                            .replace(Some(core::panic::Location::caller()));
                     }
                 }
 
@@ -1129,6 +1240,13 @@ impl<T: ?Sized> RefCell<T> {
     /// ```
     #[inline]
     #[track_caller]
+    #[trusted]
+    #[requires(refcell_count(self) == 0)]
+    #[ensures(refcell_count(self) == -1)]
+    #[ensures(refmut_flag(&result) as *const Cell<BorrowCounter>
+        == refcell_flag(self) as *const Cell<BorrowCounter>)]
+    #[ensures(&*result as *const T == im_get(&self.value) as *const T)]
+    #[ensures(*result === *old(refcell_value(self)))]
     pub const fn borrow_mut(&self) -> RefMut<'_, T> {
         match self.try_borrow_mut() {
             Ok(b) => b,
@@ -1165,12 +1283,17 @@ impl<T: ?Sized> RefCell<T> {
             Some(b) => {
                 #[cfg(feature = "debug_refcell")]
                 {
-                    self.borrowed_at.replace(Some(core::panic::Location::caller()));
+                    self.borrowed_at
+                        .replace(Some(core::panic::Location::caller()));
                 }
 
                 // SAFETY: `BorrowRefMut` guarantees unique access.
                 let value = unsafe { NonNull::new_unchecked(self.value.get()) };
-                Ok(RefMut { value, borrow: b, marker: PhantomData })
+                Ok(RefMut {
+                    value,
+                    borrow: b,
+                    marker: PhantomData,
+                })
             }
             None => Err(BorrowMutError {
                 // If a borrow occurred, then we must already have an outstanding borrow,
@@ -1481,7 +1604,9 @@ const impl Clone for BorrowRef<'_> {
         // a writing borrow.
         assert!(borrow != BorrowCounter::MAX);
         self.borrow.replace(borrow + 1);
-        BorrowRef { borrow: self.borrow }
+        BorrowRef {
+            borrow: self.borrow,
+        }
     }
 }
 
@@ -1490,6 +1615,11 @@ const impl Clone for BorrowRef<'_> {
 ///
 /// See the [module-level documentation](self) for more.
 #[must_not_suspend = "holding a Ref across suspend points can cause BorrowErrors"]
+// A `Ref` holds a token of the contents, and reaches the `RefCell`'s atom but
+// not its dependent one (the pin), which it can never need: while it lives,
+// the flag is positive.
+#[ptr_holds(value, ref_token())]
+#[im_shares(RefCell<T>, at = container_of(borrow.borrow, borrow), for 'b)]
 pub struct Ref<'b, T: ?Sized + 'b> {
     // NB: we use a pointer instead of `&'b T` to avoid `noalias` violations, because a
     // `Ref` argument doesn't hold immutability for its whole scope, only until it drops.
@@ -1498,10 +1628,14 @@ pub struct Ref<'b, T: ?Sized + 'b> {
     borrow: BorrowRef<'b>,
 }
 
+#[refine_trait_spec]
 const impl<T: ?Sized> Deref for Ref<'_, T> {
     type Target = T;
 
     #[inline]
+    #[pure]
+    #[trusted]
+    #[field_projection(*value)]
     fn deref(&self) -> &T {
         // SAFETY: the value is accessible as long as we hold our borrow.
         unsafe { self.value.as_ref() }
@@ -1519,382 +1653,24 @@ impl<'b, T: ?Sized> Ref<'b, T> {
     /// a `RefCell`.
     #[must_use]
     #[inline]
+    #[trusted]
+    #[requires(ref_count(orig) < isize::MAX)]
+    #[ensures(ref_count(orig) == old(ref_count(orig)) + 1)]
+    #[ensures(ref_flag(&result) as *const Cell<BorrowCounter>
+        == ref_flag(orig) as *const Cell<BorrowCounter>)]
+    #[ensures(&*result as *const T == &**orig as *const T)]
+    #[ensures(*result === **orig)]
     pub const fn clone(orig: &Ref<'b, T>) -> Ref<'b, T> {
-        Ref { value: orig.value, borrow: orig.borrow.clone() }
-    }
-
-    /// Makes a new `Ref` for a component of the borrowed data.
-    ///
-    /// The `RefCell` is already immutably borrowed, so this cannot fail.
-    ///
-    /// This is an associated function that needs to be used as `Ref::map(...)`.
-    /// A method would interfere with methods of the same name on the contents
-    /// of a `RefCell` used through `Deref`.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use std::cell::{RefCell, Ref};
-    ///
-    /// let c = RefCell::new((5, 'b'));
-    /// let b1: Ref<'_, (u32, char)> = c.borrow();
-    /// let b2: Ref<'_, u32> = Ref::map(b1, |t| &t.0);
-    /// assert_eq!(*b2, 5)
-    /// ```
-    #[inline]
-    pub fn map<U: ?Sized, F>(orig: Ref<'b, T>, f: F) -> Ref<'b, U>
-    where
-        F: FnOnce(&T) -> &U,
-    {
-        Ref { value: NonNull::from(f(&*orig)), borrow: orig.borrow }
-    }
-
-    /// Makes a new `Ref` for an optional component of the borrowed data. The
-    /// original guard is returned as an `Err(..)` if the closure returns
-    /// `None`.
-    ///
-    /// The `RefCell` is already immutably borrowed, so this cannot fail.
-    ///
-    /// This is an associated function that needs to be used as
-    /// `Ref::filter_map(...)`. A method would interfere with methods of the same
-    /// name on the contents of a `RefCell` used through `Deref`.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use std::cell::{RefCell, Ref};
-    ///
-    /// let c = RefCell::new(vec![1, 2, 3]);
-    /// let b1: Ref<'_, Vec<u32>> = c.borrow();
-    /// let b2: Result<Ref<'_, u32>, _> = Ref::filter_map(b1, |v| v.get(1));
-    /// assert_eq!(*b2.unwrap(), 2);
-    /// ```
-    #[inline]
-    pub fn filter_map<U: ?Sized, F>(orig: Ref<'b, T>, f: F) -> Result<Ref<'b, U>, Self>
-    where
-        F: FnOnce(&T) -> Option<&U>,
-    {
-        match f(&*orig) {
-            Some(value) => Ok(Ref { value: NonNull::from(value), borrow: orig.borrow }),
-            None => Err(orig),
+        Ref {
+            value: orig.value,
+            borrow: orig.borrow.clone(),
         }
-    }
-
-    /// Tries to makes a new `Ref` for a component of the borrowed data.
-    /// On failure, the original guard is returned alongside with the error
-    /// returned by the closure.
-    ///
-    /// The `RefCell` is already immutably borrowed, so this cannot fail.
-    ///
-    /// This is an associated function that needs to be used as
-    /// `Ref::try_map(...)`. A method would interfere with methods of the same
-    /// name on the contents of a `RefCell` used through `Deref`.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// #![feature(refcell_try_map)]
-    /// use std::cell::{RefCell, Ref};
-    /// use std::str::{from_utf8, Utf8Error};
-    ///
-    /// let c = RefCell::new(vec![0xF0, 0x9F, 0xA6 ,0x80]);
-    /// let b1: Ref<'_, Vec<u8>> = c.borrow();
-    /// let b2: Result<Ref<'_, str>, _> = Ref::try_map(b1, |v| from_utf8(v));
-    /// assert_eq!(&*b2.unwrap(), "🦀");
-    ///
-    /// let c = RefCell::new(vec![0xF0, 0x9F, 0xA6]);
-    /// let b1: Ref<'_, Vec<u8>> = c.borrow();
-    /// let b2: Result<_, (Ref<'_, Vec<u8>>, Utf8Error)> = Ref::try_map(b1, |v| from_utf8(v));
-    /// let (b3, e) = b2.unwrap_err();
-    /// assert_eq!(*b3, vec![0xF0, 0x9F, 0xA6]);
-    /// assert_eq!(e.valid_up_to(), 0);
-    /// ```
-    #[inline]
-    pub fn try_map<U: ?Sized, E>(
-        orig: Ref<'b, T>,
-        f: impl FnOnce(&T) -> Result<&U, E>,
-    ) -> Result<Ref<'b, U>, (Self, E)> {
-        match f(&*orig) {
-            Ok(value) => Ok(Ref { value: NonNull::from(value), borrow: orig.borrow }),
-            Err(e) => Err((orig, e)),
-        }
-    }
-
-    /// Splits a `Ref` into multiple `Ref`s for different components of the
-    /// borrowed data.
-    ///
-    /// The `RefCell` is already immutably borrowed, so this cannot fail.
-    ///
-    /// This is an associated function that needs to be used as
-    /// `Ref::map_split(...)`. A method would interfere with methods of the same
-    /// name on the contents of a `RefCell` used through `Deref`.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use std::cell::{Ref, RefCell};
-    ///
-    /// let cell = RefCell::new([1, 2, 3, 4]);
-    /// let borrow = cell.borrow();
-    /// let (begin, end) = Ref::map_split(borrow, |slice| slice.split_at(2));
-    /// assert_eq!(*begin, [1, 2]);
-    /// assert_eq!(*end, [3, 4]);
-    /// ```
-    #[inline]
-    pub fn map_split<U: ?Sized, V: ?Sized, F>(orig: Ref<'b, T>, f: F) -> (Ref<'b, U>, Ref<'b, V>)
-    where
-        F: FnOnce(&T) -> (&U, &V),
-    {
-        let (a, b) = f(&*orig);
-        let borrow = orig.borrow.clone();
-        (
-            Ref { value: NonNull::from(a), borrow },
-            Ref { value: NonNull::from(b), borrow: orig.borrow },
-        )
-    }
-
-    /// Converts into a reference to the underlying data.
-    ///
-    /// The underlying `RefCell` can never be mutably borrowed from again and will always appear
-    /// already immutably borrowed. It is not a good idea to leak more than a constant number of
-    /// references. The `RefCell` can be immutably borrowed again if only a smaller number of leaks
-    /// have occurred in total.
-    ///
-    /// This is an associated function that needs to be used as
-    /// `Ref::leak(...)`. A method would interfere with methods of the
-    /// same name on the contents of a `RefCell` used through `Deref`.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// #![feature(cell_leak)]
-    /// use std::cell::{RefCell, Ref};
-    /// let cell = RefCell::new(0);
-    ///
-    /// let value = Ref::leak(cell.borrow());
-    /// assert_eq!(*value, 0);
-    ///
-    /// assert!(cell.try_borrow().is_ok());
-    /// assert!(cell.try_borrow_mut().is_err());
-    /// ```
-    pub const fn leak(orig: Ref<'b, T>) -> &'b T {
-        // By forgetting this Ref we ensure that the borrow counter in the RefCell can't go back to
-        // UNUSED within the lifetime `'b`. Resetting the reference tracking state would require a
-        // unique reference to the borrowed RefCell. No further mutable references can be created
-        // from the original cell.
-        mem::forget(orig.borrow);
-        // SAFETY: after forgetting, we can form a reference for the rest of lifetime `'b`.
-        unsafe { orig.value.as_ref() }
     }
 }
 
 impl<T: ?Sized + fmt::Display> fmt::Display for Ref<'_, T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         (**self).fmt(f)
-    }
-}
-
-impl<'b, T: ?Sized> RefMut<'b, T> {
-    /// Makes a new `RefMut` for a component of the borrowed data, e.g., an enum
-    /// variant.
-    ///
-    /// The `RefCell` is already mutably borrowed, so this cannot fail.
-    ///
-    /// This is an associated function that needs to be used as
-    /// `RefMut::map(...)`. A method would interfere with methods of the same
-    /// name on the contents of a `RefCell` used through `Deref`.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use std::cell::{RefCell, RefMut};
-    ///
-    /// let c = RefCell::new((5, 'b'));
-    /// {
-    ///     let b1: RefMut<'_, (u32, char)> = c.borrow_mut();
-    ///     let mut b2: RefMut<'_, u32> = RefMut::map(b1, |t| &mut t.0);
-    ///     assert_eq!(*b2, 5);
-    ///     *b2 = 42;
-    /// }
-    /// assert_eq!(*c.borrow(), (42, 'b'));
-    /// ```
-    #[inline]
-    pub fn map<U: ?Sized, F>(mut orig: RefMut<'b, T>, f: F) -> RefMut<'b, U>
-    where
-        F: FnOnce(&mut T) -> &mut U,
-    {
-        let value = NonNull::from(f(&mut *orig));
-        RefMut { value, borrow: orig.borrow, marker: PhantomData }
-    }
-
-    /// Makes a new `RefMut` for an optional component of the borrowed data. The
-    /// original guard is returned as an `Err(..)` if the closure returns
-    /// `None`.
-    ///
-    /// The `RefCell` is already mutably borrowed, so this cannot fail.
-    ///
-    /// This is an associated function that needs to be used as
-    /// `RefMut::filter_map(...)`. A method would interfere with methods of the
-    /// same name on the contents of a `RefCell` used through `Deref`.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use std::cell::{RefCell, RefMut};
-    ///
-    /// let c = RefCell::new(vec![1, 2, 3]);
-    ///
-    /// {
-    ///     let b1: RefMut<'_, Vec<u32>> = c.borrow_mut();
-    ///     let mut b2: Result<RefMut<'_, u32>, _> = RefMut::filter_map(b1, |v| v.get_mut(1));
-    ///
-    ///     if let Ok(mut b2) = b2 {
-    ///         *b2 += 2;
-    ///     }
-    /// }
-    ///
-    /// assert_eq!(*c.borrow(), vec![1, 4, 3]);
-    /// ```
-    #[inline]
-    pub fn filter_map<U: ?Sized, F>(mut orig: RefMut<'b, T>, f: F) -> Result<RefMut<'b, U>, Self>
-    where
-        F: FnOnce(&mut T) -> Option<&mut U>,
-    {
-        // SAFETY: function holds onto an exclusive reference for the duration
-        // of its call through `orig`, and the pointer is only de-referenced
-        // inside of the function call never allowing the exclusive reference to
-        // escape.
-        match f(&mut *orig) {
-            Some(value) => {
-                Ok(RefMut { value: NonNull::from(value), borrow: orig.borrow, marker: PhantomData })
-            }
-            None => Err(orig),
-        }
-    }
-
-    /// Tries to makes a new `RefMut` for a component of the borrowed data.
-    /// On failure, the original guard is returned alongside with the error
-    /// returned by the closure.
-    ///
-    /// The `RefCell` is already mutably borrowed, so this cannot fail.
-    ///
-    /// This is an associated function that needs to be used as
-    /// `RefMut::try_map(...)`. A method would interfere with methods of the same
-    /// name on the contents of a `RefCell` used through `Deref`.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// #![feature(refcell_try_map)]
-    /// use std::cell::{RefCell, RefMut};
-    /// use std::str::{from_utf8_mut, Utf8Error};
-    ///
-    /// let c = RefCell::new(vec![0x68, 0x65, 0x6C, 0x6C, 0x6F]);
-    /// {
-    ///     let b1: RefMut<'_, Vec<u8>> = c.borrow_mut();
-    ///     let b2: Result<RefMut<'_, str>, _> = RefMut::try_map(b1, |v| from_utf8_mut(v));
-    ///     let mut b2 = b2.unwrap();
-    ///     assert_eq!(&*b2, "hello");
-    ///     b2.make_ascii_uppercase();
-    /// }
-    /// assert_eq!(*c.borrow(), "HELLO".as_bytes());
-    ///
-    /// let c = RefCell::new(vec![0xFF]);
-    /// let b1: RefMut<'_, Vec<u8>> = c.borrow_mut();
-    /// let b2: Result<_, (RefMut<'_, Vec<u8>>, Utf8Error)> = RefMut::try_map(b1, |v| from_utf8_mut(v));
-    /// let (b3, e) = b2.unwrap_err();
-    /// assert_eq!(*b3, vec![0xFF]);
-    /// assert_eq!(e.valid_up_to(), 0);
-    /// ```
-    #[inline]
-    pub fn try_map<U: ?Sized, E>(
-        mut orig: RefMut<'b, T>,
-        f: impl FnOnce(&mut T) -> Result<&mut U, E>,
-    ) -> Result<RefMut<'b, U>, (Self, E)> {
-        // SAFETY: function holds onto an exclusive reference for the duration
-        // of its call through `orig`, and the pointer is only de-referenced
-        // inside of the function call never allowing the exclusive reference to
-        // escape.
-        match f(&mut *orig) {
-            Ok(value) => {
-                Ok(RefMut { value: NonNull::from(value), borrow: orig.borrow, marker: PhantomData })
-            }
-            Err(e) => Err((orig, e)),
-        }
-    }
-
-    /// Splits a `RefMut` into multiple `RefMut`s for different components of the
-    /// borrowed data.
-    ///
-    /// The underlying `RefCell` will remain mutably borrowed until both
-    /// returned `RefMut`s go out of scope.
-    ///
-    /// The `RefCell` is already mutably borrowed, so this cannot fail.
-    ///
-    /// This is an associated function that needs to be used as
-    /// `RefMut::map_split(...)`. A method would interfere with methods of the
-    /// same name on the contents of a `RefCell` used through `Deref`.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use std::cell::{RefCell, RefMut};
-    ///
-    /// let cell = RefCell::new([1, 2, 3, 4]);
-    /// let borrow = cell.borrow_mut();
-    /// let (mut begin, mut end) = RefMut::map_split(borrow, |slice| slice.split_at_mut(2));
-    /// assert_eq!(*begin, [1, 2]);
-    /// assert_eq!(*end, [3, 4]);
-    /// begin.copy_from_slice(&[4, 3]);
-    /// end.copy_from_slice(&[2, 1]);
-    /// ```
-    #[inline]
-    pub fn map_split<U: ?Sized, V: ?Sized, F>(
-        mut orig: RefMut<'b, T>,
-        f: F,
-    ) -> (RefMut<'b, U>, RefMut<'b, V>)
-    where
-        F: FnOnce(&mut T) -> (&mut U, &mut V),
-    {
-        let borrow = orig.borrow.clone();
-        let (a, b) = f(&mut *orig);
-        (
-            RefMut { value: NonNull::from(a), borrow, marker: PhantomData },
-            RefMut { value: NonNull::from(b), borrow: orig.borrow, marker: PhantomData },
-        )
-    }
-
-    /// Converts into a mutable reference to the underlying data.
-    ///
-    /// The underlying `RefCell` can not be borrowed from again and will always appear already
-    /// mutably borrowed, making the returned reference the only to the interior.
-    ///
-    /// This is an associated function that needs to be used as
-    /// `RefMut::leak(...)`. A method would interfere with methods of the
-    /// same name on the contents of a `RefCell` used through `Deref`.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// #![feature(cell_leak)]
-    /// use std::cell::{RefCell, RefMut};
-    /// let cell = RefCell::new(0);
-    ///
-    /// let value = RefMut::leak(cell.borrow_mut());
-    /// assert_eq!(*value, 0);
-    /// *value = 1;
-    ///
-    /// assert!(cell.try_borrow_mut().is_err());
-    /// ```
-    pub const fn leak(mut orig: RefMut<'b, T>) -> &'b mut T {
-        // By forgetting this BorrowRefMut we ensure that the borrow counter in the RefCell can't
-        // go back to UNUSED within the lifetime `'b`. Resetting the reference tracking state would
-        // require a unique reference to the borrowed RefCell. No further references can be created
-        // from the original cell within that lifetime, making the current borrow the only
-        // reference for the remaining lifetime.
-        mem::forget(orig.borrow);
-        // SAFETY: after forgetting, we can form a reference for the rest of lifetime `'b`.
-        unsafe { orig.value.as_mut() }
     }
 }
 
@@ -1939,7 +1715,9 @@ impl<'b> BorrowRefMut<'b> {
         // Prevent the borrow counter from underflowing.
         assert!(borrow != BorrowCounter::MIN);
         self.borrow.set(borrow - 1);
-        BorrowRefMut { borrow: self.borrow }
+        BorrowRefMut {
+            borrow: self.borrow,
+        }
     }
 }
 
@@ -1947,6 +1725,10 @@ impl<'b> BorrowRefMut<'b> {
 ///
 /// See the [module-level documentation](self) for more.
 #[must_not_suspend = "holding a RefMut across suspend points can cause BorrowErrors"]
+// A `RefMut` holds all of the contents, and reaches both of the `RefCell`'s
+// atoms: dropping it unlends the contents, which the pin then needs.
+#[ptr_holds(value, Real::WRITE)]
+#[im_shares(RefCell<T>, at = container_of(borrow.borrow, borrow), for 'b, dependent)]
 pub struct RefMut<'b, T: ?Sized + 'b> {
     // NB: we use a pointer instead of `&'b mut T` to avoid `noalias` violations, because a
     // `RefMut` argument doesn't hold exclusivity for its whole scope, only until it drops.
@@ -1956,10 +1738,14 @@ pub struct RefMut<'b, T: ?Sized + 'b> {
     marker: PhantomData<&'b mut T>,
 }
 
+#[refine_trait_spec]
 const impl<T: ?Sized> Deref for RefMut<'_, T> {
     type Target = T;
 
     #[inline]
+    #[pure]
+    #[trusted]
+    #[field_projection(*value)]
     fn deref(&self) -> &T {
         // SAFETY: the value is accessible as long as we hold our borrow.
         unsafe { self.value.as_ref() }
@@ -1972,6 +1758,24 @@ const impl<T: ?Sized> DerefMut for RefMut<'_, T> {
         // SAFETY: the value is accessible as long as we hold our borrow.
         unsafe { self.value.as_mut() }
     }
+}
+
+// Dropping a guard changes the flag only (the guard is dead afterwards, but
+// the `RefCell`'s atom is returned at the flag it points to).
+#[extern_spec]
+impl<T: ?Sized> Drop for Ref<'_, T> {
+    #[ensures(ref_flag(self) as *const Cell<BorrowCounter>
+        == old(ref_flag(self) as *const Cell<BorrowCounter>))]
+    #[ensures(ref_count(self) == old(ref_count(self)) - 1)]
+    fn drop(&mut self);
+}
+
+#[extern_spec]
+impl<T: ?Sized> Drop for RefMut<'_, T> {
+    #[ensures(refmut_flag(self) as *const Cell<BorrowCounter>
+        == old(refmut_flag(self) as *const Cell<BorrowCounter>))]
+    #[ensures(refmut_count(self) == old(refmut_count(self)) + 1)]
+    fn drop(&mut self);
 }
 
 impl<T: ?Sized + fmt::Display> fmt::Display for RefMut<'_, T> {

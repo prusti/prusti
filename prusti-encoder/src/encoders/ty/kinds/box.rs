@@ -105,6 +105,76 @@ pub(super) fn mk_pure_box_data<'vir>(
     ))
 }
 
+/// The address of the pointee held by a `#[ptr_holds]` struct, read out of
+/// the snapshot of its pointer field `ptr` (a raw pointer, or structs around
+/// one in their first field, as `NonNull`).
+pub(super) fn mk_pure_held_address<'vir>(
+    task_key: &TyData<'vir, RustTyDatas>,
+    data: &StructData<'vir, RustTyDatas>,
+    ptr: abi::FieldIdx,
+    deps: &mut TaskEncoderDependencies<'vir, TyPureEnc>,
+    builder: &mut AdtBuilder<'vir>,
+) -> Result<vir::FunctionIdn<'vir, vir::CSnap, vir::Ref>, EncodeFullError<'vir, TyPureEnc>> {
+    let mut ty = data.fields[ptr.as_usize()].ty().decompose(task_key.params);
+    let ptr_use = deps.require_dep::<TyUsePureEnc>(ty)?;
+    let ptr_decl = builder
+        .vcx
+        .mk_local_decl("ptr", ptr_use.snapshot.downcast_ty::<vir::CSnap>());
+    let mut snap = builder.vcx.mk_local_ex(ptr_decl);
+    while ty.ty.get_structlike().is_some() {
+        let ty_use = deps.require_dep::<TyUsePureEnc>(ty)?;
+        snap = ty_use.expect_structlike()[abi::FieldIdx::ZERO]
+            .read(snap)
+            .downcast_ty();
+        ty = ty.ty.expect_structlike().fields[abi::FieldIdx::ZERO.as_usize()]
+            .decompose_context(ty.ty.params, ty.args);
+    }
+    let raw_use = deps.require_dep::<TyUsePureEnc>(ty)?;
+    Ok(builder.function(
+        "address",
+        ptr_decl.ty(),
+        vir::TYPE_REF,
+        (ptr_decl,),
+        &[],
+        &[],
+        Some(raw_use.expect_raw().address_access(snap)),
+    ))
+}
+
+/// The heap-dependent address of the pointee held by a `#[ptr_holds]`
+/// struct: the pure accessor applied to the snapshot of the pointer field
+/// `ptr`, read out of its (folded) predicate.
+pub(super) fn mk_impure_held_address<'vir>(
+    data: &StructData<'vir, (RustTyDatas, PureTyDatas)>,
+    fields: &[TyUseImpure<'vir>],
+    ptr: abi::FieldIdx,
+    builder: &mut PredicateBuilder<'vir>,
+) -> vir::FunctionIdn<'vir, (vir::Ref, vir::ManyTyVal, vir::ManyCSnap), vir::Ref> {
+    let ref_decl = builder.ref_self_decl();
+    let ref_self = builder.vcx.mk_local_ex(ref_decl);
+    let TyPureFieldRef::Constant(ptr_field_ref) = data.fields[ptr.as_usize()].1.ref_to_field_ref
+    else {
+        unreachable!()
+    };
+    let b_params = &builder.params;
+    let ptr_ref = ptr_field_ref(ref_self, b_params.ty_exprs(), b_params.const_exprs());
+    let ptr_snap = fields[ptr.as_usize()].ref_to_snap(ptr_ref).downcast_ty();
+    let ptr_pred = fields[ptr.as_usize()].ref_to_pred(builder.vcx, ptr_ref, None);
+    let TyPureFieldRef::Dynamic(address_access) = data.fields.last().unwrap().1.ref_to_field_ref
+    else {
+        unreachable!()
+    };
+    builder.inner.function(
+        "address",
+        (ref_decl.ty(), b_params.ty_args(), b_params.const_args()),
+        vir::TYPE_REF,
+        (ref_decl, b_params.ty_decls(), b_params.const_decls()),
+        &[ptr_pred],
+        &[],
+        Some(address_access.call()(ptr_snap)),
+    )
+}
+
 /// The heap-dependent `address`/`metadata` functions of a `Box`: the pure
 /// accessors applied to the `Unique` field's snapshot, read out of its
 /// (folded) predicate. Returns the box data and the `address` accessor.

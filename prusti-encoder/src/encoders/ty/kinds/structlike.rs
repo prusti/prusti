@@ -52,6 +52,13 @@ pub(super) fn ty_pure_variant<'vir>(
     } else {
         None
     };
+    let held_address = if let RustTySpecial::Holds(_, ptr) = task_key.special {
+        Some(super::r#box::mk_pure_held_address(
+            task_key, data, ptr, deps, builder,
+        )?)
+    } else {
+        None
+    };
 
     let ref_self_decl = builder.vcx.mk_local_decl("self", vir::TYPE_REF);
     let ref_self = builder.vcx.mk_local_ex(ref_self_decl);
@@ -77,7 +84,9 @@ pub(super) fn ty_pure_variant<'vir>(
                         None,
                     ))
                 }
-                RustFieldAddress::Dynamic => TyPureFieldRef::Dynamic(box_data.unwrap().1),
+                RustFieldAddress::Dynamic => TyPureFieldRef::Dynamic(
+                    box_data.map_or_else(|| held_address.unwrap(), |(_, address)| address),
+                ),
             };
             TyPureFieldData {
                 read: read.downcast_ty(),
@@ -131,8 +140,10 @@ fn unsafe_cell_impure<'vir>(
         .collect::<Vec<_>>();
     builder.mk_predicate("", None);
     let vcx = builder.vcx;
-    let shallow = data.1.field_snaps_to_snap.call()(&[unset.call()(builder.params.ty_exprs()[0])
-        .upcast_ty()]);
+    let shallow =
+        data.1.field_snaps_to_snap.call()(
+            &[unset.call()(builder.params.ty_exprs()[0]).upcast_ty()],
+        );
     let post = vcx.mk_eq_expr(vcx.mk_result(builder.csnap_type()), shallow);
     let wildcard = vcx.mk_wildcard();
     builder.mk_snap_function_amount(None, &[post], Some(wildcard));
@@ -200,6 +211,15 @@ pub(crate) fn ty_impure_variant<'vir>(
     } else {
         None
     };
+    // For a `#[ptr_holds]` struct, the (heap-dependent) address of the held
+    // pointee and the amount held.
+    let held = if let RustTySpecial::Holds(did, ptr) = task_key.0.special {
+        let address = super::r#box::mk_impure_held_address(data, &fields, ptr, builder);
+        let amount = crate::encoders::ty::im::holds_amount(deps, did, task_key.0.params)?;
+        Some((address, amount))
+    } else {
+        None
+    };
 
     // Ref-to-Ref function for every field
     let field_accessors = data
@@ -208,7 +228,9 @@ pub(crate) fn ty_impure_variant<'vir>(
         .map(|field| TyImpureFieldData {
             ref_to_field_ref: match field.1.ref_to_field_ref {
                 TyPureFieldRef::Constant(ref_to_field_ref) => ref_to_field_ref,
-                TyPureFieldRef::Dynamic(_) => box_data.unwrap().1,
+                TyPureFieldRef::Dynamic(_) => {
+                    box_data.map_or_else(|| held.unwrap().0, |(_, address)| address)
+                }
             },
         })
         .collect::<Vec<_>>();
@@ -222,23 +244,30 @@ pub(crate) fn ty_impure_variant<'vir>(
         &fields
             .iter()
             .zip(&field_accessors)
-            .map(|(field, TyImpureFieldData { ref_to_field_ref })| {
-                field.ref_to_pred(
-                    builder.vcx,
-                    ref_to_field_ref(
-                        ref_self,
-                        builder.params.ty_exprs(),
-                        builder.params.const_exprs(),
-                    ),
-                    None,
-                )
-            })
+            .zip(&data.fields)
+            .map(
+                |((field, TyImpureFieldData { ref_to_field_ref }), field_data)| {
+                    let amount = match field_data.0.address {
+                        RustFieldAddress::Dynamic => held.map(|(_, amount)| amount),
+                        RustFieldAddress::Constant => None,
+                    };
+                    field.ref_to_pred(
+                        builder.vcx,
+                        ref_to_field_ref(
+                            ref_self,
+                            builder.params.ty_exprs(),
+                            builder.params.const_exprs(),
+                        ),
+                        amount,
+                    )
+                },
+            )
             .collect::<Vec<_>>(),
     );
     let pred_owned = builder.mk_predicate(&pred_name, Some(pred_expr));
 
     // Ref-to-snap
-    let snap_args: Vec<&'vir vir::ExprGenData<'vir, (), !, vir::Snap>> = fields
+    let mut snap_args: Vec<&'vir vir::ExprGenData<'vir, (), !, vir::Snap>> = fields
         .iter()
         .zip(&field_accessors)
         .map(|(field, TyImpureFieldData { ref_to_field_ref })| {
@@ -249,6 +278,22 @@ pub(crate) fn ty_impure_variant<'vir>(
             ))
         })
         .collect::<Vec<_>>();
+    // A held pointee is read only where its amount is positive (Silicon
+    // cannot always tell inside the snapshot function).
+    if let Some((_, amount)) = held {
+        let vcx = builder.vcx;
+        let held_ty = data.fields.last().unwrap().0.decompose(task_key.0.params);
+        let arbitrary = deps
+            .require_ref::<TyUsePureEnc>(held_ty)?
+            .arbitrary_to_snap();
+        let last = snap_args.last_mut().unwrap();
+        *last = vcx.mk_ternary_expr(
+            vcx.mk_bin_op_expr(vir::BinOpKind::CmpGt, amount, vcx.mk_no_perm())
+                .downcast_ty(),
+            *last,
+            arbitrary,
+        );
+    }
     let variant_snap_expr = data.1.field_snaps_to_snap.call()(snap_args.as_slice());
 
     // Uninit token repacking methods. A `Box` is unpacked only through its
@@ -260,10 +305,18 @@ pub(crate) fn ty_impure_variant<'vir>(
     } else {
         0
     };
+    // A `#[ptr_holds]` struct's held pointee and a shared slot are no memory
+    // of the struct: they have no tokens.
     let mut field_uninits = fields
         .iter()
         .zip(&field_accessors)
         .enumerate()
+        .filter(|(idx, _)| {
+            let field_data = &data.fields[*idx];
+            field_data.0.address != RustFieldAddress::Slot
+                && !(held.is_some()
+                    && matches!(field_data.1.ref_to_field_ref, TyPureFieldRef::Dynamic(_)))
+        })
         .map(|(idx, (field, TyImpureFieldData { ref_to_field_ref }))| {
             let field_ref = ref_to_field_ref(ref_self, params.ty_exprs(), params.const_exprs());
             if idx < value_field {

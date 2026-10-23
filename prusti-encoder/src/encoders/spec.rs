@@ -214,6 +214,20 @@ pub fn get_field_projection(def_id: DefId) -> Option<Vec<String>> {
     })
 }
 
+/// The field path and the container's field of a `#[container_of(a.b, f)]`
+/// spec function.
+pub fn get_container_of(def_id: DefId) -> Option<(Vec<String>, String)> {
+    vir::with_vcx(|vcx| {
+        let attrs = prusti_interface::environment::EnvQuery::new(vcx.tcx()).get_attributes(def_id);
+        let value = prusti_interface::utils::read_prusti_attr("container_of", attrs)?;
+        let (path, field) = value.split_once(',')?;
+        Some((
+            path.split('.').map(str::to_string).collect(),
+            field.to_string(),
+        ))
+    })
+}
+
 /// Whether `def_id` is an `#[interior_mut]`-annotated accessor (with or
 /// without a permission expression).
 pub fn is_interior_mut_accessor(def_id: DefId) -> bool {
@@ -290,12 +304,22 @@ pub fn resolve_specced_trait_call<'tcx>(
     if resolved == def_id {
         return (def_id, substs);
     }
-    let has_extern_spec = with_proc_spec(
-        SpecQuery::GetProcKind(resolved, ty::GenericArgs::identity_for_item(tcx, resolved)),
-        |proc_spec| proc_spec.extern_spec.is_some(),
-    )
-    .unwrap_or(false);
-    if has_extern_spec || get_pure_unstable_encoding(resolved).is_some() {
+    let identity = ty::GenericArgs::identity_for_item(tcx, resolved);
+    let (has_extern_spec, pure) =
+        with_proc_spec(SpecQuery::GetProcKind(resolved, identity), |proc_spec| {
+            (
+                proc_spec.extern_spec.is_some(),
+                kind_is_pure(&proc_spec.kind),
+            )
+        })
+        .unwrap_or((false, false));
+    // A pure impl of an impure trait method: the call is to the impl.
+    let pure_impl = pure
+        && !with_proc_spec(SpecQuery::GetProcKind(def_id, substs), |proc_spec| {
+            kind_is_pure(&proc_spec.kind)
+        })
+        .unwrap_or(false);
+    if has_extern_spec || pure_impl || get_pure_unstable_encoding(resolved).is_some() {
         (resolved, resolved_substs)
     } else {
         (def_id, substs)

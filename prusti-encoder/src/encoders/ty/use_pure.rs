@@ -250,7 +250,9 @@ impl<'a, 'vir> TyUsePureWalker<'a, 'vir> {
                         metadata_caster: self
                             .encode_normalized(ty.box_metadata_ty(), ty.0.params)?,
                     }),
-                    RustTySpecial::None | RustTySpecial::UnsafeCell => None,
+                    RustTySpecial::None | RustTySpecial::UnsafeCell | RustTySpecial::Holds(..) => {
+                        None
+                    }
                 };
                 TySpecifics::StructLike(self.encode_structlike(data, ty.0.params, box_data)?)
             }
@@ -720,7 +722,10 @@ impl<'vir> TyUsePureEnum<'vir> {
 
 /// Walks the (possibly private) field path `path` from a value of type `ty`
 /// with snapshot `snap` at address `addr`: the type, snapshot and address of
-/// the final field. The inner error describes a malformed path.
+/// the final field, and the pointer metadata of the last `*FIELD` step (the
+/// pointee held by a `#[ptr_holds]` struct), if any. The inner error
+/// describes a malformed path.
+#[allow(clippy::type_complexity)]
 pub(crate) fn project_field_path<'vir, E: TaskEncoder>(
     vcx: &'vir vir::VirCtxt<'vir>,
     deps: &mut task_encoder::TaskEncoderDependencies<'vir, E>,
@@ -730,15 +735,68 @@ pub(crate) fn project_field_path<'vir, E: TaskEncoder>(
     mut snap: vir::ExprSnap<'vir>,
     mut addr: vir::ExprRef<'vir>,
 ) -> Result<
-    Result<(ty::Ty<'vir>, vir::ExprSnap<'vir>, vir::ExprRef<'vir>), String>,
+    Result<
+        (
+            ty::Ty<'vir>,
+            vir::ExprSnap<'vir>,
+            vir::ExprRef<'vir>,
+            Option<vir::ExprSnap<'vir>>,
+        ),
+        String,
+    >,
     EncodeFullError<'vir, E>,
 > {
+    let mut metadata = None;
     for name in path {
         let ty::TyKind::Adt(adt, substs) = *ty.kind() else {
             return Ok(Err(format!("`{ty}` has no field `{name}`")));
         };
         if !adt.is_struct() {
             return Ok(Err(format!("`{ty}` is not a struct")));
+        }
+        // `*FIELD`: the pointee held by a `#[ptr_holds]` struct.
+        if let Some(ptr_name) = name.strip_prefix('*') {
+            let decomp = super::RustTyDecomposition::from_ty(ty, params);
+            let held = crate::encoders::ty::im::ptr_holds_field(adt.did())
+                .filter(|(ptr, _)| adt.non_enum_variant().fields[*ptr].name.as_str() == ptr_name);
+            let Some((ptr, pointee)) = held else {
+                return Ok(Err(format!("`{ty}` holds no pointee of `{ptr_name}`")));
+            };
+            let ty_use = deps.require_dep::<TyUsePureEnc>(decomp)?;
+            let variant = ty_use.expect_variant_opt(None);
+            let held_field = variant.fields.last().unwrap();
+            let TyPureFieldRef::Dynamic(address_access) = held_field.pure.ref_to_field_ref else {
+                unreachable!()
+            };
+            let ptr_snap = variant[ptr].read(snap.downcast_ty()).downcast_ty();
+            addr = address_access.call()(ptr_snap);
+            // The pointer's metadata, down the chain to the raw pointer.
+            let mut ptr_ty = adt.non_enum_variant().fields[ptr]
+                .ty(vcx.tcx(), substs)
+                .skip_normalization();
+            let mut ptr_snap = ptr_snap;
+            while let ty::TyKind::Adt(ptr_adt, ptr_substs) = *ptr_ty.kind() {
+                let ptr_use = deps.require_dep::<TyUsePureEnc>(
+                    super::RustTyDecomposition::from_ty(ptr_ty, params),
+                )?;
+                ptr_snap = ptr_use.expect_structlike()[abi::FieldIdx::ZERO]
+                    .read(ptr_snap)
+                    .downcast_ty();
+                ptr_ty = ptr_adt.non_enum_variant().fields[abi::FieldIdx::ZERO]
+                    .ty(vcx.tcx(), ptr_substs)
+                    .skip_normalization();
+                if let ty::TyKind::Pat(base, _) = *ptr_ty.kind() {
+                    ptr_ty = base;
+                }
+            }
+            let raw_use = deps
+                .require_dep::<TyUsePureEnc>(super::RustTyDecomposition::from_ty(ptr_ty, params))?;
+            metadata = Some(raw_use.expect_raw().metadata_access(ptr_snap));
+            snap = held_field.read(snap.downcast_ty());
+            ty = ty::EarlyBinder::bind(vcx.tcx(), pointee)
+                .instantiate(vcx.tcx(), substs)
+                .skip_normalization();
+            continue;
         }
         let Some((idx, field)) = adt
             .non_enum_variant()
@@ -760,5 +818,5 @@ pub(crate) fn project_field_path<'vir, E: TaskEncoder>(
             ty = base;
         }
     }
-    Ok(Ok((ty, snap, addr)))
+    Ok(Ok((ty, snap, addr, metadata)))
 }

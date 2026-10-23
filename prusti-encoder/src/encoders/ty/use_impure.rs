@@ -231,7 +231,9 @@ impl<'a, 'vir> TyUseImpureWalker<'a, 'vir> {
                     RustTySpecial::Box => {
                         Some(self.encode_normalized_pure(ty.box_metadata_ty(), ty.0.params)?)
                     }
-                    RustTySpecial::None | RustTySpecial::UnsafeCell => None,
+                    RustTySpecial::None | RustTySpecial::UnsafeCell | RustTySpecial::Holds(..) => {
+                        None
+                    }
                 };
                 TySpecifics::StructLike(self.encode_structlike(
                     data,

@@ -81,8 +81,15 @@ pub use prusti_contracts_proc_macros::interior_mut;
 /// function: Prusti defines the function as the projection of the (possibly
 /// private) field path `a.b` of its first argument's referent. The return
 /// type is either the field's type (the field is copied out) or a reference
-/// to it (the result points at the field in place).
+/// to it (the result points at the field in place). A component `*FIELD`
+/// is the pointee held by a `#[ptr_holds(FIELD, ..)]` struct.
 pub use prusti_contracts_proc_macros::field_projection;
+
+/// `#[container_of(a.b, f)]` on a body-less `#[pure] #[trusted]` spec
+/// function returning `&S`: Prusti defines the function as the `S` whose
+/// field `f` is what the reference at the (possibly private) field path `a.b`
+/// of its first argument's referent points to.
+pub use prusti_contracts_proc_macros::container_of;
 
 /// `#[im_opaque]` on a struct: the struct has a key of its own, and its atom
 /// contains the atoms of every interior-mutable value stored inline in it.
@@ -99,8 +106,9 @@ pub use prusti_contracts_proc_macros::im_perm;
 /// `UnsafeCell` field `FIELD`.
 pub use prusti_contracts_proc_macros::im_dependent;
 
-/// `#[ptr_holds(FIELD, AMOUNT)]` on a struct: its values hold `AMOUNT` of the
-/// pointee of the raw-pointer field `FIELD`.
+/// `#[ptr_holds(FIELD, AMOUNT)]` on a struct: its values hold `AMOUNT` (a
+/// constant `Real`) of the pointee of the raw-pointer (or `NonNull`) field
+/// `FIELD`, which is part of their snapshot.
 pub use prusti_contracts_proc_macros::ptr_holds;
 
 /// `#[im_shares(TYPE, at = EXPR, for 'LT [, dependent])]` on a struct: its

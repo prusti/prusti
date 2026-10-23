@@ -758,8 +758,12 @@ impl TaskEncoder for MethodEnc {
                 if !crate::encoders::ty::im::reaches_im(arg.ty) {
                     continue;
                 }
-                let entries =
-                    crate::encoders::ty::im::footprint(deps, arg.ty, arg.local_ex, arg.impure_snap)?;
+                let entries = crate::encoders::ty::im::footprint(
+                    deps,
+                    arg.ty,
+                    arg.local_ex,
+                    arg.impure_snap,
+                )?;
                 fp_pre.extend(entries.iter().copied());
                 let old_entries = crate::encoders::ty::im::footprint(
                     deps,
@@ -783,6 +787,25 @@ impl TaskEncoder for MethodEnc {
             }
             if !fp_post.is_empty() {
                 posts.push(crate::encoders::ty::im::footprint_assertion(&fp_post));
+            }
+            // A pure function changes no interior-mutable state: the deep
+            // values of its arguments are framed.
+            if is_pure {
+                for arg_idx in (1..arg_count).map(mir::Local::from) {
+                    let arg = &arg_defs[arg_idx];
+                    if !crate::encoders::ty::im::reaches_im(arg.ty) {
+                        continue;
+                    }
+                    // The argument itself is consumed: its snapshot is read
+                    // in the pre-state, its contents in both.
+                    let snap = vcx.mk_old_expr(arg.impure_snap);
+                    let deep =
+                        crate::encoders::ty::im::deep_snap(deps, arg.ty, arg.local_ex, snap)?;
+                    posts.push(vcx.mk_inhale_exhale_expr(
+                        vcx.mk_eq_expr(deep, vcx.mk_old_expr(deep)),
+                        vcx.mk_bool::<true>(),
+                    ));
+                }
             }
 
             // Add the functional specification as the last pre- and

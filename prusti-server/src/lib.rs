@@ -229,6 +229,7 @@ fn handle_result(
                     };
                     prusti_encoder::backtranslate_error(
                         &error.full_id,
+                        &error.message,
                         offending_pos_id,
                         error.reason_pos_id.and_then(|id| id.parse::<usize>().ok()),
                     )

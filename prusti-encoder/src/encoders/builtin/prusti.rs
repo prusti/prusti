@@ -171,7 +171,9 @@ impl PrustiBuiltin {
             // with specifications.
             let in_cell_module = |did: DefId| {
                 tcx.def_path(did).data.first().is_some_and(|elem| {
-                    elem.data.get_opt_name().is_some_and(|name| name.as_str() == "cell")
+                    elem.data
+                        .get_opt_name()
+                        .is_some_and(|name| name.as_str() == "cell")
                 })
             };
             if in_cell_module(impl_def_id.unwrap_or(def_id)) {

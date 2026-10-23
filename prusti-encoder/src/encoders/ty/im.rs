@@ -13,7 +13,11 @@
 //! `#[im_dependent]`, it has a second key, whose atom `p_im_<S>_dep` holds the
 //! contents of its field in full, granted (scaled) by the amount.
 
-use prusti_rustc_interface::{abi, span::def_id::DefId};
+use prusti_rustc_interface::{
+    abi,
+    middle::ty,
+    span::{def_id::DefId, symbol},
+};
 use task_encoder::{EncodeFullError, TaskEncoder, TaskEncoderDependencies};
 use vir::{CallableIdn, CastType};
 
@@ -43,6 +47,37 @@ fn has_marker(did: DefId, name: &str) -> bool {
     })
 }
 
+/// The pointer field of the struct `did` whose pointee it holds
+/// (`#[ptr_holds]`): its index and the pointee type.
+pub(crate) fn ptr_holds_field<'tcx>(did: DefId) -> Option<(abi::FieldIdx, ty::Ty<'tcx>)> {
+    vir::with_vcx(|vcx| {
+        let tcx = vcx.tcx();
+        let attrs = prusti_interface::environment::EnvQuery::new(tcx).get_attributes(did);
+        let name = prusti_interface::utils::read_prusti_attr("ptr_holds", attrs)?;
+        let (idx, field) = tcx
+            .adt_def(did)
+            .non_enum_variant()
+            .fields
+            .iter_enumerated()
+            .find(|(_, f)| f.name.as_str() == name)
+            .unwrap_or_else(|| panic!("`#[ptr_holds]` names no field `{name}`"));
+        let ptr_ty = tcx
+            .type_of(field.did)
+            .instantiate_identity()
+            .skip_normalization();
+        let pointee = match *ptr_ty.kind() {
+            ty::TyKind::RawPtr(pointee, _) => pointee,
+            ty::TyKind::Adt(adt, args)
+                if tcx.is_diagnostic_item(symbol::sym::NonNull, adt.did()) =>
+            {
+                args.type_at(0)
+            }
+            _ => panic!("`#[ptr_holds]` field `{name}` is not a raw pointer or a `NonNull`"),
+        };
+        Some((idx, pointee))
+    })
+}
+
 /// The kind of an annotation method (see `prusti_specs::im_type_attribute`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ImAmountKind {
@@ -64,14 +99,17 @@ pub(crate) fn im_amounts(did: DefId) -> Vec<(ImAmountKind, Option<abi::FieldIdx>
                 .iter_enumerated()
                 .find(|(_, f)| f.name.as_str() == name)
                 .map(|(idx, _)| idx)
-                .unwrap_or_else(|| panic!("an interior-mutability annotation names no field `{name}`"))
+                .unwrap_or_else(|| {
+                    panic!("an interior-mutability annotation names no field `{name}`")
+                })
         };
         let mut out = Vec::new();
         for impl_did in tcx.inherent_impls(did) {
             for item in tcx.associated_item_def_ids(*impl_did) {
-                let Some(kind) =
-                    prusti_interface::utils::read_prusti_attr("im_amount", env.get_attributes(*item))
-                else {
+                let Some(kind) = prusti_interface::utils::read_prusti_attr(
+                    "im_amount",
+                    env.get_attributes(*item),
+                ) else {
                     continue;
                 };
                 let mut words = kind.split_whitespace();
@@ -93,15 +131,29 @@ pub(crate) fn im_amounts(did: DefId) -> Vec<(ImAmountKind, Option<abi::FieldIdx>
 }
 
 /// The atoms of an `#[im_opaque]` struct: the atom of its key, and that of
-/// its dependent key, if it has one.
+/// its dependent key, if it has one. Its amounts are heap-dependent functions
+/// (Viper allows no wildcard in a permission amount, even nested in an
+/// `unfolding`): each `#[im_perm]`/`#[im_dependent]` method's, reading the
+/// atoms the atom folds, and the dependent amount reading the atom itself.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ImAtomRef<'vir> {
     atom: ImAtomIdn<'vir>,
     dependent: Option<ImAtomIdn<'vir>>,
+    amounts: &'vir [(DefId, ImAmountIdn<'vir>)],
+    dependent_amount: Option<ImAmountIdn<'vir>>,
 }
 impl<'vir> task_encoder::OutputRefAny for ImAtomRef<'vir> {}
 
-pub(crate) type ImAtomIdn<'vir> = vir::PredicateIdn<'vir, (vir::Ref, vir::ManyTyVal, vir::ManyCSnap)>;
+impl<'vir> ImAtomRef<'vir> {
+    fn amount(&self, method: DefId) -> ImAmountIdn<'vir> {
+        self.amounts.iter().find(|(m, _)| *m == method).unwrap().1
+    }
+}
+
+pub(crate) type ImAtomIdn<'vir> =
+    vir::PredicateIdn<'vir, (vir::Ref, vir::ManyTyVal, vir::ManyCSnap)>;
+pub(crate) type ImAmountIdn<'vir> =
+    vir::FunctionIdn<'vir, (vir::Ref, vir::ManyTyVal, vir::ManyCSnap), vir::Perm>;
 
 pub(crate) struct ImOpaqueEnc;
 
@@ -110,7 +162,7 @@ impl TaskEncoder for ImOpaqueEnc {
     const ENCODER_NAME: &'static str = "interior mutability opaque type encoder";
     type TaskDescription<'vir> = DefId;
     type OutputRef<'vir> = ImAtomRef<'vir>;
-    type OutputFullLocal<'vir> = Vec<vir::Predicate<'vir>>;
+    type OutputFullLocal<'vir> = (Vec<vir::Predicate<'vir>>, Vec<vir::Function<'vir>>);
 
     fn task_to_key<'vir>(task: &Self::TaskDescription<'vir>) -> Self::TaskKey<'vir> {
         *task
@@ -135,38 +187,105 @@ impl TaskEncoder for ImOpaqueEnc {
                     (vir::TYPE_REF, generics.ty_args(), generics.const_args()),
                 )
             };
+            let amount_ident = |suffix: &str| {
+                let name = vir::vir_format_identifier!(
+                    vcx,
+                    "p_im_{}_amount{suffix}",
+                    vir::ViperIdent::from_def_id(vcx, *did)
+                );
+                vir::FunctionIdn::new(
+                    name,
+                    (vir::TYPE_REF, generics.ty_args(), generics.const_args()),
+                    vir::TYPE_PERM,
+                )
+            };
+            let amount_fns = amounts
+                .iter()
+                .enumerate()
+                .filter(|(_, (kind, ..))| {
+                    matches!(kind, ImAmountKind::Perm | ImAmountKind::Dependent)
+                })
+                .map(|(idx, (_, _, method))| (*method, amount_ident(&format!("_{idx}"))))
+                .collect::<Vec<_>>();
+            let has_dependent = amounts
+                .iter()
+                .any(|(kind, ..)| *kind == ImAmountKind::Dependent);
             let atoms = ImAtomRef {
                 atom: ident(""),
-                dependent: amounts
-                    .iter()
-                    .any(|(kind, ..)| *kind == ImAmountKind::Dependent)
-                    .then(|| ident("_dep")),
+                dependent: has_dependent.then(|| ident("_dep")),
+                amounts: vcx.alloc_slice(&amount_fns),
+                dependent_amount: has_dependent.then(|| amount_ident("_dep")),
             };
             deps.emit_output_ref(*did, atoms)?;
 
             let self_decl = vcx.mk_local_decl("self", vir::TYPE_REF);
             let self_ex = vcx.mk_local_ex(self_decl);
-            let identity = vcx.tcx().type_of(*did).instantiate_identity().skip_normalization();
+            let identity = vcx
+                .tcx()
+                .type_of(*did)
+                .instantiate_identity()
+                .skip_normalization();
             let ty = RustTyDecomposition::from_ty(identity, params);
             // The atom does not hold the struct's own predicate, so its
             // definition only reads the contents of the atoms it holds.
             let snap = deps.require_ref::<TyUsePureEnc>(ty)?.arbitrary_to_snap();
             let decls = (self_decl, generics.ty_decls(), generics.const_decls());
+            let call = |idn: ImAmountIdn<'vir>| {
+                idn.call()(self_ex, generics.ty_exprs(), generics.const_exprs())
+            };
 
-            let mut body = Vec::new();
-            for entry in folded(deps, ty, self_ex, snap)? {
-                body.push(entry.acc());
-            }
+            let folded = folded(deps, ty, self_ex, snap)?;
+            let mut body = folded.iter().map(FpEntry::acc).collect::<Vec<_>>();
+            let reads_folded = folded
+                .iter()
+                .map(|entry| vcx.mk_predicate_app_expr(entry.app(vcx.mk_wildcard())))
+                .collect::<Vec<_>>();
             let inner = deep_with(deps, ty, self_ex, snap, false)?;
+            let nonneg_post = vcx.alloc_slice(&[vcx
+                .mk_bin_op_expr(
+                    vir::BinOpKind::CmpGe,
+                    vcx.mk_result(vir::TYPE_PERM),
+                    vcx.mk_no_perm(),
+                )
+                .downcast_ty()]);
+            let mut functions = Vec::new();
+            for (method, idn) in &amount_fns {
+                functions.push(vcx.mk_function(
+                    *idn,
+                    decls,
+                    vcx.alloc_slice(&reads_folded),
+                    nonneg_post,
+                    None,
+                    Some(nonneg(call_amount(deps, *method, ty, self_ex, inner)?)),
+                ));
+            }
             let mut dep_body = Vec::new();
             for (kind, field, method) in &amounts {
                 let contents = contents_of(deps, ty, self_ex, field.unwrap())?;
                 match kind {
+                    // Clamped again: Silicon does not use the function's
+                    // postcondition when unfolding the atom in a function.
                     ImAmountKind::Perm => {
-                        let amount = call_amount(deps, *method, ty, self_ex, inner)?;
-                        body.push(contents.acc(amount));
+                        body.push(contents.acc(nonneg(call(atoms.amount(*method)))))
                     }
-                    ImAmountKind::Dependent => dep_body.push(contents.acc(vcx.mk_full_perm())),
+                    ImAmountKind::Dependent => {
+                        dep_body.push(contents.acc(vcx.mk_full_perm()));
+                        // The amount the dependent atom is granted at, read
+                        // through the atom.
+                        let own = atoms.atom.call()(
+                            self_ex,
+                            generics.ty_exprs(),
+                            generics.const_exprs(),
+                        )(Some(vcx.mk_wildcard()));
+                        functions.push(vcx.mk_function(
+                            atoms.dependent_amount.unwrap(),
+                            decls,
+                            vcx.alloc_slice(&[vcx.mk_predicate_app_expr(own)]),
+                            nonneg_post,
+                            None,
+                            Some(vcx.mk_unfolding_expr(own, call(atoms.amount(*method)))),
+                        ));
+                    }
                     _ => (),
                 }
             }
@@ -174,14 +293,17 @@ impl TaskEncoder for ImOpaqueEnc {
             if let Some(dependent) = atoms.dependent {
                 preds.push(vcx.mk_predicate(dependent, decls, Some(vcx.mk_conj(&dep_body))));
             }
-            Ok((preds, ()))
+            Ok(((preds, functions), ()))
         })
     }
 
     fn emit_outputs<'vir>(program: &mut task_encoder::Program<'vir>) {
-        for preds in Self::all_outputs_local_no_errors(program) {
+        for (preds, functions) in Self::all_outputs_local_no_errors(program) {
             for pred in preds {
                 program.add_predicate(pred);
+            }
+            for function in functions {
+                program.add_function(function);
             }
         }
     }
@@ -251,6 +373,38 @@ fn call_amount<'vir, E: TaskEncoder>(
     Ok(amount.downcast_ty())
 }
 
+/// The amount of its pointee a `#[ptr_holds]` struct `did` holds (the
+/// annotation method takes no arguments), in the context of its definition.
+pub(crate) fn holds_amount<'vir, E: TaskEncoder>(
+    deps: &mut TaskEncoderDependencies<'vir, E>,
+    did: DefId,
+    params: GParams<'vir>,
+) -> Result<vir::ExprPerm<'vir>, EncodeFullError<'vir, E>> {
+    let (_, _, method) = im_amounts(did)
+        .into_iter()
+        .find(|(kind, ..)| *kind == ImAmountKind::Holds)
+        .unwrap();
+    let func = deps.require_dep::<FunctionCallEnc>(CallTaskDescription::new(
+        params,
+        params.rust_params(),
+        method,
+    ))?;
+    Ok(nonneg(func.call_pure(Vec::new()).downcast_ty()))
+}
+
+/// `amount`, or none where it is negative: an annotation's amount is used as
+/// a permission amount, which Viper requires to be nonnegative.
+fn nonneg<'vir>(amount: vir::ExprPerm<'vir>) -> vir::ExprPerm<'vir> {
+    vir::with_vcx(|vcx| {
+        vcx.mk_ternary_expr(
+            vcx.mk_bin_op_expr(vir::BinOpKind::CmpGt, amount, vcx.mk_no_perm())
+                .downcast_ty(),
+            amount,
+            vcx.mk_no_perm(),
+        )
+    })
+}
+
 /// The `&self` argument of the annotation method `method` of the struct
 /// `ty`, for the value at `addr` with snapshot `snap`.
 fn self_ref_snap<'vir, E: TaskEncoder>(
@@ -269,10 +423,17 @@ fn self_ref_snap<'vir, E: TaskEncoder>(
             .inputs()[0]
     });
     let self_ty = RustTyDecomposition::from_ty(self_ty, ty.args.context());
-    let metadata_ty = self_ty.ty.ref_data().unwrap().metadata.decompose_normalize(self_ty.args);
+    let metadata_ty = self_ty
+        .ty
+        .ref_data()
+        .unwrap()
+        .metadata
+        .decompose_normalize(self_ty.args);
     let metadata = match deps.require_dep::<TyUsePureEnc>(metadata_ty)?.zst_to_snap() {
         Some(metadata) => metadata.upcast_ty(),
-        None => deps.require_ref::<TyUsePureEnc>(metadata_ty)?.arbitrary_to_snap(),
+        None => deps
+            .require_ref::<TyUsePureEnc>(metadata_ty)?
+            .arbitrary_to_snap(),
     };
     Ok(deps
         .require_dep::<TyUsePureEnc>(self_ty)?
@@ -304,7 +465,8 @@ impl<'vir> FpEntry<'vir> {
     }
 
     fn amount(&self) -> vir::ExprPerm<'vir> {
-        self.amount.unwrap_or_else(|| vir::with_vcx(|vcx| vcx.mk_full_perm()))
+        self.amount
+            .unwrap_or_else(|| vir::with_vcx(|vcx| vcx.mk_full_perm()))
     }
 
     /// The permission to the atom.
@@ -339,7 +501,12 @@ impl<'vir> FpEntry<'vir> {
         }
         vir::with_vcx(|vcx| {
             let mut eqs = vec![vcx.mk_eq_expr(self.addr, other.addr)];
-            eqs.extend(self.tys.iter().zip(other.tys).map(|(a, b)| vcx.mk_eq_expr(*a, *b)));
+            eqs.extend(
+                self.tys
+                    .iter()
+                    .zip(other.tys)
+                    .map(|(a, b)| vcx.mk_eq_expr(*a, *b)),
+            );
             Some(vcx.mk_conj(&eqs))
         })
     }
@@ -393,6 +560,64 @@ fn folded<'vir, E: TaskEncoder>(
     Ok(out)
 }
 
+/// What an `#[im_shares]` struct shares: the referent of the reference its
+/// annotation method computes, and whether the dependent atoms are shared.
+struct SharedTarget<'vir> {
+    ty: RustTyDecomposition<'vir>,
+    addr: vir::ExprRef<'vir>,
+    snap: vir::ExprSnap<'vir>,
+    dependent: bool,
+}
+
+fn shared_target<'vir, E: TaskEncoder>(
+    deps: &mut TaskEncoderDependencies<'vir, E>,
+    ty: RustTyDecomposition<'vir>,
+    addr: vir::ExprRef<'vir>,
+    snap: vir::ExprSnap<'vir>,
+) -> Result<Option<SharedTarget<'vir>>, EncodeFullError<'vir, E>> {
+    let Some(did) = ty.ty.im_annotated else {
+        return Ok(None);
+    };
+    let Some((dependent, method)) =
+        im_amounts(did)
+            .into_iter()
+            .find_map(|(kind, _, method)| match kind {
+                ImAmountKind::Shares { dependent } => Some((dependent, method)),
+                _ => None,
+            })
+    else {
+        return Ok(None);
+    };
+    let self_ref = self_ref_snap(deps, method, ty, addr, snap)?;
+    let func = deps.require_dep::<FunctionCallEnc>(CallTaskDescription::new(
+        ty.args.context(),
+        ty.args.args(),
+        method,
+    ))?;
+    let target = func.call_pure(vec![self_ref]);
+    let target_ty = vir::with_vcx(|vcx| {
+        let tcx = vcx.tcx();
+        tcx.fn_sig(method)
+            .instantiate(tcx, ty.args.args())
+            .skip_normalization()
+            .skip_binder()
+            .output()
+    });
+    let target_ty = RustTyDecomposition::from_ty(target_ty, ty.args.context());
+    let ref_use = deps.require_dep::<TyUsePureEnc>(target_ty)?;
+    let target_c = target.downcast_ty();
+    let ref_data = ref_use.expect_immref();
+    let TySpecifics::ImmRef(data) = &target_ty.ty.specifics else {
+        unreachable!("`#[im_shares]` returns a shared reference")
+    };
+    Ok(Some(SharedTarget {
+        ty: data.referent.decompose_normalize(target_ty.args),
+        addr: ref_data.addr_access(target_c),
+        snap: ref_data.value_access(target_c),
+        dependent,
+    }))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn footprint_into<'vir, E: TaskEncoder>(
     deps: &mut TaskEncoderDependencies<'vir, E>,
@@ -421,69 +646,37 @@ fn footprint_into<'vir, E: TaskEncoder>(
         if let Some(dependent) = atoms.dependent
             && with_dependent
         {
-            let (_, _, method) = im_amounts(did)
-                .into_iter()
-                .find(|(kind, ..)| *kind == ImAmountKind::Dependent)
-                .unwrap();
-            let deep = deep_with(deps, ty, addr, snap, true)?;
+            let amount =
+                atoms.dependent_amount.unwrap().call()(addr, args.get_ty(), args.get_const());
             out.push(FpEntry {
                 atom: dependent,
-                amount: Some(call_amount(deps, method, ty, addr, deep)?),
+                amount: Some(amount),
                 ..entry
             });
         }
         return Ok(());
     }
-    if let Some(did) = ty.ty.im_annotated {
-        let shares = im_amounts(did)
-            .into_iter()
-            .find_map(|(kind, _, method)| match kind {
-                ImAmountKind::Shares { dependent } => Some((dependent, method)),
-                _ => None,
-            });
-        if let Some((dependent, method)) = shares {
-            // A value of the struct reaches the shared atoms instead of those
-            // of its own fields.
-            let self_ref = self_ref_snap(deps, method, ty, addr, snap)?;
-            let func = deps.require_dep::<FunctionCallEnc>(CallTaskDescription::new(
-                ty.args.context(),
-                ty.args.args(),
-                method,
-            ))?;
-            let target = func.call_pure(vec![self_ref]);
-            let target_ty = vir::with_vcx(|vcx| {
-                let tcx = vcx.tcx();
-                tcx.fn_sig(method)
-                    .instantiate(tcx, ty.args.args())
-                    .skip_normalization()
-                    .skip_binder()
-                    .output()
-            });
-            let target_ty = RustTyDecomposition::from_ty(target_ty, ty.args.context());
-            let ref_use = deps.require_dep::<TyUsePureEnc>(target_ty)?;
-            let target_c = target.downcast_ty();
-            let ref_data = ref_use.expect_immref();
-            let TySpecifics::ImmRef(data) = &target_ty.ty.specifics else {
-                unreachable!("`#[im_shares]` returns a shared reference")
-            };
-            footprint_into(
-                deps,
-                data.referent.decompose_normalize(target_ty.args),
-                ref_data.addr_access(target_c),
-                ref_data.value_access(target_c),
-                true,
-                true,
-                dependent,
-                out,
-            )?;
-            return Ok(());
-        }
+    if let Some(shared) = shared_target(deps, ty, addr, snap)? {
+        // A value of the struct reaches the shared atoms instead of those of
+        // its own fields.
+        footprint_into(
+            deps,
+            shared.ty,
+            shared.addr,
+            shared.snap,
+            true,
+            true,
+            shared.dependent,
+            out,
+        )?;
+        return Ok(());
     }
     match &ty.ty.specifics {
         TySpecifics::StructLike(data)
-            if data.fields.iter().all(|f| {
-                matches!(f.address, crate::encoders::ty::RustFieldAddress::Constant)
-            }) =>
+            if data
+                .fields
+                .iter()
+                .all(|f| matches!(f.address, crate::encoders::ty::RustFieldAddress::Constant)) =>
         {
             let ty_use = deps.require_dep::<TyUsePureEnc>(ty)?;
             let snap_c = snap.downcast_ty();
@@ -518,6 +711,33 @@ fn footprint_into<'vir, E: TaskEncoder>(
                 out,
             )?;
         }
+        // The referent's value is not in the snapshot: it is read from its
+        // predicate (held next to the reference) in the current state.
+        TySpecifics::MutRef(data) => {
+            let ty_use = deps.require_dep::<TyUsePureEnc>(ty)?;
+            let referent = data.referent.decompose_normalize(ty.args);
+            let r_addr = ty_use.expect_mutref().deref_access(snap.downcast_ty());
+            // Held generically (as the reference type's parameter).
+            let generic = data.referent.decompose_context(ty.ty.params, ty.args);
+            let caster = deps.require_dep::<crate::GArgsCastEnc<crate::Pure>>(
+                data.referent
+                    .decompose_compare_normalize(ty.ty.params, ty.args),
+            )?;
+            let r_snap = caster.cast_to_caller_ctx(
+                deps.require_dep::<TyUseImpureEnc>(generic)?
+                    .ref_to_snap(r_addr),
+            );
+            footprint_into(
+                deps,
+                referent,
+                r_addr,
+                r_snap,
+                true,
+                false,
+                with_dependent,
+                out,
+            )?;
+        }
         _ => (),
     }
     Ok(())
@@ -533,7 +753,9 @@ pub(crate) fn footprint_assertion<'vir>(entries: &[FpEntry<'vir>]) -> vir::ExprB
         for (i, entry) in entries.iter().enumerate() {
             let mut perm = entry.amount();
             for earlier in &entries[..i] {
-                let Some(same) = entry.same_key(earlier) else { continue };
+                let Some(same) = entry.same_key(earlier) else {
+                    continue;
+                };
                 if entry.shared && earlier.shared {
                     perm = vcx.mk_ternary_expr(same, vcx.mk_no_perm(), perm);
                 } else {
@@ -589,12 +811,6 @@ fn deep_with<'vir, E: TaskEncoder>(
         let fields = &ty.ty.expect_structlike().fields;
         let snap_c = snap.downcast_ty();
         let amounts = im_amounts(did);
-        // The amounts read the folded atoms only.
-        let inner = if own {
-            Some(deep_with(deps, ty, addr, snap, false)?)
-        } else {
-            None
-        };
         let mut field_snaps = Vec::with_capacity(fields.len());
         for (idx, field) in fields.iter().enumerate() {
             let proj = &variant.fields[idx];
@@ -606,10 +822,11 @@ fn deep_with<'vir, E: TaskEncoder>(
             let annotated = amounts
                 .iter()
                 .any(|(_, field, _)| field.map(|f| f.as_usize()) == Some(idx));
-            field_snaps.push(match (perm, inner) {
-                (Some((_, _, method)), Some(inner)) => {
+            field_snaps.push(match perm {
+                Some((_, _, method)) if own => {
                     let contents = contents_of(deps, ty, addr, abi::FieldIdx::from_usize(idx))?;
-                    let amount = call_amount(deps, *method, ty, addr, inner)?;
+                    let amount =
+                        atoms.amount(*method).call()(addr, args.get_ty(), args.get_const());
                     let unset = deps.require_dep::<ImUnsetEnc>(())?;
                     let cell_ty_args = deps.require_dep::<GArgsTyEnc>(field_ty.args)?;
                     let slot = vcx.mk_ternary_expr(
@@ -632,33 +849,52 @@ fn deep_with<'vir, E: TaskEncoder>(
         if !own {
             return Ok(value);
         }
-        let unfold = atoms.atom.call()(addr, args.get_ty(), args.get_const())(Some(
-            vcx.mk_wildcard(),
-        ));
+        let unfold =
+            atoms.atom.call()(addr, args.get_ty(), args.get_const())(Some(vcx.mk_wildcard()));
         return Ok(vcx.mk_unfolding_expr(unfold, value));
     }
+    let shared = shared_target(deps, ty, addr, snap)?;
     match &ty.ty.specifics {
-        TySpecifics::StructLike(data)
-            if !data.fields.is_empty()
-                && data.fields.iter().all(|f| {
-                    matches!(f.address, crate::encoders::ty::RustFieldAddress::Constant)
-                }) =>
-        {
+        TySpecifics::StructLike(data) if !data.fields.is_empty() => {
             let ty_use = deps.require_dep::<TyUsePureEnc>(ty)?;
             let variant = ty_use.expect_variant_opt(None);
             let snap_c = snap.downcast_ty();
             let mut field_snaps = Vec::with_capacity(data.fields.len());
             for (idx, field) in data.fields.iter().enumerate() {
                 let proj = &variant.fields[idx];
-                field_snaps.push(deep_with(
-                    deps,
-                    field.decompose_normalize(ty.args),
-                    proj.field_ref(addr),
-                    proj.read(snap_c),
-                    true,
-                )?);
+                field_snaps.push(match field.address {
+                    crate::encoders::ty::RustFieldAddress::Constant => deep_with(
+                        deps,
+                        field.decompose_normalize(ty.args),
+                        proj.field_ref(addr),
+                        proj.read(snap_c),
+                        true,
+                    )?,
+                    // A held pointee (of a `Box` or a `#[ptr_holds]`) is
+                    // shallow.
+                    crate::encoders::ty::RustFieldAddress::Dynamic => proj.read(snap_c),
+                });
             }
-            Ok(variant.field_snaps_to_snap(field_snaps).upcast_ty())
+            let mut value = variant.field_snaps_to_snap(field_snaps).upcast_ty();
+            // The interior-mutable values a sharer's fields reach are inside
+            // the shared atoms.
+            if let Some(shared) = shared {
+                let mut entries = Vec::new();
+                footprint_into(
+                    deps,
+                    shared.ty,
+                    shared.addr,
+                    shared.snap,
+                    true,
+                    true,
+                    false,
+                    &mut entries,
+                )?;
+                for entry in entries.iter().rev() {
+                    value = vcx.mk_unfolding_expr(entry.app(vcx.mk_wildcard()), value);
+                }
+            }
+            Ok(value)
         }
         TySpecifics::ImmRef(data) => {
             let ty_use = deps.require_dep::<TyUsePureEnc>(ty)?;
@@ -678,10 +914,7 @@ fn deep_with<'vir, E: TaskEncoder>(
 /// Whether a value of `ty` reaches an `#[im_opaque]` value, i.e. whether its
 /// deep snapshot differs from its shallow one.
 pub(crate) fn reaches_im(ty: RustTyDecomposition<'_>) -> bool {
-    fn go<'tcx>(
-        ty: RustTyDecomposition<'tcx>,
-        seen: &mut Vec<RustTyDecomposition<'tcx>>,
-    ) -> bool {
+    fn go<'tcx>(ty: RustTyDecomposition<'tcx>, seen: &mut Vec<RustTyDecomposition<'tcx>>) -> bool {
         if ty.ty.im_opaque.is_some() || ty.ty.im_annotated.is_some() {
             return true;
         }
@@ -694,11 +927,98 @@ pub(crate) fn reaches_im(ty: RustTyDecomposition<'_>) -> bool {
                 .fields
                 .iter()
                 .any(|f| go(f.decompose_normalize(ty.args), seen)),
-            TySpecifics::ImmRef(data) => go(data.referent.decompose_normalize(ty.args), seen),
+            TySpecifics::ImmRef(data) | TySpecifics::MutRef(data) => {
+                go(data.referent.decompose_normalize(ty.args), seen)
+            }
             _ => false,
         }
     }
     go(ty, &mut Vec::new())
+}
+
+/// The inverse of the address of the field `field` of the struct `did`, for
+/// `#[container_of]`. Field addresses are offsets, so the two are mutually
+/// inverse: `container_of(field_addr(a, T..), T..) == a` and
+/// `field_addr(container_of(l, T..), T..) == l`.
+pub(crate) struct ContainerOfEnc;
+
+pub(crate) type ContainerOf<'vir> =
+    vir::FunctionIdn<'vir, (vir::Ref, vir::ManyTyVal, vir::ManyCSnap), vir::Ref>;
+
+impl TaskEncoder for ContainerOfEnc {
+    task_encoder::encoder_cache!(ContainerOfEnc);
+    const ENCODER_NAME: &'static str = "container-of encoder";
+    type TaskDescription<'vir> = (DefId, abi::FieldIdx);
+    type OutputFullDependency<'vir> = ContainerOf<'vir>;
+    type OutputFullLocal<'vir> = vir::Domain<'vir>;
+
+    fn task_to_key<'vir>(task: &Self::TaskDescription<'vir>) -> Self::TaskKey<'vir> {
+        *task
+    }
+
+    fn do_encode_full<'vir>(
+        task_key: &Self::TaskKey<'vir>,
+        deps: &mut task_encoder::TaskEncoderDependencies<'vir, Self>,
+    ) -> task_encoder::EncodeFullResult<'vir, Self> {
+        deps.emit_output_ref(*task_key, ())?;
+        vir::with_vcx(|vcx| {
+            let (did, field) = *task_key;
+            let params = GParams::from(did);
+            let generics = deps.require_dep::<GenericParamsEnc>(params)?;
+            let name = vir::vir_format_identifier!(
+                vcx,
+                "container_of_{}_{}",
+                vir::ViperIdent::from_def_id(vcx, did),
+                field.as_usize()
+            );
+            let inverse: ContainerOf<'vir> = vir::FunctionIdn::new(
+                name,
+                (vir::TYPE_REF, generics.ty_args(), generics.const_args()),
+                vir::TYPE_REF,
+            );
+            let identity = vcx
+                .tcx()
+                .type_of(did)
+                .instantiate_identity()
+                .skip_normalization();
+            let ty = RustTyDecomposition::from_ty(identity, params);
+            let self_decl = vcx.mk_local_decl("self", vir::TYPE_REF);
+            let self_ex = vcx.mk_local_ex(self_decl);
+            let ty_use = deps.require_dep::<TyUsePureEnc>(ty)?;
+            let field_use = ty_use.expect_variant_opt(None).fields[field.as_usize()];
+            let field_addr = field_use.field_ref(self_ex);
+            let lhs = inverse.call()(field_addr, generics.ty_exprs(), generics.const_exprs());
+            let left = vir::expr! {
+                forall [self_decl], ..[generics.ty_decls()], ..[generics.const_decls()] :: {[field_addr]}
+                    [vcx.mk_eq_expr(lhs, self_ex)]
+            };
+            let container = inverse.call()(self_ex, generics.ty_exprs(), generics.const_exprs());
+            let right = vir::expr! {
+                forall [self_decl], ..[generics.ty_decls()], ..[generics.const_decls()] :: {[container]}
+                    [vcx.mk_eq_expr(field_use.field_ref(container), self_ex)]
+            };
+            let domain = vcx.mk_domain(
+                vir::vir_format_identifier!(vcx, "def_{}", name),
+                &[],
+                vcx.alloc_slice(&[
+                    vcx.mk_domain_axiom(vir::vir_format_identifier!(vcx, "ax_{}_left", name), left),
+                    vcx.mk_domain_axiom(
+                        vir::vir_format_identifier!(vcx, "ax_{}_right", name),
+                        right,
+                    ),
+                ]),
+                vcx.alloc_slice(&[vcx.mk_domain_function(inverse, false, None)]),
+                None,
+            );
+            Ok((domain, inverse))
+        })
+    }
+
+    fn emit_outputs<'vir>(program: &mut task_encoder::Program<'vir>) {
+        for domain in Self::all_outputs_local_no_errors(program) {
+            program.add_domain(domain);
+        }
+    }
 }
 
 /// `im_unset(T): s_Param`, the slot of a shallow `UnsafeCell<T>` snapshot.

@@ -1768,7 +1768,10 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         let operands: Vec<&mir::Operand<'vir>> = match rvalue {
             mir::Rvalue::Use(operand, _) => vec![operand],
             mir::Rvalue::Aggregate(box kind, operands)
-                if matches!(kind, mir::AggregateKind::Adt(..) | mir::AggregateKind::Tuple) =>
+                if matches!(
+                    kind,
+                    mir::AggregateKind::Adt(..) | mir::AggregateKind::Tuple
+                ) =>
             {
                 operands.iter().collect()
             }
@@ -1786,7 +1789,8 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 continue;
             }
             let (result, snap, _, _) = self.encode_place_with_snap(place)?;
-            let entries = crate::encoders::ty::im::footprint(self.deps, ty, result.expr.address, snap)?;
+            let entries =
+                crate::encoders::ty::im::footprint(self.deps, ty, result.expr.address, snap)?;
             for entry in entries.into_iter().filter(|e| !e.reached) {
                 for content in entry.contents(self.deps)? {
                     let tmp = self.new_tmp(content.ty());
@@ -2284,6 +2288,13 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 pcg_state,
                 &leaf_places,
                 place_capabilities,
+            )?;
+            // Specifications see deep values.
+            let snap = crate::encoders::ty::im::deep_snap(
+                self.deps,
+                place_ty,
+                self.local_defs[local].local_ex,
+                snap,
             )?;
             locals.insert(local, snap);
         }

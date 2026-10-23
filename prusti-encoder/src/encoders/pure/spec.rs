@@ -385,7 +385,11 @@ impl TaskEncoder for MirSpecEnc {
                     }
                     post_args.insert(
                         (local_defs.arg_count + 1).into(),
-                        deep(deps, mir::RETURN_PLACE, local_defs[mir::RETURN_PLACE].impure_snap)?,
+                        deep(
+                            deps,
+                            mir::RETURN_PLACE,
+                            local_defs[mir::RETURN_PLACE].impure_snap,
+                        )?,
                     );
                     vcx.alloc(post_args)
                 }

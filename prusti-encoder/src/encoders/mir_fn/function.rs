@@ -45,18 +45,19 @@ fn field_projection_body<'vir>(
     };
     let ref_use = deps.require_dep::<TyUsePureEnc>(RustTyDecomposition::from_ty(ref_ty, params))?;
     let ref_data = ref_use.expect_immref();
-    let (cur_ty, snap, addr) = match crate::encoders::ty::use_pure::project_field_path(
-        vcx,
-        deps,
-        params,
-        path,
-        self_ty,
-        ref_data.value_access(arg.downcast_ty()),
-        ref_data.addr_access(arg.downcast_ty()),
-    )? {
-        Ok(projected) => projected,
-        Err(message) => return Ok(Err(message)),
-    };
+    let (cur_ty, snap, addr, held_metadata) =
+        match crate::encoders::ty::use_pure::project_field_path(
+            vcx,
+            deps,
+            params,
+            path,
+            self_ty,
+            ref_data.value_access(arg.downcast_ty()),
+            ref_data.addr_access(arg.downcast_ty()),
+        )? {
+            Ok(projected) => projected,
+            Err(message) => return Ok(Err(message)),
+        };
     let ret_ty = sig.output();
     let same = |a: ty::Ty<'vir>, b: ty::Ty<'vir>| {
         vcx.tcx().erase_and_anonymize_regions(a) == vcx.tcx().erase_and_anonymize_regions(b)
@@ -70,7 +71,8 @@ fn field_projection_body<'vir>(
         let ret_use =
             deps.require_dep::<TyUsePureEnc>(RustTyDecomposition::from_ty(ret_ty, params))?;
         // A field that may be unsized is the struct's tail, and a pointer to it
-        // carries the struct's metadata.
+        // carries the struct's metadata (or that of the pointer to the held
+        // pointee it is in).
         let metadata = if cur_ty.is_sized(vcx.tcx(), params.typing_env()) {
             let unit = RustTyDecomposition::from_ty(vcx.tcx().types.unit, params);
             deps.require_dep::<TyUsePureEnc>(unit)?
@@ -78,7 +80,7 @@ fn field_projection_body<'vir>(
                 .unwrap()
                 .upcast_ty()
         } else {
-            ref_data.metadata_access(arg.downcast_ty())
+            held_metadata.unwrap_or_else(|| ref_data.metadata_access(arg.downcast_ty()))
         };
         return Ok(Ok(ret_use
             .expect_immref()
@@ -89,6 +91,101 @@ fn field_projection_body<'vir>(
         "the return type `{ret_ty}` is neither the field's type `{cur_ty}` nor a shared \
         reference to it"
     )))
+}
+
+/// The body of a `#[container_of(a.b, f)]` spec function: a shared reference
+/// to the struct (the return type's referent) whose field `f` is what the
+/// reference at the field path `a.b` of the first argument's referent points
+/// to. Its shallow snapshot is left arbitrary. The outer error is an encoding
+/// failure, the inner one a malformed annotation.
+fn container_of_body<'vir>(
+    vcx: &'vir vir::VirCtxt<'vir>,
+    deps: &mut TaskEncoderDependencies<'vir, FunctionEnc>,
+    def_id: DefId,
+    params: GParams<'vir>,
+    path: &[String],
+    field: &str,
+    arg: vir::ExprSnap<'vir>,
+) -> Result<Result<vir::ExprSnap<'vir>, String>, task_encoder::EncodeFullError<'vir, FunctionEnc>> {
+    let sig = vcx
+        .tcx()
+        .fn_sig(def_id)
+        .instantiate_identity()
+        .skip_binder();
+    let Some(ref_ty) = sig.inputs().first().copied() else {
+        return Ok(Err("the function takes no argument".to_string()));
+    };
+    let ty::TyKind::Ref(_, self_ty, ty::Mutability::Not) = *ref_ty.kind() else {
+        return Ok(Err(
+            "the first argument must be a shared reference".to_string()
+        ));
+    };
+    let ref_use = deps.require_dep::<TyUsePureEnc>(RustTyDecomposition::from_ty(ref_ty, params))?;
+    let ref_data = ref_use.expect_immref();
+    let (cur_ty, snap, _, _) = match crate::encoders::ty::use_pure::project_field_path(
+        vcx,
+        deps,
+        params,
+        path,
+        self_ty,
+        ref_data.value_access(arg.downcast_ty()),
+        ref_data.addr_access(arg.downcast_ty()),
+    )? {
+        Ok(projected) => projected,
+        Err(message) => return Ok(Err(message)),
+    };
+    if !matches!(cur_ty.kind(), ty::TyKind::Ref(_, _, ty::Mutability::Not)) {
+        return Ok(Err(format!(
+            "the field path ends at `{cur_ty}`, not a shared reference"
+        )));
+    }
+    let field_ref =
+        deps.require_dep::<TyUsePureEnc>(RustTyDecomposition::from_ty(cur_ty, params))?;
+    let field_addr = field_ref.expect_immref().addr_access(snap.downcast_ty());
+    let ret_ty = sig.output();
+    let ty::TyKind::Ref(_, container_ty, ty::Mutability::Not) = *ret_ty.kind() else {
+        return Ok(Err("the return type must be a shared reference".to_string()));
+    };
+    let ty::TyKind::Adt(adt, _) = *container_ty.kind() else {
+        return Ok(Err(format!("`{container_ty}` is not a struct")));
+    };
+    let Some((idx, _)) = adt
+        .non_enum_variant()
+        .fields
+        .iter_enumerated()
+        .find(|(_, f)| f.name.as_str() == field)
+    else {
+        return Ok(Err(format!("`{container_ty}` has no field `{field}`")));
+    };
+    let container = RustTyDecomposition::from_ty(container_ty, params);
+    let inverse = deps.require_dep::<crate::encoders::ty::im::ContainerOfEnc>((adt.did(), idx))?;
+    let container_args = deps.require_dep::<GArgsTyEnc>(container.args)?;
+    let addr = inverse.call()(
+        field_addr,
+        container_args.get_ty(),
+        container_args.get_const(),
+    );
+    let ret_decomp = RustTyDecomposition::from_ty(ret_ty, params);
+    let metadata_ty = ret_decomp
+        .ty
+        .ref_data()
+        .unwrap()
+        .metadata
+        .decompose_normalize(ret_decomp.args);
+    let metadata = match deps.require_dep::<TyUsePureEnc>(metadata_ty)?.zst_to_snap() {
+        Some(metadata) => metadata.upcast_ty(),
+        None => deps
+            .require_ref::<TyUsePureEnc>(metadata_ty)?
+            .arbitrary_to_snap(),
+    };
+    let value = deps
+        .require_ref::<TyUsePureEnc>(container)?
+        .arbitrary_to_snap();
+    let ret_use = deps.require_dep::<TyUsePureEnc>(ret_decomp)?;
+    Ok(Ok(ret_use
+        .expect_immref()
+        .prim_to_snap(addr, metadata, value)
+        .upcast_ty()))
 }
 
 // Function wrapper
@@ -102,6 +199,9 @@ pub struct FunctionCallEncOutput<'vir> {
     arg_tys: Vec<TyUsePure<'vir>>,
     inputs: Vec<GArgCaster<'vir, Pure>>,
     output: GArgCaster<'vir, Pure>,
+    /// The arguments keep the addresses of shared references (which other
+    /// pure functions do not see).
+    keeps_addresses: bool,
 }
 
 impl<'vir> FunctionCallEncOutput<'vir> {
@@ -152,7 +252,10 @@ impl<'vir> FunctionCallEncOutput<'vir> {
             .zip(self.inputs.iter())
             .zip(self.arg_tys.iter())
         {
-            *arg = caster.cast_to_callee_ctx(ty.dummy_ref_address(*arg));
+            if !self.keeps_addresses {
+                *arg = ty.dummy_ref_address(*arg);
+            }
+            *arg = caster.cast_to_callee_ctx(*arg);
         }
         let call = function.call()(&args, maps, self.ty_args.get_ty(), self.ty_args.get_const());
         self.output.cast_to_caller_ctx(call)
@@ -206,6 +309,10 @@ impl TaskEncoder for FunctionCallEnc {
                 deps.require_dep::<TyUsePureEnc>(ty_task)
             })
             .collect::<Result<Vec<_>, _>>()?;
+        // A field projection or container is an address computation: it
+        // needs the address of its reference argument.
+        let keeps_addresses = crate::encoders::get_field_projection(callee_def_id).is_some()
+            || crate::encoders::get_container_of(callee_def_id).is_some();
         Ok((
             (),
             FunctionCallEncOutput {
@@ -214,6 +321,7 @@ impl TaskEncoder for FunctionCallEnc {
                 inputs,
                 output,
                 arg_tys,
+                keeps_addresses,
             },
         ))
     }
@@ -328,6 +436,18 @@ impl TaskEncoder for FunctionEnc {
                     Err(message) => {
                         vcx.emit_early_error(PrustiError::incorrect(
                             format!("invalid `#[field_projection]`: {message}"),
+                            vcx.tcx().def_span(def_id).into(),
+                        ));
+                        None
+                    }
+                }
+            } else if let Some((path, field)) = crate::encoders::get_container_of(def_id) {
+                let arg = vcx.mk_local_ex(local_defs.local_decl_args().next().unwrap());
+                match container_of_body(vcx, deps, def_id, params, &path, &field, arg)? {
+                    Ok(expr) => Some(expr),
+                    Err(message) => {
+                        vcx.emit_early_error(PrustiError::incorrect(
+                            format!("invalid `#[container_of]`: {message}"),
                             vcx.tcx().def_span(def_id).into(),
                         ));
                         None

@@ -300,6 +300,8 @@ struct Enc<'vir: 'enc, 'enc> {
     version_ctr: IndexVec<mir::Local, usize>,
     versions_used: FxHashSet<(mir::Local, usize)>, // TODO: mode indicators?
     phi_ctr: usize,
+    /// Numbers the let-bound variables of deep values read from the heap.
+    deep_ctr: usize,
     old_mode: bool,
     rel0_mode: bool,
     rel1_mode: bool,
@@ -425,6 +427,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
             version_ctr: IndexVec::from_elem_n(0, body.local_decls.len()),
             versions_used: Default::default(),
             phi_ctr: 0,
+            deep_ctr: 0,
             old_mode: false,
             rel0_mode: false,
             rel1_mode: false,
@@ -1265,7 +1268,49 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                                 .deps
                                 .require_dep::<crate::encoders::TyUseImpureEnc>(inner_ty_task)
                                 .unwrap();
-                            caster.cast_to_caller_ctx(inner_ty.ref_to_snap(ref_expr))
+                            let shallow = caster.cast_to_caller_ctx(inner_ty.ref_to_snap(ref_expr));
+                            let referent = RustTyDecomposition::from_ty(
+                                place_ty.ty.builtin_deref(true).unwrap(),
+                                self.context,
+                            );
+                            if crate::encoders::ty::im::reaches_im(referent) {
+                                // Specifications see deep values. The deep
+                                // value is built over let-bound variables for
+                                // the address and the shallow snapshot.
+                                let idx = self.deep_ctr;
+                                self.deep_ctr += 1;
+                                let addr_decl = self.vcx.mk_local_decl(
+                                    vir::vir_format!(self.vcx, "deep_addr_{idx}"),
+                                    vir::TYPE_REF,
+                                );
+                                let snap_decl = self.vcx.mk_local_decl(
+                                    vir::vir_format!(self.vcx, "deep_snap_{idx}"),
+                                    shallow.ty(),
+                                );
+                                let deep = crate::encoders::ty::im::deep_snap(
+                                    self.deps,
+                                    referent,
+                                    self.vcx.mk_local_ex(addr_decl),
+                                    self.vcx.mk_local_ex(snap_decl),
+                                )?;
+                                self.vcx.mk_lazy_expr(
+                                    "deep_value",
+                                    shallow.ty(),
+                                    Box::new(move |vcx, lctx: ExprInput<'vir>| {
+                                        use vir::Reify;
+                                        let addr = ref_expr.reify(vcx, lctx);
+                                        let snap = shallow.reify(vcx, lctx);
+                                        vcx.mk_let_expr(
+                                            addr_decl,
+                                            addr,
+                                            vcx.mk_let_expr(snap_decl, snap, deep),
+                                        )
+                                        .kind
+                                    }),
+                                )
+                            } else {
+                                shallow
+                            }
                         };
                         EncodedPlace::new(val_expr, Some(ref_expr)).with_metadata(metadata)
                     }

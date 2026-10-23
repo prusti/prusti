@@ -389,6 +389,9 @@ pub fn im_quant_perm<'vir, E: TaskEncoder>(
 /// expression, and its snapshot. The address may be a dummy (`null`) for
 /// reference arguments: their `_IM_N` functions read through the snapshot's
 /// deref address and ignore the top-level address parameter.
+///
+/// With [`V1_DISABLED`], the map is empty: `#[pure_unstable]` functions read
+/// deep values (see `im`).
 pub(crate) fn pure_unstable_call_map<'vir, Curr: 'vir, Next: 'vir, E: TaskEncoder>(
     deps: &mut task_encoder::TaskEncoderDependencies<'vir, E>,
     args: &[(
@@ -399,6 +402,11 @@ pub(crate) fn pure_unstable_call_map<'vir, Curr: 'vir, Next: 'vir, E: TaskEncode
     inner_only: bool,
 ) -> Result<vir::ExprGenMap<'vir, Curr, Next>, EncodeFullError<'vir, E>> {
     let tys = ImTys::new(deps);
+    if V1_DISABLED {
+        return Ok(vir::with_vcx(|vcx| {
+            vcx.mk_map_empty_expr(tys.key.ty, vir::TYPE_PSNAP)
+        }));
+    }
     if inner_only {
         let unions = deps.require_dep::<MapUnionEnc>(())?;
         let restrict = deps.require_dep::<MapRestrictEnc>(())?.restrict;
@@ -1009,11 +1017,20 @@ pub(crate) fn im_frame<'vir, E: TaskEncoder>(
 /// (own accessors, fields, or referents, transitively). Unlike
 /// [`provably_no_owned_interior_mut`], references recurse into their
 /// referent: this gates *boundary* QPs, which cover behind-reference objects.
+/// The value-map encoding of this module is superseded by the address-keyed
+/// one (`im`); until it is removed, it is switched off here: no type has
+/// interior-mutability maps, and `#[pure_unstable]` calls get an empty map.
+pub(crate) const V1_DISABLED: bool = true;
+
 pub(crate) fn provably_no_interior_mut<'tcx>(
     tcx: ty::TyCtxt<'tcx>,
     ty: ty::Ty<'tcx>,
     seen: &mut rustc_hash::FxHashSet<ty::Ty<'tcx>>,
 ) -> bool {
+    // Superseded by the address-keyed encoding (`im`): no value maps.
+    if V1_DISABLED {
+        return true;
+    }
     if !seen.insert(ty) {
         return true;
     }
@@ -1485,7 +1502,7 @@ impl<'vir> TyInteriorMutField<'_, 'vir> {
             // snapshot. It is stable under moves of the holder, and the
             // object lives behind the pointer rather than in the holder.
             let self_ty = rust_input_ty.builtin_deref(true).unwrap();
-            let (ptr_ty, ptr_snap, _) = crate::encoders::ty::use_pure::project_field_path(
+            let (ptr_ty, ptr_snap, _, _) = crate::encoders::ty::use_pure::project_field_path(
                 vcx,
                 self.deps,
                 task_key.data.params,

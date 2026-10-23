@@ -148,6 +148,7 @@ pub fn test_entrypoint<'tcx>(
     TyInteriorMutUseEnc::emit_outputs(&mut program);
     encoders::ty::im::ImUnsetEnc::emit_outputs(&mut program);
     encoders::ty::im::ImOpaqueEnc::emit_outputs(&mut program);
+    encoders::ty::im::ContainerOfEnc::emit_outputs(&mut program);
 
     if config::simplify_encoding() {
         program.simplify();
@@ -181,8 +182,9 @@ pub fn early_errors() -> Vec<PrustiError> {
 
 pub fn backtranslate_error(
     error_kind: &str,
+    message: &str,
     offending_pos_id: usize,
     reason_pos_id: Option<usize>,
 ) -> Vec<PrustiError> {
-    vir::with_vcx(|vcx| vcx.backtranslate(error_kind, offending_pos_id, reason_pos_id))
+    vir::with_vcx(|vcx| vcx.backtranslate(error_kind, message, offending_pos_id, reason_pos_id))
 }

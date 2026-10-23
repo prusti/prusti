@@ -339,6 +339,10 @@ pub enum RustTySpecial {
     /// `core::cell::UnsafeCell`: encoded as an empty struct; its contents are
     /// only reachable through the interior-mutability machinery.
     UnsafeCell,
+    /// A `#[ptr_holds]` struct: like a `Box`, its snapshot also carries the
+    /// pointee of the given pointer field and its predicate the annotated
+    /// amount of permission to it.
+    Holds(DefId, abi::FieldIdx),
 }
 
 impl<'tcx> RustTyData<'tcx> {
@@ -646,6 +650,10 @@ impl RustTySpecial {
         match ty.kind() {
             ty::TyKind::Adt(adt, _) if adt.is_box() => RustTySpecial::Box,
             ty::TyKind::Adt(adt, _) if adt.is_unsafe_cell() => RustTySpecial::UnsafeCell,
+            ty::TyKind::Adt(adt, _) => match crate::encoders::ty::im::ptr_holds_field(adt.did()) {
+                Some((ptr, _)) => RustTySpecial::Holds(adt.did(), ptr),
+                None => RustTySpecial::None,
+            },
             _ => RustTySpecial::None,
         }
     }
@@ -823,6 +831,17 @@ impl<'tcx> TySpecifics<'tcx, RustTyDatas> {
                             name: symbol::Symbol::intern("value"),
                             fid: abi::FieldIdx::from_usize(data.fields.len()),
                             ty: LazyRustTy(Self::new_param_ty(0)),
+                            address: RustFieldAddress::Dynamic,
+                        });
+                    } else if let Some((ptr, pointee)) =
+                        crate::encoders::ty::im::ptr_holds_field(adt.did())
+                    {
+                        // The held pointee, named `*FIELD` after its pointer.
+                        let ptr_name = adt.non_enum_variant().fields[ptr].name;
+                        data.fields.push(RustFieldData {
+                            name: symbol::Symbol::intern(&format!("*{ptr_name}")),
+                            fid: abi::FieldIdx::from_usize(data.fields.len()),
+                            ty: LazyRustTy(pointee),
                             address: RustFieldAddress::Dynamic,
                         });
                     }

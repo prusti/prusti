@@ -177,6 +177,7 @@ impl<'tcx> VirCtxt<'tcx> {
     pub fn backtranslate(
         &self,
         error_kind: &str,
+        message: &str,
         offending_pos_id: usize,
         reason_pos_id: Option<usize>,
     ) -> Vec<PrustiError> {
@@ -211,7 +212,7 @@ impl<'tcx> VirCtxt<'tcx> {
             .get(offending_pos_id)
             .map(|vir_span| vir_span.span)
             .unwrap_or(DUMMY_SP);
-        vec![PrustiError::internal(format!("A verification error occurred, but it could not be backtranslated: no handler found for error kind: {error_kind}."), span.into())]
+        vec![PrustiError::internal(format!("A verification error occurred, but it could not be backtranslated: no handler found for error kind: {error_kind} ({message})."), span.into())]
     }
 
     /// Attempt to backtranslate a position id to a rust span
