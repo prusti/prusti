@@ -60,6 +60,30 @@ pub fn field_projection(_attr: TokenStream, tokens: TokenStream) -> TokenStream 
 
 #[cfg(not(feature = "prusti"))]
 #[proc_macro_attribute]
+pub fn im_opaque(_attr: TokenStream, tokens: TokenStream) -> TokenStream {
+    tokens
+}
+
+#[cfg(not(feature = "prusti"))]
+#[proc_macro_attribute]
+pub fn im_perm(_attr: TokenStream, tokens: TokenStream) -> TokenStream {
+    tokens
+}
+
+#[cfg(not(feature = "prusti"))]
+#[proc_macro_attribute]
+pub fn im_dependent(_attr: TokenStream, tokens: TokenStream) -> TokenStream {
+    tokens
+}
+
+#[cfg(not(feature = "prusti"))]
+#[proc_macro_attribute]
+pub fn im_holds(_attr: TokenStream, tokens: TokenStream) -> TokenStream {
+    tokens
+}
+
+#[cfg(not(feature = "prusti"))]
+#[proc_macro_attribute]
 pub fn trusted(_attr: TokenStream, tokens: TokenStream) -> TokenStream {
     tokens
 }
@@ -199,6 +223,30 @@ pub fn pure_unstable(attr: TokenStream, tokens: TokenStream) -> TokenStream {
 #[proc_macro_attribute]
 pub fn field_projection(attr: TokenStream, tokens: TokenStream) -> TokenStream {
     prusti_specs::field_projection(attr.into(), tokens.into()).into()
+}
+
+#[cfg(feature = "prusti")]
+#[proc_macro_attribute]
+pub fn im_opaque(attr: TokenStream, tokens: TokenStream) -> TokenStream {
+    prusti_specs::im_type_attribute("im_opaque", attr.into(), tokens.into()).into()
+}
+
+#[cfg(feature = "prusti")]
+#[proc_macro_attribute]
+pub fn im_perm(attr: TokenStream, tokens: TokenStream) -> TokenStream {
+    prusti_specs::im_type_attribute("im_perm", attr.into(), tokens.into()).into()
+}
+
+#[cfg(feature = "prusti")]
+#[proc_macro_attribute]
+pub fn im_dependent(attr: TokenStream, tokens: TokenStream) -> TokenStream {
+    prusti_specs::im_type_attribute("im_dependent", attr.into(), tokens.into()).into()
+}
+
+#[cfg(feature = "prusti")]
+#[proc_macro_attribute]
+pub fn im_holds(attr: TokenStream, tokens: TokenStream) -> TokenStream {
+    prusti_specs::im_type_attribute("im_holds", attr.into(), tokens.into()).into()
 }
 
 #[cfg(feature = "prusti")]

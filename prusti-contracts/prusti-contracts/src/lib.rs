@@ -72,6 +72,24 @@ pub use prusti_contracts_proc_macros::interior_mut;
 /// to it (the result points at the field in place).
 pub use prusti_contracts_proc_macros::field_projection;
 
+/// `#[im_opaque]` on a struct: the struct has a key of its own, and its atom
+/// contains the atoms of every interior-mutable value stored inline in it.
+pub use prusti_contracts_proc_macros::im_opaque;
+
+/// `#[im_perm(FIELD, AMOUNT)]` on an `#[im_opaque]` struct: its atom holds
+/// `AMOUNT` (`full`, `none`, `source(n)`, or a conditional of these, reading
+/// the atom's own contents) of the `UnsafeCell` or `Witness` field `FIELD`.
+pub use prusti_contracts_proc_macros::im_perm;
+
+/// `#[im_dependent(COND => token(FIELD) && ..)]` on an `#[im_opaque]` struct:
+/// a second key whose atom holds tokens of the fields while `COND` holds.
+pub use prusti_contracts_proc_macros::im_dependent;
+
+/// `#[im_holds(PLACE, token | full)]` or `#[im_holds(PTR = PLACE, ..)]` on a
+/// struct: its values hold a token (or all) of the `UnsafeCell` or `Witness`
+/// `PLACE`, which the raw-pointer field `PTR` points to.
+pub use prusti_contracts_proc_macros::im_holds;
+
 /// A macro for marking a function as pure but with a result that additionally
 /// depends on the current values of the interior-mutable objects reachable
 /// from its arguments (so it may change between two calls with equal

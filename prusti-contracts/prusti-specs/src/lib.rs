@@ -1031,6 +1031,22 @@ pub fn field_projection(attr: TokenStream, tokens: TokenStream) -> TokenStream {
     }
 }
 
+/// The interior-mutability type annotations (`#[im_opaque]`, `#[im_perm]`,
+/// `#[im_dependent]`, `#[im_holds]`), recorded as `#[prusti::NAME = "ARGS"]`.
+pub fn im_type_attribute(name: &str, attr: TokenStream, tokens: TokenStream) -> TokenStream {
+    let item: syn::Item = handle_result!(syn::parse2(tokens));
+    if !matches!(item, syn::Item::Struct(_)) {
+        return syn::Error::new(item.span(), format!("`#[{name}]` applies to structs"))
+            .to_compile_error();
+    }
+    let name = syn::Ident::new(name, item.span());
+    let args = attr.to_string();
+    quote_spanned! {item.span()=>
+        #[prusti::#name = #args]
+        #item
+    }
+}
+
 pub fn trusted(attr: TokenStream, tokens: TokenStream) -> TokenStream {
     if !attr.is_empty() {
         return syn::Error::new(
