@@ -83,6 +83,7 @@ impl<'tcx> RustTyDecomposition<'tcx> {
             sizedness: RustTySizedness::None,
             interior_mut: &[],
             im_opaque: None,
+            im_annotated: None,
         };
         let specifics = TySpecifics::Param(RustParamData::Generic);
         TyData::<RustTyDatas>::new(data, specifics).alloc()
@@ -278,6 +279,8 @@ pub struct RustTyData<'tcx> {
     pub interior_mut: &'tcx [DefId],
     /// The struct, if it is `#[im_opaque]`: it has a key and an atom.
     pub im_opaque: Option<DefId>,
+    /// The struct, if it reaches another type's atom (`#[im_shares]`).
+    pub im_annotated: Option<DefId>,
 }
 
 /// Which of the sizedness traits (`Sized`, `MetaSized`, `PointeeSized`) the
@@ -448,6 +451,12 @@ impl<'tcx> TyData<'tcx, RustTyDatas> {
                 }
                 _ => None,
             },
+            im_annotated: match ty.kind() {
+                ty::TyKind::Adt(adt, _) if crate::encoders::ty::im::is_im_sharer(adt.did()) => {
+                    Some(adt.did())
+                }
+                _ => None,
+            },
         };
         RustTyDecomposition::new(Self::new(data, specifics).alloc(), args)
     }
@@ -463,6 +472,7 @@ impl<'tcx> TyData<'tcx, RustTyDatas> {
             sizedness: RustTySizedness::from_ty(ty),
             interior_mut: &[],
             im_opaque: None,
+            im_annotated: None,
         };
         let specifics = TySpecifics::from_prim_ty(ty);
         RustTyDecomposition::new(Self::new(data, specifics).alloc(), args)

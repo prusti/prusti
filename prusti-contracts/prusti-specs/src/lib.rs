@@ -1031,19 +1031,102 @@ pub fn field_projection(attr: TokenStream, tokens: TokenStream) -> TokenStream {
     }
 }
 
-/// The interior-mutability type annotations (`#[im_opaque]`, `#[im_perm]`,
-/// `#[im_dependent]`, `#[im_holds]`), recorded as `#[prusti::NAME = "ARGS"]`.
+/// The type annotations for interior mutability and raw-pointer ownership.
+/// Each becomes an attribute `#[prusti::im_amount = "KIND FIELD"]` on an
+/// inherent method of the struct that computes it from `&self`:
+/// - `#[im_opaque]`: the struct has a key and an atom (no method);
+/// - `#[im_perm(FIELD, AMOUNT)]`: the atom holds `AMOUNT` of the contents of
+///   the `UnsafeCell` field `FIELD`;
+/// - `#[im_dependent(FIELD, AMOUNT)]`: the dependent atom holds `AMOUNT` of
+///   them;
+/// - `#[ptr_holds(FIELD, AMOUNT)]`: the value holds `AMOUNT` of the pointee of
+///   the raw-pointer field `FIELD`;
+/// - `#[im_shares(TYPE, at = EXPR, for 'LT [, dependent])]`: the value reaches
+///   the atom (and, with `dependent`, the dependent atom) of the `TYPE` that
+///   `EXPR: &'LT TYPE` refers to.
 pub fn im_type_attribute(name: &str, attr: TokenStream, tokens: TokenStream) -> TokenStream {
-    let item: syn::Item = handle_result!(syn::parse2(tokens));
-    if !matches!(item, syn::Item::Struct(_)) {
-        return syn::Error::new(item.span(), format!("`#[{name}]` applies to structs"))
-            .to_compile_error();
-    }
-    let name = syn::Ident::new(name, item.span());
-    let args = attr.to_string();
-    quote_spanned! {item.span()=>
-        #[prusti::#name = #args]
+    let item: syn::ItemStruct = match syn::parse2(tokens.clone()) {
+        Ok(item) => item,
+        Err(_) => {
+            return syn::Error::new(tokens.span(), format!("`#[{name}]` applies to structs"))
+                .to_compile_error();
+        }
+    };
+    let span = item.span();
+    let method: Option<syn::ImplItemMethod> = match name {
+        "im_opaque" => None,
+        "im_perm" | "im_dependent" | "ptr_holds" => {
+            let parser = |input: syn::parse::ParseStream| {
+                let field: syn::Ident = input.parse()?;
+                let _: syn::Token![,] = input.parse()?;
+                let amount: syn::Expr = input.parse()?;
+                Ok((field, amount))
+            };
+            let (field, amount) = handle_result!(syn::parse::Parser::parse2(parser, attr));
+            let kind = format!("{} {field}", name.trim_start_matches("im_"));
+            let fn_name = syn::Ident::new(&format!("prusti_{name}_{field}"), span);
+            Some(parse_quote_spanned! {span=>
+                #[doc(hidden)]
+                #[allow(non_snake_case, dead_code, unused_variables)]
+                #[prusti::im_amount = #kind]
+                #[::prusti_contracts::pure_unstable]
+                fn #fn_name(&self) -> ::prusti_contracts::Real {
+                    #amount
+                }
+            })
+        }
+        "im_shares" => {
+            let parser = |input: syn::parse::ParseStream| {
+                let ty: syn::Type = input.parse()?;
+                let _: syn::Token![,] = input.parse()?;
+                let at: syn::Ident = input.parse()?;
+                if at != "at" {
+                    return Err(syn::Error::new(at.span(), "expected `at = EXPR`"));
+                }
+                let _: syn::Token![=] = input.parse()?;
+                let expr: syn::Expr = input.parse()?;
+                let _: syn::Token![,] = input.parse()?;
+                let _: syn::Token![for] = input.parse()?;
+                let lifetime: syn::Lifetime = input.parse()?;
+                let mut dependent = false;
+                if input.parse::<Option<syn::Token![,]>>()?.is_some() {
+                    let flag: syn::Ident = input.parse()?;
+                    if flag != "dependent" {
+                        return Err(syn::Error::new(flag.span(), "expected `dependent`"));
+                    }
+                    dependent = true;
+                }
+                Ok((ty, expr, lifetime, dependent))
+            };
+            let (ty, expr, lifetime, dependent) =
+                handle_result!(syn::parse::Parser::parse2(parser, attr));
+            let kind = if dependent { "shares dependent" } else { "shares" };
+            Some(parse_quote_spanned! {span=>
+                #[doc(hidden)]
+                #[allow(non_snake_case, dead_code)]
+                #[prusti::im_amount = #kind]
+                #[::prusti_contracts::pure]
+                fn prusti_im_shares(&self) -> &#lifetime #ty {
+                    #expr
+                }
+            })
+        }
+        _ => unreachable!("unknown interior-mutability attribute `{name}`"),
+    };
+    let marker = syn::Ident::new(name, span);
+    let ident = &item.ident;
+    let (impl_generics, ty_generics, where_clause) = item.generics.split_for_impl();
+    let method = method.map(|method| {
+        quote_spanned! {span=>
+            impl #impl_generics #ident #ty_generics #where_clause {
+                #method
+            }
+        }
+    });
+    quote_spanned! {span=>
+        #[prusti::#marker]
         #item
+        #method
     }
 }
 

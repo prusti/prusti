@@ -89,18 +89,24 @@ pub use prusti_contracts_proc_macros::field_projection;
 pub use prusti_contracts_proc_macros::im_opaque;
 
 /// `#[im_perm(FIELD, AMOUNT)]` on an `#[im_opaque]` struct: its atom holds
-/// `AMOUNT` (`full`, `none`, `source(n)`, or a conditional of these, reading
-/// the atom's own contents) of the `UnsafeCell` or `Witness` field `FIELD`.
+/// `AMOUNT` (a `Real` computed from `self`, reading only the contents of the
+/// interior-mutable values the atom contains) of the contents of the
+/// `UnsafeCell` field `FIELD`.
 pub use prusti_contracts_proc_macros::im_perm;
 
-/// `#[im_dependent(COND => token(FIELD) && ..)]` on an `#[im_opaque]` struct:
-/// a second key whose atom holds tokens of the fields while `COND` holds.
+/// `#[im_dependent(FIELD, AMOUNT)]` on an `#[im_opaque]` struct: a second key,
+/// whose atom holds `AMOUNT` (computed from `self`) of the contents of the
+/// `UnsafeCell` field `FIELD`.
 pub use prusti_contracts_proc_macros::im_dependent;
 
-/// `#[im_holds(PLACE, token | full)]` or `#[im_holds(PTR = PLACE, ..)]` on a
-/// struct: its values hold a token (or all) of the `UnsafeCell` or `Witness`
-/// `PLACE`, which the raw-pointer field `PTR` points to.
-pub use prusti_contracts_proc_macros::im_holds;
+/// `#[ptr_holds(FIELD, AMOUNT)]` on a struct: its values hold `AMOUNT` of the
+/// pointee of the raw-pointer field `FIELD`.
+pub use prusti_contracts_proc_macros::ptr_holds;
+
+/// `#[im_shares(TYPE, at = EXPR, for 'LT [, dependent])]` on a struct: its
+/// values reach the atom of the `TYPE` that `EXPR: &'LT TYPE` refers to (and,
+/// with `dependent`, its dependent atom) without owning it.
+pub use prusti_contracts_proc_macros::im_shares;
 
 /// A macro for marking a function as pure but with a result that additionally
 /// depends on the current values of the interior-mutable objects reachable
