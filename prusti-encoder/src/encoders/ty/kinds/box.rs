@@ -107,7 +107,8 @@ pub(super) fn mk_pure_box_data<'vir>(
 
 /// The address of the pointee held by a `#[ptr_holds]` struct, read out of
 /// the snapshot of its pointer field `ptr` (a raw pointer, or structs around
-/// one in their first field, as `NonNull`).
+/// one in their first field, as `NonNull`). For a held field of the pointee,
+/// see [`held_sub_address`].
 pub(super) fn mk_pure_held_address<'vir>(
     task_key: &TyData<'vir, RustTyDatas>,
     data: &StructData<'vir, RustTyDatas>,
@@ -141,15 +142,44 @@ pub(super) fn mk_pure_held_address<'vir>(
     ))
 }
 
+/// The address of the field `sub` of the pointee at `pointee_addr` that a
+/// `#[ptr_holds(F.sub, ..)]` struct holds; `ptr_ty` is the type of its
+/// pointer field `F` (with the arguments of the context).
+pub(crate) fn held_sub_address<'vir, E: task_encoder::TaskEncoder>(
+    deps: &mut TaskEncoderDependencies<'vir, E>,
+    mut ptr_ty: RustTyDecomposition<'vir>,
+    sub: abi::FieldIdx,
+    pointee_addr: vir::ExprRef<'vir>,
+) -> Result<vir::ExprRef<'vir>, EncodeFullError<'vir, E>> {
+    while ptr_ty.ty.get_structlike().is_some() {
+        ptr_ty = ptr_ty.ty.expect_structlike().fields[abi::FieldIdx::ZERO.as_usize()]
+            .decompose_normalize(ptr_ty.args);
+    }
+    let pointee = ptr_ty
+        .ty
+        .ref_data()
+        .unwrap()
+        .referent
+        .decompose_normalize(ptr_ty.args);
+    let pointee_use = deps.require_dep::<TyUsePureEnc>(pointee)?;
+    Ok(pointee_use.expect_variant_opt(None).fields[sub.as_usize()].field_ref(pointee_addr))
+}
+
 /// The heap-dependent address of the pointee held by a `#[ptr_holds]`
 /// struct: the pure accessor applied to the snapshot of the pointer field
 /// `ptr`, read out of its (folded) predicate.
-pub(super) fn mk_impure_held_address<'vir>(
+#[allow(clippy::type_complexity)]
+pub(super) fn mk_impure_held_address<'vir, E: task_encoder::TaskEncoder>(
+    deps: &mut TaskEncoderDependencies<'vir, E>,
     data: &StructData<'vir, (RustTyDatas, PureTyDatas)>,
     fields: &[TyUseImpure<'vir>],
     ptr: abi::FieldIdx,
+    sub: Option<(RustTyDecomposition<'vir>, abi::FieldIdx)>,
     builder: &mut PredicateBuilder<'vir>,
-) -> vir::FunctionIdn<'vir, (vir::Ref, vir::ManyTyVal, vir::ManyCSnap), vir::Ref> {
+) -> Result<
+    vir::FunctionIdn<'vir, (vir::Ref, vir::ManyTyVal, vir::ManyCSnap), vir::Ref>,
+    EncodeFullError<'vir, E>,
+> {
     let ref_decl = builder.ref_self_decl();
     let ref_self = builder.vcx.mk_local_ex(ref_decl);
     let TyPureFieldRef::Constant(ptr_field_ref) = data.fields[ptr.as_usize()].1.ref_to_field_ref
@@ -164,15 +194,20 @@ pub(super) fn mk_impure_held_address<'vir>(
     else {
         unreachable!()
     };
-    builder.inner.function(
+    let mut address = address_access.call()(ptr_snap);
+    if let Some((ptr_ty, sub)) = sub {
+        address = held_sub_address(deps, ptr_ty, sub, address)?;
+    }
+    let b_params = &builder.params;
+    Ok(builder.inner.function(
         "address",
         (ref_decl.ty(), b_params.ty_args(), b_params.const_args()),
         vir::TYPE_REF,
         (ref_decl, b_params.ty_decls(), b_params.const_decls()),
         &[ptr_pred],
         &[],
-        Some(address_access.call()(ptr_snap)),
-    )
+        Some(address),
+    ))
 }
 
 /// The heap-dependent `address`/`metadata` functions of a `Box`: the pure

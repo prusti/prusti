@@ -810,7 +810,32 @@ pub(super) fn final_leaf_def(
 /// the printed expression, there being no expression visitor).
 fn reads_im_state(expr: &vir::ExprBool<'_>) -> bool {
     let text = format!("{expr:?}");
-    text.contains("im0_snap") || text.contains("im1_snap") || text.contains("im_map")
+    text.contains("im0_snap")
+        || text.contains("im1_snap")
+        || text.contains("im_map")
+        || reads_heap(expr)
+}
+
+/// Whether `expr` reads the heap through an `old` or an `unfolding` (e.g. a
+/// deep value): an axiom cannot.
+fn reads_heap(expr: &vir::ExprBool<'_>) -> bool {
+    use vir::{Visitable, Visitor};
+    struct Reads(bool);
+    impl<'vir> Visitor<'vir, (), !> for Reads {
+        fn visit_expr(&mut self, e: vir::ExprGenDyn<'vir, (), !>) {
+            if matches!(
+                e.kind,
+                vir::ExprKindGenData::Old(_) | vir::ExprKindGenData::Unfolding(_)
+            ) {
+                self.0 = true;
+            } else {
+                e.super_visit_with(self);
+            }
+        }
+    }
+    let mut reads = Reads(false);
+    expr.visit_with(&mut reads);
+    reads.0
 }
 
 /// The Viper name of an impl. `idx` is only unique within a crate, so foreign

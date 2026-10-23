@@ -259,10 +259,55 @@ use alloc::boxed::Box;
 // repr(align(2)) (forcing alignment to at least 2) is required because usize
 // has 1-byte alignment on AVR.
 #[repr(C, align(2))]
+// The atom folds the two count `Cell`s' atoms and holds, while there are
+// strong pointers, the value with one token split off per `Rc`. No dependent
+// atom: the last `Rc` may write the value (`get_mut`).
+#[im_opaque]
+#[im_perm(value, if self.strong.get() > 0 {
+    Real::WRITE - Real::from(self.strong.get() as isize) * rc_token()
+} else {
+    Real::NONE
+})]
 struct RcInner<T: ?Sized> {
     strong: Cell<usize>,
     weak: Cell<usize>,
     value: T,
+}
+
+/// The share of the value each `Rc` holds.
+#[pure]
+#[ensures(Real::NONE < result && result < Real::WRITE)]
+pub fn rc_token() -> Real {
+    Real::WRITE / (Real::from(isize::MAX) + Real::WRITE)
+}
+
+/// The allocation an `Rc` points to, with its current value.
+#[pure]
+#[trusted]
+#[field_projection(@shares)]
+fn rc_inner<T: ?Sized, A: Allocator>(_r: &Rc<T, A>) -> &RcInner<T> {
+    unimplemented!()
+}
+
+/// The pointer of an `Rc`: its allocation's identity (with `===`).
+#[pure]
+#[trusted]
+#[field_projection(ptr)]
+fn rc_ptr<T: ?Sized, A: Allocator>(_r: &Rc<T, A>) -> NonNull<RcInner<T>> {
+    unimplemented!()
+}
+
+/// The strong count of an `Rc`'s allocation.
+#[pure_unstable]
+fn rc_strong<T: ?Sized, A: Allocator>(r: &Rc<T, A>) -> usize {
+    rc_inner(r).strong.get()
+}
+
+/// The weak count of an `Rc`'s allocation (with the implicit weak pointer
+/// of the strong ones).
+#[pure_unstable]
+fn rc_weak<T: ?Sized, A: Allocator>(r: &Rc<T, A>) -> usize {
+    rc_inner(r).weak.get()
 }
 
 /// Calculate layout for `RcInner<T>` using the inner value's layout
@@ -293,7 +338,10 @@ fn rc_inner_layout_for_value_layout(layout: Layout) -> Layout {
     label = "this move could be avoided by cloning the original `{Self}`, which is inexpensive",
     note = "consider using `Rc::clone`"
 )]
-
+// An `Rc` holds a token of the value and reaches its allocation's atom.
+#[ptr_holds(ptr.value, rc_token())]
+#[im_shares(RcInner<T>, at = pointee(ptr), for '_)]
+#[im_assume(rc_strong(self) >= 1)]
 pub struct Rc<
     T: ?Sized,
     A: Allocator = Global,
@@ -380,6 +428,9 @@ impl<T> Rc<T> {
     ///
     /// let five = Rc::new(5);
     /// ```
+    #[trusted]
+    #[ensures(rc_strong(&result) == 1 && rc_weak(&result) == 1)]
+    #[ensures(*result === value)]
     pub fn new(value: T) -> Rc<T> {
         // There is an implicit weak pointer owned by all the strong
         // pointers, which ensures that the weak destructor never frees
@@ -572,6 +623,9 @@ impl<T: ?Sized, A: Allocator> Rc<T, A> {
     /// assert_eq!(1, Rc::weak_count(&five));
     /// ```
     #[inline]
+    #[pure_unstable]
+    #[trusted]
+    #[ensures(result == rc_weak(this) - 1)]
     pub fn weak_count(this: &Self) -> usize {
         this.inner().weak() - 1
     }
@@ -589,6 +643,9 @@ impl<T: ?Sized, A: Allocator> Rc<T, A> {
     /// assert_eq!(2, Rc::strong_count(&five));
     /// ```
     #[inline]
+    #[pure_unstable]
+    #[trusted]
+    #[ensures(result == rc_strong(this))]
     pub fn strong_count(this: &Self) -> usize {
         this.inner().strong()
     }
@@ -669,10 +726,14 @@ impl<T: ?Sized, A: Allocator> Rc<T, A> {
 
 
 
+#[refine_trait_spec]
 impl<T: ?Sized, A: Allocator> Deref for Rc<T, A> {
     type Target = T;
 
     #[inline(always)]
+    #[pure]
+    #[trusted]
+    #[field_projection(*ptr)]
     fn deref(&self) -> &T {
         &self.inner().value
     }
@@ -720,6 +781,7 @@ unsafe impl<#[may_dangle] T: ?Sized, A: Allocator> Drop for Rc<T, A> {
     }
 }
 
+#[refine_trait_spec]
 impl<T: ?Sized, A: AllocatorClone> Clone for Rc<T, A> {
     /// Makes a clone of the `Rc` pointer.
     ///
@@ -736,6 +798,11 @@ impl<T: ?Sized, A: AllocatorClone> Clone for Rc<T, A> {
     /// let _ = Rc::clone(&five);
     /// ```
     #[inline]
+    #[trusted]
+    #[ensures(rc_ptr(&result) === rc_ptr(self))]
+    #[ensures(rc_strong(self) == old(rc_strong(self)) + 1)]
+    #[ensures(rc_weak(self) == old(rc_weak(self)))]
+    #[ensures(*result === **self)]
     fn clone(&self) -> Self {
         unsafe {
             self.inner().inc_strong();
@@ -1263,6 +1330,17 @@ unsafe fn data_offset<T: ?Sized>(ptr: *const T) -> usize {
 fn data_offset_alignment(alignment: Alignment) -> usize {
     let layout = Layout::new::<RcInner<()>>();
     layout.size() + layout.padding_needed_for(alignment)
+}
+
+// Dropping an `Rc` decrements the strong count: the `Rc` is dead afterwards,
+// but the allocation's atom is returned at the pointer it holds. (Identity
+// through the pointer: the deep `Rc` includes the counts.)
+#[extern_spec]
+impl<T: ?Sized, A: Allocator> Drop for Rc<T, A> {
+    #[ensures(rc_ptr(self) === old(rc_ptr(self)))]
+    #[ensures(rc_strong(self) == old(rc_strong(self)) - 1)]
+    #[ensures(**self === *old(&**self))]
+    fn drop(&mut self);
 }
 
 

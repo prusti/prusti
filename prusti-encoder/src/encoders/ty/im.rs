@@ -58,45 +58,72 @@ pub(crate) fn shares_slot_ty<'tcx>(did: DefId) -> Option<ty::Ty<'tcx>> {
         .find(|(kind, ..)| matches!(kind, ImAmountKind::Shares { .. }))?;
     vir::with_vcx(|vcx| {
         // The annotation method's impl has the struct's generics.
-        let output = vcx
-            .tcx()
-            .fn_sig(method)
-            .instantiate_identity()
-            .skip_normalization()
-            .skip_binder()
-            .output();
-        Some(vcx.tcx().erase_and_anonymize_regions(output))
+        let sig = vcx.tcx().instantiate_bound_regions_with_erased(
+            vcx.tcx()
+                .fn_sig(method)
+                .instantiate_identity()
+                .skip_normalization(),
+        );
+        Some(vcx.tcx().erase_and_anonymize_regions(sig.output()))
     })
 }
 
-/// The pointer field of the struct `did` whose pointee it holds
-/// (`#[ptr_holds]`): its index and the pointee type.
+/// The pointer field of the struct `did` whose pointee (or a field of it) it
+/// holds (`#[ptr_holds]`): its index and the held type.
 pub(crate) fn ptr_holds_field<'tcx>(did: DefId) -> Option<(abi::FieldIdx, ty::Ty<'tcx>)> {
+    ptr_holds(did).map(|(ptr, _, held)| (ptr, held))
+}
+
+/// Like [`ptr_holds_field`], with the index of the pointee's field that is
+/// held, if not the whole pointee.
+pub(crate) fn ptr_holds<'tcx>(
+    did: DefId,
+) -> Option<(abi::FieldIdx, Option<abi::FieldIdx>, ty::Ty<'tcx>)> {
     vir::with_vcx(|vcx| {
-        let tcx = vcx.tcx();
-        let attrs = prusti_interface::environment::EnvQuery::new(tcx).get_attributes(did);
-        let name = prusti_interface::utils::read_prusti_attr("ptr_holds", attrs)?;
-        let (idx, field) = tcx
-            .adt_def(did)
-            .non_enum_variant()
-            .fields
-            .iter_enumerated()
-            .find(|(_, f)| f.name.as_str() == name)
-            .unwrap_or_else(|| panic!("`#[ptr_holds]` names no field `{name}`"));
-        let ptr_ty = tcx
-            .type_of(field.did)
+        let attrs = prusti_interface::environment::EnvQuery::new(vcx.tcx()).get_attributes(did);
+        let path = prusti_interface::utils::read_prusti_attr("ptr_holds", attrs)?;
+        let (name, sub) = match path.split_once('.') {
+            Some((name, sub)) => (name.to_string(), Some(sub.to_string())),
+            None => (path, None),
+        };
+        let field_of = |adt: ty::AdtDef<'tcx>, name: &str| {
+            adt.non_enum_variant()
+                .fields
+                .iter_enumerated()
+                .find(|(_, f)| f.name.as_str() == name)
+                .map(|(idx, f)| (idx, f.did))
+                .unwrap_or_else(|| panic!("`#[ptr_holds]` names no field `{name}`"))
+        };
+        let (idx, field) = field_of(vcx.tcx().adt_def(did), &name);
+        let ptr_ty = vcx
+            .tcx()
+            .type_of(field)
             .instantiate_identity()
             .skip_normalization();
         let pointee = match *ptr_ty.kind() {
             ty::TyKind::RawPtr(pointee, _) => pointee,
             ty::TyKind::Adt(adt, args)
-                if tcx.is_diagnostic_item(symbol::sym::NonNull, adt.did()) =>
+                if vcx
+                    .tcx()
+                    .is_diagnostic_item(symbol::sym::NonNull, adt.did()) =>
             {
                 args.type_at(0)
             }
             _ => panic!("`#[ptr_holds]` field `{name}` is not a raw pointer or a `NonNull`"),
         };
-        Some((idx, pointee))
+        let Some(sub) = sub else {
+            return Some((idx, None, pointee));
+        };
+        let ty::TyKind::Adt(pointee_adt, pointee_args) = *pointee.kind() else {
+            panic!("`#[ptr_holds]` pointee `{pointee}` is not a struct");
+        };
+        let (sub_idx, sub_field) = field_of(pointee_adt, &sub);
+        let held = vcx
+            .tcx()
+            .type_of(sub_field)
+            .instantiate(vcx.tcx(), pointee_args)
+            .skip_normalization();
+        Some((idx, Some(sub_idx), held))
     })
 }
 
@@ -360,6 +387,15 @@ fn contents_of<'vir, E: TaskEncoder>(
     let ty_use = deps.require_dep::<TyUsePureEnc>(ty)?;
     let cell_ty = ty.ty.expect_structlike().fields[field.as_usize()].decompose_normalize(ty.args);
     let cell_addr = ty_use.expect_variant_opt(None).fields[field.as_usize()].field_ref(addr);
+    // A plain field is itself the interior location.
+    if cell_ty.ty.special != crate::encoders::ty::RustTySpecial::UnsafeCell {
+        let contents_ty = ty.ty.expect_structlike().fields[field.as_usize()]
+            .decompose_context(ty.ty.params, ty.args);
+        return Ok(Contents {
+            addr: cell_addr,
+            ty: deps.require_dep::<TyUseImpureEnc>(contents_ty)?,
+        });
+    }
     let cell_use = deps.require_dep::<TyUsePureEnc>(cell_ty)?;
     let addr = cell_use.expect_variant_opt(None).fields[0].field_ref(cell_addr);
     let contents_ty =
@@ -967,11 +1003,23 @@ fn deep_with<'vir, E: TaskEncoder>(
                     let contents = contents_of(deps, ty, addr, abi::FieldIdx::from_usize(idx))?;
                     let amount =
                         atoms.amount(*method).call()(addr, args.get_ty(), args.get_const());
+                    let held = vcx
+                        .mk_bin_op_expr(vir::BinOpKind::CmpGt, amount, vcx.mk_no_perm())
+                        .downcast_ty();
+                    // A plain field is a slot itself, as in the shallow
+                    // snapshot where the atom holds none of it.
+                    if field_ty.ty.special != crate::encoders::ty::RustTySpecial::UnsafeCell {
+                        field_snaps.push(vcx.mk_ternary_expr(
+                            held,
+                            proj.generic_to_caller(contents.snap()),
+                            field_snap,
+                        ));
+                        continue;
+                    }
                     let unset = deps.require_dep::<ImUnsetEnc>(())?;
                     let cell_ty_args = deps.require_dep::<GArgsTyEnc>(field_ty.args)?;
                     let slot = vcx.mk_ternary_expr(
-                        vcx.mk_bin_op_expr(vir::BinOpKind::CmpGt, amount, vcx.mk_no_perm())
-                            .downcast_ty(),
+                        held,
                         contents.snap(),
                         unset.call()(cell_ty_args.get_ty()[0]).upcast_ty(),
                     );

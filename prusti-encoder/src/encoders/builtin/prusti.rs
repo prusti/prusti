@@ -167,13 +167,13 @@ impl PrustiBuiltin {
             if tcx.crate_name(impl_def_id.unwrap_or(def_id).krate).as_str() != "prusti_contracts" {
                 return None;
             }
-            // `prusti_contracts::cell` is a copy of `core::cell`: ordinary code
-            // with specifications.
+            // `prusti_contracts::cell` and `::rc` are copies of `core::cell` and
+            // `alloc::rc`: ordinary code with specifications.
             let in_cell_module = |did: DefId| {
                 tcx.def_path(did).data.first().is_some_and(|elem| {
                     elem.data
                         .get_opt_name()
-                        .is_some_and(|name| name.as_str() == "cell")
+                        .is_some_and(|name| matches!(name.as_str(), "cell" | "rc"))
                 })
             };
             if in_cell_module(impl_def_id.unwrap_or(def_id)) {

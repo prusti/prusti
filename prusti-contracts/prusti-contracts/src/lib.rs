@@ -99,6 +99,12 @@ pub use prusti_contracts_proc_macros::field_projection;
 /// of its first argument's referent points to.
 pub use prusti_contracts_proc_macros::container_of;
 
+/// `#[pointee_of(a.b)]` on a body-less `#[pure] #[trusted]` spec function
+/// returning `&S`: Prusti defines the function as the `S` the raw pointer (or
+/// `NonNull`) at the (possibly private) field path `a.b` of its first
+/// argument's referent points to.
+pub use prusti_contracts_proc_macros::pointee_of;
+
 /// `#[im_opaque]` on a struct: the struct has a key of its own, and its atom
 /// contains the atoms of every interior-mutable value stored inline in it.
 pub use prusti_contracts_proc_macros::im_opaque;

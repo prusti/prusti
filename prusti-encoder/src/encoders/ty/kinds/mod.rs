@@ -1,7 +1,7 @@
 //! Encoding for MIR types, organised by type kind.
 
 pub mod arraylike;
-mod r#box;
+pub(crate) mod r#box;
 pub mod enumlike;
 pub mod immref;
 pub mod mutref;

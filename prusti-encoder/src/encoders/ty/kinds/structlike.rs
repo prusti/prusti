@@ -215,7 +215,15 @@ pub(crate) fn ty_impure_variant<'vir>(
     // For a `#[ptr_holds]` struct, the (heap-dependent) address of the held
     // pointee and the amount held.
     let held = if let RustTySpecial::Holds(did, ptr) = task_key.0.special {
-        let address = super::r#box::mk_impure_held_address(data, &fields, ptr, builder);
+        let sub = crate::encoders::ty::im::ptr_holds(did)
+            .and_then(|(_, sub, _)| sub)
+            .map(|sub| {
+                (
+                    data.fields[ptr.as_usize()].0.decompose(task_key.0.params),
+                    sub,
+                )
+            });
+        let address = super::r#box::mk_impure_held_address(deps, data, &fields, ptr, sub, builder)?;
         let amount = crate::encoders::ty::im::holds_amount(deps, did, task_key.0.params)?;
         Some((address, amount))
     } else {

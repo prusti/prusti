@@ -34,8 +34,8 @@ pub use pure::spec::MirSpecEnc;
 pub(super) use spec::with_proc_spec;
 pub use spec::{
     SpecEnc, SpecEncTask, get_container_of, get_field_projection, get_interior_mut_perm,
-    get_pure_unstable, get_pure_unstable_encoding, get_type_drop_spec, get_type_interior_mut,
-    is_function_pure, is_function_trusted, is_type_trusted, kind_is_pure,
+    get_pointee_of, get_pure_unstable, get_pure_unstable_encoding, get_type_drop_spec,
+    get_type_interior_mut, is_function_pure, is_function_trusted, is_type_trusted, kind_is_pure,
     report_kind_refinement_error, resolve_specced_trait_call, spec_is_trusted, spec_items,
 };
 pub use ty::{

@@ -228,6 +228,15 @@ pub fn get_container_of(def_id: DefId) -> Option<(Vec<String>, String)> {
     })
 }
 
+/// The field path of a `#[pointee_of(a.b)]` spec function.
+pub fn get_pointee_of(def_id: DefId) -> Option<Vec<String>> {
+    vir::with_vcx(|vcx| {
+        let attrs = prusti_interface::environment::EnvQuery::new(vcx.tcx()).get_attributes(def_id);
+        prusti_interface::utils::read_prusti_attr("pointee_of", attrs)
+            .map(|path| path.split('.').map(str::to_string).collect())
+    })
+}
+
 /// Whether `def_id` is an `#[interior_mut]`-annotated accessor (with or
 /// without a permission expression).
 pub fn is_interior_mut_accessor(def_id: DefId) -> bool {
@@ -305,21 +314,34 @@ pub fn resolve_specced_trait_call<'tcx>(
         return (def_id, substs);
     }
     let identity = ty::GenericArgs::identity_for_item(tcx, resolved);
-    let (has_extern_spec, pure) =
+    let (has_extern_spec, pure, trusted_with_posts) =
         with_proc_spec(SpecQuery::GetProcKind(resolved, identity), |proc_spec| {
             (
                 proc_spec.extern_spec.is_some(),
                 kind_is_pure(&proc_spec.kind),
+                // A trusted impl with its own contract (a library's, like an
+                // extern spec): its postconditions may read the heap, which
+                // the trait impl's axioms cannot.
+                proc_spec.trusted.extract_inherit().unwrap_or(false)
+                    && matches!(
+                        proc_spec.posts,
+                        SpecificationItem::Inherent(ref posts)
+                            | SpecificationItem::Refined(_, ref posts) if !posts.is_empty()
+                    ),
             )
         })
-        .unwrap_or((false, false));
+        .unwrap_or((false, false, false));
     // A pure impl of an impure trait method: the call is to the impl.
     let pure_impl = pure
         && !with_proc_spec(SpecQuery::GetProcKind(def_id, substs), |proc_spec| {
             kind_is_pure(&proc_spec.kind)
         })
         .unwrap_or(false);
-    if has_extern_spec || pure_impl || get_pure_unstable_encoding(resolved).is_some() {
+    if has_extern_spec
+        || pure_impl
+        || trusted_with_posts
+        || get_pure_unstable_encoding(resolved).is_some()
+    {
         (resolved, resolved_substs)
     } else {
         (def_id, substs)

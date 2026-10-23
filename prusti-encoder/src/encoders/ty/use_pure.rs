@@ -685,6 +685,15 @@ impl<'vir> TyUsePureStruct<'vir> {
 }
 
 impl<'vir> TyUsePureField<'vir> {
+    /// A value of the field in the type's own (generic) context, in the
+    /// caller's context (as [`Self::read`] returns it).
+    pub fn generic_to_caller<Curr, Next>(
+        &self,
+        snap: vir::ExprGenSnap<'vir, Curr, Next>,
+    ) -> vir::ExprGenSnap<'vir, Curr, Next> {
+        self.caster.cast_to_caller_ctx(snap)
+    }
+
     pub fn read<Curr, Next>(
         &self,
         snap: vir::ExprGenCSnap<'vir, Curr, Next>,
@@ -718,6 +727,38 @@ impl<'vir> TyUsePureEnum<'vir> {
     ) -> vir::ExprGenCSnap<'vir, Curr, Next> {
         self.snap_to_discr_snap.call()(snap)
     }
+}
+
+/// The address and metadata of a pointer of type `ty` (a raw pointer, or
+/// structs around one in their first field, as `NonNull`) with snapshot
+/// `snap`.
+pub(crate) fn pointer_parts<'vir, E: TaskEncoder>(
+    deps: &mut task_encoder::TaskEncoderDependencies<'vir, E>,
+    params: GParams<'vir>,
+    mut ty: ty::Ty<'vir>,
+    mut snap: vir::ExprCSnap<'vir>,
+) -> Result<(vir::ExprRef<'vir>, vir::ExprSnap<'vir>), EncodeFullError<'vir, E>> {
+    while let ty::TyKind::Adt(adt, substs) = *ty.kind() {
+        let ty_use =
+            deps.require_dep::<TyUsePureEnc>(super::RustTyDecomposition::from_ty(ty, params))?;
+        snap = ty_use.expect_structlike()[abi::FieldIdx::ZERO]
+            .read(snap)
+            .downcast_ty();
+        ty = vir::with_vcx(|vcx| {
+            adt.non_enum_variant().fields[abi::FieldIdx::ZERO]
+                .ty(vcx.tcx(), substs)
+                .skip_normalization()
+        });
+        // A pattern type (e.g. `*const T is !null` in `NonNull`) is encoded as
+        // its base type.
+        if let ty::TyKind::Pat(base, _) = *ty.kind() {
+            ty = base;
+        }
+    }
+    let raw_use =
+        deps.require_dep::<TyUsePureEnc>(super::RustTyDecomposition::from_ty(ty, params))?;
+    let raw = raw_use.expect_raw();
+    Ok((raw.address_access(snap), raw.metadata_access(snap)))
 }
 
 /// Walks the (possibly private) field path `path` from a value of type `ty`
@@ -792,28 +833,18 @@ pub(crate) fn project_field_path<'vir, E: TaskEncoder>(
             };
             let ptr_snap = variant[ptr].read(snap.downcast_ty()).downcast_ty();
             addr = address_access.call()(ptr_snap);
-            // The pointer's metadata, down the chain to the raw pointer.
-            let mut ptr_ty = adt.non_enum_variant().fields[ptr]
+            let ptr_ty = adt.non_enum_variant().fields[ptr]
                 .ty(vcx.tcx(), substs)
                 .skip_normalization();
-            let mut ptr_snap = ptr_snap;
-            while let ty::TyKind::Adt(ptr_adt, ptr_substs) = *ptr_ty.kind() {
-                let ptr_use = deps.require_dep::<TyUsePureEnc>(
+            if let Some((_, Some(sub), _)) = crate::encoders::ty::im::ptr_holds(adt.did()) {
+                addr = super::kinds::r#box::held_sub_address(
+                    deps,
                     super::RustTyDecomposition::from_ty(ptr_ty, params),
+                    sub,
+                    addr,
                 )?;
-                ptr_snap = ptr_use.expect_structlike()[abi::FieldIdx::ZERO]
-                    .read(ptr_snap)
-                    .downcast_ty();
-                ptr_ty = ptr_adt.non_enum_variant().fields[abi::FieldIdx::ZERO]
-                    .ty(vcx.tcx(), ptr_substs)
-                    .skip_normalization();
-                if let ty::TyKind::Pat(base, _) = *ptr_ty.kind() {
-                    ptr_ty = base;
-                }
             }
-            let raw_use = deps
-                .require_dep::<TyUsePureEnc>(super::RustTyDecomposition::from_ty(ptr_ty, params))?;
-            metadata = Some(raw_use.expect_raw().metadata_access(ptr_snap));
+            metadata = Some(pointer_parts(deps, params, ptr_ty, ptr_snap)?.1);
             snap = held_field.read(snap.downcast_ty());
             ty = ty::EarlyBinder::bind(vcx.tcx(), pointee)
                 .instantiate(vcx.tcx(), substs)

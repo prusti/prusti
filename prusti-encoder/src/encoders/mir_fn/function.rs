@@ -190,6 +190,61 @@ fn container_of_body<'vir>(
         .upcast_ty()))
 }
 
+/// The body of a `#[pointee_of(a.b)]` spec function: a shared reference to
+/// what the pointer at the field path `a.b` of the first argument's referent
+/// points to. Its shallow snapshot is left arbitrary. The outer error is an
+/// encoding failure, the inner one a malformed annotation.
+fn pointee_of_body<'vir>(
+    vcx: &'vir vir::VirCtxt<'vir>,
+    deps: &mut TaskEncoderDependencies<'vir, FunctionEnc>,
+    def_id: DefId,
+    params: GParams<'vir>,
+    path: &[String],
+    arg: vir::ExprSnap<'vir>,
+) -> Result<Result<vir::ExprSnap<'vir>, String>, task_encoder::EncodeFullError<'vir, FunctionEnc>> {
+    let sig = vcx
+        .tcx()
+        .fn_sig(def_id)
+        .instantiate_identity()
+        .skip_binder();
+    let Some(ref_ty) = sig.inputs().first().copied() else {
+        return Ok(Err("the function takes no argument".to_string()));
+    };
+    let ty::TyKind::Ref(_, self_ty, ty::Mutability::Not) = *ref_ty.kind() else {
+        return Ok(Err(
+            "the first argument must be a shared reference".to_string()
+        ));
+    };
+    let ref_use = deps.require_dep::<TyUsePureEnc>(RustTyDecomposition::from_ty(ref_ty, params))?;
+    let ref_data = ref_use.expect_immref();
+    let (ptr_ty, snap, _, _) = match crate::encoders::ty::use_pure::project_field_path(
+        vcx,
+        deps,
+        params,
+        path,
+        self_ty,
+        ref_data.value_access(arg.downcast_ty()),
+        ref_data.addr_access(arg.downcast_ty()),
+    )? {
+        Ok(projected) => projected,
+        Err(message) => return Ok(Err(message)),
+    };
+    let (addr, metadata) =
+        crate::encoders::ty::use_pure::pointer_parts(deps, params, ptr_ty, snap.downcast_ty())?;
+    let ret_ty = sig.output();
+    let ty::TyKind::Ref(_, pointee_ty, ty::Mutability::Not) = *ret_ty.kind() else {
+        return Ok(Err("the return type must be a shared reference".to_string()));
+    };
+    let value = deps
+        .require_ref::<TyUsePureEnc>(RustTyDecomposition::from_ty(pointee_ty, params))?
+        .arbitrary_to_snap();
+    let ret_use = deps.require_dep::<TyUsePureEnc>(RustTyDecomposition::from_ty(ret_ty, params))?;
+    Ok(Ok(ret_use
+        .expect_immref()
+        .prim_to_snap(addr, metadata, value)
+        .upcast_ty()))
+}
+
 // Function wrapper
 
 pub struct FunctionCallEnc;
@@ -314,7 +369,8 @@ impl TaskEncoder for FunctionCallEnc {
         // A field projection or container is an address computation: it
         // needs the address of its reference argument.
         let keeps_addresses = crate::encoders::get_field_projection(callee_def_id).is_some()
-            || crate::encoders::get_container_of(callee_def_id).is_some();
+            || crate::encoders::get_container_of(callee_def_id).is_some()
+            || crate::encoders::get_pointee_of(callee_def_id).is_some();
         Ok((
             (),
             FunctionCallEncOutput {
@@ -450,6 +506,18 @@ impl TaskEncoder for FunctionEnc {
                     Err(message) => {
                         vcx.emit_early_error(PrustiError::incorrect(
                             format!("invalid `#[container_of]`: {message}"),
+                            vcx.tcx().def_span(def_id).into(),
+                        ));
+                        None
+                    }
+                }
+            } else if let Some(path) = crate::encoders::get_pointee_of(def_id) {
+                let arg = vcx.mk_local_ex(local_defs.local_decl_args().next().unwrap());
+                match pointee_of_body(vcx, deps, def_id, params, &path, arg)? {
+                    Ok(expr) => Some(expr),
+                    Err(message) => {
+                        vcx.emit_early_error(PrustiError::incorrect(
+                            format!("invalid `#[pointee_of]`: {message}"),
                             vcx.tcx().def_span(def_id).into(),
                         ));
                         None

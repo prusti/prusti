@@ -1075,16 +1075,25 @@ pub fn im_type_attribute(name: &str, attr: TokenStream, tokens: TokenStream) -> 
     let method: Option<syn::ImplItemMethod> = match name {
         "im_opaque" => None,
         "ptr_holds" => {
+            // `FIELD` or `FIELD.POINTEE_FIELD`: the pointee, or a field of it.
             let parser = |input: syn::parse::ParseStream| {
                 let field: syn::Ident = input.parse()?;
+                let sub = if input.parse::<Option<syn::Token![.]>>()?.is_some() {
+                    Some(input.parse::<syn::Ident>()?)
+                } else {
+                    None
+                };
                 let _: syn::Token![,] = input.parse()?;
                 let amount: syn::Expr = input.parse()?;
-                Ok((field, amount))
+                Ok((field, sub, amount))
             };
-            let (field, amount) = handle_result!(syn::parse::Parser::parse2(parser, attr));
+            let (field, sub, amount) = handle_result!(syn::parse::Parser::parse2(parser, attr));
             let kind = format!("holds {field}");
             let fn_name = syn::Ident::new(&format!("prusti_{name}_{field}"), span);
-            marker_value = Some(field.to_string());
+            marker_value = Some(match sub {
+                Some(sub) => format!("{field}.{sub}"),
+                None => field.to_string(),
+            });
             // The amount is part of the struct's predicate, so it cannot
             // depend on the value.
             Some(parse_quote_spanned! {span=>
@@ -1162,14 +1171,20 @@ pub fn im_type_attribute(name: &str, attr: TokenStream, tokens: TokenStream) -> 
             // `at = container_of(PATH, FIELD)` is the method's own definition
             // (rather than a call of a `#[container_of]` function, which the
             // encoder would see through one more function).
-            let container_of = match &expr {
+            // `at = pointee(PATH)`, likewise: the pointee of the pointer at PATH.
+            let address = match &expr {
                 syn::Expr::Call(call) => match &*call.func {
-                    syn::Expr::Path(func) if func.path.is_ident("container_of") => Some(call),
+                    syn::Expr::Path(func) if func.path.is_ident("container_of") => {
+                        Some((call, quote_spanned! {span=> container_of }))
+                    }
+                    syn::Expr::Path(func) if func.path.is_ident("pointee") => {
+                        Some((call, quote_spanned! {span=> pointee_of }))
+                    }
                     _ => None,
                 },
                 _ => None,
             };
-            if let Some(call) = container_of {
+            if let Some((call, attribute)) = address {
                 let args = call.args.iter().collect::<Vec<_>>();
                 Some(parse_quote_spanned! {span=>
                     #[doc(hidden)]
@@ -1177,7 +1192,7 @@ pub fn im_type_attribute(name: &str, attr: TokenStream, tokens: TokenStream) -> 
                     #[prusti::im_amount = #kind]
                     #[::prusti_contracts::pure]
                     #[::prusti_contracts::trusted]
-                    #[::prusti_contracts::container_of(#(#args),*)]
+                    #[::prusti_contracts::#attribute(#(#args),*)]
                     fn prusti_im_shares(&self) -> &#lifetime #ty {
                         unimplemented!()
                     }
@@ -1231,6 +1246,24 @@ pub fn container_of(attr: TokenStream, tokens: TokenStream) -> TokenStream {
     }
     quote_spanned! {tokens.span()=>
         #[prusti::container_of = #value]
+        #tokens
+    }
+}
+
+/// `#[pointee_of(a.b)]`: marks a body-less spec function returning `&S` as
+/// the `S` the pointer at the (possibly private) field path `a.b` of its
+/// first argument's referent points to.
+pub fn pointee_of(attr: TokenStream, tokens: TokenStream) -> TokenStream {
+    let path: String = attr.to_string().split_whitespace().collect();
+    if path.is_empty() {
+        return syn::Error::new(
+            attr.span(),
+            "the `#[pointee_of]` attribute takes a field path such as `a.b`",
+        )
+        .to_compile_error();
+    }
+    quote_spanned! {tokens.span()=>
+        #[prusti::pointee_of = #path]
         #tokens
     }
 }
