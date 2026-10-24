@@ -1079,7 +1079,8 @@ impl<T: ?Sized, A: Allocator> Weak<T, A> {
         Some(r) => !weak_dangles(self) && old(weak_strong(self)) > 0
             && rc_ptr(r) === weak_ptr(self)
             && rc_strong(r) == old(weak_strong(self)) + 1
-            && rc_weak(r) == old(weak_weak(self)),
+            && rc_weak(r) == old(weak_weak(self))
+            && **r === weak_inner(self).value,
         None => weak_dangles(self) || weak_strong(self) == 0,
     })]
     pub fn upgrade(&self) -> Option<Rc<T, A>>
