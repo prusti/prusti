@@ -1616,6 +1616,36 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         Ok(Some(snaps))
     }
 
+    /// Whether `statement` accesses memory through a raw pointer.
+    fn derefs_raw_ptr(&self, statement: &mir::Statement<'vir>, location: mir::Location) -> bool {
+        use mir::visit::Visitor;
+        struct RawDerefs<'a, 'vir> {
+            local_decls: &'a mir::LocalDecls<'vir>,
+            tcx: ty::TyCtxt<'vir>,
+            found: bool,
+        }
+        impl<'vir> Visitor<'vir> for RawDerefs<'_, 'vir> {
+            fn visit_place(
+                &mut self,
+                place: &mir::Place<'vir>,
+                _context: mir::visit::PlaceContext,
+                _location: mir::Location,
+            ) {
+                self.found |= place.iter_projections().any(|(base, elem)| {
+                    elem == mir::ProjectionElem::Deref
+                        && base.ty(self.local_decls, self.tcx).ty.is_raw_ptr()
+                });
+            }
+        }
+        let mut visitor = RawDerefs {
+            local_decls: self.local_decls,
+            tcx: self.vcx.tcx(),
+            found: false,
+        };
+        visitor.visit_statement(statement, location);
+        visitor.found
+    }
+
     pub(crate) fn encode_place(
         &mut self,
         place: Place<'vir>,
@@ -2834,6 +2864,27 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             self.new_before_label(location);
 
             comment!(self, "[MIR] {location:?}: {statement:?}");
+
+            // Memory behind a raw pointer is only accessible where the program
+            // makes it so (e.g. the contents of an interior-mutable value,
+            // while its atom is open): a missing permission is the program's
+            // error, not Prusti's.
+            if self.derefs_raw_ptr(statement, location) {
+                let span = statement.source_info.span;
+                for kind in [
+                    "application.precondition:insufficient.permission",
+                    "exhale.failed:insufficient.permission",
+                    "call.precondition:insufficient.permission",
+                ] {
+                    self.vcx.handle_error(kind, move |_| {
+                        Some(vec![PrustiError::verification(
+                            "the memory behind this raw pointer might not be accessible here \
+                             (e.g. the contents of an interior-mutable value need `im_open`)",
+                            span.into(),
+                        )])
+                    });
+                }
+            }
 
             self.pcg_phase_actions(location, EvalStmtPhase::PreOperands)?;
 
