@@ -334,10 +334,13 @@ fn weak_ptr<T: ?Sized, A: Allocator>(_w: &Weak<T, A>) -> NonNull<RcInner<T>> {
     unimplemented!()
 }
 
-/// Whether a `Weak` dangles (comes from `Weak::new`).
+/// Whether a `Weak` dangles (comes from `Weak::new`). Defined by its
+/// postcondition: `===` is not executable, so the body cannot be checked.
 #[pure]
+#[trusted]
+#[ensures(result == (weak_ptr(w) === weak_dangling::<T>()))]
 fn weak_dangles<T: ?Sized, A: Allocator>(w: &Weak<T, A>) -> bool {
-    Ghost::new_ref(&weak_ptr(w)) == Ghost::new_ref(&weak_dangling::<T>())
+    unimplemented!()
 }
 
 /// The strong count of a (not dangling) `Weak`'s allocation.
