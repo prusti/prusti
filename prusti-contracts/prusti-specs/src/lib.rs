@@ -869,6 +869,17 @@ pub fn refine_trait_spec(_attr: TokenStream, tokens: TokenStream) -> TokenStream
         }
         _ => None,
     };
+    // Nor `[const]` bounds: parse the generics without them, and put the
+    // original generics back on the impl (not on the generated spec items,
+    // which are not `const`).
+    let original_generics = impl_generics_range(&trees).map(|range| trees[range].to_vec());
+    if let Some(range) = impl_generics_range(&trees) {
+        let generics = trees
+            .drain(range.clone())
+            .filter(|tree| !is_const_bound_marker(tree))
+            .collect::<Vec<_>>();
+        trees.splice(range.start..range.start, generics);
+    }
     let mut impl_block: syn::ItemImpl =
         handle_result!(syn::parse2(trees.into_iter().collect::<TokenStream>()));
     let impl_attrs = std::mem::take(&mut impl_block.attrs);
@@ -952,6 +963,11 @@ pub fn refine_trait_spec(_attr: TokenStream, tokens: TokenStream) -> TokenStream
     }
 
     impl_block.items = new_items;
+    let mut impl_trees = impl_block.to_token_stream().into_iter().collect::<Vec<_>>();
+    if let (Some(original), Some(range)) = (original_generics, impl_generics_range(&impl_trees)) {
+        impl_trees.splice(range, original);
+    }
+    let impl_block = impl_trees.into_iter().collect::<TokenStream>();
     quote_spanned! {impl_block.span()=>
         #(#generated_spec_items)*
         #(#impl_attrs)*
@@ -959,6 +975,46 @@ pub fn refine_trait_spec(_attr: TokenStream, tokens: TokenStream) -> TokenStream
         #[prusti::specs_version = #SPECS_VERSION]
         #constness #impl_block
     }
+}
+
+/// The range of the generics (`<..>`) right after the `impl` keyword in
+/// `trees`, if any.
+fn impl_generics_range(trees: &[TokenTree]) -> Option<std::ops::Range<usize>> {
+    let impl_idx = trees
+        .iter()
+        .position(|tree| matches!(tree, TokenTree::Ident(i) if i == "impl"))?;
+    let start = impl_idx + 1;
+    if !matches!(trees.get(start), Some(TokenTree::Punct(p)) if p.as_char() == '<') {
+        return None;
+    }
+    let mut depth = 0;
+    for (idx, tree) in trees.iter().enumerate().skip(start) {
+        let TokenTree::Punct(p) = tree else {
+            continue;
+        };
+        // `->` (in `Fn() -> T` bounds) closes nothing.
+        let after_dash = idx > 0
+            && matches!(&trees[idx - 1], TokenTree::Punct(d)
+                if d.as_char() == '-' && d.spacing() == proc_macro2::Spacing::Joint);
+        match p.as_char() {
+            '<' => depth += 1,
+            '>' if !after_dash => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(start..idx + 1);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Whether `tree` is the `[const]` of a `[const] Trait` bound.
+fn is_const_bound_marker(tree: &TokenTree) -> bool {
+    matches!(tree, TokenTree::Group(g)
+        if g.delimiter() == proc_macro2::Delimiter::Bracket
+            && g.stream().to_string() == "const")
 }
 
 /// `#[field_projection(a.b)]`: marks a body-less spec function as the
