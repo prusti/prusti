@@ -36,6 +36,29 @@ pub struct PledgeExpr<'vir> {
 #[derive(Debug, Clone, Copy)]
 pub struct PledgeArgs<'vir>(&'vir FxHashMap<mir::Local, vir::ExprSnap<'vir>>, mir::Local);
 
+impl<'vir> PledgeArgs<'vir> {
+    /// The arguments with `f` applied to each (to the result as
+    /// `RETURN_PLACE`).
+    pub fn map(
+        self,
+        mut f: impl FnMut(mir::Local, vir::ExprSnap<'vir>) -> vir::ExprSnap<'vir>,
+    ) -> Self {
+        let args = self
+            .0
+            .iter()
+            .map(|(local, snap)| {
+                let arg = if *local == self.1 {
+                    mir::RETURN_PLACE
+                } else {
+                    *local
+                };
+                (*local, f(arg, *snap))
+            })
+            .collect();
+        vir::with_vcx(|vcx| Self(vcx.alloc(args), self.1))
+    }
+}
+
 impl<'vir> std::ops::Index<mir::Local> for PledgeArgs<'vir> {
     type Output = vir::ExprSnap<'vir>;
 

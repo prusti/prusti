@@ -4,7 +4,7 @@ use crate::encoders::{
     ty::{
         RustTyDecomposition,
         generics::{GArgs, GArgsTyEnc, GParams, GenericParamsEnc},
-        im::on_expiry,
+        im::{deep_snap, on_expiry},
         indirect::{IndirectPredicatesEnc, projection_for_generalized_idx},
     },
 };
@@ -331,11 +331,23 @@ impl<'vir> WandEncOutput<'vir> {
     ) -> Option<vir::Wand<'vir>> {
         debug_assert!(!wand_data.lhs.is_empty());
         let generics = self.generics_subst(call_ctx, vcx, deps);
+        // Specifications see deep values (see `MirSpecEnc`).
+        let fn_sig = self.fn_sig(vcx, call_ctx);
+        let g_params = self.g_params(vcx, call_ctx);
+        let deep_args = pledge_args.map(|local, snap| {
+            let ty = if local == mir::RETURN_PLACE {
+                fn_sig.output()
+            } else {
+                fn_sig.inputs()[local.index() - 1]
+            };
+            let ty = RustTyDecomposition::from_ty(ty, g_params);
+            deep_snap(deps, ty, vcx.mk_null(), snap).unwrap()
+        });
         let pledge_expr = |pledge: &PledgeExpr<'vir>| match pledge_old_label {
             Some(label) => {
-                vcx.with_local_subst(generics, || pledge.expr_at_label(pledge_args, label))
+                vcx.with_local_subst(generics, || pledge.expr_at_label(deep_args, label))
             }
-            None => pledge.expr(pledge_args),
+            None => pledge.expr(deep_args),
         };
         let mut rhs = wand_data
             .rhs
