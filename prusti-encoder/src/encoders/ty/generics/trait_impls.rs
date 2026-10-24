@@ -119,6 +119,28 @@ impl TaskEncoder for TraitImplEnc {
                     }
                 }
                 // TODO: wands
+                // The referents of the arguments and their IM footprints, which
+                // the specifications read (as in the method's contract).
+                let wands = deps.require_dep::<crate::encoders::WandEnc>(
+                    crate::encoders::WandEncTask {
+                        data: pcg::borrow_pcg::FunctionData::new(impl_item_def_id),
+                    },
+                )?;
+                impure_arg_preds.extend(wands.indirect_pres(vcx, &local_defs, deps));
+                let mut fp_args = Vec::new();
+                for arg in local_defs.args() {
+                    if crate::encoders::ty::im::reaches_im(arg.ty) {
+                        fp_args.extend(crate::encoders::ty::im::footprint(
+                            deps,
+                            arg.ty,
+                            arg.local_ex,
+                            arg.impure_snap,
+                        )?);
+                    }
+                }
+                if !fp_args.is_empty() {
+                    impure_arg_preds.push(crate::encoders::ty::im::footprint_assertion(&fp_args));
+                }
 
                 let mut pre_weaken_pres = impure_arg_preds.clone();
                 pre_weaken_pres.extend(trait_item_spec.pre_exprs());
@@ -173,6 +195,17 @@ impl TaskEncoder for TraitImplEnc {
 
                 // exceptionally, we also put the allocated result in the precondition
                 post_strengthen_pres.push(local_defs[mir::RETURN_PLACE].impure_pred);
+                let result = &local_defs[mir::RETURN_PLACE];
+                if crate::encoders::ty::im::reaches_im(result.ty) {
+                    let fp_result = crate::encoders::ty::im::footprint(
+                        deps,
+                        result.ty,
+                        result.local_ex,
+                        result.impure_snap,
+                    )?;
+                    post_strengthen_pres
+                        .push(crate::encoders::ty::im::footprint_assertion(&fp_result));
+                }
 
                 // here we inhale the impl postconditions, since they
                 // can contain "old" variables
