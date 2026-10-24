@@ -581,6 +581,8 @@ impl<T: ?Sized> Cell<T> {
     /// let ptr = c.as_ptr();
     /// ```
     #[inline]
+    #[pure]
+    #[trusted]
     pub const fn as_ptr(&self) -> *mut T {
         self.value.get()
     }
@@ -629,6 +631,9 @@ impl<T: ?Sized> Cell<T> {
     /// assert_eq!(slice_cell.len(), 3);
     /// ```
     #[inline]
+    #[trusted]
+    #[ensures(*cell_value(result) === *old(&*t))]
+    #[after_expiry(Ghost::new_ref(&*t) == before_expiry(Ghost::new_ref(cell_value(result))))]
     pub const fn from_mut(t: &mut T) -> &Cell<T> {
         // SAFETY: `&mut` ensures unique access.
         unsafe { &*(t as *mut T as *const Cell<T>) }
@@ -1334,6 +1339,8 @@ impl<T: ?Sized> RefCell<T> {
     /// let ptr = c.as_ptr();
     /// ```
     #[inline]
+    #[pure]
+    #[trusted]
     pub const fn as_ptr(&self) -> *mut T {
         self.value.get()
     }
@@ -1772,8 +1779,15 @@ const impl<T: ?Sized> Deref for RefMut<'_, T> {
     }
 }
 
+#[refine_trait_spec]
 const impl<T: ?Sized> DerefMut for RefMut<'_, T> {
     #[inline]
+    #[trusted]
+    #[ensures(*result === *old(&**self))]
+    #[after_expiry(refmut_flag(self) as *const Cell<BorrowCounter>
+        === old(refmut_flag(self) as *const Cell<BorrowCounter>))]
+    #[after_expiry(&**self as *const T === old(&**self as *const T))]
+    #[after_expiry(Ghost::new_ref(&**self) == before_expiry(Ghost::new_ref(&*result)))]
     fn deref_mut(&mut self) -> &mut T {
         // SAFETY: the value is accessible as long as we hold our borrow.
         unsafe { self.value.as_mut() }

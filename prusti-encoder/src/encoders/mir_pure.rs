@@ -1217,6 +1217,10 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                                         use vir::Reify;
                                         let addr = ref_expr.reify(vcx, lctx);
                                         let snap = shallow.reify(vcx, lctx);
+                                        // Reified as well, for the local
+                                        // substitution of the callee's generics
+                                        // at a pledge's call site.
+                                        let deep = deep.lazy().reify(vcx, lctx);
                                         vcx.mk_let_expr(
                                             addr_decl,
                                             addr,

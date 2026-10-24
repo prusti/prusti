@@ -293,7 +293,7 @@ impl TaskEncoder for ImOpaqueEnc {
                 .iter()
                 .map(|entry| vcx.mk_predicate_app_expr(entry.app(vcx.mk_wildcard())))
                 .collect::<Vec<_>>();
-            let inner = deep_with(deps, ty, self_ex, snap, false)?;
+            let inner = deep_with(deps, ty, self_ex, snap, DeepMode::Atom)?;
             let nonneg_post = vcx.alloc_slice(&[vcx
                 .mk_bin_op_expr(
                     vir::BinOpKind::CmpGe,
@@ -570,6 +570,17 @@ impl<'vir> FpEntry<'vir> {
                 Some(condition) => vcx.mk_ternary_expr(condition, amount, vcx.mk_no_perm()),
                 None => amount,
             }
+        })
+    }
+
+    /// The entry with its key, amount and condition evaluated in the
+    /// pre-state.
+    pub(crate) fn in_old(&self) -> Self {
+        vir::with_vcx(|vcx| Self {
+            addr: vcx.mk_old_expr(self.addr),
+            amount: self.amount.map(|amount| vcx.mk_old_expr(amount)),
+            condition: self.condition.map(|condition| vcx.mk_old_expr(condition)),
+            ..*self
         })
     }
 
@@ -1048,23 +1059,46 @@ pub(crate) fn deep_snap<'vir, E: TaskEncoder>(
     addr: vir::ExprRef<'vir>,
     snap: vir::ExprSnap<'vir>,
 ) -> Result<vir::ExprSnap<'vir>, EncodeFullError<'vir, E>> {
-    deep_with(deps, ty, addr, snap, true)
+    deep_with(deps, ty, addr, snap, DeepMode::Call)
 }
 
-/// Like [`deep_snap`]; for an `#[im_opaque]` `ty`, `own` says whether its own
-/// atom is held (and read) or the read happens inside its definition, where
-/// only the atoms it folds can be read.
+/// How [`deep_with`] reads the atoms of `#[im_opaque]` and `#[im_shares]`
+/// values.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DeepMode {
+    /// Through their deep functions ([`DeepFnEnc`]): a deep value contains no
+    /// `unfolding`, which Silicon cannot match in a wand (a pledge).
+    Call,
+    /// By unfolding the atoms, as in the deep functions' bodies.
+    Inline,
+    /// Inside the definition of the atom of the outermost `#[im_opaque]`
+    /// value, where only the atoms it folds can be read.
+    Atom,
+}
+
 fn deep_with<'vir, E: TaskEncoder>(
     deps: &mut TaskEncoderDependencies<'vir, E>,
     ty: RustTyDecomposition<'vir>,
     addr: vir::ExprRef<'vir>,
     snap: vir::ExprSnap<'vir>,
-    own: bool,
+    mode: DeepMode,
 ) -> Result<vir::ExprSnap<'vir>, EncodeFullError<'vir, E>> {
     let vcx = vir::with_vcx(|vcx| vcx);
     if !reaches_im(ty) {
         return Ok(snap);
     }
+    if mode == DeepMode::Call
+        && let Some(did) = ty.ty.im_opaque.or(ty.ty.im_annotated)
+    {
+        let deep = deps.require_dep::<DeepFnEnc>(did)?;
+        let args = deps.require_dep::<GArgsTyEnc>(ty.args)?;
+        return Ok(deep.call()(addr, snap, args.get_ty(), args.get_const()));
+    }
+    let own = mode != DeepMode::Atom;
+    let nested = match mode {
+        DeepMode::Call => DeepMode::Call,
+        DeepMode::Inline | DeepMode::Atom => DeepMode::Inline,
+    };
     if let Some(did) = ty.ty.im_opaque {
         let atoms = deps.require_ref::<ImOpaqueEnc>(did)?;
         let args = deps.require_dep::<GArgsTyEnc>(ty.args)?;
@@ -1116,7 +1150,7 @@ fn deep_with<'vir, E: TaskEncoder>(
                         .upcast_ty()
                 }
                 _ if annotated => field_snap,
-                _ => deep_with(deps, field_ty, proj.field_ref(addr), field_snap, true)?,
+                _ => deep_with(deps, field_ty, proj.field_ref(addr), field_snap, nested)?,
             });
         }
         let value = variant.field_snaps_to_snap(field_snaps).upcast_ty();
@@ -1142,7 +1176,7 @@ fn deep_with<'vir, E: TaskEncoder>(
                         field.decompose_normalize(ty.args),
                         proj.field_ref(addr),
                         proj.read(snap_c),
-                        true,
+                        nested,
                     )?,
                     // A held pointee (of a `Box` or a `#[ptr_holds]`) is
                     // shallow.
@@ -1150,7 +1184,7 @@ fn deep_with<'vir, E: TaskEncoder>(
                     // The shared value, deep.
                     crate::encoders::ty::RustFieldAddress::Slot => {
                         let shared = shared.as_ref().unwrap();
-                        let deep = deep_with(deps, shared.ty, shared.addr, shared.snap, true)?;
+                        let deep = deep_with(deps, shared.ty, shared.addr, shared.snap, nested)?;
                         let slot_ty = field.decompose_normalize(ty.args);
                         deps.require_dep::<TyUsePureEnc>(slot_ty)?
                             .expect_immref()
@@ -1190,7 +1224,7 @@ fn deep_with<'vir, E: TaskEncoder>(
             let referent = data.referent.decompose_normalize(ty.args);
             let ref_use = ty_use.expect_immref();
             let r_addr = ref_use.addr_access(snap_c);
-            let value = deep_with(deps, referent, r_addr, ref_use.value_access(snap_c), true)?;
+            let value = deep_with(deps, referent, r_addr, ref_use.value_access(snap_c), nested)?;
             Ok(ref_use
                 .prim_to_snap(r_addr, ref_use.metadata_access(snap_c), value)
                 .upcast_ty())
@@ -1217,7 +1251,7 @@ fn deep_with<'vir, E: TaskEncoder>(
                         field.decompose_normalize(ty.args),
                         proj.field_ref(addr),
                         proj.read(snap_c),
-                        true,
+                        nested,
                     )?);
                 }
                 let deep = variant_use.field_snaps_to_snap(field_snaps).upcast_ty();
@@ -1258,6 +1292,102 @@ pub(crate) fn reaches_im(ty: RustTyDecomposition<'_>) -> bool {
         }
     }
     go(ty, &mut Vec::new())
+}
+
+/// The deep snapshot of a value of the `#[im_opaque]` or `#[im_shares]`
+/// struct `did`, as a function of its address and shallow snapshot that reads
+/// its footprint.
+pub(crate) struct DeepFnEnc;
+
+pub(crate) type DeepFn<'vir> =
+    vir::FunctionIdn<'vir, (vir::Ref, vir::Snap, vir::ManyTyVal, vir::ManyCSnap), vir::Snap>;
+
+impl TaskEncoder for DeepFnEnc {
+    task_encoder::encoder_cache!(DeepFnEnc);
+    const ENCODER_NAME: &'static str = "interior mutability deep snapshot encoder";
+    type TaskDescription<'vir> = DefId;
+    type OutputFullDependency<'vir> = DeepFn<'vir>;
+    type OutputFullLocal<'vir> = vir::Function<'vir>;
+
+    fn task_to_key<'vir>(task: &Self::TaskDescription<'vir>) -> Self::TaskKey<'vir> {
+        *task
+    }
+
+    fn do_encode_full<'vir>(
+        did: &Self::TaskKey<'vir>,
+        deps: &mut TaskEncoderDependencies<'vir, Self>,
+    ) -> task_encoder::EncodeFullResult<'vir, Self> {
+        vir::with_vcx(|vcx| {
+            let params = GParams::from(*did);
+            let generics = deps.require_dep::<GenericParamsEnc>(params)?;
+            let identity = vcx
+                .tcx()
+                .type_of(*did)
+                .instantiate_identity()
+                .skip_normalization();
+            let ty = RustTyDecomposition::from_ty(identity, params);
+            let snap_ty = deps.require_ref::<TyUsePureEnc>(ty)?.snapshot;
+            let deep: DeepFn<'vir> = vir::FunctionIdn::new(
+                vir::vir_format_identifier!(
+                    vcx,
+                    "deep_{}",
+                    vir::ViperIdent::from_def_id(vcx, *did)
+                ),
+                (
+                    vir::TYPE_REF,
+                    snap_ty,
+                    generics.ty_args(),
+                    generics.const_args(),
+                ),
+                snap_ty,
+            );
+            deps.emit_output_ref(*did, ())?;
+
+            let addr_decl = vcx.mk_local_decl("addr", vir::TYPE_REF);
+            let snap_decl = vcx.mk_local_decl("snap", snap_ty);
+            let addr = vcx.mk_local_ex(addr_decl);
+            let snap = vcx.mk_local_ex(snap_decl);
+            let mut entries = Vec::new();
+            footprint_into(deps, ty, addr, snap, false, false, false, &mut entries)?;
+            // The deep value reads no dependent atom.
+            let pres = entries
+                .iter()
+                .filter(|entry| entry.amount.is_none())
+                .map(|entry| {
+                    let acc = vcx.mk_predicate_app_expr(entry.app(vcx.mk_wildcard()));
+                    match entry.condition {
+                        Some(condition) => vcx
+                            .mk_bin_op_expr(vir::BinOpKind::Implies, condition, acc)
+                            .downcast_ty(),
+                        None => acc,
+                    }
+                })
+                .collect::<Vec<_>>();
+            let body = deep_with(deps, ty, addr, snap, DeepMode::Inline)?;
+            Ok((
+                vcx.mk_function(
+                    deep,
+                    (
+                        addr_decl,
+                        snap_decl,
+                        generics.ty_decls(),
+                        generics.const_decls(),
+                    ),
+                    vcx.alloc_slice(&pres),
+                    &[],
+                    None,
+                    Some(body),
+                ),
+                deep,
+            ))
+        })
+    }
+
+    fn emit_outputs<'vir>(program: &mut task_encoder::Program<'vir>) {
+        for function in Self::all_outputs_local_no_errors(program) {
+            program.add_function(function);
+        }
+    }
 }
 
 /// The inverse of the address of the field `field` of the struct `did`, for
