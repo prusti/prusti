@@ -1399,6 +1399,22 @@ fn deep_with<'vir, E: TaskEncoder>(
     }
 }
 
+/// A type in `ty` whose contents reach interior-mutable values
+/// (`RefCell<Cell<_>>`, `Rc<RefCell<_>>`), if any. The encoding does not
+/// support these yet: the contents are held generically, without the atoms
+/// they would reach.
+pub(crate) fn nested_im<'tcx>(ty: ty::Ty<'tcx>, params: GParams<'tcx>) -> Option<ty::Ty<'tcx>> {
+    ty.walk().filter_map(|arg| arg.as_type()).find(|inner| {
+        let ty::TyKind::Adt(adt, args) = *inner.kind() else {
+            return false;
+        };
+        (is_im_opaque(adt.did()) || is_im_sharer(adt.did()))
+            && args
+                .types()
+                .any(|arg| reaches_im(RustTyDecomposition::from_ty(arg, params)))
+    })
+}
+
 /// Whether a value of `ty` reaches an `#[im_opaque]` value, i.e. whether its
 /// deep snapshot differs from its shallow one.
 pub(crate) fn reaches_im(ty: RustTyDecomposition<'_>) -> bool {

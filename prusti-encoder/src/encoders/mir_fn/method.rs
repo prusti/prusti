@@ -207,6 +207,29 @@ impl TaskEncoder for MethodEnc {
                 (def_id, def_id, MirSpecEncMode::Impure),
                 span,
             )?;
+            // Interior-mutable values inside another's contents are not
+            // supported yet (see `im::nested_im`): the body is not encoded,
+            // the contract is (for the callers).
+            let tys = match crate::encoders::impure_body_with_facts(def_id) {
+                Some(body) => body.body.local_decls.iter().map(|decl| decl.ty).collect(),
+                None => vcx
+                    .tcx()
+                    .fn_sig(def_id)
+                    .instantiate_identity()
+                    .skip_normalization()
+                    .skip_binder()
+                    .inputs_and_output
+                    .to_vec(),
+            };
+            let nested = tys
+                .into_iter()
+                .find_map(|ty| crate::encoders::ty::im::nested_im(ty, params));
+            if let Some(nested) = nested {
+                vcx.emit_early_error(PrustiError::unsupported(
+                    format!("interior-mutable values inside the contents of `{nested}`"),
+                    span.into(),
+                ));
+            }
             let function_data = FunctionData::new(def_id);
             let wands = deps
                 .require_dep_spanned::<WandEnc>(
@@ -300,7 +323,9 @@ impl TaskEncoder for MethodEnc {
             // functions without a default implementation have no body to
             // encode; only their contract is emitted.
             let body_with_facts = crate::encoders::impure_body_with_facts(def_id);
-            let blocks = if let Some(body_with_facts) = body_with_facts {
+            let blocks = if nested.is_none()
+                && let Some(body_with_facts) = body_with_facts
+            {
                 let body = &body_with_facts.body;
                 let local_defs = deps.require_dep_spanned::<MirLocalDefEnc>(
                     MirLocalDefEncTask::Local {
