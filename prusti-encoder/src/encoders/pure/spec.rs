@@ -185,7 +185,13 @@ fn closure_substs<'vir>(
     ctx: SpecEncCtx<'vir>,
     closure: DefId,
 ) -> ty::GenericArgsRef<'vir> {
-    let Some(parent) = vcx.tcx().generics_of(closure).parent else {
+    // A spec item that is not a closure has generics of its own.
+    let parent = if vcx.tcx().is_closure_like(closure) {
+        vcx.tcx().generics_of(closure).parent
+    } else {
+        Some(closure)
+    };
+    let Some(parent) = parent else {
         return ctx.substs;
     };
     if vcx.tcx().trait_of_assoc(parent).is_some()
