@@ -525,6 +525,14 @@ impl<T, A: Allocator> Rc<T, A> {
     /// assert_eq!(*Rc::try_unwrap(x).unwrap_err(), 4);
     /// ```
     #[inline]
+    #[trusted]
+    #[ensures(result.is_ok() == (old(rc_strong(&this)) == 1))]
+    #[ensures(match &result {
+        Ok(v) => *v === *old(&*this),
+        Err(r) => rc_ptr(r) === old(rc_ptr(&this))
+            && rc_strong(r) == old(rc_strong(&this))
+            && rc_weak(r) == old(rc_weak(&this)),
+    })]
     pub fn try_unwrap(this: Self) -> Result<T, Self> {
         if Rc::strong_count(&this) == 1 {
             let this = ManuallyDrop::new(this);
@@ -575,6 +583,12 @@ impl<T, A: Allocator> Rc<T, A> {
     /// assert_eq!(Rc::into_inner(x), Some(4));
     /// ```
     #[inline]
+    #[trusted]
+    #[ensures(result.is_some() == (old(rc_strong(&this)) == 1))]
+    #[ensures(match &result {
+        Some(v) => *v === *old(&*this),
+        None => true,
+    })]
     pub fn into_inner(this: Self) -> Option<T> {
         Rc::try_unwrap(this).ok()
     }
@@ -620,6 +634,8 @@ impl<T: ?Sized, A: Allocator> Rc<T, A> {
     /// assert_eq!(x_ptr, Rc::as_ptr(&y));
     /// assert_eq!(unsafe { *x_ptr }, 0);
     /// ```
+    #[pure]
+    #[trusted]
     pub fn as_ptr(this: &Self) -> *const T {
         let ptr: *mut RcInner<T> = NonNull::as_ptr(this.ptr);
 
@@ -645,6 +661,7 @@ impl<T: ?Sized, A: Allocator> Rc<T, A> {
                   without modifying the original `Rc`"]
     #[trusted]
     #[ensures(weak_ptr(&result) === rc_ptr(this))]
+    #[ensures(!weak_dangles(&result))]
     #[ensures(rc_strong(this) == old(rc_strong(this)))]
     #[ensures(rc_weak(this) == old(rc_weak(this)) + 1)]
     pub fn downgrade(this: &Self) -> Weak<T, A>
@@ -758,6 +775,10 @@ impl<T: ?Sized, A: Allocator> Rc<T, A> {
     /// assert!(Rc::ptr_eq(&five, &same_five));
     /// assert!(!Rc::ptr_eq(&five, &other_five));
     /// ```
+    // Two live allocations never share an address.
+    #[pure]
+    #[trusted]
+    #[ensures(result == (rc_ptr(this) === rc_ptr(other)))]
     pub fn ptr_eq(this: &Self, other: &Self) -> bool {
         ptr::addr_eq(this.ptr.as_ptr(), other.ptr.as_ptr())
     }
@@ -1026,6 +1047,8 @@ impl<T: ?Sized, A: Allocator> Weak<T, A> {
     ///
     /// [`null`]: ptr::null
     #[must_use]
+    #[pure]
+    #[trusted]
     pub fn as_ptr(&self) -> *const T {
         let ptr: *mut RcInner<T> = NonNull::as_ptr(self.ptr);
 
@@ -1114,6 +1137,10 @@ impl<T: ?Sized, A: Allocator> Weak<T, A> {
     ///
     /// If no strong pointers remain, this will return zero.
     #[must_use]
+    #[trusted]
+    #[ensures(weak_dangles(self) ==> result == 0)]
+    #[ensures(!weak_dangles(self) ==> (weak_strong(self) == 0 ==> result == 0))]
+    #[ensures(!weak_dangles(self) ==> (weak_strong(self) != 0 ==> result + 1 == weak_weak(self)))]
     pub fn weak_count(&self) -> usize {
         if let Some(inner) = self.inner() {
             if inner.strong() > 0 {
@@ -1184,6 +1211,9 @@ impl<T: ?Sized, A: Allocator> Weak<T, A> {
     /// ```
     #[inline]
     #[must_use]
+    #[pure]
+    #[trusted]
+    #[ensures(result == (weak_ptr(self) === weak_ptr(other)))]
     pub fn ptr_eq(&self, other: &Self) -> bool {
         ptr::addr_eq(self.ptr.as_ptr(), other.ptr.as_ptr())
     }
