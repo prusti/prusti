@@ -484,13 +484,15 @@ impl TaskEncoder for MethodEnc {
                     arg.impure_snap,
                 )?;
                 fp_pre.extend(entries.iter().copied());
-                // What is borrowed by the result cannot be read afterwards:
-                // its atoms are returned at their keys in the pre-state.
+                // What the result borrows is lent to it: its wand returns the
+                // atoms the argument holds alone. Shared atoms are not
+                // blocked; as the argument cannot be read until the borrow
+                // expires, they are returned at their keys in the pre-state.
                 if blocked.contains(&arg_idx) {
                     fp_post.extend(
                         entries
                             .iter()
-                            .filter(|e| e.reached)
+                            .filter(|e| e.reached && e.shared)
                             .map(|e| e.in_state(vir::OldLabel::None)),
                     );
                     continue;

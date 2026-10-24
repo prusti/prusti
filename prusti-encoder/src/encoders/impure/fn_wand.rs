@@ -4,7 +4,7 @@ use crate::encoders::{
     ty::{
         RustTyDecomposition,
         generics::{GArgs, GArgsTyEnc, GParams, GenericParamsEnc},
-        im::{deep_snap, on_expiry},
+        im::{deep_snap, lent_footprint, on_expiry},
         indirect::{IndirectPredicatesEnc, projection_for_generalized_idx},
     },
 };
@@ -16,6 +16,7 @@ use pcg::borrow_pcg::{
 use prusti_interface::PrustiError;
 use prusti_rustc_interface::{
     data_structures::fx::{FxHashMap, FxHashSet},
+    index::Idx,
     middle::{mir, ty},
     span::def_id::DefId,
 };
@@ -66,13 +67,18 @@ impl<'vir, E: TaskEncoder> ImpureEncVisitor<'vir, '_, E> {
                 package_script.extend(unblock);
             }
 
-            if !wand_data.pledges.is_empty() {
+            let lent = self
+                .wands
+                .lent_footprints(&wand_data, args, None, self.vcx, self.deps);
+            if !wand_data.pledges.is_empty() || !lent.is_empty() {
                 // Statements in the package script only see resources already
                 // in the package state. A resource that is not obtained from
                 // the LHS (e.g. an argument the result does not borrow from)
                 // is only moved there when consumed, which for the RHS happens
                 // after the script. Asserting the RHS resources moves them in
                 // early, so that the pledge exhales below can read them.
+                // Likewise for the atoms lent to the result that it does not
+                // reach, which the deep values in the RHS read.
                 let resources = wand_data
                     .rhs
                     .iter()
@@ -85,6 +91,7 @@ impl<'vir, E: TaskEncoder> ImpureEncVisitor<'vir, '_, E> {
                             |i| args[i],
                         )
                     })
+                    .chain(lent)
                     .collect::<Vec<_>>();
                 package_script.push(self.vcx.mk_assert_stmt(self.vcx.mk_conj(&resources)));
             }
@@ -358,7 +365,9 @@ impl<'vir> WandEncOutput<'vir> {
                 })
             })
             .collect::<Vec<_>>();
-        // The interior-mutability facts about the returned arguments.
+        // The interior-mutability state of the returned arguments: the atoms
+        // they lent to the result, and the facts about the rest.
+        rhs.extend(self.lent_footprints(wand_data, pledge_args, call_ctx, vcx, deps));
         let label = pledge_old_label.map_or(vir::OldLabel::None, vir::OldLabel::Label);
         let mut returned = Vec::new();
         for g in &wand_data.rhs {
@@ -387,12 +396,22 @@ impl<'vir> WandEncOutput<'vir> {
             return None;
         }
         let rhs = vcx.mk_conj(&rhs);
+        // What the result was lent goes back with it.
+        let lent = wand_data
+            .lhs
+            .iter()
+            .find(|g| g.mir_local() == mir::RETURN_PLACE && g.region_idx().index() == 0)
+            .and_then(|g| {
+                let decomp = RustTyDecomposition::from_ty(g.ty(fn_sig), g_params);
+                lent_footprint(deps, decomp, pledge_args[mir::RETURN_PLACE]).unwrap()
+            });
         let lhs = wand_data.lhs.iter().filter_map(|g| {
             self.encode_predicates_for_function_shape_node(vcx, deps, *g, call_ctx, |i| {
                 pledge_args[i]
             })
         });
         let lhs = lhs
+            .chain(lent)
             .chain(
                 wand_data
                     .pledges
@@ -402,6 +421,30 @@ impl<'vir> WandEncOutput<'vir> {
             .collect::<Vec<_>>();
         let lhs = vcx.mk_conj(&lhs);
         Some(vcx.mk_wand(lhs, rhs))
+    }
+
+    /// The interior-mutability atoms the returned arguments lent to the
+    /// result (with the projection of their outermost reference, so once).
+    pub fn lent_footprints<E: TaskEncoder>(
+        &self,
+        wand_data: &WandData<'vir>,
+        pledge_args: PledgeArgs<'vir>,
+        call_ctx: WandCallContext<'vir>,
+        vcx: &'vir vir::VirCtxt<'vir>,
+        deps: &mut TaskEncoderDependencies<'vir, E>,
+    ) -> Vec<vir::ExprBool<'vir>> {
+        let fn_sig = self.fn_sig(vcx, call_ctx);
+        let g_params = self.g_params(vcx, call_ctx);
+        wand_data
+            .rhs
+            .iter()
+            .filter(|g| g.region_idx().index() == 0)
+            .filter_map(|g| {
+                let arg_ty = FunctionShapeNode::from(*g).ty(fn_sig);
+                let decomp = RustTyDecomposition::from_ty(arg_ty, g_params);
+                lent_footprint(deps, decomp, pledge_args[g.mir_local()]).unwrap()
+            })
+            .collect()
     }
 
     /// The pledges are encoded once, at the callee's identity substitution,

@@ -566,8 +566,11 @@ pub(crate) struct FpEntry<'vir> {
     /// Reached through a reference (or a guard): returned to the caller, and
     /// possibly aliased with other such entries.
     pub(crate) reached: bool,
-    /// Reached through a shared reference: may alias other shared entries.
-    shared: bool,
+    /// Reached through a shared reference or a sharing (`#[im_shares]`): may
+    /// alias other shared entries. Such an atom is held by every holder, so a
+    /// borrow of one of them does not block it; the others are lent to the
+    /// borrow's result.
+    pub(crate) shared: bool,
     /// Where the atom is reached (a conditional `#[im_shares]`), if not
     /// always.
     condition: Option<vir::ExprBool<'vir>>,
@@ -999,10 +1002,29 @@ fn is_variant<'vir, E: TaskEncoder>(
     Ok(vir::with_vcx(|vcx| vcx.mk_eq_expr(discr, value)))
 }
 
+/// The atoms a value of `ty` with snapshot `snap` reaches other than through
+/// shared references: what a borrow of it lends to the borrow's result.
+pub(crate) fn lent_footprint<'vir, E: TaskEncoder>(
+    deps: &mut TaskEncoderDependencies<'vir, E>,
+    ty: RustTyDecomposition<'vir>,
+    snap: vir::ExprSnap<'vir>,
+) -> Result<Option<vir::ExprBool<'vir>>, EncodeFullError<'vir, E>> {
+    if !reaches_im(ty) {
+        return Ok(None);
+    }
+    let vcx = vir::with_vcx(|vcx| vcx);
+    let entries = footprint(deps, ty, vcx.mk_null(), snap)?
+        .into_iter()
+        .filter(|entry| !entry.shared)
+        .collect::<Vec<_>>();
+    Ok((!entries.is_empty()).then(|| footprint_assertion(&entries)))
+}
+
 /// What holds of an argument of type `ty` with snapshot `snap` when the
 /// borrow of it by the result of a call expires:
-/// - the atoms it reaches are at the keys they had in the state `label`: the
-///   call returned them at their keys from its pre-state (see `MethodEnc`);
+/// - the atoms it reaches through shared references are at the keys they
+///   had in the state `label`: the call returned them at their keys from
+///   its pre-state (see `MethodEnc`);
 /// - a guard behind a mutable reference is live again, so its
 ///   `#[im_assume]` fact holds.
 pub(crate) fn on_expiry<'vir, E: TaskEncoder>(
@@ -1018,7 +1040,7 @@ pub(crate) fn on_expiry<'vir, E: TaskEncoder>(
     let entries = footprint(deps, ty, vcx.mk_null(), snap)?;
     let mut conjs = entries
         .iter()
-        .filter(|entry| entry.reached && entry.amount.is_none())
+        .filter(|entry| entry.reached && entry.shared && entry.amount.is_none())
         .map(|entry| {
             let same = vcx.mk_eq_expr(entry.addr, vcx.mk_old(entry.addr, label));
             match entry.condition {
