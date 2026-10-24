@@ -326,6 +326,7 @@ struct Enc<'vir: 'enc, 'enc> {
     rel1_mode: bool,
     before_expiry_mode: bool,
     impure_context: bool,
+    spec_closure: bool,
     calls_pure_unstable: bool,
 }
 
@@ -439,6 +440,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                     ..
                 } | PureKind::SpecBlock(..)
             ),
+            spec_closure: kind == PureKind::Closure,
             calls_pure_unstable: false,
         }
     }
@@ -1608,6 +1610,15 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
             }
             // A permission at the pointer's address: only meaningful as the
             // whole of a pre- or postcondition (an assertion, not a value).
+            // Spec closures (quantifier bodies) are not whole clauses.
+            SpecBuiltin::Acc | SpecBuiltin::ImAtoms if self.spec_closure => {
+                return Err(self.unsupported_rvalue(
+                    "`acc` and `im_atoms` must be a whole pre- or postcondition, not inside \
+                     a quantifier"
+                        .to_string(),
+                    args[0].span,
+                ));
+            }
             // Pure contexts (trait axioms, functions' contracts) state values
             // only; the methods' contracts hold the permission.
             SpecBuiltin::Acc | SpecBuiltin::ImAtoms if !self.impure_context => {

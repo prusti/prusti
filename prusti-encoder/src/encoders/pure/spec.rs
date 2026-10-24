@@ -373,8 +373,9 @@ impl TaskEncoder for MirSpecEnc {
             // interior-mutable contents are a constant, unless the function
             // is `#[pure_unstable]`. A spec reading them (calling a
             // `#[pure_unstable]` function) is kept in the method's contract
-            // alone. For `f_`, it is an error if the arguments reach any,
-            // since the method's result is tied to `f_`.
+            // alone (a precondition becomes `false` in the pure modes). For
+            // `f_`, it is an error if the arguments reach any, since the
+            // method's result is tied to `f_`.
             let shallow = enc_mode != MirSpecEncMode::Impure
                 && !crate::encoders::is_pure_unstable(context_def_id);
             let args_reach_im = (1..=local_defs.arg_count)
@@ -403,8 +404,10 @@ impl TaskEncoder for MirSpecEnc {
                     let spec = Self::encode_pure(vcx, deps, pre_ctx, *spec_def_id, "precondition")?;
                     let expr = spec.expr.downcast_ty::<vir::Bool>();
                     let span = vcx.tcx().def_span(*spec_def_id);
+                    // Calls through the pure modes' contract (the trait stub)
+                    // cannot establish such a precondition.
                     if !keep_spec(&spec, span) {
-                        return None;
+                        return Some((vcx.mk_bool::<false>(), span));
                     }
                     // Reify *inside* the span scope: the nodes created by the
                     // reification pick up the ambient span, which makes error

@@ -1653,17 +1653,44 @@ pub(crate) fn nested_im<'tcx>(ty: ty::Ty<'tcx>, params: GParams<'tcx>) -> Option
     ty.walk()
         .filter_map(|arg| arg.as_type())
         .find(|inner| match *inner.kind() {
-            ty::TyKind::Adt(adt, args) => {
-                (is_im_opaque(adt.did()) || is_im_sharer(adt.did()))
+            ty::TyKind::Adt(adt, args)
+                if (is_im_opaque(adt.did()) || is_im_sharer(adt.did()))
                     && args
                         .types()
-                        .any(|arg| reaches_im(RustTyDecomposition::from_ty(arg, params)))
+                        .any(|arg| reaches_im(RustTyDecomposition::from_ty(arg, params))) =>
+            {
+                true
             }
-            ty::TyKind::Array(elem, _) | ty::TyKind::Slice(elem) => {
-                reaches_im(RustTyDecomposition::from_ty(elem, params))
-            }
-            _ => false,
+            _ => reaches_im_array(RustTyDecomposition::from_ty(*inner, params)),
         })
+}
+
+/// Whether a value of `ty` holds, inline or behind references, an array or
+/// slice of values that reach `#[im_opaque]` ones.
+fn reaches_im_array(ty: RustTyDecomposition<'_>) -> bool {
+    fn go<'tcx>(ty: RustTyDecomposition<'tcx>, seen: &mut Vec<RustTyDecomposition<'tcx>>) -> bool {
+        if seen.contains(&ty) {
+            return false;
+        }
+        seen.push(ty);
+        match &ty.ty.specifics {
+            TySpecifics::ArrayLike(data) => reaches_im(data.data.decompose_normalize(ty.args)),
+            TySpecifics::StructLike(data) => data
+                .fields
+                .iter()
+                .any(|f| go(f.decompose_normalize(ty.args), seen)),
+            TySpecifics::ImmRef(data) | TySpecifics::MutRef(data) => {
+                go(data.referent.decompose_normalize(ty.args), seen)
+            }
+            TySpecifics::EnumLike(data) => data
+                .variants
+                .iter()
+                .flat_map(|variant| variant.inner.fields.iter())
+                .any(|f| go(f.decompose_normalize(ty.args), seen)),
+            _ => false,
+        }
+    }
+    go(ty, &mut Vec::new())
 }
 
 /// Whether a value of `ty` reaches an `#[im_opaque]` value, i.e. whether its

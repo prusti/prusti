@@ -2182,11 +2182,15 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
     /// (the contract returns nothing), so the referent's permission simply
     /// comes back through the contract's postcondition; afterwards the place
     /// is released as for any other drop.
-    fn apply_drop_contract(&mut self, place: mir::Place<'vir>) -> EncodeResult<'vir, (), E> {
+    fn apply_drop_contract(
+        &mut self,
+        place: mir::Place<'vir>,
+        span: Span,
+    ) -> EncodeResult<'vir, (), E> {
         let tcx = self.vcx.tcx();
         let ty = place.ty(self.local_decls, tcx).ty;
         let Some(drop_spec) = crate::encoders::get_type_drop_spec(ty) else {
-            return self.apply_glue_drop_contracts(place, ty);
+            return self.apply_glue_drop_contracts(place, ty, span);
         };
         let ty::TyKind::Adt(_, adt_args) = *ty.kind() else {
             unreachable!("drop contracts are registered on ADTs")
@@ -2227,7 +2231,20 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         let dest: vir::ExprRef<'vir> = self.new_tmp(vir::TYPE_REF);
         let unit = self.ty_use_impure(tcx.types.unit);
         self.stmt(self.vcx.mk_inhale_stmt(unit.uninit_pred(self.vcx, dest)));
-        self.stmts(contract.call(vec![tmp], dest));
+        let call = self.vcx.with_span(span, |vcx| {
+            vcx.handle_error("call.precondition:assertion.false", move |reason_span_opt| {
+                let mut error = PrustiError::verification(
+                    format!("the precondition of the drop contract of `{ty}` might not hold"),
+                    span.into(),
+                );
+                if let Some(reason_span) = reason_span_opt {
+                    error.add_note_mut("the failing precondition is here", Some(reason_span.into()));
+                }
+                Some(vec![error])
+            });
+            contract.call(vec![tmp], dest)
+        });
+        self.stmts(call);
         self.stmts(p_ref_ty.unfold(None, tmp, None, None, Some(vir::OldLabel::Label(borrowed))));
         if place.projection.is_empty() {
             self.guard_rereads([place.local], false)?;
@@ -2243,6 +2260,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         &mut self,
         place: mir::Place<'vir>,
         ty: ty::Ty<'vir>,
+        span: Span,
     ) -> EncodeResult<'vir, (), E> {
         let tcx = self.vcx.tcx();
         if !has_drop_contract(tcx, ty, &mut Vec::new()) {
@@ -2293,7 +2311,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                         elems.push(mir::ProjectionElem::Downcast(None, vid));
                     }
                     elems.push(mir::ProjectionElem::Field(idx, field_ty));
-                    this.apply_drop_contract(place.project_deeper(&elems, tcx))?;
+                    this.apply_drop_contract(place.project_deeper(&elems, tcx), span)?;
                 }
                 if variant.is_some() {
                     this.stmts(ty_use.fold(variant, addr, None, None, None));
@@ -3149,7 +3167,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         // `StorageDead`), so their drop contracts apply first.
         if let mir::TerminatorKind::Drop { place, .. } = &terminator.kind {
             for part in self.terminator_held_parts(*place) {
-                self.apply_drop_contract(part)?;
+                self.apply_drop_contract(part, span)?;
             }
         }
         for phase in [
@@ -3193,7 +3211,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 if let mir::TerminatorKind::Drop { place, .. } = &terminator.kind
                     && self.terminator_holds_exclusive(*place)
                 {
-                    self.apply_drop_contract(*place)?;
+                    self.apply_drop_contract(*place, span)?;
                 }
                 self.goto_single_succ(location, *target)?
             }
@@ -3295,7 +3313,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                     func_def_id,
                 ) && let Some(mir::Operand::Move(place)) = args.first().map(|arg| &arg.node)
                 {
-                    self.apply_drop_contract(*place)?;
+                    self.apply_drop_contract(*place, span)?;
                 }
                 // A call whose span comes from a macro expansion (e.g. the
                 // `core::panicking::panic` call inside a failing `assert!`)
