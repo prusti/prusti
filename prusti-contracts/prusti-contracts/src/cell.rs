@@ -354,9 +354,14 @@ impl<T: Copy> Clone for Cell<T> {
     }
 }
 
+#[refine_trait_spec]
 const impl<T: [const] Default> Default for Cell<T> {
     /// Creates a `Cell<T>`, with the `Default` value for T.
     #[inline]
+    // `Default::default` is pure, the body is not.
+    #[pure]
+    #[trusted]
+    #[ensures(*cell_value(&result) === T::default())]
     fn default() -> Cell<T> {
         Cell::new(Default::default())
     }
@@ -713,6 +718,7 @@ impl<T> Cell<[T]> {
     ///
     /// assert_eq!(slice_cell.len(), 3);
     /// ```
+    #[trusted]
     pub const fn as_slice_of_cells(&self) -> &[Cell<T>] {
         // SAFETY: `Cell<T>` has the same memory layout as `T`.
         unsafe { &*(self as *const Cell<[T]> as *const [Cell<T>]) }
@@ -731,6 +737,7 @@ impl<T, const N: usize> Cell<[T; N]> {
     /// let cell_array: &Cell<[i32; 3]> = Cell::from_mut(&mut array);
     /// let array_cell: &[Cell<i32>; 3] = cell_array.as_array_of_cells();
     /// ```
+    #[trusted]
     pub const fn as_array_of_cells(&self) -> &[Cell<T>; N] {
         // SAFETY: `Cell<T>` has the same memory layout as `T`.
         unsafe { &*(self as *const Cell<[T; N]> as *const [Cell<T>; N]) }
@@ -808,6 +815,7 @@ impl<T: CloneFromCell> Cell<T> {
     /// let c2 = c1.get_cloned();
     /// assert_eq!(*c2.into_inner(), 1);
     /// ```
+    #[trusted]
     pub fn get_cloned(&self) -> Self {
         // SAFETY: T is CloneFromCell, which guarantees that this is sound.
         Cell::new(T::clone(unsafe { &*self.as_ptr() }))
@@ -1110,6 +1118,8 @@ impl<T> RefCell<T> {
     /// ```
     #[inline]
     #[track_caller]
+    #[trusted]
+    #[requires(refcell_count(self) == 0)]
     pub fn replace_with<F: FnOnce(&mut T) -> T>(&self, f: F) -> T {
         let mut_borrow = &mut *self.borrow_mut();
         let replacement = f(mut_borrow);
@@ -1451,6 +1461,8 @@ impl<T: ?Sized> RefCell<T> {
     /// c.undo_leak();
     /// assert!(c.try_borrow().is_ok());
     /// ```
+    // Reclaims the permissions of leaked guards.
+    #[trusted]
     pub const fn undo_leak(&mut self) -> &mut T {
         *self.borrow.get_mut() = UNUSED;
         self.get_mut()
@@ -1484,6 +1496,7 @@ impl<T: ?Sized> RefCell<T> {
     /// }
     /// ```
     #[inline]
+    #[trusted]
     pub const unsafe fn try_borrow_unguarded(&self) -> Result<&T, BorrowError> {
         if !is_writing(self.borrow.get()) {
             // SAFETY: We check that nobody is actively writing now, but it is
@@ -1540,10 +1553,12 @@ impl<T: Clone> Clone for RefCell<T> {
     /// # Panics
     ///
     /// Panics if the value is currently mutably borrowed.
+    // Like the comparisons below, it panics where the trait's contract (with
+    // no precondition) allows no panic: an implementation cannot require
+    // that the value is not mutably borrowed.
     #[inline]
     #[track_caller]
     #[trusted]
-    #[requires(0 <= refcell_count(self) && refcell_count(self) < isize::MAX)]
     #[ensures(refcell_count(self) == old(refcell_count(self)))]
     #[ensures(*refcell_value(self) === *old(refcell_value(self)))]
     #[ensures(refcell_count(&result) == 0)]
@@ -1556,24 +1571,35 @@ impl<T: Clone> Clone for RefCell<T> {
     /// Panics if `source` is currently mutably borrowed.
     #[inline]
     #[track_caller]
+    #[trusted]
     fn clone_from(&mut self, source: &Self) {
         self.get_mut().clone_from(&source.borrow())
     }
 }
 
+#[refine_trait_spec]
 const impl<T: [const] Default> Default for RefCell<T> {
     /// Creates a `RefCell<T>`, with the `Default` value for T.
     #[inline]
+    // `Default::default` is pure, the body is not.
+    #[pure]
+    #[trusted]
+    #[ensures(refcell_count(&result) == 0)]
+    #[ensures(*refcell_value(&result) === T::default())]
     fn default() -> RefCell<T> {
         RefCell::new(Default::default())
     }
 }
 
+#[refine_trait_spec]
 impl<T: ?Sized + PartialEq> PartialEq for RefCell<T> {
     /// # Panics
     ///
     /// Panics if the value in either `RefCell` is currently mutably borrowed.
     #[inline]
+    // `PartialEq::eq` is pure, the body is not.
+    #[pure]
+    #[trusted]
     fn eq(&self, other: &RefCell<T>) -> bool {
         *self.borrow() == *other.borrow()
     }
@@ -1581,11 +1607,13 @@ impl<T: ?Sized + PartialEq> PartialEq for RefCell<T> {
 
 impl<T: ?Sized + Eq> Eq for RefCell<T> {}
 
+#[refine_trait_spec]
 impl<T: ?Sized + PartialOrd> PartialOrd for RefCell<T> {
     /// # Panics
     ///
     /// Panics if the value in either `RefCell` is currently mutably borrowed.
     #[inline]
+    #[trusted]
     fn partial_cmp(&self, other: &RefCell<T>) -> Option<Ordering> {
         self.borrow().partial_cmp(&*other.borrow())
     }
@@ -1594,6 +1622,7 @@ impl<T: ?Sized + PartialOrd> PartialOrd for RefCell<T> {
     ///
     /// Panics if the value in either `RefCell` is currently mutably borrowed.
     #[inline]
+    #[trusted]
     fn lt(&self, other: &RefCell<T>) -> bool {
         *self.borrow() < *other.borrow()
     }
@@ -1602,6 +1631,7 @@ impl<T: ?Sized + PartialOrd> PartialOrd for RefCell<T> {
     ///
     /// Panics if the value in either `RefCell` is currently mutably borrowed.
     #[inline]
+    #[trusted]
     fn le(&self, other: &RefCell<T>) -> bool {
         *self.borrow() <= *other.borrow()
     }
@@ -1610,6 +1640,7 @@ impl<T: ?Sized + PartialOrd> PartialOrd for RefCell<T> {
     ///
     /// Panics if the value in either `RefCell` is currently mutably borrowed.
     #[inline]
+    #[trusted]
     fn gt(&self, other: &RefCell<T>) -> bool {
         *self.borrow() > *other.borrow()
     }
@@ -1618,16 +1649,19 @@ impl<T: ?Sized + PartialOrd> PartialOrd for RefCell<T> {
     ///
     /// Panics if the value in either `RefCell` is currently mutably borrowed.
     #[inline]
+    #[trusted]
     fn ge(&self, other: &RefCell<T>) -> bool {
         *self.borrow() >= *other.borrow()
     }
 }
 
+#[refine_trait_spec]
 impl<T: ?Sized + Ord> Ord for RefCell<T> {
     /// # Panics
     ///
     /// Panics if the value in either `RefCell` is currently mutably borrowed.
     #[inline]
+    #[trusted]
     fn cmp(&self, other: &RefCell<T>) -> Ordering {
         self.borrow().cmp(&*other.borrow())
     }
@@ -1673,8 +1707,12 @@ impl<'b> BorrowRef<'b> {
     }
 }
 
+// The guard internals need an invariant of the guard (the flag is reading
+// or writing) to verify.
+#[refine_trait_spec]
 const impl Drop for BorrowRef<'_> {
     #[inline]
+    #[trusted]
     fn drop(&mut self) {
         let borrow = self.borrow.get();
         debug_assert!(is_reading(borrow));
@@ -1682,8 +1720,10 @@ const impl Drop for BorrowRef<'_> {
     }
 }
 
+#[refine_trait_spec]
 const impl Clone for BorrowRef<'_> {
     #[inline]
+    #[trusted]
     fn clone(&self) -> Self {
         // Since this Ref exists, we know the borrow flag
         // is a reading borrow.
@@ -1768,8 +1808,10 @@ struct BorrowRefMut<'b> {
     borrow: &'b Cell<BorrowCounter>,
 }
 
+#[refine_trait_spec]
 const impl Drop for BorrowRefMut<'_> {
     #[inline]
+    #[trusted]
     fn drop(&mut self) {
         let borrow = self.borrow.get();
         debug_assert!(is_writing(borrow));
@@ -1799,6 +1841,7 @@ impl<'b> BorrowRefMut<'b> {
     // reference to a distinct, nonoverlapping range of the original object.
     // This isn't in a Clone impl so that code doesn't call this implicitly.
     #[inline]
+    #[trusted]
     fn clone(&self) -> BorrowRefMut<'b> {
         let borrow = self.borrow.get();
         debug_assert!(is_writing(borrow));
