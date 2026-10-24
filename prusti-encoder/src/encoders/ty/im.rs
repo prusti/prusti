@@ -428,6 +428,20 @@ pub(crate) fn guard_assumption<'vir, E: TaskEncoder>(
     ty: RustTyDecomposition<'vir>,
     addr: vir::ExprRef<'vir>,
 ) -> Result<Option<vir::ExprBool<'vir>>, EncodeFullError<'vir, E>> {
+    if ty.ty.im_annotated.or(ty.ty.im_opaque).is_none() {
+        return Ok(None);
+    }
+    let snap = deps.require_dep::<TyUseImpureEnc>(ty)?.ref_to_snap(addr);
+    guard_assumption_of(deps, ty, addr, snap)
+}
+
+/// Like [`guard_assumption`], for the value with shallow snapshot `snap`.
+fn guard_assumption_of<'vir, E: TaskEncoder>(
+    deps: &mut TaskEncoderDependencies<'vir, E>,
+    ty: RustTyDecomposition<'vir>,
+    addr: vir::ExprRef<'vir>,
+    snap: vir::ExprSnap<'vir>,
+) -> Result<Option<vir::ExprBool<'vir>>, EncodeFullError<'vir, E>> {
     let Some(did) = ty.ty.im_annotated.or(ty.ty.im_opaque) else {
         return Ok(None);
     };
@@ -437,7 +451,6 @@ pub(crate) fn guard_assumption<'vir, E: TaskEncoder>(
     else {
         return Ok(None);
     };
-    let snap = deps.require_dep::<TyUseImpureEnc>(ty)?.ref_to_snap(addr);
     let deep = deep_snap(deps, ty, addr, snap)?;
     let fact = call_annotation(deps, method, ty, addr, deep)?;
     let bool_ty =
@@ -937,6 +950,57 @@ fn is_variant<'vir, E: TaskEncoder>(
     let value =
         discr_prim.prim_to_snap(discr_prim.expr_from_bits(data.data.discr, variant.discr_val));
     Ok(vir::with_vcx(|vcx| vcx.mk_eq_expr(discr, value)))
+}
+
+/// What holds of an argument of type `ty` with snapshot `snap` when the
+/// borrow of it by the result of a call expires:
+/// - the atoms it reaches are at the keys they had in the state `label`: the
+///   call returned them at their keys from its pre-state (see `MethodEnc`);
+/// - a guard behind a mutable reference is live again, so its
+///   `#[im_assume]` fact holds.
+pub(crate) fn on_expiry<'vir, E: TaskEncoder>(
+    deps: &mut TaskEncoderDependencies<'vir, E>,
+    ty: RustTyDecomposition<'vir>,
+    snap: vir::ExprSnap<'vir>,
+    label: vir::OldLabel<'vir>,
+) -> Result<Option<vir::ExprBool<'vir>>, EncodeFullError<'vir, E>> {
+    if !reaches_im(ty) {
+        return Ok(None);
+    }
+    let vcx = vir::with_vcx(|vcx| vcx);
+    let entries = footprint(deps, ty, vcx.mk_null(), snap)?;
+    let mut conjs = entries
+        .iter()
+        .filter(|entry| entry.reached && entry.amount.is_none())
+        .map(|entry| {
+            let same = vcx.mk_eq_expr(entry.addr, vcx.mk_old(entry.addr, label));
+            match entry.condition {
+                Some(condition) => vcx.mk_conj(&[
+                    vcx.mk_eq_expr(condition, vcx.mk_old(condition, label)),
+                    vcx.mk_bin_op_expr(vir::BinOpKind::Implies, condition, same)
+                        .downcast_ty(),
+                ]),
+                None => same,
+            }
+        })
+        .collect::<Vec<_>>();
+    if let TySpecifics::MutRef(data) = &ty.ty.specifics {
+        let referent = data.referent.decompose_normalize(ty.args);
+        let ref_use = deps.require_dep::<TyUsePureEnc>(ty)?;
+        let r_addr = ref_use.expect_mutref().deref_access(snap.downcast_ty());
+        // Held generically (as the reference type's parameter).
+        let generic = data.referent.decompose_context(ty.ty.params, ty.args);
+        let caster = deps.require_dep::<crate::GArgsCastEnc<crate::Pure>>(
+            data.referent
+                .decompose_compare_normalize(ty.ty.params, ty.args),
+        )?;
+        let r_snap = caster.cast_to_caller_ctx(
+            deps.require_dep::<TyUseImpureEnc>(generic)?
+                .ref_to_snap(r_addr),
+        );
+        conjs.extend(guard_assumption_of(deps, referent, r_addr, r_snap)?);
+    }
+    Ok((!conjs.is_empty()).then(|| vcx.mk_conj(&conjs)))
 }
 
 /// The permissions to `entries`. Owned entries are distinct from every other

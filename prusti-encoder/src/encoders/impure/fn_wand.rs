@@ -4,6 +4,7 @@ use crate::encoders::{
     ty::{
         RustTyDecomposition,
         generics::{GArgs, GArgsTyEnc, GParams, GenericParamsEnc},
+        im::on_expiry,
         indirect::{IndirectPredicatesEnc, projection_for_generalized_idx},
     },
 };
@@ -336,12 +337,30 @@ impl<'vir> WandEncOutput<'vir> {
             }
             None => pledge.expr(pledge_args),
         };
-        let rhs = wand_data.rhs.iter().filter_map(|g| {
-            self.encode_predicates_for_function_shape_node(vcx, deps, *g, call_ctx, |i| {
-                pledge_args[i]
+        let mut rhs = wand_data
+            .rhs
+            .iter()
+            .filter_map(|g| {
+                self.encode_predicates_for_function_shape_node(vcx, deps, *g, call_ctx, |i| {
+                    pledge_args[i]
+                })
             })
-        });
+            .collect::<Vec<_>>();
+        // The interior-mutability facts about the returned arguments.
+        let label = pledge_old_label.map_or(vir::OldLabel::None, vir::OldLabel::Label);
+        let mut returned = Vec::new();
+        for g in &wand_data.rhs {
+            let local = g.mir_local();
+            if returned.contains(&local) {
+                continue;
+            }
+            returned.push(local);
+            let arg_ty = FunctionShapeNode::from(*g).ty(self.fn_sig(vcx, call_ctx));
+            let decomp = RustTyDecomposition::from_ty(arg_ty, self.g_params(vcx, call_ctx));
+            rhs.extend(on_expiry(deps, decomp, pledge_args[local], label).unwrap());
+        }
         let rhs = rhs
+            .into_iter()
             .chain(
                 wand_data
                     .pledges
