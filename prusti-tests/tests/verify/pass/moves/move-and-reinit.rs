@@ -97,3 +97,74 @@ fn exits_move_or_lend(c: bool, d: bool) {
     prusti_assert!(a.v == 3 && b.v == 4);
     prusti_refute!(false);
 }
+
+// `c` holds a value on loop entry and is only overwritten in the loop: the
+// invariant keeps its value, which the first write drops.
+fn reassign_in_loop() {
+    let mut c = 0;
+    let mut i = 0;
+    while i < 3 {
+        body_invariant!(0 <= i && i <= 3);
+        c = i;
+        i += 1;
+    }
+    prusti_refute!(false);
+}
+
+fn struct_reassign_in_loop() {
+    let mut c = S { v: 0 };
+    let mut i = 0;
+    while i < 3 {
+        body_invariant!(0 <= i && i <= 3);
+        c = S { v: i };
+        i += 1;
+    }
+    prusti_refute!(false);
+}
+
+// The invariant at the PCG loop head itself.
+fn reassign_in_loop_no_body_invariant() {
+    let mut c = 0;
+    let mut i = 0;
+    while i < 3 {
+        c = i;
+        i += 1;
+    }
+    prusti_refute!(false);
+}
+
+fn reassign_in_loop_invariant_at_head() {
+    let mut c = 0;
+    let mut i = 0;
+    loop {
+        body_invariant!(0 <= i && i <= 3);
+        if i >= 3 {
+            break;
+        }
+        c = i;
+        i += 1;
+    }
+    prusti_refute!(false);
+}
+
+fn reassign_in_loop_read_after() {
+    let mut c = 0;
+    let mut i = 0;
+    while i < 3 {
+        body_invariant!(0 <= i && i < 3 && (i == 0 || c == i - 1));
+        c = i;
+        i += 1;
+    }
+    assert!(c == 2);
+}
+
+fn struct_reassign_in_loop_read_after() {
+    let mut c = S { v: 0 };
+    let mut i = 0;
+    while i < 3 {
+        body_invariant!(0 <= i && i < 3 && c.v == i - 1 || i == 0);
+        c = S { v: i };
+        i += 1;
+    }
+    assert!(c.v == 2);
+}
