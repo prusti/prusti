@@ -701,11 +701,21 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                 // the branch point.
                 // TODO: indexvec?
                 let new_join_point = self.rev_doms.immediate_dominator(curr);
-                let mut updates = targets
-                    .all_targets()
-                    .iter()
-                    .map(|target| self.encode_cfg(&new_curr_ver, *target, new_join_point))
-                    .collect::<Result<Vec<_>, _>>()?;
+                // A mode (`old`, `before_expiry`, ...) may start before the
+                // branch and end in each branch, so every branch starts in the
+                // modes of the branch point.
+                let modes = self.modes();
+                let mut modes_after = modes;
+                let mut updates = Vec::with_capacity(targets.all_targets().len());
+                for target in targets.all_targets() {
+                    self.set_modes(modes);
+                    let update = self.encode_cfg(&new_curr_ver, *target, new_join_point)?;
+                    if update.is_some() {
+                        modes_after = self.modes();
+                    }
+                    updates.push(update);
+                }
+                self.set_modes(modes_after);
 
                 // find locals updated in any of the results, which were also
                 // defined before the branch
@@ -1305,6 +1315,23 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
         self.old_mode || self.rel0_mode || self.rel1_mode || self.before_expiry_mode
     }
 
+    /// The modes: `old`, `rel(0)`, `rel(1)`, `before_expiry`.
+    fn modes(&self) -> [bool; 4] {
+        [
+            self.old_mode,
+            self.rel0_mode,
+            self.rel1_mode,
+            self.before_expiry_mode,
+        ]
+    }
+
+    fn set_modes(&mut self, [old, rel0, rel1, before_expiry]: [bool; 4]) {
+        self.old_mode = old;
+        self.rel0_mode = rel0;
+        self.rel1_mode = rel1;
+        self.before_expiry_mode = before_expiry;
+    }
+
     fn encode_place_with_ref(
         &mut self,
         curr_ver: &FxHashMap<mir::Local, Version<'vir>>,
@@ -1377,14 +1404,15 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
             // An `old` around a pinned snapshot is a no-op, but breaks the
             // match with the callee's wand at a call site, where the `old` is
             // labelled. Silicon evaluates the heap-independent parts of a wand
-            // when inhaling it, where `old[lhs]` is undefined.
-            let heap_read = should_wrap
-                && self.impure_context
+            // when inhaling it, where `old[lhs]` is undefined. Before expiry,
+            // a reference into the result bound in the spec is read there
+            // too.
+            let heap_read = self.impure_context
                 && matches!(elem, mir::ProjectionElem::Deref)
                 && matches!(place_ty.ty.kind(), TyKind::Ref(.., ty::Mutability::Mut));
             encoded_place = self.encode_place_element(curr_ver, place_ty, *elem, encoded_place)?;
             place_ty = place_ty.projection_ty(self.vcx.tcx(), *elem);
-            if heap_read && self.old_mode {
+            if heap_read && should_wrap && self.old_mode {
                 let inner = encoded_place.snap;
                 encoded_place.snap = self.vcx.mk_lazy_expr(
                     "old_mode_wrap",
