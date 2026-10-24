@@ -3324,16 +3324,31 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                             },
                         );
                         // As above: a permission failure here is a Prusti
-                        // encoding bug, not a user error.
+                        // encoding bug, not a user error, unless the
+                        // permission is one the callee's specification asks
+                        // for (`acc`, `im_atoms`).
                         vcx.handle_error(
                             "call.precondition:insufficient.permission",
                             move |reason_span_opt| {
-                                let mut error = PrustiError::internal(
-                                    "this call failed to provide the permissions the callee's \
-                                    precondition requires; this indicates a bug in Prusti's \
-                                    encoding",
-                                    span.into(),
-                                );
+                                let asked = reason_span_opt.is_some_and(|reason| {
+                                    crate::encoders::mir_pure::PERM_SPEC_SPANS.with_borrow(
+                                        |spans| spans.iter().any(|asked| reason.contains(*asked)),
+                                    )
+                                });
+                                let mut error = if asked {
+                                    PrustiError::verification(
+                                        "the caller might not hold the permission the callee's \
+                                        precondition asks for",
+                                        span.into(),
+                                    )
+                                } else {
+                                    PrustiError::internal(
+                                        "this call failed to provide the permissions the \
+                                        callee's precondition requires; this indicates a bug in \
+                                        Prusti's encoding",
+                                        span.into(),
+                                    )
+                                };
                                 if let Some(reason_span) = reason_span_opt {
                                     error.add_note_mut(
                                         "the failing precondition is here",

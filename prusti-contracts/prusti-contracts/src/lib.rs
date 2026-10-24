@@ -843,6 +843,21 @@ pub fn spec_block<A: core::marker::Tuple, F: Fn<A, Output = bool>>(_closure: &F)
     panic!()
 }
 
+/// `amount` of the permission to the `T` at `p`, in a pre- or
+/// postcondition: what the caller gives (precondition) or gets
+/// (postcondition) beyond the arguments' and result's own permissions. The
+/// whole of a `requires`/`ensures` clause, one permission per clause.
+#[cfg(feature = "prusti")]
+pub fn acc<T: ?Sized>(_p: *const T, _amount: Real) -> bool {
+    panic!()
+}
+
+/// The atoms of the `#[im_opaque]` value of type `T` at `p` (see [`acc`]).
+#[cfg(feature = "prusti")]
+pub fn im_atoms<T: ?Sized>(_p: *const T) -> bool {
+    panic!()
+}
+
 /// Prusti-internal: use `f16::is_nan` instead, which is pure and can also be used in specifications.
 #[cfg(feature = "prusti")]
 #[doc(hidden)]

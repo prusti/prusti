@@ -32,6 +32,10 @@ pub enum SpecBuiltin {
     SpecBlock,
     ModeStart(Mode),
     ModeEnd(Mode),
+    /// `acc(p, amount)`: a permission in a pre- or postcondition.
+    Acc,
+    /// `im_atoms(p)`: the atoms of an interior-mutable value.
+    ImAtoms,
 }
 
 /// The operations of the `Ghost` wrapper.
@@ -224,6 +228,8 @@ impl PrustiBuiltin {
                     "forall" => Self::Spec(SpecBuiltin::Forall),
                     "exists" => Self::Spec(SpecBuiltin::Exists),
                     "spec_block" => Self::Spec(SpecBuiltin::SpecBlock),
+                    "acc" => Self::Spec(SpecBuiltin::Acc),
+                    "im_atoms" => Self::Spec(SpecBuiltin::ImAtoms),
                     "ghost_call" => Self::Ghost(GhostOp::Call),
                     "ghost_erased" => Self::Ghost(GhostOp::Erased),
                     "old_start" => Self::Spec(SpecBuiltin::ModeStart(Mode::Old)),

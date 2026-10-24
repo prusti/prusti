@@ -27,6 +27,14 @@ use vir::{CastType, CompType, add_debug_note};
 
 pub struct MirPureEnc;
 
+thread_local! {
+    /// The spans of the `acc`/`im_atoms` calls in specifications: a call whose
+    /// precondition lacks permission there fails by the caller's fault, not
+    /// by an encoding bug (see the call encoding of `ImpureEncVisitor`).
+    pub(crate) static PERM_SPEC_SPANS: std::cell::RefCell<Vec<Span>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
 #[derive(Clone, Debug)]
 pub enum MirPureEncError {
     // UnsupportedStatement,
@@ -1251,11 +1259,20 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                         };
                         EncodedPlace::new(val_expr, Some(ref_expr)).with_metadata(metadata)
                     }
-                    TyKind::RawPtr(..) => {
-                        return Err(self.unsupported_rvalue(
-                            format!("dereference of the raw pointer `{}`", place_ty.ty),
-                            self.current_span(),
-                        ));
+                    // The address is the pointer's (e.g. `&raw const (*p).f`);
+                    // the value is read from the heap, where a specification
+                    // holds the permission (`acc`).
+                    TyKind::RawPtr(pointee, _) => {
+                        let e_ty = e_ty.expect_raw();
+                        let snap = encoded_place.snap.downcast_ty();
+                        let metadata = e_ty.metadata_access(snap);
+                        let ref_expr = e_ty.address_access(snap);
+                        let pointee = RustTyDecomposition::from_ty(*pointee, self.context);
+                        let val_expr = self
+                            .deps
+                            .require_dep::<crate::encoders::TyUseImpureEnc>(pointee)?
+                            .ref_to_snap(ref_expr);
+                        EncodedPlace::new(val_expr, Some(ref_expr)).with_metadata(metadata)
                     }
                     _ => unreachable!(),
                 }
@@ -1575,6 +1592,66 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                     self.vcx.mk_exists_expr(qvars, &[], body)
                 };
                 mk_bool(res)
+            }
+            // A permission at the pointer's address: only meaningful as the
+            // whole of a pre- or postcondition (an assertion, not a value).
+            SpecBuiltin::Acc | SpecBuiltin::ImAtoms => {
+                let pointee = arg_tys[0].expect_ty();
+                let encoded_args = args
+                    .iter()
+                    .map(|oper| self.encode_operand_snap(&oper.node, curr_ver))
+                    .collect::<Result<Vec<_>, _>>()?;
+                PERM_SPEC_SPANS.with_borrow_mut(|spans| spans.push(args[0].span));
+                let ptr_ty = ty::Ty::new_imm_ptr(self.vcx.tcx(), pointee);
+                let addr = self
+                    .ty_use_pure(ptr_ty)
+                    .expect_raw()
+                    .address_access(encoded_args[0].downcast_ty());
+                let decomp = RustTyDecomposition::from_ty(pointee, self.context);
+                // Built over let-bound variables for the address and amount.
+                let idx = self.deep_ctr;
+                self.deep_ctr += 1;
+                let addr_decl = self.vcx.mk_local_decl(
+                    vir::vir_format!(self.vcx, "acc_addr_{idx}"),
+                    vir::TYPE_REF,
+                );
+                let amount_decl = self.vcx.mk_local_decl(
+                    vir::vir_format!(self.vcx, "acc_amount_{idx}"),
+                    vir::TYPE_PERM,
+                );
+                let addr_ex = self.vcx.mk_local_ex(addr_decl);
+                let perm = if builtin == SpecBuiltin::Acc {
+                    let ty_use = self
+                        .deps
+                        .require_dep::<crate::encoders::TyUseImpureEnc>(decomp)?;
+                    let amount = self.vcx.mk_local_ex(amount_decl);
+                    ty_use.ref_to_pred(self.vcx, addr_ex, Some(amount))
+                } else {
+                    crate::encoders::ty::im::atoms_assertion(self.deps, decomp, addr_ex)?
+                        .ok_or_else(|| {
+                            self.unsupported_rvalue(
+                                format!("`im_atoms` of `{pointee}`, which is not `#[im_opaque]`"),
+                                args[0].span,
+                            )
+                        })?
+                };
+                let amount = (builtin == SpecBuiltin::Acc)
+                    .then(|| encoded_args[1].downcast_ty::<vir::Perm>());
+                mk_bool(self.vcx.mk_lazy_expr(
+                    "acc",
+                    vir::TYPE_BOOL,
+                    Box::new(move |vcx, lctx: ExprInput<'vir>| {
+                        use vir::Reify;
+                        let perm = perm.lazy().reify(vcx, lctx);
+                        let perm = match amount {
+                            Some(amount) => {
+                                vcx.mk_let_expr(amount_decl, amount.reify(vcx, lctx), perm)
+                            }
+                            None => perm,
+                        };
+                        vcx.mk_let_expr(addr_decl, addr.reify(vcx, lctx), perm).kind
+                    }),
+                ))
             }
             SpecBuiltin::SpecBlock => {
                 assert_eq!(arg_tys.len(), 2);

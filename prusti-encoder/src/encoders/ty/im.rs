@@ -1162,6 +1162,33 @@ pub(crate) fn footprint_release<'vir>(entries: &[FpEntry<'vir>]) -> Vec<vir::Exp
         .collect()
 }
 
+/// The permissions to the atoms of the value of `ty` at `addr`, if it is of
+/// an `#[im_opaque]` struct (`im_atoms` in a specification): the atom, then
+/// the dependent atom at its amount.
+pub(crate) fn atoms_assertion<'vir, E: TaskEncoder>(
+    deps: &mut TaskEncoderDependencies<'vir, E>,
+    ty: RustTyDecomposition<'vir>,
+    addr: vir::ExprRef<'vir>,
+) -> Result<Option<vir::ExprBool<'vir>>, EncodeFullError<'vir, E>> {
+    let Some(did) = ty.ty.im_opaque else {
+        return Ok(None);
+    };
+    let atoms = deps.require_ref::<ImOpaqueEnc>(did)?;
+    let args = deps.require_dep::<GArgsTyEnc>(ty.args)?;
+    let (tys, consts) = (args.get_ty(), args.get_const());
+    let vcx = vir::with_vcx(|vcx| vcx);
+    let mut conjs = vec![vcx.mk_predicate_app_expr(
+        atoms.atom.call()(addr, tys, consts)(Some(vcx.mk_full_perm())),
+    )];
+    if let Some(dependent) = atoms.dependent {
+        let amount = atoms.dependent_amount.unwrap().call()(addr, tys, consts);
+        conjs.push(vcx.mk_predicate_app_expr(
+            dependent.call()(addr, tys, consts)(Some(amount)),
+        ));
+    }
+    Ok(Some(vcx.mk_conj(&conjs)))
+}
+
 /// Opening (`unfold`) or closing (`fold`) the atoms of the value of `ty` at
 /// `addr`, if it is of an `#[im_opaque]` struct: its place is expanded into
 /// its fields, or collapsed back. Opened, the dependent atom first, as its
