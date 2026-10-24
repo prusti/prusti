@@ -92,23 +92,13 @@ fn extract_prusti_attributes(
                     }
                     // Nothing to do for attributes without arguments.
                     SpecAttributeKind::Pure
+                    | SpecAttributeKind::PureUnstable
                     | SpecAttributeKind::Terminates
                     | SpecAttributeKind::Trusted
                     | SpecAttributeKind::Predicate
                     | SpecAttributeKind::Verified => {
                         assert!(attr.tokens.is_empty(), "Unexpected shape of an attribute.");
                         attr.tokens
-                    }
-                    SpecAttributeKind::InteriorMut | SpecAttributeKind::PureUnstable => {
-                        let mut iter = attr.tokens.into_iter();
-                        let tt = iter.next().map(|tt| {
-                            let TokenTree::Group(group) = tt else {
-                                unreachable!()
-                            };
-                            group.stream()
-                        });
-                        assert!(iter.next().is_none(), "Unexpected shape of an attribute.");
-                        tt.unwrap_or_default()
                     }
                     SpecAttributeKind::Invariant => unreachable!("type invariant on function"),
                     SpecAttributeKind::Model => unreachable!("model on function"),
@@ -179,12 +169,6 @@ fn generate_spec_and_assertions(
     let mut generated_items = vec![];
     let mut generated_attributes = vec![];
 
-    // Whether the item is a level-1 accessor (`#[pure_unstable(true)]`); the
-    // `#[interior_mut(EXPR)]` permission closure inherits this marking.
-    let pure_unstable_level1 = prusti_attributes.iter().any(|(kind, _, tokens)| {
-        matches!(kind, SpecAttributeKind::PureUnstable) && tokens.to_string().trim() == "true"
-    });
-
     for (attr_kind, attr_span, attr_tokens) in prusti_attributes.drain(..) {
         let rewriting_result = match attr_kind {
             SpecAttributeKind::Requires => generate_for_requires(attr_tokens, attr_span, item),
@@ -196,9 +180,8 @@ fn generate_spec_and_assertions(
                 generate_for_assert_on_expiry(attr_tokens, attr_span, item)
             }
             SpecAttributeKind::Pure => generate_for_pure(attr_tokens, attr_span, item),
-            SpecAttributeKind::PureUnstable => generate_for_pure_unstable(attr_tokens, item),
-            SpecAttributeKind::InteriorMut => {
-                generate_for_interior_mut(attr_tokens, item, pure_unstable_level1)
+            SpecAttributeKind::PureUnstable => {
+                generate_for_pure_unstable(attr_tokens, attr_span, item)
             }
             SpecAttributeKind::Verified => generate_for_verified(attr_tokens, attr_span, item),
             SpecAttributeKind::Terminates => generate_for_terminates(attr_tokens, attr_span, item),
@@ -351,80 +334,28 @@ fn generate_for_pure(attr: TokenStream, span: Span, _item: &untyped::AnyFnItem) 
     ))
 }
 
-fn generate_for_interior_mut(
+/// Generate attributes to mark a function as `pure_unstable`: a pure function
+/// that sees the deep values of interior-mutable objects.
+fn generate_for_pure_unstable(
     attr: TokenStream,
-    item: &untyped::AnyFnItem,
-    level1: bool,
+    span: Span,
+    _item: &untyped::AnyFnItem,
 ) -> GeneratedResult {
-    // No permission expression: the interior-mutable object always has full
-    // (write) permission (e.g. `Cell`).
-    if attr.is_empty() {
-        return Ok((
-            vec![],
-            vec![parse_quote_spanned! {item.span()=>
-                #[prusti::interior_mut]
-            }],
+    if !attr.is_empty() {
+        return Err(syn::Error::new(
+            attr.span(),
+            "the `#[pure_unstable]` attribute does not take parameters",
         ));
     }
 
-    // A permission expression (e.g. `RefCell`): generate a `Real`-returning
-    // spec item with the same arguments as the annotated function, so it can
-    // refer to `self` and call (pure) functions of the inner state.
-    let mut rewriter = rewriter::AstRewriter::new();
-    let spec_id = rewriter.generate_spec_id();
-    let spec_id_str = spec_id.to_string();
-    let spec_item = rewriter.process_assertion(
-        rewriter::SpecItemType::InteriorMutPerm { level1 },
-        spec_id,
-        attr,
-        item,
-    )?;
-    Ok((
-        vec![spec_item],
-        vec![
-            parse_quote_spanned! {item.span()=>
-                #[prusti::interior_mut]
-            },
-            parse_quote_spanned! {item.span()=>
-                #[prusti::interior_mut_perm_spec_id_ref = #spec_id_str]
-            },
-        ],
-    ))
-}
-
-/// Generate attributes to mark a function as `pure_unstable`, i.e. a pure
-/// function whose Viper encoding additionally takes the values of the
-/// interior-mutable objects reachable from its arguments.
-/// `#[pure_unstable(true)]` passes only the level-0 values (for functions
-/// used in level-1 permission amounts); `#[pure_unstable]` /
-/// `#[pure_unstable(false)]` passes the level-0 and level-1 values.
-fn generate_for_pure_unstable(attr: TokenStream, item: &untyped::AnyFnItem) -> GeneratedResult {
-    let inner_only = if attr.is_empty() {
-        false
-    } else {
-        let lit = attr.to_string();
-        match lit.trim() {
-            "true" => true,
-            "false" => false,
-            _ => {
-                return Err(syn::Error::new(
-                    attr.span(),
-                    "the `#[pure_unstable(...)]` attribute only accepts `true` or `false`",
-                ));
-            }
-        }
-    };
-    let inner_only_str = inner_only.to_string();
     Ok((
         vec![],
         vec![
-            // A `pure_unstable` function is also pure for the purposes of the
-            // existing pure-function machinery.
-            parse_quote_spanned! {item.span()=>
+            parse_quote_spanned! {span=>
                 #[prusti::pure]
             },
-            parse_quote_spanned! {item.span()=>
-                #[prusti::pure_unstable = #inner_only_str]
+            parse_quote_spanned! {span=>
+                #[prusti::pure_unstable]
             },
         ],
     ))
@@ -1527,7 +1458,6 @@ fn extract_prusti_attributes_for_types(
                     SpecAttributeKind::RefineSpec => unreachable!("refine_spec on type"),
                     SpecAttributeKind::Pure => unreachable!("pure on type"),
                     SpecAttributeKind::PureUnstable => unreachable!("pure_unstable on type"),
-                    SpecAttributeKind::InteriorMut => unreachable!("interior_mut on type"),
                     SpecAttributeKind::Verified => unreachable!("verified on type"),
                     SpecAttributeKind::Invariant => unreachable!("invariant on type"),
                     SpecAttributeKind::Predicate => unreachable!("predicate on type"),
@@ -1575,7 +1505,6 @@ fn generate_spec_and_assertions_for_types(
             SpecAttributeKind::AssertOnExpiry => unreachable!(),
             SpecAttributeKind::Pure => unreachable!(),
             SpecAttributeKind::PureUnstable => unreachable!(),
-            SpecAttributeKind::InteriorMut => unreachable!(),
             SpecAttributeKind::Verified => unreachable!(),
             SpecAttributeKind::Predicate => unreachable!(),
             SpecAttributeKind::Invariant => unreachable!(),

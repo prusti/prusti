@@ -63,8 +63,6 @@ pub enum SpecIdRef {
     },
     Predicate(SpecificationId),
     Terminates(SpecificationId),
-    /// The permission-amount expression of an `#[interior_mut(EXPR)]` annotation.
-    InteriorMutPerm(SpecificationId),
 }
 
 impl Display for SpecificationId {

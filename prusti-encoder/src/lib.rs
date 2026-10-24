@@ -30,7 +30,6 @@ use crate::encoders::{
                 TraitImplConditionEnc, TraitImplDefaultFnEnc, TraitImplEnc, TraitImplItemEnc,
             },
         },
-        interior_mut::TyInteriorMutUseEnc,
         interpretation::{bitvec::BitVecEnc, float_conv::FloatBitVecConvEnc},
         lifted::TyConstructorEnc,
     },
@@ -146,7 +145,6 @@ pub fn test_entrypoint<'tcx>(
     TraitImplDefaultFnEnc::emit_outputs(&mut program);
 
     program.header("interior mutability");
-    TyInteriorMutUseEnc::emit_outputs(&mut program);
     encoders::ty::im::ImUnsetEnc::emit_outputs(&mut program);
     encoders::ty::im::ImOpaqueEnc::emit_outputs(&mut program);
     encoders::ty::im::ContainerOfEnc::emit_outputs(&mut program);

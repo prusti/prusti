@@ -3,7 +3,7 @@
 // each function has to fail at its final assertion. (A guard reaches the
 // cell's borrow flag through a reference, so a boundary with both the cell
 // and a guard must grant the flag once, not once per holder.)
-use std::cell::RefCell;
+use prusti_contracts::cell::RefCell;
 
 fn scope_end() {
     let c = RefCell::new(5);

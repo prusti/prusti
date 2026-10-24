@@ -1,7 +1,7 @@
 //@ compile-flags: -Passert_timeout=45000
 // The interior-mutable objects of an enum are those of its active variant,
 // also for enums with more than two variants.
-use std::cell::Cell;
+use prusti_contracts::cell::Cell;
 
 pub enum E {
     A(Cell<i32>),

@@ -1,9 +1,9 @@
 //@ compile-flags: -Passert_timeout=45000
-// Basic `std::cell::RefCell` API: construction, dynamic borrows, writes and
+// Basic `RefCell` API: construction, dynamic borrows, writes and
 // consumption. All borrows are provably disjoint, so no `borrow`/`borrow_mut`
 // call can panic and all assertions hold.
 
-use std::cell::RefCell;
+use prusti_contracts::cell::RefCell;
 
 fn new_and_borrow() {
     let c = RefCell::new(5);

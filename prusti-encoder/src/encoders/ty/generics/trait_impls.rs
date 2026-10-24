@@ -177,19 +177,10 @@ impl TaskEncoder for TraitImplEnc {
                 // here we inhale the impl postconditions, since they
                 // can contain "old" variables
                 let mut stmts = bounds;
-                for post in impl_item_spec
-                    .post_exprs()
-                    .filter(|post| !reads_im_state(post))
-                {
+                for post in impl_item_spec.post_exprs().filter(|post| !reads_heap(post)) {
                     stmts.push(vcx.mk_inhale_stmt(post));
                 }
-                // A `#[pure_unstable]` impl function takes the
-                // interior-mutability snapshot, which does not exist in this
-                // check: its result is left unconstrained here.
-                if impl_item_has_body
-                    && impl_item_is_pure
-                    && crate::encoders::get_pure_unstable_encoding(impl_item_def_id).is_none()
-                {
+                if impl_item_has_body && impl_item_is_pure {
                     let pure_func = deps.require_dep::<FunctionCallEnc>(
                         CallTaskDescription::new(
                             impl_item_def_id,
@@ -803,21 +794,8 @@ pub(super) fn final_leaf_def(
         .filter(specialization_graph::LeafDef::is_final)
 }
 
-/// Whether a spec conjunct reads interior-mutable state: through the
-/// heap-dependent `im0_snap`/`im1_snap` materialization, or through the
-/// snapshot parameter of a `#[pure_unstable]` function. Such a conjunct
-/// cannot be part of the pure trait-impl axioms and checks (it is detected on
-/// the printed expression, there being no expression visitor).
-fn reads_im_state(expr: &vir::ExprBool<'_>) -> bool {
-    let text = format!("{expr:?}");
-    text.contains("im0_snap")
-        || text.contains("im1_snap")
-        || text.contains("im_map")
-        || reads_heap(expr)
-}
-
 /// Whether `expr` reads the heap through an `old` or an `unfolding` (e.g. a
-/// deep value): an axiom cannot.
+/// deep value): the pure trait-impl axioms and checks cannot.
 fn reads_heap(expr: &vir::ExprBool<'_>) -> bool {
     use vir::{Visitable, Visitor};
     struct Reads(bool);
@@ -1069,15 +1047,13 @@ impl TaskEncoder for TraitImplItemEnc {
                         impl_span,
                     )?;
                     // These axioms are a pure context: a spec conjunct that
-                    // reads interior-mutable state (through the
-                    // heap-dependent `im0_snap`/`im_snap` materialization)
-                    // cannot be part of them. Such conjuncts are left out:
-                    // callers dispatching dynamically learn less, which is
-                    // sound, and statically resolved calls use the impl
-                    // item's own contract. A precondition that cannot be
-                    // expressed makes the item uncallable through the trait.
+                    // reads the heap cannot be part of them. Such conjuncts
+                    // are left out: callers dispatching dynamically learn
+                    // less, which is sound, and statically resolved calls use
+                    // the impl item's own contract. A precondition that cannot
+                    // be expressed makes the item uncallable through the trait.
                     let pre_exprs = impl_item_spec.pre_exprs().collect::<Vec<_>>();
-                    let pres = if pre_exprs.iter().any(reads_im_state) {
+                    let pres = if pre_exprs.iter().any(reads_heap) {
                         vcx.mk_bool::<false>()
                     } else {
                         vcx.mk_conj(&pre_exprs)
@@ -1119,11 +1095,9 @@ impl TaskEncoder for TraitImplItemEnc {
                     ));
                     let mut posts = impl_item_spec
                         .post_exprs()
-                        .filter(|post| !reads_im_state(post))
+                        .filter(|post| !reads_heap(post))
                         .collect::<Vec<_>>();
-                    let impl_item_is_pure_unstable =
-                        crate::encoders::get_pure_unstable_encoding(impl_item_def_id).is_some();
-                    if impl_item_has_body && impl_item_is_pure && !impl_item_is_pure_unstable {
+                    if impl_item_has_body && impl_item_is_pure {
                         let pure_func = deps.require_dep::<FunctionCallEnc>(
                             CallTaskDescription::new(
                                 impl_item_def_id,

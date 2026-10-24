@@ -81,7 +81,6 @@ impl<'tcx> RustTyDecomposition<'tcx> {
             params: GParams::empty_env(gty),
             special: RustTySpecial::None,
             sizedness: RustTySizedness::None,
-            interior_mut: &[],
             im_opaque: None,
             im_annotated: None,
         };
@@ -275,8 +274,6 @@ pub struct RustTyData<'tcx> {
     pub params: GParams<'tcx>,
     pub special: RustTySpecial,
     pub sizedness: RustTySizedness<'tcx>,
-    /// The type's `#[interior_mut]` accessors (from its extern type spec).
-    pub interior_mut: &'tcx [DefId],
     /// The struct, if it is `#[im_opaque]`: it has a key and an atom.
     pub im_opaque: Option<DefId>,
     /// The struct, if it reaches another type's atom (`#[im_shares]`).
@@ -445,13 +442,11 @@ impl<'tcx> TyData<'tcx, RustTyDatas> {
         let (params, args) = Self::identity_for_ty(ty, context.is_trait_extern_spec());
         let args = GArgs::new(context, args);
         let specifics = TySpecifics::from_ty(ty);
-        let interior_mut = crate::encoders::get_type_interior_mut(ty);
         let data = RustTyData {
             name: symbol::Symbol::intern(&name),
             params,
             special: RustTySpecial::from_ty(ty),
             sizedness: RustTySizedness::from_ty(ty),
-            interior_mut: vir::with_vcx(|vcx| vcx.alloc_slice(&interior_mut)),
             im_opaque: match ty.kind() {
                 ty::TyKind::Adt(adt, _) if crate::encoders::ty::im::is_im_opaque(adt.did()) => {
                     Some(adt.did())
@@ -477,7 +472,6 @@ impl<'tcx> TyData<'tcx, RustTyDatas> {
             params,
             special: RustTySpecial::None,
             sizedness: RustTySizedness::from_ty(ty),
-            interior_mut: &[],
             im_opaque: None,
             im_annotated: None,
         };

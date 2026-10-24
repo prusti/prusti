@@ -42,12 +42,6 @@ pub fn pure(_attr: TokenStream, tokens: TokenStream) -> TokenStream {
 
 #[cfg(not(feature = "prusti"))]
 #[proc_macro_attribute]
-pub fn interior_mut(_attr: TokenStream, tokens: TokenStream) -> TokenStream {
-    tokens
-}
-
-#[cfg(not(feature = "prusti"))]
-#[proc_macro_attribute]
 pub fn pure_unstable(_attr: TokenStream, tokens: TokenStream) -> TokenStream {
     tokens
 }
@@ -229,12 +223,6 @@ pub fn assert_on_expiry(attr: TokenStream, tokens: TokenStream) -> TokenStream {
 #[proc_macro_attribute]
 pub fn pure(attr: TokenStream, tokens: TokenStream) -> TokenStream {
     rewrite_prusti_attributes(SpecAttributeKind::Pure, attr.into(), tokens.into()).into()
-}
-
-#[cfg(feature = "prusti")]
-#[proc_macro_attribute]
-pub fn interior_mut(attr: TokenStream, tokens: TokenStream) -> TokenStream {
-    rewrite_prusti_attributes(SpecAttributeKind::InteriorMut, attr.into(), tokens.into()).into()
 }
 
 #[cfg(feature = "prusti")]

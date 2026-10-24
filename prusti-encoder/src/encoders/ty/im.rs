@@ -466,15 +466,7 @@ fn call_annotation<'vir, E: TaskEncoder>(
         ty.args.args(),
         method,
     ))?;
-    let amount = if func.is_pure_unstable() {
-        // The value map of the old encoding, unused by deep values.
-        let tys = crate::encoders::ty::interior_mut::ImTys::new(deps);
-        let empty = vir::with_vcx(|vcx| vcx.mk_map_empty_expr(tys.key.ty, vir::TYPE_PSNAP));
-        func.call_pure_unstable(vec![self_ref], empty)
-    } else {
-        func.call_pure(vec![self_ref])
-    };
-    Ok(amount)
+    Ok(func.call_pure(vec![self_ref]))
 }
 
 /// The amount of its pointee a `#[ptr_holds]` struct `did` holds (the

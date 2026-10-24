@@ -3,8 +3,7 @@
 // through all others, and functions taking several `&Cell` parameters must
 // only assert facts that also hold when the parameters alias.
 
-use prusti_contracts::*;
-use std::cell::Cell;
+use prusti_contracts::{cell::Cell, *};
 
 fn two_aliases_of_local() {
     let c = Cell::new(0);

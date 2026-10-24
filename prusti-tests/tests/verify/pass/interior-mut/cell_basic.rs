@@ -1,9 +1,9 @@
 //@ compile-flags: -Passert_timeout=45000
-// Basic `std::cell::Cell` API: construction, reads, writes and consumption.
+// Basic `Cell` API: construction, reads, writes and consumption.
 // All assertions hold in every execution; a future Prusti with fully
 // specified `Cell` methods should verify this file.
 
-use std::cell::Cell;
+use prusti_contracts::cell::Cell;
 
 fn new_and_get() {
     let c = Cell::new(42);

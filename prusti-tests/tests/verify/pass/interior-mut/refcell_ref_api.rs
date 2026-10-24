@@ -4,7 +4,7 @@
 // The `Ref` and `RefMut` guard APIs: `map`, `map_split`, `filter_map` and
 // `Ref::clone`, including writes through mapped `RefMut`s.
 
-use std::cell::{Ref, RefCell, RefMut};
+use prusti_contracts::cell::{Ref, RefCell, RefMut};
 
 fn ref_map_projects_field() {
     let c = RefCell::new((1, 2));

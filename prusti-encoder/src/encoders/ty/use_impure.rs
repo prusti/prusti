@@ -7,7 +7,6 @@ use crate::encoders::{
     ty::{
         LazyRustTy, RustTyDatas, RustTyDecomposition,
         generics::{GArgs, GArgsCastEnc, GArgsTyEnc, GParams, TyExprEnc},
-        interior_mut::TyInteriorMutUseEnc,
         pure::TyPureEnc,
         use_inhabited::{TyUseInhabitedEnc, TyUseInhabitedRef},
     },
@@ -145,7 +144,6 @@ impl TaskEncoder for TyUseImpureEnc {
         task_key: &Self::TaskKey<'vir>,
         deps: &mut task_encoder::TaskEncoderDependencies<'vir, Self>,
     ) -> EncodeFullResult<'vir, Self> {
-        deps.require_dep::<TyInteriorMutUseEnc>(*task_key)?;
         deps.emit_output_ref(*task_key, ())?;
 
         let ty_impure = deps.require_dep::<TyImpureEnc>(task_key.ty)?;

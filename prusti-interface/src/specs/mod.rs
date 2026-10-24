@@ -42,8 +42,7 @@ use prusti_specs::specifications::common::SpecificationId;
 struct ProcedureSpecRefs {
     spec_id_refs: Vec<SpecIdRef>,
     pure: bool,
-    /// `Some(inner_only)` if the function is `#[pure_unstable]`.
-    pure_unstable: Option<bool>,
+    pure_unstable: bool,
     abstract_predicate: bool,
     trusted: bool,
 }
@@ -76,7 +75,6 @@ struct TypeSpecRefs {
     trusted: bool,
     model: Option<(String, LocalDefId)>,
     countexample_print: Vec<(Option<String>, LocalDefId)>,
-    interior_mut: Vec<DefId>,
     drop_spec: Option<DefId>,
 }
 
@@ -233,16 +231,11 @@ impl<'a, 'tcx> SpecCollector<'a, 'tcx> {
                     SpecIdRef::Terminates(spec_id) => {
                         spec.set_terminates(*self.spec_functions.get(spec_id).unwrap());
                     }
-                    SpecIdRef::InteriorMutPerm(spec_id) => {
-                        spec.set_interior_mut_perm(
-                            self.spec_functions.get(spec_id).unwrap().to_def_id(),
-                        );
-                    }
                 }
             }
 
-            if let Some(inner_only) = refs.pure_unstable {
-                spec.set_pure_unstable(inner_only);
+            if refs.pure_unstable {
+                spec.set_pure_unstable();
             }
 
             // An `#[extern_spec]` is assumed whether or not it says
@@ -588,10 +581,6 @@ fn get_procedure_spec_ids(def_id: DefId, attrs: &[hir::Attribute]) -> Option<Pro
         read_prusti_attr("pred_spec_id_ref", attrs)
             .map(|raw_spec_id| SpecIdRef::Predicate(parse_spec_id(raw_spec_id, def_id))),
     );
-    spec_id_refs.extend(
-        read_prusti_attr("interior_mut_perm_spec_id_ref", attrs)
-            .map(|raw_spec_id| SpecIdRef::InteriorMutPerm(parse_spec_id(raw_spec_id, def_id))),
-    );
     let is_predicate = matches!(spec_id_refs.last(), Some(SpecIdRef::Predicate(..)));
     debug!(
         "Function {:?} has specification ids {:?}",
@@ -599,7 +588,7 @@ fn get_procedure_spec_ids(def_id: DefId, attrs: &[hir::Attribute]) -> Option<Pro
     );
 
     let pure = has_prusti_attr(attrs, "pure");
-    let pure_unstable = read_prusti_attr("pure_unstable", attrs).map(|v| v.trim() == "true");
+    let pure_unstable = has_prusti_attr(attrs, "pure_unstable");
     let trusted = has_prusti_attr(attrs, "trusted")
         || (!is_predicate && config::opt_in_verification() && !has_prusti_attr(attrs, "verified"));
     let abstract_predicate = has_abstract_predicate_attr(attrs);
@@ -655,17 +644,6 @@ impl<'a, 'tcx> intravisit::Visitor<'tcx> for SpecCollector<'a, 'tcx> {
         if let Some(raw_spec_id) = read_prusti_attr("spec_id", attrs) {
             let spec_id: SpecificationId = parse_spec_id(raw_spec_id, def_id);
             self.spec_functions.insert(spec_id, local_id);
-
-            // A spec function may itself be `#[pure_unstable]` (e.g. an
-            // `#[interior_mut(EXPR)]` permission closure). Such functions are
-            // encoded as ordinary pure functions and therefore also need a
-            // procedure specification, so the encoder can see the
-            // `pure_unstable` flag (and thread the value `Map`).
-            if read_prusti_attr("pure_unstable", attrs).is_some() {
-                if let Some(procedure_spec_ref) = get_procedure_spec_ids(def_id, attrs) {
-                    self.procedure_specs.insert(local_id, procedure_spec_ref);
-                }
-            }
 
             // Collect loop specifications
             if has_prusti_attr(attrs, "loop_body_invariant_spec") {
@@ -738,56 +716,6 @@ impl<'a, 'tcx> intravisit::Visitor<'tcx> for SpecCollector<'a, 'tcx> {
                     .add_extern_fn(fn_kind, fn_decl, body_id, span, local_id, kind)
                 {
                     fn_id = source;
-                }
-            }
-
-            if has_prusti_attr(attrs, "interior_mut") {
-                // An `#[interior_mut]` accessor must be either `#[pure]` (a
-                // level-0 accessor, collected by `_IM_0`: its permission
-                // expression cannot read interior-mutable state) or
-                // `#[pure_unstable(true)]` (a level-1 accessor, collected by
-                // `_IM_1`: its permission expression may read level-0 state).
-                // `#[pure_unstable]` (which reads level-1 state as well) would
-                // be circular, and a non-pure accessor cannot be evaluated in
-                // the `_IM_N` functions at all.
-                let valid = match read_prusti_attr("pure_unstable", attrs).as_deref() {
-                    Some("true") => true,
-                    Some(_) => false,
-                    None => has_prusti_attr(attrs, "pure"),
-                };
-                if !valid {
-                    PrustiError::incorrect(
-                        "an `#[interior_mut]` accessor must be marked either `#[pure]` \
-                         (level 0) or `#[pure_unstable(true)]` (level 1)"
-                            .to_string(),
-                        MultiSpan::from_span(span),
-                    )
-                    .emit(&self.env.diagnostic);
-                } else {
-                    // The accessor's type: the `Self` type of its `impl`, or,
-                    // for a free spec function (the only way to declare an
-                    // accessor on a foreign type that has no suitable
-                    // method), the referent of its first argument.
-                    let tcx = self.env.query.tcx();
-                    let parent = tcx.parent(fn_id);
-                    let self_ty = if matches!(tcx.def_kind(parent), hir::def::DefKind::Impl { .. })
-                    {
-                        tcx.type_of(parent).skip_binder()
-                    } else {
-                        tcx.fn_sig(fn_id).skip_binder().inputs().skip_binder()[0]
-                            .builtin_deref(true)
-                            .expect("an `#[interior_mut]` accessor must take `&self`")
-                    };
-                    let ty = self_ty
-                        .ty_adt_def()
-                        .expect("interior_mut can only be applied to ADTs")
-                        .did();
-                    self.extern_resolver
-                        .extern_ty_map
-                        .entry(ty)
-                        .or_default()
-                        .interior_mut
-                        .push(fn_id);
                 }
             }
 

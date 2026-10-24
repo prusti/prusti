@@ -3,7 +3,7 @@
 
 // Closure-taking `RefCell` methods.
 
-use std::cell::RefCell;
+use prusti_contracts::cell::RefCell;
 
 fn replace_with_uses_old() {
     let c = RefCell::new(5);

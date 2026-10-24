@@ -9,7 +9,6 @@ pub mod sizedness;
 pub mod trait_fn;
 pub mod trait_impls;
 mod ty_expr;
-pub(super) mod interior_mut;
 
 pub(crate) use param_typ::ParamTypEnc;
 

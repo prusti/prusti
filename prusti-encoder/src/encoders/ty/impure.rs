@@ -378,9 +378,8 @@ impl<'vir> PredicateBuilder<'vir> {
     /// Like [`Self::mk_snap_function`], with an explicit permission amount
     /// for the precondition (`None` = `write`). Bodyless (abstract) snapshot
     /// functions can require only `wildcard`: reading needs any positive
-    /// amount, and the weaker precondition lets heap-dependent consumers
-    /// (e.g. the interior-mutability value-snapshot function) mention them
-    /// under wildcard permissions.
+    /// amount, and the weaker precondition lets them be read under fractional
+    /// permissions (e.g. the contents of an interior-mutable atom).
     pub(crate) fn mk_snap_function_amount(
         &mut self,
         inner: Option<vir::ExprCSnap<'vir>>,

@@ -3,7 +3,7 @@
 // nested cells, slices of cells), generic functions over `Cell<T>`, and the
 // `Cell` trait implementations (`Clone`, `Default`, `From`, comparisons).
 
-use std::cell::Cell;
+use prusti_contracts::cell::Cell;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Point {

@@ -4,9 +4,10 @@
 // `unreachable!()` arms and the `is_ok`/`is_err` assertions requires precise
 // tracking of the borrow state.
 
-use prusti_contracts::*;
-use prusti_contracts::core_spec::ref_cell::refcell_count;
-use std::cell::{Ref, RefCell};
+use prusti_contracts::{
+    cell::{Ref, RefCell, refcell_count},
+    *,
+};
 
 fn free_state() {
     let c = RefCell::new(1);

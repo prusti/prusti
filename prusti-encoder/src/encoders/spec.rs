@@ -10,7 +10,7 @@ use prusti_interface::{
         },
     },
 };
-use prusti_rustc_interface::{hir, middle::ty, span::def_id::DefId};
+use prusti_rustc_interface::{middle::ty, span::def_id::DefId};
 use task_encoder::{EncodeFullResult, TaskEncoder, TaskEncoderDependencies};
 
 use crate::encoders::ty::generics::GArgs;
@@ -171,134 +171,65 @@ pub fn get_type_drop_spec(ty: ty::Ty) -> Option<DefId> {
     }
 }
 
-pub fn get_type_interior_mut(ty: ty::Ty) -> Vec<DefId> {
-    match ty.kind() {
-        prusti_rustc_interface::middle::ty::TyKind::Adt(adt_def, _) => with_type_spec(|def_spec| {
-            def_spec
-                .get_type_spec(&adt_def.did())
-                .map(|type_spec| {
-                    type_spec
-                        .interior_mut
-                        .expect_empty_or_inherent()
-                        .cloned()
-                        .unwrap_or_default()
-                })
-                .unwrap_or_default()
-        }),
-        _ => Vec::new(),
+/// The body Prusti defines for a body-less spec function that computes an
+/// address from its first argument (a shared reference): the function keeps
+/// the address of that argument, which other pure functions do not see.
+pub enum AddressBody {
+    /// `#[field_projection(a.b)]`: the field at the path.
+    FieldProjection(Vec<String>),
+    /// `#[container_of(a.b, f)]`: the struct whose field `f` the reference at
+    /// the path points to.
+    ContainerOf(Vec<String>, String),
+    /// `#[pointee_of(a.b)]`: what the pointer at the path points to.
+    PointeeOf(Vec<String>),
+}
+
+impl AddressBody {
+    pub fn attribute(&self) -> &'static str {
+        match self {
+            AddressBody::FieldProjection(_) => "field_projection",
+            AddressBody::ContainerOf(..) => "container_of",
+            AddressBody::PointeeOf(_) => "pointee_of",
+        }
     }
 }
 
-/// For an `#[interior_mut(EXPR)]`-annotated function (an `as_ptr`-style
-/// function in a type's interior-mut list), returns the `DefId` of the
-/// `Real`-returning permission-amount function, or `None` for a plain
-/// `#[interior_mut]` (always full permission, e.g. `Cell`).
-pub fn get_interior_mut_perm(def_id: DefId) -> Option<DefId> {
-    let substs = ty::GenericArgs::identity_for_item(vir::with_vcx(|vcx| vcx.tcx()), def_id);
-    with_proc_spec(SpecQuery::GetProcKind(def_id, substs), |proc_spec| {
-        proc_spec
-            .interior_mut_perm
-            .extract_with_selective_replacement()
-            .copied()
-            .flatten()
-    })
-    .flatten()
-}
-
-/// The field path of a `#[field_projection(a.b)]` spec function.
-pub fn get_field_projection(def_id: DefId) -> Option<Vec<String>> {
+/// The [`AddressBody`] of `def_id`, if it has one.
+pub fn address_body(def_id: DefId) -> Option<AddressBody> {
+    let path = |path: &str| path.split('.').map(str::to_string).collect();
     vir::with_vcx(|vcx| {
-        let attrs = prusti_interface::environment::EnvQuery::new(vcx.tcx()).get_attributes(def_id);
-        prusti_interface::utils::read_prusti_attr("field_projection", attrs)
-            .map(|path| path.split('.').map(str::to_string).collect())
-    })
-}
-
-/// The field path and the container's field of a `#[container_of(a.b, f)]`
-/// spec function.
-pub fn get_container_of(def_id: DefId) -> Option<(Vec<String>, String)> {
-    vir::with_vcx(|vcx| {
-        let attrs = prusti_interface::environment::EnvQuery::new(vcx.tcx()).get_attributes(def_id);
-        let value = prusti_interface::utils::read_prusti_attr("container_of", attrs)?;
-        let (path, field) = value.split_once(',')?;
-        Some((
-            path.split('.').map(str::to_string).collect(),
-            field.to_string(),
-        ))
-    })
-}
-
-/// The field path of a `#[pointee_of(a.b)]` spec function.
-pub fn get_pointee_of(def_id: DefId) -> Option<Vec<String>> {
-    vir::with_vcx(|vcx| {
-        let attrs = prusti_interface::environment::EnvQuery::new(vcx.tcx()).get_attributes(def_id);
+        let attrs = EnvQuery::new(vcx.tcx()).get_attributes(def_id);
+        if let Some(value) = prusti_interface::utils::read_prusti_attr("field_projection", attrs) {
+            return Some(AddressBody::FieldProjection(path(&value)));
+        }
+        if let Some(value) = prusti_interface::utils::read_prusti_attr("container_of", attrs) {
+            let (field_path, field) = value.split_once(',')?;
+            return Some(AddressBody::ContainerOf(path(field_path), field.to_string()));
+        }
         prusti_interface::utils::read_prusti_attr("pointee_of", attrs)
-            .map(|path| path.split('.').map(str::to_string).collect())
+            .map(|value| AddressBody::PointeeOf(path(&value)))
     })
 }
 
-/// Whether `def_id` is an `#[interior_mut]`-annotated accessor (with or
-/// without a permission expression).
-pub fn is_interior_mut_accessor(def_id: DefId) -> bool {
-    vir::with_vcx(|vcx| {
-        if prusti_interface::environment::EnvQuery::new(vcx.tcx())
-            .has_prusti_attribute(def_id, "interior_mut")
-        {
-            return true;
-        }
-        // An extern-spec'd accessor (e.g. `Cell::as_ptr`) carries the
-        // attribute on its spec item, not on itself: it is an accessor iff
-        // its holder type (the referent of its first argument) lists it.
-        if !matches!(
-            vcx.tcx().def_kind(def_id),
-            hir::def::DefKind::Fn | hir::def::DefKind::AssocFn
-        ) {
-            return false;
-        }
-        let sig = vcx.tcx().fn_sig(def_id).skip_binder().skip_binder();
-        sig.inputs()
-            .first()
-            .is_some_and(|holder| get_type_interior_mut(holder.peel_refs()).contains(&def_id))
-    })
-}
-
-/// The `#[pure_unstable]` marking used for the Viper *encoding* of `def_id`:
-/// like [`get_pure_unstable`], except that `#[interior_mut]` accessors are
-/// `None`. On an accessor the marking only declares the IM *level* of its
-/// objects; the accessor's value is map-independent (it identifies a stable
-/// address), so it is encoded as a plain pure function. This keeps the IM-QP
-/// keys built from accessors stable across differently-phrased maps.
-///
-/// NOTE: the map argument makes the solver instantiate Viper's built-in
-/// `Map_values` axioms on every domain-membership term, whose documented
-/// matching loop makes Z3 grind for minutes per assertion. The patched
-/// Silicon preamble in `viper/preamble_override` (gating those axioms'
-/// triggers on an actual `Map_values` term) is therefore REQUIRED for this
-/// encoding to perform.
-pub fn get_pure_unstable_encoding(def_id: DefId) -> Option<bool> {
-    get_pure_unstable(def_id).filter(|_| !is_interior_mut_accessor(def_id))
-}
-
-/// `Some(inner_only)` if `def_id` is a `#[pure_unstable]` function: `inner_only`
-/// is `true` for `#[pure_unstable(true)]` (only the level-0 value map is
-/// passed) and `false` otherwise (the level-0 and level-1 values are passed).
-pub fn get_pure_unstable(def_id: DefId) -> Option<bool> {
+/// Whether `def_id` is `#[pure_unstable]`: a pure function that sees deep
+/// values (the contents of the interior-mutable values its arguments reach).
+pub fn is_pure_unstable(def_id: DefId) -> bool {
     let substs = ty::GenericArgs::identity_for_item(vir::with_vcx(|vcx| vcx.tcx()), def_id);
     with_proc_spec(SpecQuery::GetProcKind(def_id, substs), |proc_spec| {
         proc_spec
             .pure_unstable
-            .extract_with_selective_replacement()
-            .copied()
-            .flatten()
+            .extract_inherit()
+            .unwrap_or(false)
     })
-    .flatten()
+    .unwrap_or(false)
 }
 
 /// A call to a trait method whose statically known impl carries its own
-/// specification (an `extern_spec`, or a `#[pure_unstable]` function) goes
-/// directly to the impl: such a contract reads the heap (interior-mutable
-/// state, pledges of a `&mut` result), so it cannot be stated by the axioms
-/// of the trait method's stub.
+/// specification (an `extern_spec`, a trusted impl with postconditions, a
+/// pure impl of an impure method, or a `#[pure_unstable]` function) goes
+/// directly to the impl: such a contract may read the heap (deep values,
+/// pledges of a `&mut` result), so it cannot be stated by the axioms of the
+/// trait method's stub.
 pub fn resolve_specced_trait_call<'tcx>(
     caller_def_id: DefId,
     def_id: DefId,
@@ -337,11 +268,7 @@ pub fn resolve_specced_trait_call<'tcx>(
             kind_is_pure(&proc_spec.kind)
         })
         .unwrap_or(false);
-    if has_extern_spec
-        || pure_impl
-        || trusted_with_posts
-        || get_pure_unstable_encoding(resolved).is_some()
-    {
+    if has_extern_spec || pure_impl || trusted_with_posts || is_pure_unstable(resolved) {
         (resolved, resolved_substs)
     } else {
         (def_id, substs)

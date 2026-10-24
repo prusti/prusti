@@ -3,8 +3,7 @@
 // mention `Cell::get`, including two-state (`old`) postconditions, and
 // callers relying on them.
 
-use prusti_contracts::*;
-use std::cell::Cell;
+use prusti_contracts::{cell::Cell, *};
 
 #[ensures(c.get() == v)]
 fn set_cell(c: &Cell<i32>, v: i32) {

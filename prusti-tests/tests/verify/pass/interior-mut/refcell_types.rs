@@ -3,9 +3,10 @@
 // mixing `Cell` and `RefCell` fields, sharing, and the `RefCell` trait
 // implementations (`Clone`, `Default`, `From`, comparisons).
 
-use prusti_contracts::core_spec::ref_cell::refcell_count;
-use prusti_contracts::*;
-use std::cell::{Cell, RefCell};
+use prusti_contracts::{
+    cell::{Cell, RefCell, refcell_count},
+    *,
+};
 
 struct Pair {
     a: i32,
