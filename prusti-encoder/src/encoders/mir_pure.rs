@@ -966,7 +966,13 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                             .collect::<Result<Vec<_>, _>>()?;
                         Ok(pure_func.call_pure(snap_args))
                     } else {
-                        panic!("call to unknown non-pure function in pure code ({def_id:?})");
+                        Err(self.unsupported_rvalue(
+                            format!(
+                                "call to the non-pure function `{}` in pure code",
+                                self.vcx.tcx().def_path_str(def_id)
+                            ),
+                            self.current_span(),
+                        ))
                     }
                 };
 
