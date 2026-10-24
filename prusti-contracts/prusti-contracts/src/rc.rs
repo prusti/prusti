@@ -748,6 +748,22 @@ impl<T: ?Sized, A: Allocator> Rc<T, A> {
     /// assert!(Rc::get_mut(&mut x).is_none());
     /// ```
     #[inline]
+    #[trusted]
+    #[ensures(result.is_some() == (old(rc_strong(this)) == 1 && old(rc_weak(this)) == 1))]
+    #[ensures(match &result {
+        Some(v) => **v === *old(&**this),
+        None => true,
+    })]
+    #[after_expiry(rc_ptr(this) === old(rc_ptr(this))
+        && rc_strong(this) == old(rc_strong(this))
+        && rc_weak(this) == old(rc_weak(this)))]
+    #[after_expiry((old(rc_strong(this)) == 1 && old(rc_weak(this)) == 1)
+        ==> Ghost::new_ref(&**this) == before_expiry(match &result {
+            Some(v) => Ghost::new_ref(&**v),
+            None => Ghost::new_ref(&**this),
+        }))]
+    #[after_expiry(!(old(rc_strong(this)) == 1 && old(rc_weak(this)) == 1)
+        ==> Ghost::new_ref(&**this) == Ghost::new_ref(old(&**this)))]
     pub fn get_mut(this: &mut Self) -> Option<&mut T> {
         if Rc::is_unique(this) { unsafe { Some(Rc::get_mut_unchecked(this)) } } else { None }
     }
