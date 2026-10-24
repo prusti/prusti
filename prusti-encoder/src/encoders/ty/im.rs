@@ -22,7 +22,7 @@ use task_encoder::{EncodeFullError, TaskEncoder, TaskEncoderDependencies};
 use vir::{CallableIdn, CastType};
 
 use crate::encoders::{
-    FunctionCallEnc, TyUseImpureEnc, TyUsePureEnc,
+    FunctionCallEnc, LocalDef, TyUseImpureEnc, TyUsePureEnc,
     mir_fn::CallTaskDescription,
     ty::{
         RustTyDecomposition, TySpecifics,
@@ -398,6 +398,15 @@ fn contents_of<'vir, E: TaskEncoder>(
             ty: deps.require_dep::<TyUseImpureEnc>(contents_ty)?,
         });
     }
+    unsafe_cell_contents(deps, cell_ty, cell_addr)
+}
+
+/// The contents of the `UnsafeCell` of type `cell_ty` at `cell_addr`.
+fn unsafe_cell_contents<'vir, E: TaskEncoder>(
+    deps: &mut TaskEncoderDependencies<'vir, E>,
+    cell_ty: RustTyDecomposition<'vir>,
+    cell_addr: vir::ExprRef<'vir>,
+) -> Result<Contents<'vir>, EncodeFullError<'vir, E>> {
     let cell_use = deps.require_dep::<TyUsePureEnc>(cell_ty)?;
     let addr = cell_use.expect_variant_opt(None).fields[0].field_ref(cell_addr);
     let contents_ty =
@@ -406,6 +415,57 @@ fn contents_of<'vir, E: TaskEncoder>(
         addr,
         ty: deps.require_dep::<TyUseImpureEnc>(contents_ty)?,
     })
+}
+
+/// The permission to and the snapshot of the contents of the value of `ty`
+/// at `addr`, if it is an `UnsafeCell`: a free-floating permission (see
+/// [`unsafe_cell_contract`]), which moves with the cell.
+pub(crate) fn unsafe_cell_slot<'vir, E: TaskEncoder>(
+    deps: &mut TaskEncoderDependencies<'vir, E>,
+    ty: RustTyDecomposition<'vir>,
+    addr: vir::ExprRef<'vir>,
+) -> Result<Option<(vir::ExprBool<'vir>, vir::ExprSnap<'vir>)>, EncodeFullError<'vir, E>> {
+    if ty.ty.special != crate::encoders::ty::RustTySpecial::UnsafeCell {
+        return Ok(None);
+    }
+    let contents = unsafe_cell_contents(deps, ty, addr)?;
+    let full = vir::with_vcx(|vcx| vcx.mk_full_perm());
+    Ok(Some((contents.acc(full), contents.snap())))
+}
+
+/// The contract of an `UnsafeCell` primitive on the contents, an interior
+/// location outside the cell's predicate: `new` returns the permission to
+/// them (free-floating, folded into an atom where needed) and `into_inner`
+/// takes it. As pre- and postconditions; `args[0]` is the result.
+/// (`UnsafeCell::get` only needs an address fact, given by its spec.)
+pub(crate) fn unsafe_cell_contract<'vir, E: TaskEncoder>(
+    deps: &mut TaskEncoderDependencies<'vir, E>,
+    def_id: DefId,
+    args: &[LocalDef<'vir>],
+) -> Result<(Vec<vir::ExprBool<'vir>>, Vec<vir::ExprBool<'vir>>), EncodeFullError<'vir, E>> {
+    let vcx = vir::with_vcx(|vcx| vcx);
+    let is_unsafe_cell = |ty: RustTyDecomposition<'vir>| {
+        ty.ty.special == crate::encoders::ty::RustTySpecial::UnsafeCell
+    };
+    let Some(item) = vcx.tcx().opt_associated_item(def_id) else {
+        return Ok(Default::default());
+    };
+    let full = vcx.mk_full_perm();
+    match item.name().as_str() {
+        "new" if is_unsafe_cell(args[0].ty) => {
+            let contents = unsafe_cell_contents(deps, args[0].ty, args[0].local_ex)?;
+            let value = vcx.mk_old_expr(args[1].impure_snap);
+            let post = vcx.mk_conj(&[contents.acc(full), vcx.mk_eq_expr(contents.snap(), value)]);
+            Ok((Vec::new(), vec![post]))
+        }
+        "into_inner" if args.len() == 2 && is_unsafe_cell(args[1].ty) => {
+            let contents = unsafe_cell_contents(deps, args[1].ty, args[1].local_ex)?;
+            let value = vcx.mk_old_expr(contents.snap());
+            let post = vcx.mk_eq_expr(args[0].impure_snap, value);
+            Ok((vec![contents.acc(full)], vec![post]))
+        }
+        _ => Ok(Default::default()),
+    }
 }
 
 /// The amount computed by the annotation method `method` of the struct `ty`
@@ -1081,6 +1141,50 @@ pub(crate) fn footprint_release<'vir>(entries: &[FpEntry<'vir>]) -> Vec<vir::Exp
         .filter(|part| !part.is_empty())
         .map(|part| footprint_assertion(&part))
         .collect()
+}
+
+/// Opening (`unfold`) or closing (`fold`) the atoms of the value of `ty` at
+/// `addr`, if it is of an `#[im_opaque]` struct: its place is expanded into
+/// its fields, or collapsed back. Opened, the dependent atom first, as its
+/// amount reads the atom; closed, the other way round. The dependent atom
+/// only where its amount is positive.
+pub(crate) fn open_or_close<'vir, E: TaskEncoder>(
+    deps: &mut TaskEncoderDependencies<'vir, E>,
+    ty: RustTyDecomposition<'vir>,
+    addr: vir::ExprRef<'vir>,
+    open: bool,
+) -> Result<Vec<vir::Stmt<'vir>>, EncodeFullError<'vir, E>> {
+    let Some(did) = ty.ty.im_opaque else {
+        return Ok(Vec::new());
+    };
+    let atoms = deps.require_ref::<ImOpaqueEnc>(did)?;
+    let args = deps.require_dep::<GArgsTyEnc>(ty.args)?;
+    let (tys, consts) = (args.get_ty(), args.get_const());
+    let vcx = vir::with_vcx(|vcx| vcx);
+    let fold_or_unfold = |app| {
+        if open {
+            vcx.mk_unfold_stmt(app)
+        } else {
+            vcx.mk_fold_stmt(app)
+        }
+    };
+    let mut stmts = vec![fold_or_unfold(
+        atoms.atom.call()(addr, tys, consts)(Some(vcx.mk_full_perm())),
+    )];
+    if let Some(dependent) = atoms.dependent {
+        let amount = atoms.dependent_amount.unwrap().call()(addr, tys, consts);
+        let positive = vcx
+            .mk_bin_op_expr(vir::BinOpKind::CmpGt, amount, vcx.mk_no_perm())
+            .downcast_ty();
+        let stmt = fold_or_unfold(dependent.call()(addr, tys, consts)(Some(amount)));
+        let stmt = vcx.mk_if_stmt(positive, vcx.alloc_slice(&[stmt]), &[]);
+        if open {
+            stmts.insert(0, stmt);
+        } else {
+            stmts.push(stmt);
+        }
+    }
+    Ok(stmts)
 }
 
 /// The permissions to the atoms of the places a loop invariant keeps, granted

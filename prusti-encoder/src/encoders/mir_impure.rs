@@ -249,6 +249,21 @@ impl<'vir> PlaceExpr<'vir> {
     }
 }
 
+/// What a moved operand carries besides its predicate: the contents of its
+/// inline interior locations, read into temporaries (their atoms move), and
+/// for an `UnsafeCell`, its free-floating contents.
+#[derive(Default)]
+struct Moved<'vir> {
+    contents: Vec<vir::ExprSnap<'vir>>,
+    cell: Option<vir::ExprSnap<'vir>>,
+}
+
+impl Moved<'_> {
+    fn is_empty(&self) -> bool {
+        self.contents.is_empty() && self.cell.is_none()
+    }
+}
+
 pub(crate) struct EncodePlaceResult<'vir> {
     pub(crate) expr: PlaceExpr<'vir>,
     pub(crate) ty: mir::PlaceTy<'vir>,
@@ -653,6 +668,12 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             label.map(vir::OldLabel::Label)
         };
 
+        // Also behind shared references: the atoms are not in the snapshot.
+        if expansion.is_some() {
+            let open = matches!(fold_or_unfold, FoldOrUnfold::Unfold);
+            self.open_or_close_atoms(place, label, open)?;
+        }
+
         // We don't want to unfold because for immutable refs we only use snapshot read/writes
         if place.is_shared_ref(self.pcg_ctxt()) || place.projects_shared_ref(self.pcg_ctxt()) {
             return Ok(());
@@ -676,6 +697,29 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             FoldOrUnfold::Unfold => data.unfold(place_ty.variant_index, ref_p, index, None, label),
             FoldOrUnfold::Fold => data.fold(place_ty.variant_index, ref_p, index, None, label),
         };
+        self.stmts(stmts);
+        Ok(())
+    }
+
+    /// The atoms of an `#[im_opaque]` value are open while its place is
+    /// expanded into its fields.
+    fn open_or_close_atoms(
+        &mut self,
+        place: Place<'vir>,
+        label: Option<vir::OldLabel<'vir>>,
+        open: bool,
+    ) -> EncodeResult<'vir, (), E> {
+        let ty = (*place).ty(self.local_decls, self.vcx.tcx());
+        if ty.variant_index.is_some() {
+            return Ok(());
+        }
+        let ty = RustTyDecomposition::from_ty(ty.ty, self.def_id);
+        if ty.ty.im_opaque.is_none() {
+            return Ok(());
+        }
+        let addr = self.encode_place(place)?.expr.address;
+        let addr = self.vcx.maybe_apply_label(addr, label);
+        let stmts = crate::encoders::ty::im::open_or_close(self.deps, ty, addr, open)?;
         self.stmts(stmts);
         Ok(())
     }
@@ -1317,7 +1361,9 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 });
                 if matches!(repack_op, pcg::free_pcs::RepackOp::Expand(..)) {
                     self.stmts(data.unfold(place_ty.variant_index, place_enc, index, None, None));
+                    self.open_or_close_atoms(place, None, true)?;
                 } else if matches!(repack_op, pcg::free_pcs::RepackOp::Collapse(..)) {
+                    self.open_or_close_atoms(place, None, false)?;
                     self.stmts(data.fold(place_ty.variant_index, place_enc, index, None, None));
                 } else {
                     unreachable!()
@@ -1735,11 +1781,19 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                             snap: None,
                         }
                     }
+                    // The pointee's permission is not held by the pointer: it
+                    // must be in the state already (e.g. from an opened atom).
                     ty::TyKind::RawPtr(..) => {
-                        return Err(self.unsupported_rvalue(
-                            format!("dereference of the raw pointer `{}`", place_ty.ty),
-                            self.current_span(),
-                        ));
+                        let snap = expr
+                            .snap
+                            .unwrap_or_else(|| e_ty.ref_to_snap(expr.address))
+                            .downcast_ty();
+                        let p_ty = self.ty_use_pure(place_ty.ty).expect_raw();
+                        PlaceExpr {
+                            address: p_ty.address_access(snap),
+                            metadata: Some(p_ty.metadata_access(snap)),
+                            snap: None,
+                        }
                     }
                     _ => unreachable!(),
                 }
@@ -1761,13 +1815,13 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         (func_def_id, caller_substs, is_pure)
     }
 
-    /// For each operand that `rvalue` moves (in field order): the contents of
-    /// its inline interior locations, read into temporaries. Their atoms are
-    /// exhaled: they move to the assigned place (see [`Self::im_give_moved`]).
+    /// For each operand of `rvalue` (in field order), what it moves (see
+    /// [`Moved`]). The permissions are exhaled: they move to the assigned
+    /// place (see [`Self::im_give_moved`]).
     fn im_take_moved(
         &mut self,
         rvalue: &mir::Rvalue<'vir>,
-    ) -> EncodeResult<'vir, Vec<vir::ExprSnap<'vir>>, E> {
+    ) -> EncodeResult<'vir, Vec<Moved<'vir>>, E> {
         let operands: Vec<&mir::Operand<'vir>> = match rvalue {
             mir::Rvalue::Use(operand, _) => vec![operand],
             mir::Rvalue::Aggregate(box kind, operands)
@@ -1780,15 +1834,28 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             }
             _ => return Ok(Vec::new()),
         };
-        let mut contents = Vec::new();
+        let mut all_moved = Vec::new();
         for operand in operands {
+            let mut moved = Moved::default();
             let mir::Operand::Move(place) = operand else {
+                all_moved.push(moved);
                 continue;
             };
             let place = Place::from(*place);
             let ty = (*place).ty(self.local_decls, self.vcx.tcx()).ty;
             let ty = RustTyDecomposition::from_ty(ty, self.def_id);
+            if ty.ty.special == crate::encoders::ty::RustTySpecial::UnsafeCell
+                && let addr = self.encode_place(place)?.expr.address
+                && let Some((acc, snap)) =
+                    crate::encoders::ty::im::unsafe_cell_slot(self.deps, ty, addr)?
+            {
+                let tmp = self.new_tmp(snap.ty());
+                self.stmt(self.vcx.mk_pure_assign_stmt(tmp, snap));
+                self.stmt(self.vcx.mk_exhale_stmt(acc));
+                moved.cell = Some(tmp);
+            }
             if !crate::encoders::ty::im::reaches_im(ty) {
+                all_moved.push(moved);
                 continue;
             }
             let (result, snap, _, _) = self.encode_place_with_snap(place)?;
@@ -1802,24 +1869,78 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 for content in entry.contents(self.deps)? {
                     let tmp = self.new_tmp(content.ty());
                     self.stmt(self.vcx.mk_pure_assign_stmt(tmp, content));
-                    contents.push(tmp);
+                    moved.contents.push(tmp);
                 }
             }
             for release in crate::encoders::ty::im::footprint_release(&owned) {
                 self.stmt(self.vcx.mk_exhale_stmt(release));
             }
+            all_moved.push(moved);
         }
-        Ok(contents)
+        Ok(all_moved)
     }
 
-    /// The inline interior locations of the place `dest` of type `ty`, just
-    /// assigned a moved value: their atoms, with the moved `contents`.
+    /// The place `dest` of type `ty`, just assigned `rvalue`, receives what
+    /// its operands moved: an aggregate field by field. A value of an
+    /// `#[im_opaque]` struct built from its parts closes its atoms over them.
     fn im_give_moved(
+        &mut self,
+        rvalue: &mir::Rvalue<'vir>,
+        ty: ty::Ty<'vir>,
+        dest: vir::ExprRef<'vir>,
+        moved: Vec<Moved<'vir>>,
+    ) -> EncodeResult<'vir, (), E> {
+        let mir::Rvalue::Aggregate(box kind, operands) = rvalue else {
+            if let Some(moved) = moved.into_iter().next() {
+                self.im_give_moved_to(ty, dest, moved)?;
+            }
+            return Ok(());
+        };
+        if !moved.iter().all(Moved::is_empty) {
+            let variant = match kind {
+                mir::AggregateKind::Adt(def_id, variant, ..)
+                    if self.vcx.tcx().adt_def(*def_id).is_enum() =>
+                {
+                    Some(*variant)
+                }
+                _ => None,
+            };
+            let ty_use = self.ty_use_pure(ty);
+            for ((idx, operand), moved) in operands.iter_enumerated().zip(moved) {
+                if moved.is_empty() {
+                    continue;
+                }
+                let field_ty = operand.ty(self.local_decls, self.vcx.tcx());
+                let field = ty_use.expect_variant_opt(variant).fields[idx.as_usize()].field_ref(dest);
+                self.im_give_moved_to(field_ty, field, moved)?;
+            }
+        }
+        let ty = RustTyDecomposition::from_ty(ty, self.def_id);
+        let stmts = crate::encoders::ty::im::open_or_close(self.deps, ty, dest, false)?;
+        self.stmts(stmts);
+        Ok(())
+    }
+
+    /// The place `dest` of type `ty` receives the `moved` parts of a value.
+    fn im_give_moved_to(
         &mut self,
         ty: ty::Ty<'vir>,
         dest: vir::ExprRef<'vir>,
-        contents: Vec<vir::ExprSnap<'vir>>,
+        moved: Moved<'vir>,
     ) -> EncodeResult<'vir, (), E> {
+        let decomp = RustTyDecomposition::from_ty(ty, self.def_id);
+        if let Some(value) = moved.cell
+            && let Some((acc, snap)) =
+                crate::encoders::ty::im::unsafe_cell_slot(self.deps, decomp, dest)?
+        {
+            self.stmt(self.vcx.mk_inhale_stmt(
+                self.vcx.mk_conj(&[acc, self.vcx.mk_eq_expr(snap, value)]),
+            ));
+        }
+        if moved.contents.is_empty() {
+            return Ok(());
+        }
+        let contents = moved.contents;
         let ty_out = self.ty_use_impure(ty);
         let ty = RustTyDecomposition::from_ty(ty, self.def_id);
         let snap = ty_out.ref_to_snap(dest);
@@ -2747,7 +2868,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                         .expect_predicate();
 
                     // A moved value's inline interior locations move with it.
-                    let moved_contents = self.im_take_moved(rvalue)?;
+                    let moved = self.im_take_moved(rvalue)?;
 
                     // The snapshot of the value that we are assigning.
                     let rval_enc = self.encode_rvalue(rvalue, span, &captured);
@@ -2761,9 +2882,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                                 dest_ty_out.apply_method_assign(self.vcx, proj_enc, rval_enc.expr);
                             self.stmt(method_assign_app);
                             self.stmts(rval_enc.post_fold_stmts(proj_enc));
-                            if !moved_contents.is_empty() {
-                                self.im_give_moved(dest_ty.ty, proj_enc, moved_contents)?;
-                            }
+                            self.im_give_moved(rvalue, dest_ty.ty, proj_enc, moved)?;
                         }
                         Err(_) => {
                             self.vcx.with_span(span, |vcx| {
@@ -2929,6 +3048,15 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 let borrows = current_fpcs.statements.last().unwrap().states
                     [EvalStmtPhase::PostMain]
                     .borrow_pcg();
+                // Places still expanded (borrowed by the result) close here.
+                for edge in borrows.graph().edges() {
+                    if let BorrowPcgEdgeKind::BorrowPcgExpansion(expansion) = edge.kind()
+                        && let PcgNode::Place(MaybeLabelledPlace::Current(base)) =
+                            expansion.base()
+                    {
+                        self.open_or_close_atoms(base, None, false)?;
+                    }
+                }
                 let wand_packages = self.package_wands(borrows)?;
                 self.current_fpcs = Some(current_fpcs);
                 self.stmts(wand_packages);

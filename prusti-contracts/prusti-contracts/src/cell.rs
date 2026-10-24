@@ -316,6 +316,18 @@ pub fn im_get<T: ?Sized>(_c: &UnsafeCell<T>) -> &T {
     unimplemented!()
 }
 
+/// Keeps the place `r` borrows from borrowed until `im_close`, and so the
+/// `#[im_opaque]` value it is a field of expanded: its atoms stay open, e.g.
+/// across raw accesses to its contents through `UnsafeCell::get`.
+#[trusted]
+pub fn im_open<'a, T: ?Sized>(r: &'a T) -> &'a T {
+    r
+}
+
+/// Ends an `im_open`.
+#[trusted]
+pub fn im_close<T: ?Sized>(_r: &T) {}
+
 /// The current value of a `Cell`.
 #[pure_unstable]
 pub fn cell_value<T: ?Sized>(c: &Cell<T>) -> &T {

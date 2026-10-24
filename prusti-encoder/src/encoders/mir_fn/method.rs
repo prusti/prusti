@@ -520,6 +520,13 @@ impl TaskEncoder for MethodEnc {
             if !fp_post.is_empty() {
                 posts.push(crate::encoders::ty::im::footprint_assertion(&fp_post));
             }
+            let defs = (0..arg_count)
+                .map(|idx| arg_defs[mir::Local::from(idx)])
+                .collect::<Vec<_>>();
+            let (cell_pres, cell_posts) =
+                crate::encoders::ty::im::unsafe_cell_contract(deps, def_id, &defs)?;
+            pres.extend(cell_pres);
+            posts.extend(cell_posts);
             // A pure function changes no interior-mutable state: the deep
             // values of its arguments are framed.
             if is_pure {
