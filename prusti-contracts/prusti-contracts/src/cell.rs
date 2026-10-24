@@ -1519,12 +1519,18 @@ unsafe impl<T: ?Sized> Send for RefCell<T> where T: Send {}
 
 impl<T: ?Sized> !Sync for RefCell<T> {}
 
+#[refine_trait_spec]
 impl<T: Clone> Clone for RefCell<T> {
     /// # Panics
     ///
     /// Panics if the value is currently mutably borrowed.
     #[inline]
     #[track_caller]
+    #[trusted]
+    #[requires(0 <= refcell_count(self) && refcell_count(self) < isize::MAX)]
+    #[ensures(refcell_count(self) == old(refcell_count(self)))]
+    #[ensures(*refcell_value(self) === *old(refcell_value(self)))]
+    #[ensures(refcell_count(&result) == 0)]
     fn clone(&self) -> RefCell<T> {
         RefCell::new(self.borrow().clone())
     }

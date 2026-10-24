@@ -462,7 +462,12 @@ impl TaskEncoder for MethodEnc {
                 // What is borrowed by the result cannot be read afterwards:
                 // its atoms are returned at their keys in the pre-state.
                 if blocked.contains(&arg_idx) {
-                    fp_post.extend(entries.iter().filter(|e| e.reached).map(|e| e.in_old()));
+                    fp_post.extend(
+                        entries
+                            .iter()
+                            .filter(|e| e.reached)
+                            .map(|e| e.in_state(vir::OldLabel::None)),
+                    );
                     continue;
                 }
                 let old_entries = crate::encoders::ty::im::footprint(

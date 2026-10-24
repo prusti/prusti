@@ -1805,9 +1805,8 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                     contents.push(tmp);
                 }
             }
-            // A dependent atom's amount reads the atom it follows.
-            for entry in owned.iter().rev() {
-                self.stmt(self.vcx.mk_exhale_stmt(entry.acc()));
+            for release in crate::encoders::ty::im::footprint_release(&owned) {
+                self.stmt(self.vcx.mk_exhale_stmt(release));
             }
         }
         Ok(contents)
@@ -2952,6 +2951,46 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                             return Ok(());
                         };
 
+                        // A trait method called through its (generic) stub
+                        // has no interior-mutability contract: the caller
+                        // gives up the atoms of the arguments, and gets back
+                        // those reached through references and the result's,
+                        // as the callee's own contract would state.
+                        let stub_call = self.vcx.tcx().trait_of_assoc(func_def_id).is_some();
+                        let mut stub_reached = Vec::new();
+                        if stub_call {
+                            let before = vir::OldLabel::Label(self.new_label("im_release"));
+                            let mut entries = Vec::new();
+                            for arg in args.iter() {
+                                let (mir::Operand::Move(place) | mir::Operand::Copy(place)) =
+                                    &arg.node
+                                else {
+                                    continue;
+                                };
+                                let ty = place.ty(self.local_decls, self.vcx.tcx()).ty;
+                                let ty = RustTyDecomposition::from_ty(ty, self.def_id);
+                                if !crate::encoders::ty::im::reaches_im(ty) {
+                                    continue;
+                                }
+                                let (result, snap, _, _) =
+                                    self.encode_place_with_snap(Place::from(*place))?;
+                                entries.extend(crate::encoders::ty::im::footprint(
+                                    self.deps,
+                                    ty,
+                                    result.expr.address,
+                                    snap,
+                                )?);
+                            }
+                            for release in crate::encoders::ty::im::footprint_release(&entries) {
+                                self.stmt(self.vcx.mk_exhale_stmt(release));
+                            }
+                            stub_reached = entries
+                                .iter()
+                                .filter(|e| e.reached)
+                                .map(|e| e.in_state(before))
+                                .collect();
+                        }
+
                         let method_in = args
                             .iter()
                             .map(|arg| self.encode_operand(&arg.node).unwrap())
@@ -3000,6 +3039,26 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                             if let &mir::Operand::Move(place) = &arg.node {
                                 let uninit = self.place_uninit(Place::from(place))?;
                                 self.stmt(self.vcx.mk_inhale_stmt(uninit));
+                            }
+                        }
+                        if stub_call {
+                            let mut returned = stub_reached.clone();
+                            let dest_ty = destination.ty(self.local_decls, self.vcx.tcx()).ty;
+                            let dest_ty = RustTyDecomposition::from_ty(dest_ty, self.def_id);
+                            if crate::encoders::ty::im::reaches_im(dest_ty) {
+                                let (result, snap, _, _) =
+                                    self.encode_place_with_snap(Place::from(*destination))?;
+                                returned.extend(crate::encoders::ty::im::footprint(
+                                    self.deps,
+                                    dest_ty,
+                                    result.expr.address,
+                                    snap,
+                                )?);
+                            }
+                            if !returned.is_empty() {
+                                self.stmt(self.vcx.mk_inhale_stmt(
+                                    crate::encoders::ty::im::footprint_assertion(&returned),
+                                ));
                             }
                         }
                         // The guards the caller still holds (and the one the

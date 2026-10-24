@@ -588,13 +588,13 @@ impl<'vir> FpEntry<'vir> {
         })
     }
 
-    /// The entry with its key, amount and condition evaluated in the
-    /// pre-state.
-    pub(crate) fn in_old(&self) -> Self {
+    /// The entry with its key, amount and condition evaluated in the state
+    /// `label`.
+    pub(crate) fn in_state(&self, label: vir::OldLabel<'vir>) -> Self {
         vir::with_vcx(|vcx| Self {
-            addr: vcx.mk_old_expr(self.addr),
-            amount: self.amount.map(|amount| vcx.mk_old_expr(amount)),
-            condition: self.condition.map(|condition| vcx.mk_old_expr(condition)),
+            addr: vcx.mk_old(self.addr, label),
+            amount: self.amount.map(|amount| vcx.mk_old(amount, label)),
+            condition: self.condition.map(|condition| vcx.mk_old(condition, label)),
             ..*self
         })
     }
@@ -1033,6 +1033,17 @@ pub(crate) fn on_expiry<'vir, E: TaskEncoder>(
         conjs.extend(guard_assumption_of(deps, referent, r_addr, r_snap)?);
     }
     Ok((!conjs.is_empty()).then(|| vcx.mk_conj(&conjs)))
+}
+
+/// The assertions releasing the permissions to `entries`, to be exhaled in
+/// order: the dependent atoms first, as their amounts read the atoms.
+pub(crate) fn footprint_release<'vir>(entries: &[FpEntry<'vir>]) -> Vec<vir::ExprBool<'vir>> {
+    let (dependent, atoms): (Vec<_>, Vec<_>) = entries.iter().partition(|e| e.amount.is_some());
+    [dependent, atoms]
+        .into_iter()
+        .filter(|part| !part.is_empty())
+        .map(|part| footprint_assertion(&part))
+        .collect()
 }
 
 /// The permissions to the atoms of the places a loop invariant keeps, granted
