@@ -10,15 +10,15 @@ use prusti_rustc_interface::{
         TypeVisitableExt, Unnormalized,
     },
     span::{
+        Span,
         def_id::{DefId, LocalDefId},
         source_map::SourceMap,
-        Span,
     },
     trait_selection::{
         infer::{InferCtxtExt, TyCtxtInferExt},
         traits::{
-            query::evaluate_obligation::InferCtxtExt as QueryInferCtxtExt, ImplSource, Obligation,
-            ObligationCause, SelectionContext,
+            ImplSource, Obligation, ObligationCause, SelectionContext,
+            query::evaluate_obligation::InferCtxtExt as QueryInferCtxtExt,
         },
     },
 };
@@ -372,13 +372,24 @@ impl<'tcx> EnvQuery<'tcx> {
         called_def_id: impl IntoParam<ProcedureDefId>, // what are we calling?
         call_substs: GenericArgsRef<'tcx>,
     ) -> (ProcedureDefId, GenericArgsRef<'tcx>) {
+        let typing_env = ty::TypingEnv::post_analysis(self.tcx, caller_def_id.into_param());
+        self.resolve_method_call_in(typing_env, called_def_id, call_substs)
+    }
+
+    /// Like [`Self::resolve_method_call`], for `call_substs` whose parameters
+    /// are those of `typing_env`.
+    pub fn resolve_method_call_in(
+        self,
+        typing_env: ty::TypingEnv<'tcx>,
+        called_def_id: impl IntoParam<ProcedureDefId>,
+        call_substs: GenericArgsRef<'tcx>,
+    ) -> (ProcedureDefId, GenericArgsRef<'tcx>) {
         let called_def_id = called_def_id.into_param();
 
         (|| {
             // trait resolution does not depend on lifetimes, and in fact fails in the presence of uninferred regions
             let clean_substs = self.tcx.erase_and_anonymize_regions(call_substs);
 
-            let typing_env = ty::TypingEnv::post_analysis(self.tcx, caller_def_id.into_param());
             let instance = self
                 .tcx
                 .resolve_instance_raw(typing_env.as_query_input((called_def_id, clean_substs)))

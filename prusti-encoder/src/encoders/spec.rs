@@ -204,7 +204,10 @@ pub fn address_body(def_id: DefId) -> Option<AddressBody> {
         }
         if let Some(value) = prusti_interface::utils::read_prusti_attr("container_of", attrs) {
             let (field_path, field) = value.split_once(',')?;
-            return Some(AddressBody::ContainerOf(path(field_path), field.to_string()));
+            return Some(AddressBody::ContainerOf(
+                path(field_path),
+                field.to_string(),
+            ));
         }
         prusti_interface::utils::read_prusti_attr("pointee_of", attrs)
             .map(|value| AddressBody::PointeeOf(path(&value)))
@@ -216,10 +219,7 @@ pub fn address_body(def_id: DefId) -> Option<AddressBody> {
 pub fn is_pure_unstable(def_id: DefId) -> bool {
     let substs = ty::GenericArgs::identity_for_item(vir::with_vcx(|vcx| vcx.tcx()), def_id);
     with_proc_spec(SpecQuery::GetProcKind(def_id, substs), |proc_spec| {
-        proc_spec
-            .pure_unstable
-            .extract_inherit()
-            .unwrap_or(false)
+        proc_spec.pure_unstable.extract_inherit().unwrap_or(false)
     })
     .unwrap_or(false)
 }
@@ -229,9 +229,9 @@ pub fn is_pure_unstable(def_id: DefId) -> bool {
 /// pure impl of an impure method, or a `#[pure_unstable]` function) goes
 /// directly to the impl: such a contract may read the heap (deep values,
 /// pledges of a `&mut` result), so it cannot be stated by the axioms of the
-/// trait method's stub.
+/// trait method's stub. `typing_env` is the context of `substs`.
 pub fn resolve_specced_trait_call<'tcx>(
-    caller_def_id: DefId,
+    typing_env: ty::TypingEnv<'tcx>,
     def_id: DefId,
     substs: ty::GenericArgsRef<'tcx>,
 ) -> (DefId, ty::GenericArgsRef<'tcx>) {
@@ -240,7 +240,7 @@ pub fn resolve_specced_trait_call<'tcx>(
         return (def_id, substs);
     }
     let (resolved, resolved_substs) =
-        EnvQuery::new(tcx).resolve_method_call(caller_def_id, def_id, substs);
+        EnvQuery::new(tcx).resolve_method_call_in(typing_env, def_id, substs);
     if resolved == def_id {
         return (def_id, substs);
     }
