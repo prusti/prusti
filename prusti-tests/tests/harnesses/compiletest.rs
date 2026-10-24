@@ -9,6 +9,7 @@
 // use log::{error, info};
 use prusti_server::spawn_server_thread;
 use std::{
+    collections::BTreeSet,
     env,
     path::PathBuf,
     sync::{
@@ -16,7 +17,102 @@ use std::{
         Arc, Mutex,
     },
 };
-use ui_test::{run_tests, spanned::Spanned, Config};
+use ui_test::{
+    default_file_filter, default_per_file_config, run_tests_generic,
+    spanned::Spanned,
+    status_emitter::{Gha, StatusEmitter, Summary, TestStatus, Text},
+    Args, Config, Error, Format,
+};
+
+/// The test files marked `//@ known-failure` that were parsed since the last
+/// summary.
+static KNOWN_FAILURES: Mutex<BTreeSet<PathBuf>> = Mutex::new(BTreeSet::new());
+
+/// `ui_test::run_tests`, plus a summary that tells fixed known failures apart
+/// from regressions.
+fn run_tests(mut config: Config) -> ui_test::color_eyre::Result<()> {
+    let args = Args::test()?;
+    if let Format::Pretty = args.format {
+        println!(
+            "Compiler: {}",
+            config.program.display().to_string().replace('\\', "/")
+        );
+    }
+    let name = config.root_dir.display().to_string().replace('\\', "/");
+    let text = match args.format {
+        Format::Terse => Text::quiet(),
+        Format::Pretty => Text::verbose(),
+    };
+    config.with_args(&args);
+    run_tests_generic(
+        vec![config],
+        default_file_filter,
+        default_per_file_config,
+        (KnownFailureEmitter, (text, Gha::<true> { name })),
+    )
+}
+
+/// Prints after ui_test's own summary, since `(A, B)` emitters drop the
+/// summary of `B` first.
+struct KnownFailureEmitter;
+
+impl StatusEmitter for KnownFailureEmitter {
+    fn register_test(&self, path: PathBuf) -> Box<dyn TestStatus> {
+        ().register_test(path)
+    }
+
+    fn finalize(
+        &self,
+        _failed: usize,
+        _succeeded: usize,
+        _ignored: usize,
+        _filtered: usize,
+        _aborted: bool,
+    ) -> Box<dyn Summary> {
+        Box::new(KnownFailureSummary {
+            known_failures: std::mem::take(&mut KNOWN_FAILURES.lock().unwrap()),
+            failures: vec![],
+        })
+    }
+}
+
+struct KnownFailureSummary {
+    known_failures: BTreeSet<PathBuf>,
+    failures: Vec<String>,
+}
+
+impl Summary for KnownFailureSummary {
+    fn test_failure(&mut self, status: &dyn TestStatus, errors: &Vec<Error>) {
+        let path = status.path();
+        let fixed = self.known_failures.contains(path)
+            && matches!(errors.as_slice(), [Error::ExitStatus { status: exit, .. }] if exit.success());
+        self.failures.push(if fixed {
+            format!(
+                "    FIXED     {} (remove `//@ known-failure`)",
+                path.display()
+            )
+        } else {
+            format!("    REGRESSED {}", path.display())
+        });
+    }
+}
+
+impl Drop for KnownFailureSummary {
+    fn drop(&mut self) {
+        if !self.failures.is_empty() {
+            println!("FAILURES BY KIND:");
+            for line in &self.failures {
+                println!("{line}");
+            }
+            println!();
+        }
+        println!(
+            "Test files still marked `//@ known-failure`: {}",
+            self.known_failures.len()
+        );
+        println!();
+    }
+}
 
 fn find_prusti_rustc_path() -> PathBuf {
     let target_directory = if cfg!(debug_assertions) {
@@ -81,6 +177,7 @@ fn run_prusti_tests(
         config
             .custom_comments
             .insert("known-failure", |parser, _args, span| {
+                KNOWN_FAILURES.lock().unwrap().insert(span.file.clone());
                 parser.exit_status = Spanned::new(1, span.clone()).into();
                 parser.normalize_stderr.push((
                     ui_test::Match::Regex(regex::bytes::Regex::new("(?s).*").unwrap()),
