@@ -1121,6 +1121,12 @@ impl<T> RefCell<T> {
     /// assert_eq!(d, RefCell::new(5));
     /// ```
     #[inline]
+    #[trusted]
+    #[requires(refcell_count(self) == 0 && refcell_count(other) == 0)]
+    #[requires(self as *const RefCell<T> !== other as *const RefCell<T>)]
+    #[ensures(refcell_count(self) == 0 && refcell_count(other) == 0)]
+    #[ensures(*refcell_value(self) === *old(refcell_value(other)))]
+    #[ensures(*refcell_value(other) === *old(refcell_value(self)))]
     pub const fn swap(&self, other: &Self) {
         mem::swap(&mut *self.borrow_mut(), &mut *other.borrow_mut())
     }
@@ -1377,6 +1383,10 @@ impl<T: ?Sized> RefCell<T> {
     /// assert_eq!(c, RefCell::new(6));
     /// ```
     #[inline]
+    #[trusted]
+    #[ensures(*result === *old(refcell_value(self)))]
+    #[after_expiry(refcell_count(self) == old(refcell_count(self)))]
+    #[after_expiry(Ghost::new_ref(refcell_value(&*self)) == before_expiry(Ghost::new_ref(&*result)))]
     pub const fn get_mut(&mut self) -> &mut T {
         self.value.get_mut()
     }
@@ -1472,6 +1482,11 @@ impl<T: Default> RefCell<T> {
     /// assert_eq!(five, 5);
     /// assert_eq!(c.into_inner(), 0);
     /// ```
+    #[trusted]
+    #[requires(refcell_count(self) == 0)]
+    #[ensures(refcell_count(self) == 0)]
+    #[ensures(result === *old(refcell_value(self)))]
+    #[ensures(*refcell_value(self) === T::default())]
     pub fn take(&self) -> T {
         self.replace(Default::default())
     }

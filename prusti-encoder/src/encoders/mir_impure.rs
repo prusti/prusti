@@ -1794,12 +1794,19 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             let (result, snap, _, _) = self.encode_place_with_snap(place)?;
             let entries =
                 crate::encoders::ty::im::footprint(self.deps, ty, result.expr.address, snap)?;
-            for entry in entries.into_iter().filter(|e| !e.reached) {
+            let owned = entries
+                .into_iter()
+                .filter(|e| !e.reached)
+                .collect::<Vec<_>>();
+            for entry in &owned {
                 for content in entry.contents(self.deps)? {
                     let tmp = self.new_tmp(content.ty());
                     self.stmt(self.vcx.mk_pure_assign_stmt(tmp, content));
                     contents.push(tmp);
                 }
+            }
+            // A dependent atom's amount reads the atom it follows.
+            for entry in owned.iter().rev() {
                 self.stmt(self.vcx.mk_exhale_stmt(entry.acc()));
             }
         }

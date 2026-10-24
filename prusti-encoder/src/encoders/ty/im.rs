@@ -557,6 +557,8 @@ pub(crate) struct FpEntry<'vir> {
     ty: RustTyDecomposition<'vir>,
     atom: ImAtomIdn<'vir>,
     addr: vir::ExprRef<'vir>,
+    /// The (shallow) snapshot of the value.
+    snap: vir::ExprSnap<'vir>,
     tys: &'vir [vir::ExprTyVal<'vir>],
     consts: &'vir [vir::ExprCSnap<'vir>],
     /// The amount of a dependent atom (`None`: the full atom).
@@ -602,8 +604,9 @@ impl<'vir> FpEntry<'vir> {
         vir::with_vcx(|vcx| vcx.mk_predicate_app_expr(self.app(self.amount())))
     }
 
-    /// The snapshots of the contents of the atom's `#[im_perm]`s, read through
-    /// the atom (the dependent atom of a key has none of its own).
+    /// The snapshots of the contents of the atom's `#[im_perm]`s and of the
+    /// atoms it folds, read through the atom (the dependent atom of a key has
+    /// none of its own).
     pub(crate) fn contents<E: TaskEncoder>(
         &self,
         deps: &mut TaskEncoderDependencies<'vir, E>,
@@ -612,12 +615,40 @@ impl<'vir> FpEntry<'vir> {
             return Ok(Vec::new());
         }
         let did = self.ty.ty.im_opaque.unwrap();
-        let unfold = vir::with_vcx(|vcx| self.app(vcx.mk_wildcard()));
+        let vcx = vir::with_vcx(|vcx| vcx);
+        let unfold = self.app(vcx.mk_wildcard());
+        let atoms = deps.require_ref::<ImOpaqueEnc>(did)?;
+        let unset = deps.require_dep::<ImUnsetEnc>(())?;
         let mut out = Vec::new();
-        for (kind, field, _) in im_amounts(did) {
+        for (kind, field, method) in im_amounts(did) {
             if kind == ImAmountKind::Perm {
-                let snap = contents_of(deps, self.ty, self.addr, field.unwrap())?.snap();
-                out.push(vir::with_vcx(|vcx| vcx.mk_unfolding_expr(unfold, snap)));
+                let contents = contents_of(deps, self.ty, self.addr, field.unwrap())?;
+                // Where the atom holds none of them, the contents are not
+                // readable (as in a deep value).
+                let amount = atoms.amount(method).call()(self.addr, self.tys, self.consts);
+                let held = vcx
+                    .mk_bin_op_expr(vir::BinOpKind::CmpGt, amount, vcx.mk_no_perm())
+                    .downcast_ty();
+                let field_ty = self.ty.ty.expect_structlike().fields[field.unwrap().as_usize()]
+                    .decompose_normalize(self.ty.args);
+                let contents_ty =
+                    if field_ty.ty.special == crate::encoders::ty::RustTySpecial::UnsafeCell {
+                        deps.require_dep::<GArgsTyEnc>(field_ty.args)?.get_ty()[0]
+                    } else {
+                        deps.require_dep::<crate::encoders::ty::generics::TyExprEnc>(field_ty)?
+                    };
+                let snap = vcx.mk_ternary_expr(
+                    held,
+                    contents.snap(),
+                    unset.call()(contents_ty).upcast_ty(),
+                );
+                out.push(vcx.mk_unfolding_expr(unfold, snap));
+            }
+        }
+        // Those of the atoms it folds.
+        for folded in folded(deps, self.ty, self.addr, self.snap)? {
+            for snap in folded.contents(deps)? {
+                out.push(vcx.mk_unfolding_expr(unfold, snap));
             }
         }
         Ok(out)
@@ -784,6 +815,7 @@ fn footprint_into<'vir, E: TaskEncoder>(
             ty,
             atom: atoms.atom,
             addr,
+            snap,
             tys: args.get_ty(),
             consts: args.get_const(),
             amount: None,
