@@ -965,6 +965,21 @@ fn footprint_into<'vir, E: TaskEncoder>(
     Ok(())
 }
 
+/// Whether the value of the enum `ty` with snapshot `snap` is the variant
+/// `vid`.
+pub(crate) fn variant_is<'vir, E: TaskEncoder>(
+    deps: &mut TaskEncoderDependencies<'vir, E>,
+    ty: RustTyDecomposition<'vir>,
+    vid: abi::VariantIdx,
+    snap: vir::ExprCSnap<'vir>,
+) -> Result<vir::ExprBool<'vir>, EncodeFullError<'vir, E>> {
+    let TySpecifics::EnumLike(data) = &ty.ty.specifics else {
+        unreachable!("not an enum: {ty:?}")
+    };
+    let variant = data.variants.iter().find(|v| v.data.vid == vid).unwrap();
+    is_variant(deps, ty, data, variant.data, snap)
+}
+
 /// Whether the value of the enum `ty` with snapshot `snap` is `variant`.
 fn is_variant<'vir, E: TaskEncoder>(
     deps: &mut TaskEncoderDependencies<'vir, E>,

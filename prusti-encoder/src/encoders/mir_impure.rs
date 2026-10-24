@@ -1904,7 +1904,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         let tcx = self.vcx.tcx();
         let ty = place.ty(self.local_decls, tcx).ty;
         let Some(drop_spec) = crate::encoders::get_type_drop_spec(ty) else {
-            return Ok(());
+            return self.apply_glue_drop_contracts(place, ty);
         };
         let ty::TyKind::Adt(_, adt_args) = *ty.kind() else {
             unreachable!("drop contracts are registered on ADTs")
@@ -1950,6 +1950,88 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         if place.projection.is_empty() {
             self.guard_rereads([place.local], false)?;
         }
+        Ok(())
+    }
+
+    /// The drop glue of `place` of type `ty` without a drop contract of its
+    /// own: the contracts of the values it holds inline (the fields of a
+    /// struct, those of the active variant of an enum), e.g. the `Ref` of a
+    /// dropped `Result<Ref<_>, _>`.
+    fn apply_glue_drop_contracts(
+        &mut self,
+        place: mir::Place<'vir>,
+        ty: ty::Ty<'vir>,
+    ) -> EncodeResult<'vir, (), E> {
+        let tcx = self.vcx.tcx();
+        if !has_drop_contract(tcx, ty, &mut Vec::new()) {
+            return Ok(());
+        }
+        let ty::TyKind::Adt(adt, args) = *ty.kind() else {
+            unreachable!("only ADTs hold drop contracts")
+        };
+        let ty_use = self.ty_use_impure(ty);
+        let addr = self
+            .encode_place(Place::from(place))?
+            .expr
+            .expect_predicate();
+        // Which variant the value is, read before its predicate is unfolded.
+        let mut variants = Vec::new();
+        for (vid, variant) in adt.variants().iter_enumerated() {
+            let fields = variant
+                .fields
+                .iter_enumerated()
+                .map(|(idx, field)| (idx, field.ty(tcx, args).skip_normalization()))
+                .filter(|(_, field_ty)| has_drop_contract(tcx, *field_ty, &mut Vec::new()))
+                .collect::<Vec<_>>();
+            if fields.is_empty() {
+                continue;
+            }
+            let condition = if adt.is_enum() {
+                let decomp = RustTyDecomposition::from_ty(ty, self.def_id);
+                let snap = ty_use.ref_to_snap(addr).downcast_ty();
+                let is = crate::encoders::ty::im::variant_is(self.deps, decomp, vid, snap)?;
+                let tmp = self.new_tmp(vir::TYPE_BOOL);
+                self.stmt(self.vcx.mk_pure_assign_stmt(tmp, is));
+                Some(tmp)
+            } else {
+                None
+            };
+            variants.push((vid, fields, condition));
+        }
+        self.stmts(ty_use.unfold(None, addr, None, None, None));
+        for (vid, fields, condition) in variants {
+            let variant = adt.is_enum().then_some(vid);
+            let glue = self.block(|this| {
+                if variant.is_some() {
+                    this.stmts(ty_use.unfold(variant, addr, None, None, None));
+                }
+                for (idx, field_ty) in fields {
+                    let mut elems = Vec::new();
+                    if let Some(vid) = variant {
+                        elems.push(mir::ProjectionElem::Downcast(None, vid));
+                    }
+                    elems.push(mir::ProjectionElem::Field(idx, field_ty));
+                    this.apply_drop_contract(place.project_deeper(&elems, tcx))?;
+                }
+                if variant.is_some() {
+                    this.stmts(ty_use.fold(variant, addr, None, None, None));
+                }
+                Ok(())
+            })?;
+            match condition {
+                Some(condition) => {
+                    // The method's locals are declared at its top level.
+                    let (decls, glue): (Vec<_>, Vec<_>) = glue
+                        .into_iter()
+                        .partition(|stmt| matches!(stmt.kind, vir::StmtKindData::LocalDecl(..)));
+                    self.stmts(decls);
+                    let glue = self.vcx.alloc_slice(&glue);
+                    self.stmt(self.vcx.mk_if_stmt(condition, glue, &[]));
+                }
+                None => self.stmts(glue),
+            }
+        }
+        self.stmts(ty_use.fold(None, addr, None, None, None));
         Ok(())
     }
 
@@ -3348,4 +3430,25 @@ impl<'vir, 'enc, E: TaskEncoder> PureRvalueEnc<'vir> for ImpureEncVisitor<'vir, 
     ) -> EncodeResult<'vir, vir::ExprSnap<'vir>, E> {
         Ok(self.encode_place_with_snap(place)?.1)
     }
+}
+
+/// Whether dropping a value of `ty` applies a drop contract: that of `ty`,
+/// or one of a value it holds inline.
+fn has_drop_contract<'tcx>(
+    tcx: ty::TyCtxt<'tcx>,
+    ty: ty::Ty<'tcx>,
+    seen: &mut Vec<ty::Ty<'tcx>>,
+) -> bool {
+    if crate::encoders::get_type_drop_spec(ty).is_some() {
+        return true;
+    }
+    let ty::TyKind::Adt(adt, args) = *ty.kind() else {
+        return false;
+    };
+    if adt.is_box() || seen.contains(&ty) {
+        return false;
+    }
+    seen.push(ty);
+    adt.all_fields()
+        .any(|field| has_drop_contract(tcx, field.ty(tcx, args).skip_normalization(), seen))
 }
