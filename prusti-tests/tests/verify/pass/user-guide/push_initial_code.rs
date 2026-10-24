@@ -1,4 +1,3 @@
-//@ known-failure
 // The next line is only required for doctests, you can ignore/remove it
 extern crate prusti_contracts;
 use prusti_contracts::*;

@@ -10,13 +10,15 @@ use crate::encoders::{
 };
 use pcg::borrow_pcg::{
     FunctionData, FunctionShape, FunctionShapeInput, FunctionShapeNode, FunctionShapeOutput,
-    MakeFunctionShapeError, region_projection::Generalized, state::BorrowsState,
+    GeneralizedLifetime, MakeFunctionShapeError,
+    region_projection::{ExtractRegionsCtxt, Generalized, PcgRegion},
+    state::BorrowsState,
     unblock_graph::UnblockGraph,
 };
 use prusti_interface::PrustiError;
 use prusti_rustc_interface::{
     data_structures::fx::{FxHashMap, FxHashSet},
-    index::Idx,
+    index::{Idx, IndexVec},
     middle::{mir, ty},
     span::def_id::DefId,
 };
@@ -630,6 +632,27 @@ impl<'vir> WandEncOutput<'vir> {
         let (mut wands, resourceless): (Vec<_>, Vec<_>) = wands
             .into_iter()
             .partition(|wand_data| wand_data.rhs.iter().any(|g| has_resources((*g).into())));
+        // The PCG lets a type parameter in the result capture any region of
+        // the arguments, through projections without a counterpart in the
+        // encoding. A wand blocked only by such projections is not needed if
+        // no value of a type parameter can borrow from what it gives back:
+        // the arguments are then given back directly.
+        if !has_pledges {
+            wands.retain(|wand_data| {
+                wand_data
+                    .lhs
+                    .iter()
+                    .any(|g| self.generalized_region(vcx, *g).is_some())
+                    || wand_data
+                        .rhs
+                        .iter()
+                        .filter(|g| has_resources((**g).into()))
+                        .any(|g| match self.generalized_region(vcx, (*g).into()) {
+                            Some(region) => self.type_param_may_capture(vcx, region),
+                            None => true,
+                        })
+            });
+        }
         // A wand gives back its sources only once all of its targets have
         // expired. That matches the signature only if each source with
         // resources flows into each target with resources.
@@ -669,6 +692,49 @@ impl<'vir> WandEncOutput<'vir> {
             }
         }
         Ok(wands)
+    }
+
+    /// The region of the given node, or `None` if it has no counterpart in
+    /// the encoding (e.g. the regions in a type parameter).
+    fn generalized_region(
+        &self,
+        vcx: &'vir vir::VirCtxt<'vir>,
+        g: FunctionShapeNode<Generalized>,
+    ) -> Option<PcgRegion<'vir>> {
+        let ty = g.ty(self.fn_sig(vcx, None));
+        let lifetimes: IndexVec<_, GeneralizedLifetime<'vir>> = vcx.tcx().extract_regions(ty);
+        match lifetimes.get(g.region_idx())? {
+            GeneralizedLifetime::Region(region) => Some(*region),
+            GeneralizedLifetime::RegionsIn(_) => None,
+        }
+    }
+
+    /// Whether a value of a type parameter can be made to borrow from
+    /// `region`. That needs an argument or a bound relating the two, which is
+    /// approximated by `region` occurring in a bound other than an outlives
+    /// bound, or in an argument other than in its outer references.
+    fn type_param_may_capture(
+        &self,
+        vcx: &'vir vir::VirCtxt<'vir>,
+        region: PcgRegion<'vir>,
+    ) -> bool {
+        let in_args = self.fn_sig(vcx, None).inputs().iter().any(|&ty| {
+            let mut ty = ty;
+            while let ty::TyKind::Ref(_, referent, _) = ty.kind() {
+                ty = *referent;
+            }
+            vcx.tcx()
+                .any_free_region_meets(&ty, |r| PcgRegion::from(r) == region)
+        });
+        let param_env = self.function_data.param_env(vcx.tcx());
+        let in_bounds = param_env.caller_bounds().iter().any(|clause| {
+            clause.as_type_outlives_clause().is_none()
+                && clause.as_region_outlives_clause().is_none()
+                && vcx
+                    .tcx()
+                    .any_free_region_meets(&clause, |r| PcgRegion::from(r) == region)
+        });
+        in_args || in_bounds
     }
 
     pub fn viper_wands(&self) -> Vec<WandData<'vir>> {
