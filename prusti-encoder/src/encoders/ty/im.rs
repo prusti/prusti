@@ -1162,6 +1162,43 @@ pub(crate) fn footprint_release<'vir>(entries: &[FpEntry<'vir>]) -> Vec<vir::Exp
         .collect()
 }
 
+/// The reference parameter of the `#[im_open(PARAM)]` function `def_id`
+/// (see `prusti_contracts::im_open`), if any.
+pub(crate) fn im_open_param(def_id: DefId) -> Option<prusti_rustc_interface::middle::mir::Local> {
+    vir::with_vcx(|vcx| {
+        let attrs = prusti_interface::environment::EnvQuery::new(vcx.tcx()).get_attributes(def_id);
+        let name = prusti_interface::utils::read_prusti_attr("im_open", attrs)?;
+        // The attribute macro checked that the parameter exists.
+        let idx = vcx
+            .tcx()
+            .fn_arg_idents(def_id)
+            .iter()
+            .position(|ident| ident.is_some_and(|ident| ident.name.as_str() == name))
+            .unwrap();
+        Some(prusti_rustc_interface::middle::mir::Local::from_usize(idx + 1))
+    })
+}
+
+/// The type and address of the `#[im_opaque]` value the shared reference
+/// `snap` of type `ty` points to (an `#[im_open]` parameter), if any.
+#[allow(clippy::type_complexity)]
+pub(crate) fn im_open_referent<'vir, E: TaskEncoder>(
+    deps: &mut TaskEncoderDependencies<'vir, E>,
+    ty: RustTyDecomposition<'vir>,
+    snap: vir::ExprSnap<'vir>,
+) -> Result<Option<(RustTyDecomposition<'vir>, vir::ExprRef<'vir>)>, EncodeFullError<'vir, E>> {
+    let TySpecifics::ImmRef(data) = &ty.ty.specifics else {
+        return Ok(None);
+    };
+    let referent = data.referent.decompose_normalize(ty.args);
+    if referent.ty.im_opaque.is_none() {
+        return Ok(None);
+    }
+    let ty_use = deps.require_dep::<TyUsePureEnc>(ty)?;
+    let addr = ty_use.expect_immref().addr_access(snap.downcast_ty());
+    Ok(Some((referent, addr)))
+}
+
 /// The permissions to the atoms of the value of `ty` at `addr`, if it is of
 /// an `#[im_opaque]` struct (`im_atoms` in a specification): the atom, then
 /// the dependent atom at its amount.
@@ -1369,6 +1406,34 @@ pub(crate) fn deep_snap<'vir, E: TaskEncoder>(
     deep_with(deps, ty, addr, snap, DeepMode::Call)
 }
 
+/// The deep value of the reference `snap` of type `ty` to an `#[im_opaque]`
+/// value whose atom is open (an `#[im_open]` function's parameter): read
+/// from the atom's contents.
+pub(crate) fn opened_deep_snap<'vir, E: TaskEncoder>(
+    deps: &mut TaskEncoderDependencies<'vir, E>,
+    ty: RustTyDecomposition<'vir>,
+    snap: vir::ExprSnap<'vir>,
+) -> Result<vir::ExprSnap<'vir>, EncodeFullError<'vir, E>> {
+    let TySpecifics::ImmRef(data) = &ty.ty.specifics else {
+        unreachable!("`#[im_open]` takes a shared reference")
+    };
+    let ty_use = deps.require_dep::<TyUsePureEnc>(ty)?;
+    let snap_c = snap.downcast_ty();
+    let referent = data.referent.decompose_normalize(ty.args);
+    let ref_use = ty_use.expect_immref();
+    let r_addr = ref_use.addr_access(snap_c);
+    let value = deep_with(
+        deps,
+        referent,
+        r_addr,
+        ref_use.value_access(snap_c),
+        DeepMode::Opened,
+    )?;
+    Ok(ref_use
+        .prim_to_snap(r_addr, ref_use.metadata_access(snap_c), value)
+        .upcast_ty())
+}
+
 /// How [`deep_with`] reads the atoms of `#[im_opaque]` and `#[im_shares]`
 /// values.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1381,6 +1446,10 @@ enum DeepMode {
     /// Inside the definition of the atom of the outermost `#[im_opaque]`
     /// value, where only the atoms it folds can be read.
     Atom,
+    /// The outermost `#[im_opaque]` value's atom is open (an `#[im_open]`
+    /// function): its contents are read directly, nested values through
+    /// their deep functions.
+    Opened,
 }
 
 fn deep_with<'vir, E: TaskEncoder>(
@@ -1403,7 +1472,7 @@ fn deep_with<'vir, E: TaskEncoder>(
     }
     let own = mode != DeepMode::Atom;
     let nested = match mode {
-        DeepMode::Call => DeepMode::Call,
+        DeepMode::Call | DeepMode::Opened => DeepMode::Call,
         DeepMode::Inline | DeepMode::Atom => DeepMode::Inline,
     };
     if let Some(did) = ty.ty.im_opaque {
@@ -1461,7 +1530,7 @@ fn deep_with<'vir, E: TaskEncoder>(
             });
         }
         let value = variant.field_snaps_to_snap(field_snaps).upcast_ty();
-        if !own {
+        if !own || mode == DeepMode::Opened {
             return Ok(value);
         }
         let unfold =

@@ -85,6 +85,14 @@ pub use prusti_contracts_proc_macros::pure;
 /// is the pointee held by a `#[ptr_holds(FIELD, ..)]` struct.
 pub use prusti_contracts_proc_macros::field_projection;
 
+/// `#[im_open(PARAM)]` on an internal function of an `#[im_opaque]` type: its
+/// body works on the opened atom of the value the shared reference parameter
+/// `PARAM` points to. Its contract takes and returns the atom closed, but the
+/// result may point into the atom's contents (e.g. a reference to an inline
+/// `Cell` field), which callers can only use while they hold the atom open
+/// themselves, i.e. in another `#[im_open]` function on the same value.
+pub use prusti_contracts_proc_macros::im_open;
+
 /// `#[container_of(a.b, f)]` on a body-less `#[pure] #[trusted]` spec
 /// function returning `&S`: Prusti defines the function as the `S` whose
 /// field `f` is what the reference at the (possibly private) field path `a.b`

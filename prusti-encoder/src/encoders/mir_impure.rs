@@ -742,11 +742,61 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         if ty.ty.im_opaque.is_none() {
             return Ok(());
         }
+        // The `#[im_open]` parameter's referent is open throughout.
+        if let [mir::ProjectionElem::Deref] = place.projection
+            && crate::encoders::ty::im::im_open_param(self.def_id) == Some(place.local)
+        {
+            return Ok(());
+        }
         let addr = self.encode_place(place)?.expr.address;
         let addr = self.vcx.maybe_apply_label(addr, label);
         let stmts = crate::encoders::ty::im::open_or_close(self.deps, ty, addr, open)?;
         self.stmts(stmts);
         Ok(())
+    }
+
+    /// The type and address of the value whose atom this `#[im_open]`
+    /// function works on opened, if any.
+    fn own_opened(
+        &mut self,
+    ) -> EncodeResult<'vir, Option<(RustTyDecomposition<'vir>, vir::ExprRef<'vir>)>, E> {
+        let Some(param) = crate::encoders::ty::im::im_open_param(self.def_id) else {
+            return Ok(None);
+        };
+        let arg = self.local_defs[param];
+        Ok(crate::encoders::ty::im::im_open_referent(
+            self.deps,
+            arg.ty,
+            arg.impure_snap,
+        )?)
+    }
+
+    /// For a call to an `#[im_open]` function (which takes the atom closed)
+    /// from a function working on an opened atom of the same type: closes the
+    /// atom, returning what to reopen after the call.
+    fn im_open_for_call(
+        &mut self,
+        callee: DefId,
+        args: &[Spanned<mir::Operand<'vir>>],
+    ) -> EncodeResult<'vir, Option<(RustTyDecomposition<'vir>, vir::ExprRef<'vir>)>, E> {
+        let Some(param) = crate::encoders::ty::im::im_open_param(callee) else {
+            return Ok(None);
+        };
+        let arg_ty = args[param.as_usize() - 1]
+            .node
+            .ty(self.local_decls, self.vcx.tcx());
+        let ty::TyKind::Ref(_, referent, _) = *arg_ty.kind() else {
+            return Ok(None);
+        };
+        let Some((ty, addr)) = self.own_opened()? else {
+            return Ok(None);
+        };
+        if RustTyDecomposition::from_ty(referent, self.def_id) != ty {
+            return Ok(None);
+        }
+        let stmts = crate::encoders::ty::im::open_or_close(self.deps, ty, addr, false)?;
+        self.stmts(stmts);
+        Ok(Some((ty, addr)))
     }
 
     /// The path condition under which `edge` is valid; `None` if unconditional.
@@ -2615,13 +2665,18 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 &leaf_places,
                 place_capabilities,
             )?;
-            // Specifications see deep values.
-            let snap = crate::encoders::ty::im::deep_snap(
-                self.deps,
-                place_ty,
-                self.local_defs[local].local_ex,
-                snap,
-            )?;
+            // Specifications see deep values (read from the opened atom for an
+            // `#[im_open]` parameter).
+            let snap = if crate::encoders::ty::im::im_open_param(self.def_id) == Some(local) {
+                crate::encoders::ty::im::opened_deep_snap(self.deps, place_ty, snap)?
+            } else {
+                crate::encoders::ty::im::deep_snap(
+                    self.deps,
+                    place_ty,
+                    self.local_defs[local].local_ex,
+                    snap,
+                )?
+            };
             locals.insert(local, snap);
         }
         let expr = enc_output
@@ -3157,6 +3212,10 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                         self.open_or_close_atoms(base, None, false)?;
                     }
                 }
+                if let Some((ty, addr)) = self.own_opened()? {
+                    let stmts = crate::encoders::ty::im::open_or_close(self.deps, ty, addr, false)?;
+                    self.stmts(stmts);
+                }
                 let wand_packages = self.package_wands(borrows)?;
                 self.current_fpcs = Some(current_fpcs);
                 self.stmts(wand_packages);
@@ -3301,6 +3360,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                                 .collect();
                         }
 
+                        let reopen = self.im_open_for_call(func_def_id, args)?;
                         let method_in = args
                             .iter()
                             .map(|arg| self.encode_operand(&arg.node).unwrap())
@@ -3359,6 +3419,11 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                             },
                         );
                         self.stmts(call);
+                        if let Some((ty, addr)) = reopen {
+                            let stmts =
+                                crate::encoders::ty::im::open_or_close(self.deps, ty, addr, true)?;
+                            self.stmts(stmts);
+                        }
                         // Moved-out arguments keep their storage.
                         for arg in args {
                             if let &mir::Operand::Move(place) = &arg.node {

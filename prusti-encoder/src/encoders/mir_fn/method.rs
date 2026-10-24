@@ -362,6 +362,21 @@ impl TaskEncoder for MethodEnc {
                         start_stmts.push(vcx.mk_inhale_stmt(local_defs[local].impure_uninit));
                     }
                 }
+                // An `#[im_open]` function works on the opened atom (closed
+                // again at its return).
+                if let Some(param) = crate::encoders::ty::im::im_open_param(def_id) {
+                    let arg = &local_defs[param];
+                    match crate::encoders::ty::im::im_open_referent(deps, arg.ty, arg.impure_snap)? {
+                        Some((referent, addr)) => start_stmts.extend(
+                            crate::encoders::ty::im::open_or_close(deps, referent, addr, true)?,
+                        ),
+                        None => vcx.emit_early_error(PrustiError::unsupported(
+                            "`#[im_open]` names a parameter that is no shared reference to an \
+                             `#[im_opaque]` value",
+                            span.into(),
+                        )),
+                    }
+                }
                 // This will be overwritten later.
                 encoded_blocks.push(vcx.mk_cfg_block(
                     &vir::CfgBlockLabelData::Start,
@@ -472,6 +487,7 @@ impl TaskEncoder for MethodEnc {
             // result and of everything behind references in the arguments.
             let mut fp_pre = Vec::new();
             let mut fp_post = Vec::new();
+            let im_open = crate::encoders::ty::im::im_open_param(def_id);
             for arg_idx in (1..arg_count).map(mir::Local::from) {
                 let arg = &arg_defs[arg_idx];
                 if !crate::encoders::ty::im::reaches_im(arg.ty) {
@@ -505,7 +521,11 @@ impl TaskEncoder for MethodEnc {
                 )?;
                 fp_post.extend(old_entries.into_iter().filter(|e| e.reached));
             }
-            if crate::encoders::ty::im::reaches_im(arg_defs[mir::RETURN_PLACE].ty) {
+            // An `#[im_open]` function's result points into the opened
+            // contents, which it returns already.
+            if im_open.is_none()
+                && crate::encoders::ty::im::reaches_im(arg_defs[mir::RETURN_PLACE].ty)
+            {
                 let result = &arg_defs[mir::RETURN_PLACE];
                 fp_post.extend(crate::encoders::ty::im::footprint(
                     deps,

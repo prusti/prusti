@@ -27,7 +27,7 @@ use std::convert::TryInto;
 use syn::{spanned::Spanned, visit::Visit};
 
 use crate::{
-    common::{merge_generics, RewritableReceiver, SelfTypeRewriter},
+    common::{merge_generics, HasSignature, RewritableReceiver, SelfTypeRewriter},
     predicate::{is_predicate_macro, ParsedPredicate},
     specifications::preparser::{parse_prusti, parse_type_cond_spec, NestedSpec},
 };
@@ -1031,6 +1031,31 @@ pub fn field_projection(attr: TokenStream, tokens: TokenStream) -> TokenStream {
     }
     quote_spanned! {tokens.span()=>
         #[prusti::field_projection = #path]
+        #tokens
+    }
+}
+
+/// `#[im_open(PARAM)]`: an internal function of an `#[im_opaque]` type whose
+/// body works on the opened atom of the value its reference parameter
+/// `PARAM` points to.
+pub fn im_open(attr: TokenStream, tokens: TokenStream) -> TokenStream {
+    let item: untyped::AnyFnItem = handle_result!(syn::parse2(tokens.clone()));
+    let param: String = attr.to_string().split_whitespace().collect();
+    let names_param = item.sig().inputs.iter().any(|input| match input {
+        syn::FnArg::Receiver(_) => param == "self",
+        syn::FnArg::Typed(pat) => {
+            matches!(&*pat.pat, syn::Pat::Ident(ident) if ident.ident == param)
+        }
+    });
+    if !names_param {
+        return syn::Error::new(
+            attr.span(),
+            "the `#[im_open]` attribute takes the name of a reference parameter",
+        )
+        .to_compile_error();
+    }
+    quote_spanned! {tokens.span()=>
+        #[prusti::im_open = #param]
         #tokens
     }
 }

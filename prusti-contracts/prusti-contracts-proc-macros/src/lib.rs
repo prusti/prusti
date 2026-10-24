@@ -54,6 +54,12 @@ pub fn field_projection(_attr: TokenStream, tokens: TokenStream) -> TokenStream 
 
 #[cfg(not(feature = "prusti"))]
 #[proc_macro_attribute]
+pub fn im_open(_attr: TokenStream, tokens: TokenStream) -> TokenStream {
+    tokens
+}
+
+#[cfg(not(feature = "prusti"))]
+#[proc_macro_attribute]
 pub fn container_of(_attr: TokenStream, tokens: TokenStream) -> TokenStream {
     tokens
 }
@@ -235,6 +241,12 @@ pub fn pure_unstable(attr: TokenStream, tokens: TokenStream) -> TokenStream {
 #[proc_macro_attribute]
 pub fn field_projection(attr: TokenStream, tokens: TokenStream) -> TokenStream {
     prusti_specs::field_projection(attr.into(), tokens.into()).into()
+}
+
+#[cfg(feature = "prusti")]
+#[proc_macro_attribute]
+pub fn im_open(attr: TokenStream, tokens: TokenStream) -> TokenStream {
+    prusti_specs::im_open(attr.into(), tokens.into()).into()
 }
 
 #[cfg(feature = "prusti")]
