@@ -320,13 +320,22 @@ pub fn im_get<T: ?Sized>(_c: &UnsafeCell<T>) -> &T {
 /// `#[im_opaque]` value it is a field of expanded: its atoms stay open, e.g.
 /// across raw accesses to its contents through `UnsafeCell::get`.
 #[trusted]
-pub fn im_open<'a, T: ?Sized>(r: &'a T) -> &'a T {
+pub const fn im_open<'a, T: ?Sized>(r: &'a T) -> &'a T {
     r
 }
 
 /// Ends an `im_open`.
 #[trusted]
-pub fn im_close<T: ?Sized>(_r: &T) {}
+pub const fn im_close<T: ?Sized>(_r: &T) {}
+
+/// `mem::replace`, with its contract (users write their own extern spec of
+/// `mem::replace`, so this crate cannot give it one).
+#[trusted]
+#[ensures(*dest === src)]
+#[ensures(result === *old(&*dest))]
+const fn mem_replace<T>(dest: &mut T, src: T) -> T {
+    mem::replace(dest, src)
+}
 
 /// The current value of a `Cell`.
 #[pure_unstable]
@@ -522,13 +531,15 @@ impl<T> Cell<T> {
     /// assert_eq!(cell.get(), 10);
     /// ```
     #[inline]
-    #[trusted]
     #[ensures(result === *old(cell_value(self)))]
     #[ensures(*cell_value(self) === val)]
     pub const fn replace(&self, val: T) -> T {
+        let open = im_open(&self.value);
         // SAFETY: This can cause data races if called from a separate thread,
         // but `Cell` is `!Sync` so this won't happen.
-        mem::replace(unsafe { &mut *self.value.get() }, val)
+        let old = mem_replace(unsafe { &mut *self.value.get() }, val);
+        im_close(open);
+        old
     }
 
     /// Unwraps the value, consuming the cell.
@@ -675,7 +686,6 @@ impl<T: Default> Cell<T> {
     /// assert_eq!(five, 5);
     /// assert_eq!(c.into_inner(), 0);
     /// ```
-    #[trusted]
     #[ensures(result === *old(cell_value(self)))]
     #[ensures(*cell_value(self) === T::default())]
     pub fn take(&self) -> T {

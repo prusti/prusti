@@ -6,6 +6,7 @@ pub mod float;
 pub mod option;
 pub mod result;
 pub mod slice;
+pub mod unsafe_cell;
 
 pub use eq::PureEq;
 
