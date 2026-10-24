@@ -1,9 +1,12 @@
 use rustc_hash::FxHashMap;
 
 use pcg::{
-    borrow_pcg::region_projection::{
-        ExtractRegionsCtxt, LifetimeProjection, PcgLifetimeProjectionBase,
-        PcgLifetimeProjectionBaseLike,
+    borrow_pcg::{
+        edge::{abstraction::AbstractionEdge, kind::BorrowPcgEdgeKind},
+        region_projection::{
+            ExtractRegionsCtxt, LifetimeProjection, PcgLifetimeProjectionBase,
+            PcgLifetimeProjectionBaseLike,
+        },
     },
     r#loop::PlaceUsages,
     pcg::{CapabilityKind, EvalStmtPhase, PcgNode},
@@ -77,9 +80,23 @@ impl<'vir: 'a, 'a, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             }
         }
 
-        for edge in state.borrow_pcg().graph().coupled_edges() {
+        // The wands held at the loop head: one per coupled edge and per loop
+        // edge. The PCG couples only calls, so a loop edge becomes a singleton
+        // coupled edge, as when its wand is packaged and applied.
+        let edges = state
+            .borrow_pcg()
+            .graph()
+            .edges()
+            .filter_map(|edge| match edge.kind() {
+                BorrowPcgEdgeKind::Coupled(coupled) => Some(coupled.clone()),
+                BorrowPcgEdgeKind::Abstraction(at @ AbstractionEdge::Loop(_)) => {
+                    Some(at.clone().into_singleton_coupled_edge())
+                }
+                _ => None,
+            });
+        for edge in edges {
             let mut let_bind = WandOldOuter::LetBind(Vec::new());
-            let (wand, _) = self.coupled_wand(edge.value(), &mut let_bind)?;
+            let (wand, _) = self.coupled_wand(&edge, &mut let_bind)?;
             let mut wand = self.vcx.mk_wand_expr(wand);
             let WandOldOuter::LetBind(let_bind) = let_bind else {
                 unreachable!()

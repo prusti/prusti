@@ -7,13 +7,20 @@ use crate::encoders::{
         indirect::{IndirectPredicatesEnc, projection_for_generalized_idx},
     },
 };
-use pcg::borrow_pcg::{
-    FunctionData, FunctionShape, FunctionShapeInput, FunctionShapeNode, FunctionShapeOutput,
-    MakeFunctionShapeError, region_projection::Generalized, state::BorrowsState,
+use pcg::{
+    borrow_pcg::{
+        FunctionData, FunctionShape, FunctionShapeInput, FunctionShapeNode, FunctionShapeOutput,
+        GeneralizedLifetime, MakeFunctionShapeError,
+        borrow_pcg_edge::BlockedNode,
+        region_projection::{ExtractRegionsCtxt, Generalized, LifetimeProjection, PcgRegion},
+        state::BorrowsState,
+    },
+    utils::remote::RemotePlace,
 };
 use prusti_interface::PrustiError;
 use prusti_rustc_interface::{
     data_structures::fx::{FxHashMap, FxHashSet},
+    index::IndexVec,
     middle::{mir, ty},
     span::def_id::DefId,
 };
@@ -50,10 +57,16 @@ impl<'vir, E: TaskEncoder> ImpureEncVisitor<'vir, '_, E> {
             else {
                 continue;
             };
+            let nodes = wand_data
+                .rhs
+                .iter()
+                .map(|g| self.wand_input_nodes(*g))
+                .collect::<Vec<_>>();
             let rhs = wand_data
                 .rhs
                 .iter()
-                .map(|g| {
+                .zip(nodes)
+                .map(|(g, nodes)| {
                     let resources = self.wands.encode_predicates_for_function_shape_node(
                         self.vcx,
                         self.deps,
@@ -61,10 +74,7 @@ impl<'vir, E: TaskEncoder> ImpureEncVisitor<'vir, '_, E> {
                         None,
                         |i| args[i],
                     );
-                    (
-                        mir::Place::from(g.mir_local()),
-                        resources.into_iter().collect(),
-                    )
+                    (nodes, resources.into_iter().collect())
                 })
                 .collect();
             let mut package_script = self.pcs_package_script(final_borrow_state, rhs, label)?;
@@ -91,6 +101,62 @@ impl<'vir, E: TaskEncoder> ImpureEncVisitor<'vir, '_, E> {
             );
         }
         Ok(wand_packages)
+    }
+
+    /// The nodes through which the input `g` is given back: the projections,
+    /// for the lifetime of `g`, of the argument's remote place (the place the
+    /// argument pointed to on entry). The argument itself may have been
+    /// reassigned, e.g. in a loop, and then only the edges out of these
+    /// projections, such as the loop's abstraction edge, lead to what `g`
+    /// gives back.
+    ///
+    /// The argument's type in the body has a distinct region at each
+    /// occurrence of a region of its type in the signature, so a lifetime
+    /// may have several projections. Where the lifetime is not a region of
+    /// the signature (e.g. the regions in a type parameter), the two types
+    /// differ other than in their regions, or the PCG has no such projection,
+    /// this falls back to the argument's place.
+    fn wand_input_nodes(&self, g: WandRhsKey) -> Vec<BlockedNode<'vir>> {
+        let local = g.mir_local();
+        let sig_ty = g
+            .to_function_shape_node()
+            .ty(self.wands.fn_sig(self.vcx, None));
+        let body_ty = self.local_decls[local].ty;
+        let lifetimes: IndexVec<_, GeneralizedLifetime<'vir>> =
+            self.vcx.tcx().extract_regions(sig_ty);
+        let Some(&GeneralizedLifetime::Region(region)) = lifetimes.get(g.region_idx()) else {
+            return vec![mir::Place::from(local).into()];
+        };
+        if self.vcx.tcx().erase_and_anonymize_regions(sig_ty)
+            != self.vcx.tcx().erase_and_anonymize_regions(body_ty)
+        {
+            return vec![mir::Place::from(local).into()];
+        }
+        let mut sig_regions = Vec::new();
+        self.vcx
+            .tcx()
+            .for_each_free_region(&sig_ty, |r| sig_regions.push(PcgRegion::from(r)));
+        let mut sig_regions = sig_regions.into_iter();
+        let mut nodes = Vec::new();
+        self.vcx.tcx().for_each_free_region(&body_ty, |r| {
+            if sig_regions.next() == Some(region)
+                && let Some(projection) = LifetimeProjection::new(
+                    RemotePlace::new(local),
+                    PcgRegion::from(r),
+                    None,
+                    self.pcg_ctxt(),
+                )
+            {
+                let node = projection.into();
+                if !nodes.contains(&node) {
+                    nodes.push(node);
+                }
+            }
+        });
+        if nodes.is_empty() {
+            nodes.push(mir::Place::from(local).into());
+        }
+        nodes
     }
 }
 
