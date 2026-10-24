@@ -331,8 +331,12 @@ unsafe impl<T: ?Sized> Send for Cell<T> where T: Send {}
 // and results in nicer error messages.
 impl<T: ?Sized> !Sync for Cell<T> {}
 
+#[refine_trait_spec]
 impl<T: Copy> Clone for Cell<T> {
     #[inline]
+    #[trusted]
+    #[ensures(*cell_value(&result) === *cell_value(self))]
+    #[ensures(*cell_value(self) === *old(cell_value(self)))]
     fn clone(&self) -> Cell<T> {
         Cell::new(self.get())
     }
@@ -389,8 +393,11 @@ impl<T: Ord + Copy> Ord for Cell<T> {
     }
 }
 
+#[refine_trait_spec]
 const impl<T> From<T> for Cell<T> {
     /// Creates a new `Cell<T>` containing the given value.
+    #[trusted]
+    #[ensures(*cell_value(&result) === t)]
     fn from(t: T) -> Cell<T> {
         Cell::new(t)
     }
@@ -1617,8 +1624,12 @@ impl<T: ?Sized + Ord> Ord for RefCell<T> {
     }
 }
 
+#[refine_trait_spec]
 const impl<T> From<T> for RefCell<T> {
     /// Creates a new `RefCell<T>` containing the given value.
+    #[trusted]
+    #[ensures(refcell_count(&result) == 0)]
+    #[ensures(*refcell_value(&result) === t)]
     fn from(t: T) -> RefCell<T> {
         RefCell::new(t)
     }
