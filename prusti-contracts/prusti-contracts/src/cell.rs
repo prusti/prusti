@@ -426,7 +426,6 @@ impl<T> Cell<T> {
     /// let c = Cell::new(5);
     /// ```
     #[inline]
-    #[trusted]
     #[ensures(*cell_value(&result) === value)]
     pub const fn new(value: T) -> Cell<T> {
         Cell {
@@ -446,7 +445,6 @@ impl<T> Cell<T> {
     /// c.set(10);
     /// ```
     #[inline]
-    #[trusted]
     #[ensures(*cell_value(self) === val)]
     pub fn set(&self, val: T) {
         self.replace(val);
@@ -540,7 +538,6 @@ impl<T> Cell<T> {
     ///
     /// assert_eq!(five, 5);
     /// ```
-    #[trusted]
     #[ensures(result === *old(cell_value(&self)))]
     pub const fn into_inner(self) -> T {
         self.value.into_inner()
