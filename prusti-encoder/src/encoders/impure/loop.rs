@@ -49,6 +49,8 @@ impl<'vir: 'a, 'a, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         let loop_invariant_place_capabilities =
             cfpcs.loop_invariant_place_capabilities(loop_place_usages, ctxt);
 
+        // The atoms of the interior-mutable values the kept places reach.
+        let mut im_entries = Vec::new();
         for (place, capability) in loop_invariant_place_capabilities.iter() {
             if self.is_spec_only_local(place.local) {
                 continue;
@@ -64,6 +66,15 @@ impl<'vir: 'a, 'a, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             let ty_out = self.deps.require_dep::<TyUseImpureEnc>(task).unwrap();
             let pred = ty_out.ref_to_pred(self.vcx, place_res.expr.expect_predicate(), None);
             inv.push(pred);
+            if crate::encoders::ty::im::reaches_im(task) {
+                let addr = place_res.expr.expect_predicate();
+                im_entries.extend(crate::encoders::ty::im::footprint(
+                    self.deps,
+                    task,
+                    addr,
+                    ty_out.ref_to_snap(addr),
+                )?);
+            }
             // gets all the lifetime projections of the place
             // for example, if we add an invariant for x and x is a reference, then we also want to add
             // an invariant for *x
@@ -80,6 +91,12 @@ impl<'vir: 'a, 'a, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                     )
                 }));
             }
+        }
+
+        if !im_entries.is_empty() {
+            inv.push(crate::encoders::ty::im::loop_footprint_assertion(
+                &im_entries,
+            ));
         }
 
         for (inputs, outputs) in self.get_abstraction_edges(state.borrow_pcg().graph()) {

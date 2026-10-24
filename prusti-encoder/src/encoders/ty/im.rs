@@ -1035,6 +1035,19 @@ pub(crate) fn on_expiry<'vir, E: TaskEncoder>(
     Ok((!conjs.is_empty()).then(|| vcx.mk_conj(&conjs)))
 }
 
+/// The permissions to the atoms of the places a loop invariant keeps, granted
+/// once per key: a place and a reference to it reach the same atoms.
+pub(crate) fn loop_footprint_assertion<'vir>(entries: &[FpEntry<'vir>]) -> vir::ExprBool<'vir> {
+    let merged = entries
+        .iter()
+        .map(|entry| FpEntry {
+            shared: true,
+            ..*entry
+        })
+        .collect::<Vec<_>>();
+    footprint_assertion(&merged)
+}
+
 /// The permissions to `entries`. Owned entries are distinct from every other
 /// entry (assumed on inhale); entries reached through shared references are
 /// granted once per key.
