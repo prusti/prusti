@@ -1208,6 +1208,18 @@ impl<T: ?Sized> RefCell<T> {
     /// ```
     #[inline]
     #[cfg_attr(feature = "debug_refcell", track_caller)]
+    #[trusted]
+    #[ensures(result.is_ok()
+        == (0 <= old(refcell_count(self)) && old(refcell_count(self)) < isize::MAX))]
+    #[ensures(match &result {
+        Ok(r) => refcell_count(self) == old(refcell_count(self)) + 1
+            && ref_flag(r) as *const Cell<BorrowCounter>
+                === refcell_flag(self) as *const Cell<BorrowCounter>
+            && &**r as *const T === im_get(&self.value) as *const T
+            && **r === *refcell_value(self),
+        Err(_) => refcell_count(self) == old(refcell_count(self)),
+    })]
+    #[ensures(*refcell_value(self) === *old(refcell_value(self)))]
     pub const fn try_borrow(&self) -> Result<Ref<'_, T>, BorrowError> {
         match BorrowRef::new(&self.borrow) {
             Some(b) => {
@@ -1307,6 +1319,17 @@ impl<T: ?Sized> RefCell<T> {
     /// ```
     #[inline]
     #[cfg_attr(feature = "debug_refcell", track_caller)]
+    #[trusted]
+    #[ensures(result.is_ok() == (old(refcell_count(self)) == 0))]
+    #[ensures(match &result {
+        Ok(m) => refcell_count(self) == -1
+            && refmut_flag(m) as *const Cell<BorrowCounter>
+                === refcell_flag(self) as *const Cell<BorrowCounter>
+            && &**m as *const T === im_get(&self.value) as *const T
+            && **m === *old(refcell_value(self)),
+        Err(_) => refcell_count(self) == old(refcell_count(self))
+            && *refcell_value(self) === *old(refcell_value(self)),
+    })]
     pub const fn try_borrow_mut(&self) -> Result<RefMut<'_, T>, BorrowMutError> {
         match BorrowRefMut::new(&self.borrow) {
             Some(b) => {
