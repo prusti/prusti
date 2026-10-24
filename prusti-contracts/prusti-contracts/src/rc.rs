@@ -1137,10 +1137,15 @@ impl<T: ?Sized, A: Allocator> Weak<T, A> {
     ///
     /// If no strong pointers remain, this will return zero.
     #[must_use]
+    #[pure_unstable]
     #[trusted]
-    #[ensures(weak_dangles(self) ==> result == 0)]
-    #[ensures(!weak_dangles(self) ==> (weak_strong(self) == 0 ==> result == 0))]
-    #[ensures(!weak_dangles(self) ==> (weak_strong(self) != 0 ==> result + 1 == weak_weak(self)))]
+    #[ensures(result == if weak_dangles(self) {
+        0
+    } else if weak_strong(self) == 0 {
+        0
+    } else {
+        weak_weak(self) - 1
+    })]
     pub fn weak_count(&self) -> usize {
         if let Some(inner) = self.inner() {
             if inner.strong() > 0 {
@@ -1258,6 +1263,7 @@ unsafe impl<#[may_dangle] T: ?Sized, A: Allocator> Drop for Weak<T, A> {
     }
 }
 
+#[refine_trait_spec]
 impl<T: ?Sized, A: AllocatorClone> Clone for Weak<T, A> {
     /// Makes a clone of the `Weak` pointer that points to the same allocation.
     ///
@@ -1271,6 +1277,10 @@ impl<T: ?Sized, A: AllocatorClone> Clone for Weak<T, A> {
     /// let _ = Weak::clone(&weak_five);
     /// ```
     #[inline]
+    #[trusted]
+    #[ensures(weak_ptr(&result) === weak_ptr(self))]
+    #[ensures(!weak_dangles(self) ==> weak_weak(self) == old(weak_weak(self)) + 1)]
+    #[ensures(!weak_dangles(self) ==> weak_strong(self) == old(weak_strong(self)))]
     fn clone(&self) -> Weak<T, A> {
         if let Some(inner) = self.inner() {
             inner.inc_weak()
