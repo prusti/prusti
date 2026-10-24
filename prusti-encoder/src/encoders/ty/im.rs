@@ -561,6 +561,25 @@ pub(crate) fn holds_amount<'vir, E: TaskEncoder>(
     Ok(nonneg(func.call_pure(Vec::new()).downcast_ty()))
 }
 
+/// The amount of its pointee a value of the `#[ptr_holds]` struct `did` of
+/// type `ty` holds.
+pub(crate) fn holds_amount_of<'vir, E: TaskEncoder>(
+    deps: &mut TaskEncoderDependencies<'vir, E>,
+    did: DefId,
+    ty: RustTyDecomposition<'vir>,
+) -> Result<vir::ExprPerm<'vir>, EncodeFullError<'vir, E>> {
+    let (_, _, method) = im_amounts(did)
+        .into_iter()
+        .find(|(kind, ..)| *kind == ImAmountKind::Holds)
+        .unwrap();
+    let func = deps.require_dep::<FunctionCallEnc>(CallTaskDescription::new(
+        ty.args.context(),
+        ty.args.args(),
+        method,
+    ))?;
+    Ok(nonneg(func.call_pure(Vec::new()).downcast_ty()))
+}
+
 /// `amount`, or none where it is negative: an annotation's amount is used as
 /// a permission amount, which Viper requires to be nonnegative.
 fn nonneg<'vir>(amount: vir::ExprPerm<'vir>) -> vir::ExprPerm<'vir> {

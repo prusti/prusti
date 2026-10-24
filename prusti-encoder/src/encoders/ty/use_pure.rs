@@ -863,3 +863,73 @@ pub(crate) fn project_field_path<'vir, E: TaskEncoder>(
     }
     Ok(Ok((ty, snap, addr, metadata)))
 }
+
+/// The parts of a value of the struct `ty` that an aggregate of its fields'
+/// snapshots `fields` does not give: an `#[im_shares]` struct's slot
+/// (arbitrary, as in shallow snapshots), and a `#[ptr_holds]` struct's held
+/// pointee, read at the address its pointer field gives (where the amount
+/// held is positive, as in the struct's snapshot function), with the
+/// permission to it that the value holds (taken from the state).
+pub(crate) struct HolderParts<'vir> {
+    pub(crate) slot: Option<vir::ExprSnap<'vir>>,
+    pub(crate) held: Option<(vir::ExprSnap<'vir>, vir::ExprBool<'vir>)>,
+}
+
+/// Whether an aggregate of the type `ty` with `operands` fields lacks
+/// [`HolderParts`].
+pub(crate) fn has_holder_parts(ty: super::RustTyDecomposition<'_>, operands: usize) -> bool {
+    !matches!(ty.ty.special, RustTySpecial::Box)
+        && ty
+            .ty
+            .get_structlike()
+            .is_some_and(|data| data.fields.len() > operands)
+}
+
+pub(crate) fn holder_parts<'vir, E: TaskEncoder>(
+    deps: &mut task_encoder::TaskEncoderDependencies<'vir, E>,
+    ty: super::RustTyDecomposition<'vir>,
+    fields: &[vir::ExprSnap<'vir>],
+) -> Result<HolderParts<'vir>, EncodeFullError<'vir, E>> {
+    let data = ty.ty.expect_structlike();
+    let ty_use = deps.require_dep::<TyUsePureEnc>(ty)?;
+    let variant = ty_use.expect_variant_opt(None);
+    let mut parts = HolderParts {
+        slot: None,
+        held: None,
+    };
+    for (idx, field) in data.fields.iter().enumerate().skip(fields.len()) {
+        let field_ty = field.decompose_normalize(ty.args);
+        match field.address {
+            super::RustFieldAddress::Slot => {
+                parts.slot = Some(deps.require_ref::<TyUsePureEnc>(field_ty)?.arbitrary_to_snap());
+            }
+            super::RustFieldAddress::Dynamic => {
+                let RustTySpecial::Holds(did, ptr) = ty.ty.special else {
+                    unreachable!("a dynamic field of a struct that is no `Box` is a held pointee")
+                };
+                let TyPureFieldRef::Dynamic(address_access) = variant.fields[idx].pure.ref_to_field_ref
+                else {
+                    unreachable!()
+                };
+                let mut addr = address_access.call()(fields[ptr.as_usize()].downcast_ty());
+                if let Some((_, Some(sub), _)) = crate::encoders::ty::im::ptr_holds(did) {
+                    let ptr_ty = data.fields[ptr.as_usize()].decompose_normalize(ty.args);
+                    addr = super::kinds::r#box::held_sub_address(deps, ptr_ty, sub, addr)?;
+                }
+                let amount = crate::encoders::ty::im::holds_amount_of(deps, did, ty)?;
+                let held_use = deps.require_dep::<crate::encoders::TyUseImpureEnc>(field_ty)?;
+                let arbitrary = deps.require_ref::<TyUsePureEnc>(field_ty)?.arbitrary_to_snap();
+                let snap = vir::with_vcx(|vcx| {
+                    let positive = vcx
+                        .mk_bin_op_expr(vir::BinOpKind::CmpGt, amount, vcx.mk_no_perm())
+                        .downcast_ty();
+                    vcx.mk_ternary_expr(positive, held_use.ref_to_snap(addr), arbitrary)
+                });
+                let acc = vir::with_vcx(|vcx| held_use.ref_to_pred(vcx, addr, Some(amount)));
+                parts.held = Some((snap, acc));
+            }
+            super::RustFieldAddress::Constant => unreachable!("a struct's own fields come first"),
+        }
+    }
+    Ok(parts)
+}

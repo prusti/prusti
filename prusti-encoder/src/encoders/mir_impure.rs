@@ -429,6 +429,31 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 Ok(tmp_exp.upcast_ty().into())
             }
 
+            // A value of a `#[ptr_holds]`/`#[im_shares]` struct has parts its
+            // fields do not give; it takes the permission it holds.
+            mir::Rvalue::Aggregate(box mir::AggregateKind::Adt(..), fields)
+                if crate::encoders::ty::use_pure::has_holder_parts(
+                    RustTyDecomposition::from_ty(rvalue_ty, self.def_id),
+                    fields.len(),
+                ) =>
+            {
+                let decomp = RustTyDecomposition::from_ty(rvalue_ty, self.def_id);
+                let mut snaps = fields
+                    .iter()
+                    .map(|field| self.encode_operand_snap(field, operand_snaps))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let parts = crate::encoders::ty::use_pure::holder_parts(self.deps, decomp, &snaps)?;
+                snaps.extend(parts.slot);
+                if let Some((held, acc)) = parts.held {
+                    let tmp = self.new_tmp(held.ty());
+                    self.stmt(self.vcx.mk_pure_assign_stmt(tmp, held));
+                    self.stmt(self.vcx.mk_exhale_stmt(acc));
+                    snaps.push(tmp);
+                }
+                let sl = self.ty_use_pure(rvalue_ty).expect_structlike();
+                Ok(sl.field_snaps_to_snap(snaps).upcast_ty().into())
+            }
+
             mir::Rvalue::Aggregate(
                 box kind @ (mir::AggregateKind::Adt(..)
                 | mir::AggregateKind::Tuple
