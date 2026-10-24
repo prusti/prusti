@@ -376,8 +376,11 @@ const impl<T: [const] Default> Default for Cell<T> {
     }
 }
 
+#[refine_trait_spec]
 impl<T: PartialEq + Copy> PartialEq for Cell<T> {
     #[inline]
+    // `PartialEq::eq` is pure; it reads the contents.
+    #[pure_unstable]
     fn eq(&self, other: &Cell<T>) -> bool {
         self.get() == other.get()
     }
@@ -1607,8 +1610,8 @@ impl<T: ?Sized + PartialEq> PartialEq for RefCell<T> {
     ///
     /// Panics if the value in either `RefCell` is currently mutably borrowed.
     #[inline]
-    // `PartialEq::eq` is pure, the body is not.
-    #[pure]
+    // `PartialEq::eq` is pure, the body is not. It reads the contents.
+    #[pure_unstable]
     #[trusted]
     fn eq(&self, other: &RefCell<T>) -> bool {
         *self.borrow() == *other.borrow()

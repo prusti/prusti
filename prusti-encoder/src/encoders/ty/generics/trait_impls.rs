@@ -168,20 +168,24 @@ impl TaskEncoder for TraitImplEnc {
                             &[],
                             vcx.alloc_slice(&bounds.iter().copied().chain(impl_item_spec.pres.iter().copied()
                                 .map(|(pre, pre_span)| vcx.with_span(pre_span, |vcx| {
-                                    let trait_pre_spans = trait_pre_spans.clone();
-                                    vcx.handle_error("exhale.failed:assertion.false", move |_| {
-                                        let mut err = PrustiError::verification(
-                                            "the implementation's precondition may be stronger than the trait method's",
-                                            pre_span.into(),
-                                        );
-                                        for trait_span in &trait_pre_spans {
-                                            err = err.add_note(
-                                                "the trait method's precondition is declared here",
-                                                Some(*trait_span),
+                                    // A stronger permission (`acc`) fails as
+                                    // a missing permission.
+                                    for kind in REFINEMENT_FAILURES {
+                                        let trait_pre_spans = trait_pre_spans.clone();
+                                        vcx.handle_error(kind, move |_| {
+                                            let mut err = PrustiError::verification(
+                                                "the implementation's precondition may be stronger than the trait method's",
+                                                pre_span.into(),
                                             );
-                                        }
-                                        Some(vec![err])
-                                    });
+                                            for trait_span in &trait_pre_spans {
+                                                err = err.add_note(
+                                                    "the trait method's precondition is declared here",
+                                                    Some(*trait_span),
+                                                );
+                                            }
+                                            Some(vec![err])
+                                        });
+                                    }
                                     vcx.mk_exhale_stmt(pre)
                                 })))
                                 .collect::<Vec<_>>()),
@@ -238,24 +242,26 @@ impl TaskEncoder for TraitImplEnc {
                 let impl_post_spans: Vec<_> =
                     impl_item_spec.posts.iter().map(|(_, s)| *s).collect();
                 for &(post, trait_post_span) in &trait_item_spec.posts {
-                    let impl_post_spans = impl_post_spans.clone();
                     vcx.with_span(impl_span, |vcx| {
-                        vcx.handle_error("exhale.failed:assertion.false", move |_| {
-                            let primary = if impl_post_spans.is_empty() {
-                                impl_span.into()
-                            } else {
-                                MultiSpan::from_spans(impl_post_spans.clone())
-                            };
-                            let err = PrustiError::verification(
-                                "the implementation's postcondition may be weaker than the trait method's",
-                                primary,
-                            )
-                            .add_note(
-                                "the trait method's (stronger) postcondition is declared here",
-                                Some(trait_post_span),
-                            );
-                            Some(vec![err])
-                        });
+                        for kind in REFINEMENT_FAILURES {
+                            let impl_post_spans = impl_post_spans.clone();
+                            vcx.handle_error(kind, move |_| {
+                                let primary = if impl_post_spans.is_empty() {
+                                    impl_span.into()
+                                } else {
+                                    MultiSpan::from_spans(impl_post_spans.clone())
+                                };
+                                let err = PrustiError::verification(
+                                    "the implementation's postcondition may be weaker than the trait method's",
+                                    primary,
+                                )
+                                .add_note(
+                                    "the trait method's (stronger) postcondition is declared here",
+                                    Some(trait_post_span),
+                                );
+                                Some(vec![err])
+                            });
+                        }
                         stmts.push(vcx.mk_exhale_stmt(post));
                     });
                 }
@@ -826,6 +832,13 @@ pub(super) fn final_leaf_def(
         .leaf_def(tcx, trait_item)
         .filter(specialization_graph::LeafDef::is_final)
 }
+
+/// The Viper errors of a failing refinement check: a value or a permission
+/// (`acc`) the other contract lacks.
+const REFINEMENT_FAILURES: [&str; 2] = [
+    "exhale.failed:assertion.false",
+    "exhale.failed:insufficient.permission",
+];
 
 /// Whether `expr` reads the heap through an `old` or an `unfolding` (e.g. a
 /// deep value): the pure trait-impl axioms and checks cannot.

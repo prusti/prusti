@@ -403,6 +403,25 @@ impl TaskEncoder for FunctionEnc {
             let arg_types = vcx.alloc_slice(&local_defs.snap_ty_args().collect::<Vec<_>>());
             let return_type = local_defs.snap_ty_return();
             let params = GParams::from(def_id);
+            // See `MethodEnc`.
+            let nested = (!vcx.tcx().is_closure_like(def_id))
+                .then(|| {
+                    vcx.tcx()
+                        .fn_sig(def_id)
+                        .instantiate_identity()
+                        .skip_normalization()
+                        .skip_binder()
+                        .inputs_and_output
+                        .iter()
+                        .find_map(|ty| crate::encoders::ty::im::nested_im(ty, params))
+                })
+                .flatten();
+            if let Some(nested) = nested {
+                vcx.emit_early_error(PrustiError::unsupported(
+                    format!("interior-mutable values inside the contents of `{nested}`"),
+                    vcx.tcx().def_span(def_id).into(),
+                ));
+            }
             let generics = deps.require_dep::<GenericParamsEnc>(params)?;
             let function_ref = FunctionIdn::new(
                 function_ident,
@@ -450,6 +469,23 @@ impl TaskEncoder for FunctionEnc {
                     parent_def_id: def_id,
                     gargs: params.identity_args(),
                 }) {
+                    // A `#[pure]` function sees shallow values, whose
+                    // interior-mutable contents are a constant.
+                    Ok(out)
+                        if out.calls_pure_unstable
+                            && !crate::encoders::is_pure_unstable(def_id) =>
+                    {
+                        vcx.emit_early_error(PrustiError::incorrect(
+                            format!(
+                                "the `#[pure]` function `{}` reads interior-mutable state \
+                                 (through a `#[pure_unstable]` function); mark it \
+                                 `#[pure_unstable]`",
+                                vcx.tcx().def_path_str(def_id),
+                            ),
+                            vcx.tcx().def_span(def_id).into(),
+                        ));
+                        None
+                    }
                     Ok(out) => {
                         let expr = out.expr.reify(
                             vcx,

@@ -2143,6 +2143,38 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             .contains(&Place::from(place))
     }
 
+    /// The places inside `place` (not behind references) held whole before
+    /// the current terminator, if `place` is partially moved out of.
+    fn terminator_held_parts(&self, place: mir::Place<'vir>) -> Vec<mir::Place<'vir>> {
+        if self.terminator_holds_exclusive(place) {
+            return Vec::new();
+        }
+        let cfpcs = self
+            .current_fpcs
+            .as_ref()
+            .unwrap()
+            .statements
+            .last()
+            .unwrap();
+        cfpcs.states[EvalStmtPhase::PreOperands]
+            .places_with_capapability(CapabilityKind::Exclusive)
+            .into_iter()
+            .map(mir::PlaceRef::from)
+            .filter(|held| {
+                held.local == place.local
+                    && held.projection.len() > place.projection.len()
+                    && held.projection.starts_with(place.projection)
+                    && !held.projection[place.projection.len()..]
+                        .contains(&mir::ProjectionElem::Deref)
+            })
+            .map(|held| mir::Place {
+                local: held.local,
+                projection: self.vcx.tcx().mk_place_elems(held.projection),
+            })
+            .sorted_by_cached_key(|held| format!("{held:?}"))
+            .collect()
+    }
+
     /// Applies the drop contract of `place`'s type, if one was declared
     /// (`#[extern_spec] impl Drop for X`): the drop of the value is a call to
     /// the contract's `fn drop(&mut self)` through a temporary mutable
@@ -3112,6 +3144,14 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         // have been read, then records a snapshot before the edge repacks;
         // every terminator arm with a successor must call it. Terminators
         // without successors have no successor state to re-pack for.
+        // The held parts of a partially moved-out place are released by
+        // these phases already (a whole place's release is deferred to its
+        // `StorageDead`), so their drop contracts apply first.
+        if let mir::TerminatorKind::Drop { place, .. } = &terminator.kind {
+            for part in self.terminator_held_parts(*place) {
+                self.apply_drop_contract(part)?;
+            }
+        }
         for phase in [
             EvalStmtPhase::PreOperands,
             EvalStmtPhase::PostOperands,

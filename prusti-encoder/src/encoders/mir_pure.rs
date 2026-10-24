@@ -67,6 +67,9 @@ type SpecClosure<'vir> = (
 pub struct MirPureEncOutput<'vir> {
     pub inputs: Vec<mir::Local>,
     pub expr: ExprRet<'vir>,
+    /// Whether the body (or a spec closure in it) calls a `#[pure_unstable]`
+    /// function, which reads deep values.
+    pub calls_pure_unstable: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -137,7 +140,7 @@ impl TaskEncoder for MirPureEnc {
         let (_, kind, def_id, gargs) = *task_key;
 
         tracing::debug!("encoding {def_id:?}");
-        let (inputs, expr) = vir::with_vcx(move |vcx| {
+        let (inputs, expr, calls_pure_unstable) = vir::with_vcx(move |vcx| {
             // The bodies are encoded generically, so they are fetched at the
             // compiler's identity arguments. The one exception is a trait's
             // specification encoded for an `impl` of that trait, which is
@@ -189,6 +192,7 @@ impl TaskEncoder for MirPureEnc {
                 .sorted()
                 .collect::<Vec<_>>();
             let inputs_expected = inputs.len();
+            let calls_pure_unstable = enc.calls_pure_unstable;
 
             // We wrap the expression with an additional lazy that will perform
             // some sanity checks. These requirements cannot be expressed using
@@ -224,11 +228,18 @@ impl TaskEncoder for MirPureEnc {
                 )
             });
             add_debug_note!(expr.debug_info, "Inner expr: {}", expr_inner.debug_info);
-            Ok((inputs, expr))
+            Ok((inputs, expr, calls_pure_unstable))
         })?;
         tracing::debug!("finished {def_id:?}");
 
-        Ok(((), MirPureEncOutput { inputs, expr }))
+        Ok((
+            (),
+            MirPureEncOutput {
+                inputs,
+                expr,
+                calls_pure_unstable,
+            },
+        ))
     }
 }
 
@@ -315,6 +326,7 @@ struct Enc<'vir: 'enc, 'enc> {
     rel1_mode: bool,
     before_expiry_mode: bool,
     impure_context: bool,
+    calls_pure_unstable: bool,
 }
 
 struct EncodedPlace<'vir> {
@@ -427,6 +439,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                     ..
                 } | PureKind::SpecBlock(..)
             ),
+            calls_pure_unstable: false,
         }
     }
 
@@ -960,6 +973,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                             }
                         }
                     } else if is_pure {
+                        self.calls_pure_unstable |= crate::encoders::is_pure_unstable(def_id);
                         let pure_func = self
                             .deps
                             .require_dep::<FunctionCallEnc>(CallTaskDescription::new(
@@ -1531,15 +1545,14 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
         // variable to use, then closure access = tuple access
         // (then hope to optimise this away later ...?)
         use vir::Reify;
-        let body = self
-            .deps
-            .require_dep::<MirPureEnc>(MirPureEncTask {
-                encoding_depth: self.encoding_depth + 1,
-                kind: PureKind::Closure,
-                parent_def_id: cl_def_id,
-                gargs: GParams::from(cl_def_id).identity_args(),
-            })?
-            .expr;
+        let body = self.deps.require_dep::<MirPureEnc>(MirPureEncTask {
+            encoding_depth: self.encoding_depth + 1,
+            kind: PureKind::Closure,
+            parent_def_id: cl_def_id,
+            gargs: GParams::from(cl_def_id).identity_args(),
+        })?;
+        self.calls_pure_unstable |= body.calls_pure_unstable;
+        let body = body.expr;
         let reify_args = self.vcx.alloc(reify_args);
         let no_addrs = self.vcx.alloc(FxHashMap::default());
         let body = self.vcx.mk_lazy_expr(
@@ -1595,6 +1608,11 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
             }
             // A permission at the pointer's address: only meaningful as the
             // whole of a pre- or postcondition (an assertion, not a value).
+            // Pure contexts (trait axioms, functions' contracts) state values
+            // only; the methods' contracts hold the permission.
+            SpecBuiltin::Acc | SpecBuiltin::ImAtoms if !self.impure_context => {
+                mk_bool(self.vcx.mk_bool::<true>().lift())
+            }
             SpecBuiltin::Acc | SpecBuiltin::ImAtoms => {
                 let pointee = arg_tys[0].expect_ty();
                 let encoded_args = args

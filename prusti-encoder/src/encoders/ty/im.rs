@@ -314,6 +314,10 @@ impl TaskEncoder for ImOpaqueEnc {
             }
             let mut dep_body = Vec::new();
             for (kind, field, method) in &amounts {
+                // The other annotations hold nothing in the atom.
+                if !matches!(kind, ImAmountKind::Perm | ImAmountKind::Dependent) {
+                    continue;
+                }
                 let contents = contents_of(deps, ty, self_ex, field.unwrap())?;
                 match kind {
                     // Clamped again: Silicon does not use the function's
@@ -1641,19 +1645,25 @@ fn deep_with<'vir, E: TaskEncoder>(
 }
 
 /// A type in `ty` whose contents reach interior-mutable values
-/// (`RefCell<Cell<_>>`, `Rc<RefCell<_>>`), if any. The encoding does not
-/// support these yet: the contents are held generically, without the atoms
-/// they would reach.
+/// (`RefCell<Cell<_>>`, `Rc<RefCell<_>>`, `[Cell<_>; N]`), if any. The
+/// encoding does not support these yet: the contents are held generically
+/// (or, for arrays and slices, element-wise without footprints and deep
+/// values), without the atoms they would reach.
 pub(crate) fn nested_im<'tcx>(ty: ty::Ty<'tcx>, params: GParams<'tcx>) -> Option<ty::Ty<'tcx>> {
-    ty.walk().filter_map(|arg| arg.as_type()).find(|inner| {
-        let ty::TyKind::Adt(adt, args) = *inner.kind() else {
-            return false;
-        };
-        (is_im_opaque(adt.did()) || is_im_sharer(adt.did()))
-            && args
-                .types()
-                .any(|arg| reaches_im(RustTyDecomposition::from_ty(arg, params)))
-    })
+    ty.walk()
+        .filter_map(|arg| arg.as_type())
+        .find(|inner| match *inner.kind() {
+            ty::TyKind::Adt(adt, args) => {
+                (is_im_opaque(adt.did()) || is_im_sharer(adt.did()))
+                    && args
+                        .types()
+                        .any(|arg| reaches_im(RustTyDecomposition::from_ty(arg, params)))
+            }
+            ty::TyKind::Array(elem, _) | ty::TyKind::Slice(elem) => {
+                reaches_im(RustTyDecomposition::from_ty(elem, params))
+            }
+            _ => false,
+        })
 }
 
 /// Whether a value of `ty` reaches an `#[im_opaque]` value, i.e. whether its

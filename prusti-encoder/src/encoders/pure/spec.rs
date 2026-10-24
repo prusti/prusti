@@ -368,6 +368,31 @@ impl TaskEncoder for MirSpecEnc {
             };
             let pre_addrs = vcx.alloc(arg_addrs);
 
+            // In the pure modes (a function's `f_`, trait axioms), the
+            // arguments and the result are shallow snapshots, whose
+            // interior-mutable contents are a constant, unless the function
+            // is `#[pure_unstable]`. A spec reading them (calling a
+            // `#[pure_unstable]` function) is kept in the method's contract
+            // alone. For `f_`, it is an error if the arguments reach any,
+            // since the method's result is tied to `f_`.
+            let shallow = enc_mode != MirSpecEncMode::Impure
+                && !crate::encoders::is_pure_unstable(context_def_id);
+            let args_reach_im = (1..=local_defs.arg_count)
+                .any(|local| crate::encoders::ty::im::reaches_im(local_defs[local.into()].ty));
+            let keep_spec = |spec: &MirPureEncOutput<'vir>, span: Span| {
+                if !shallow || !spec.calls_pure_unstable {
+                    return true;
+                }
+                if enc_mode == MirSpecEncMode::PureWithResult && args_reach_im {
+                    vcx.emit_early_error(PrustiError::incorrect(
+                        "the specification of a `#[pure]` function reads the interior-mutable \
+                         state its arguments reach; mark the function `#[pure_unstable]`",
+                        span.into(),
+                    ));
+                }
+                false
+            };
+
             // Encode each functional precondition; if one cannot be encoded (e.g.
             // it uses an unsupported feature), report the error at *that spec's*
             // span and skip only it, keeping the permission contract and the other
@@ -378,6 +403,9 @@ impl TaskEncoder for MirSpecEnc {
                     let spec = Self::encode_pure(vcx, deps, pre_ctx, *spec_def_id, "precondition")?;
                     let expr = spec.expr.downcast_ty::<vir::Bool>();
                     let span = vcx.tcx().def_span(*spec_def_id);
+                    if !keep_spec(&spec, span) {
+                        return None;
+                    }
                     // Reify *inside* the span scope: the nodes created by the
                     // reification pick up the ambient span, which makes error
                     // positions inside this precondition point at the spec.
@@ -447,6 +475,9 @@ impl TaskEncoder for MirSpecEnc {
                     vcx.with_span(span, |vcx| {
                         let spec =
                             Self::encode_pure(vcx, deps, post_ctx, *spec_def_id, "postcondition")?;
+                        if !keep_spec(&spec, span) {
+                            return None;
+                        }
                         vcx.handle_error("postcondition.violated:assertion.false", move |_| {
                             Some(vec![PrustiError::verification(
                                 "postcondition might not hold",
