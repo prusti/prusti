@@ -1866,6 +1866,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
     fn im_take_moved(
         &mut self,
         rvalue: &mir::Rvalue<'vir>,
+        captured: &OperandSnaps<'vir>,
     ) -> EncodeResult<'vir, Vec<Moved<'vir>>, E> {
         let operands: Vec<&mir::Operand<'vir>> = match rvalue {
             mir::Rvalue::Use(operand, _) => vec![operand],
@@ -1903,9 +1904,17 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 all_moved.push(moved);
                 continue;
             }
-            let (result, snap, _, _) = self.encode_place_with_snap(place)?;
-            let entries =
-                crate::encoders::ty::im::footprint(self.deps, ty, result.expr.address, snap)?;
+            // The operand's snapshot was read before it was moved out (its
+            // predicate is gone).
+            let addr = self.encode_place(place)?.expr.address;
+            let captured_snap = captured
+                .as_ref()
+                .and_then(|snaps| snaps.get(&operand.place().unwrap()));
+            let snap = match captured_snap {
+                Some(snap) => *snap,
+                None => self.encode_place_with_snap(place)?.1,
+            };
+            let entries = crate::encoders::ty::im::footprint(self.deps, ty, addr, snap)?;
             let owned = entries
                 .into_iter()
                 .filter(|e| !e.reached)
@@ -2934,7 +2943,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                         .expect_predicate();
 
                     // A moved value's inline interior locations move with it.
-                    let moved = self.im_take_moved(rvalue)?;
+                    let moved = self.im_take_moved(rvalue, &captured)?;
 
                     // The snapshot of the value that we are assigning.
                     let rval_enc = self.encode_rvalue(rvalue, span, &captured);
