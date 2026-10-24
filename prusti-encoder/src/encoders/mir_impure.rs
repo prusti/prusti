@@ -1407,6 +1407,21 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
 
         let place_ty_out = self.ty_use_impure(place_ty.ty);
 
+        // The atoms the value holds alone die with it (read before its
+        // predicate, which the keys read, is given up).
+        let ty = RustTyDecomposition::from_ty(place_ty.ty, self.def_id);
+        if crate::encoders::ty::im::reaches_im(ty) {
+            let (result, snap, _, _) = self.encode_place_with_snap(place)?;
+            let owned =
+                crate::encoders::ty::im::footprint(self.deps, ty, result.expr.address, snap)?
+                    .into_iter()
+                    .filter(|e| !e.reached)
+                    .collect::<Vec<_>>();
+            for release in crate::encoders::ty::im::footprint_release(&owned) {
+                self.stmt(self.vcx.mk_exhale_stmt(release));
+            }
+        }
+
         let place_ref = self.encode_place(place)?.expr.expect_predicate();
         comment!(self, "exhale due to weaken to Write");
         if mint_token {
