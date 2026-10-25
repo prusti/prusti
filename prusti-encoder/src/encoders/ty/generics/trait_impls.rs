@@ -199,6 +199,8 @@ impl TaskEncoder for TraitImplEnc {
 
                 // exceptionally, we also put the allocated result in the precondition
                 post_strengthen_pres.push(local_defs[mir::RETURN_PLACE].impure_pred);
+                // And what the result references, which the postconditions read.
+                post_strengthen_pres.extend(wands.indirect_outputs(vcx, &local_defs, deps));
                 let result = &local_defs[mir::RETURN_PLACE];
                 if crate::encoders::ty::im::reaches_im(result.ty) {
                     let fp_result = crate::encoders::ty::im::footprint(
@@ -214,7 +216,7 @@ impl TaskEncoder for TraitImplEnc {
                 // here we inhale the impl postconditions, since they
                 // can contain "old" variables
                 let mut stmts = bounds;
-                for post in impl_item_spec.post_exprs().filter(|post| !reads_heap(post)) {
+                for post in impl_item_spec.post_exprs() {
                     stmts.push(vcx.mk_inhale_stmt(post));
                 }
                 if impl_item_has_body && impl_item_is_pure {

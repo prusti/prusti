@@ -2,12 +2,11 @@ use crate::*;
 
 use core::default::Default;
 
-// TODO: this should ideally be `#[refine_spec(where Self: PureDefault, [pure])]`
-// (cf. `PartialEq::eq`), since not every `Default::default` is pure.
+// Not `#[pure]` at the trait level: a default may allocate (e.g. `Box`), and
+// two calls of a pure function are equal. The impls below are pure.
 #[extern_spec]
 trait Default: Sized {
     #[trusted]
-    #[pure]
     fn default() -> Self;
 }
 
@@ -44,42 +43,4 @@ impl<'a, T> Default for &'a [T] {
     #[pure]
     #[ensures(result.len() == 0)]
     fn default() -> &'a [T];
-}
-
-// The default of a tuple is the tuple of the defaults. Written out per arity:
-// the `===` operator does not survive a `macro_rules!` expansion (its three
-// `=` are no longer joint tokens).
-#[extern_spec]
-impl<A: Default> Default for (A,) {
-    #[trusted]
-    #[pure]
-    #[ensures(result.0 === A::default())]
-    fn default() -> (A,);
-}
-
-#[extern_spec]
-impl<A: Default, B: Default> Default for (A, B) {
-    #[trusted]
-    #[pure]
-    #[ensures(result.0 === A::default() && result.1 === B::default())]
-    fn default() -> (A, B);
-}
-
-#[extern_spec]
-impl<A: Default, B: Default, C: Default> Default for (A, B, C) {
-    #[trusted]
-    #[pure]
-    #[ensures(result.0 === A::default() && result.1 === B::default() && result.2 === C::default())]
-    fn default() -> (A, B, C);
-}
-
-#[extern_spec]
-impl<A: Default, B: Default, C: Default, D: Default> Default for (A, B, C, D) {
-    #[trusted]
-    #[pure]
-    #[ensures(result.0 === A::default()
-        && result.1 === B::default()
-        && result.2 === C::default()
-        && result.3 === D::default())]
-    fn default() -> (A, B, C, D);
 }

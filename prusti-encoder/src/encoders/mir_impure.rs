@@ -2340,7 +2340,14 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             for entry in &owned {
                 for content in entry.contents(self.deps)? {
                     let tmp = self.new_tmp(content.ty());
-                    self.stmt(self.vcx.mk_pure_assign_stmt(tmp, content));
+                    let assign = self.vcx.mk_pure_assign_stmt(tmp, content);
+                    // Readable only where the atom is (e.g. in its variant).
+                    self.stmt(match entry.condition() {
+                        Some(condition) => {
+                            self.vcx.mk_if_stmt(condition, self.vcx.alloc_slice(&[assign]), &[])
+                        }
+                        None => assign,
+                    });
                     moved.contents.push(tmp);
                 }
             }
@@ -2427,7 +2434,14 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 let Some(value) = moved.next() else {
                     break;
                 };
-                conjs.push(self.vcx.mk_eq_expr(content, value));
+                let same = self.vcx.mk_eq_expr(content, value);
+                conjs.push(match entry.condition() {
+                    Some(condition) => self
+                        .vcx
+                        .mk_bin_op_expr(vir::BinOpKind::Implies, condition, same)
+                        .downcast_ty(),
+                    None => same,
+                });
             }
             self.stmt(self.vcx.mk_inhale_stmt(self.vcx.mk_conj(&conjs)));
         }

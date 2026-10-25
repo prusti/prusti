@@ -401,14 +401,28 @@ impl TaskEncoder for ConstEnc {
                             }
                             res => return res,
                         }
-                    } else if uneval.promoted.is_none()
-                        && vcx.tcx().trait_of_assoc(uneval.def).is_some()
-                    {
-                        return Err(EncodeFullError::EncodingError(
-                            ConstEncError::GenericAssociated,
-                            None,
-                        ));
                     }
+                    // A trait's associated constant is that of the item it
+                    // resolves to (the impl's, or the trait's default).
+                    let (def, args) = match uneval.promoted {
+                        None if vcx.tcx().trait_of_assoc(uneval.def).is_some() => {
+                            match ty::Instance::try_resolve(
+                                vcx.tcx(),
+                                context.typing_env(),
+                                uneval.def,
+                                uneval.args,
+                            ) {
+                                Ok(Some(instance)) => (instance.def_id(), instance.args),
+                                _ => {
+                                    return Err(EncodeFullError::EncodingError(
+                                        ConstEncError::GenericAssociated,
+                                        None,
+                                    ));
+                                }
+                            }
+                        }
+                        _ => (uneval.def, uneval.args),
+                    };
                     let (kind, gargs) = match uneval.promoted {
                         // The promoted MIR is encoded at identity substs, so
                         // its types live in the generic context of the body it
@@ -418,11 +432,11 @@ impl TaskEncoder for ConstEnc {
                             PureKind::Constant(promoted),
                             GParams::from(uneval.def).identity_args(),
                         ),
-                        None => (PureKind::NamedConstant, GArgs::new(context, uneval.args)),
+                        None => (PureKind::NamedConstant, GArgs::new(context, args)),
                     };
                     let task = MirPureEncTask {
                         encoding_depth: encoding_depth + 1,
-                        parent_def_id: uneval.def,
+                        parent_def_id: def,
                         gargs,
                         kind,
                     };
@@ -435,7 +449,7 @@ impl TaskEncoder for ConstEnc {
                         expr.reify(
                             vcx,
                             (
-                                uneval.def,
+                                def,
                                 vcx.alloc(args),
                                 vir::OldLabel::None,
                                 vcx.alloc(addrs),

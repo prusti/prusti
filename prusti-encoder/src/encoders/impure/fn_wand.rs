@@ -245,6 +245,21 @@ impl<'vir> WandEncOutput<'vir> {
         })
     }
 
+    /// The encoded predicates of the result's lifetime projections (e.g. the
+    /// referent of a returned `&mut`), as in [`Self::indirect_posts`].
+    pub fn indirect_outputs<'a, E: TaskEncoder>(
+        &'a self,
+        vcx: &'vir vir::VirCtxt<'vir>,
+        local_defs: &'a MirLocalDefEncOutput<'vir>,
+        deps: &'a mut TaskEncoderDependencies<'vir, E>,
+    ) -> impl Iterator<Item = vir::ExprBool<'vir>> + 'a {
+        self.outputs().filter_map(|g| {
+            self.encode_predicates_for_function_shape_node(vcx, deps, g, None, |i| {
+                local_defs[i].impure_snap
+            })
+        })
+    }
+
     pub fn indirect_posts<'a, E: TaskEncoder>(
         &'a self,
         vcx: &'vir vir::VirCtxt<'vir>,

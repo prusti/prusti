@@ -697,6 +697,12 @@ impl<'vir> FpEntry<'vir> {
         })
     }
 
+    /// Where the atom is reached, if not always (its contents can only be
+    /// read there).
+    pub(crate) fn condition(&self) -> Option<vir::ExprBool<'vir>> {
+        self.condition
+    }
+
     /// The entry, reached only where `condition` holds as well.
     pub(crate) fn with_condition(self, condition: Option<vir::ExprBool<'vir>>) -> Self {
         let Some(condition) = condition else {

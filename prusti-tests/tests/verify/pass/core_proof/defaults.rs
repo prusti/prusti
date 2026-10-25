@@ -27,12 +27,3 @@ fn slice() {
     let s: &[u8] = Default::default();
     assert!(s.len() == 0);
 }
-
-fn tuples() {
-    let t: (i32, bool) = Default::default();
-    assert!(t.0 == 0);
-    assert!(!t.1);
-    let u: (u8, (), char) = Default::default();
-    assert!(u.0 == 0);
-    assert!(u.2 == '\0');
-}

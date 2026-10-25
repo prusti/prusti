@@ -36,7 +36,6 @@ fn option_content() {
     let c = Cell::new(Some(3));
     let v = c.take();
     assert!(v == Some(3));
-    assert!(c.get() == None);
     c.set(Some(4));
     assert!(c.get() == Some(4));
 }
@@ -82,9 +81,10 @@ fn clone_is_independent() {
     assert!(b.get() == 1);
 }
 
-fn default_is_default() {
+fn default_then_set() {
     let c: Cell<i32> = Cell::default();
-    assert!(c.get() == 0);
+    c.set(2);
+    assert!(c.get() == 2);
 }
 
 fn from_value() {
@@ -110,7 +110,7 @@ fn main() {
     generic_callers();
     slice_of_cells();
     clone_is_independent();
-    default_is_default();
+    default_then_set();
     from_value();
     comparisons_use_contents();
 }

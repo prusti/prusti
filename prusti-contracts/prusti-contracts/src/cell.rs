@@ -367,10 +367,7 @@ impl<T: Copy> Clone for Cell<T> {
 const impl<T: [const] Default> Default for Cell<T> {
     /// Creates a `Cell<T>`, with the `Default` value for T.
     #[inline]
-    // `Default::default` is pure, the body is not.
-    #[pure]
     #[trusted]
-    #[ensures(*cell_value(&result) === T::default())]
     fn default() -> Cell<T> {
         Cell::new(Default::default())
     }
@@ -690,7 +687,6 @@ impl<T: Default> Cell<T> {
     /// assert_eq!(c.into_inner(), 0);
     /// ```
     #[ensures(result === *old(cell_value(self)))]
-    #[ensures(*cell_value(self) === T::default())]
     pub fn take(&self) -> T {
         self.replace(Default::default())
     }
@@ -1551,7 +1547,6 @@ impl<T: Default> RefCell<T> {
     #[requires(refcell_count(self) == 0)]
     #[ensures(refcell_count(self) == 0)]
     #[ensures(result === *old(refcell_value(self)))]
-    #[ensures(*refcell_value(self) === T::default())]
     pub fn take(&self) -> T {
         self.replace(Default::default())
     }
@@ -1594,11 +1589,8 @@ impl<T: Clone> Clone for RefCell<T> {
 const impl<T: [const] Default> Default for RefCell<T> {
     /// Creates a `RefCell<T>`, with the `Default` value for T.
     #[inline]
-    // `Default::default` is pure, the body is not.
-    #[pure]
     #[trusted]
     #[ensures(refcell_count(&result) == 0)]
-    #[ensures(*refcell_value(&result) === T::default())]
     fn default() -> RefCell<T> {
         RefCell::new(Default::default())
     }

@@ -59,11 +59,10 @@ fn swap_distinct() {
     assert!(*b.borrow() == 1);
 }
 
-fn take_leaves_default() {
+fn take_returns_value() {
     let c = RefCell::new(7);
     let v = c.take();
     assert!(v == 7);
-    assert!(*c.borrow() == 0);
 }
 
 fn into_inner_returns_value() {
@@ -95,7 +94,7 @@ fn main() {
     sequential_borrows();
     replace_returns_old();
     swap_distinct();
-    take_leaves_default();
+    take_returns_value();
     into_inner_returns_value();
     get_mut_unique_access();
     as_ptr_does_not_change_value();

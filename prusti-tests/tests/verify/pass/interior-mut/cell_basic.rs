@@ -33,11 +33,10 @@ fn swap_distinct() {
     assert!(b.get() == 1);
 }
 
-fn take_leaves_default() {
+fn take_returns_value() {
     let c = Cell::new(7);
     let v = c.take();
     assert!(v == 7);
-    assert!(c.get() == 0);
 }
 
 fn into_inner_returns_value() {
@@ -71,7 +70,7 @@ fn main() {
     set_overwrites();
     replace_returns_old();
     swap_distinct();
-    take_leaves_default();
+    take_returns_value();
     into_inner_returns_value();
     get_mut_unique_access();
     from_mut_view();
