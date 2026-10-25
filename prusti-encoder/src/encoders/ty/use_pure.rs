@@ -554,6 +554,33 @@ impl<'vir> TyUsePureArray<'vir> {
         self.pure.index_access.call()(snap, index).upcast_ty()
     }
 
+    /// The array-like with the given elements (`[a, b, c]`).
+    pub fn elems_to_snap<Curr, Next>(
+        &self,
+        elems: &[vir::ExprGenSnap<'vir, Curr, Next>],
+    ) -> vir::ExprGenCSnap<'vir, Curr, Next> {
+        vir::with_vcx(|vcx| {
+            let elems = elems
+                .iter()
+                .map(|elem| self.caster.cast_to_callee_ctx(*elem).downcast_ty())
+                .collect::<Vec<vir::ExprGenPSnap<'vir, Curr, Next>>>();
+            let seq = vcx.mk_seq_literal_expr(vcx.alloc_slice(&elems), vir::TYPE_PSNAP);
+            self.pure.from_seq.call()(seq)
+        })
+    }
+
+    /// The array-like with `len` copies of `elem` (`[elem; len]`), where
+    /// `seq_repeat` is the collection builtin `prusti_seq_repeat`.
+    pub fn repeat_to_snap<Curr, Next>(
+        &self,
+        elem: vir::ExprGenSnap<'vir, Curr, Next>,
+        len: vir::ExprGenInt<'vir, Curr, Next>,
+        seq_repeat: vir::FunctionIdn<'vir, (vir::PSnap, vir::Int), vir::Seq>,
+    ) -> vir::ExprGenCSnap<'vir, Curr, Next> {
+        let elem = self.caster.cast_to_callee_ctx(elem).downcast_ty();
+        self.pure.from_seq.call()(seq_repeat.call()(elem, len))
+    }
+
     /// Get the (Ref) address of an index. Identical to the function one would
     /// call in `use_pure`.
     pub fn ref_to_index_ref<Curr, Next>(

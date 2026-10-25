@@ -1,5 +1,7 @@
 use crate::encoders::{
-    FunctionCallEnc, Mode, PrustiBuiltin, SpecBuiltin, ViperTupleEnc,
+    ConstEnc, FunctionCallEnc, Mode, PrustiBuiltin, SpecBuiltin, ViperTupleEnc,
+    builtin::seq_repeat_function,
+    r#const::ConstEncTask,
     mir_fn::{CallTaskDescription, GhostBlocks, RustSignature},
     mir_shared::{EncodeResult, PureRvalueEnc, RustcIntrinsic},
     pure::spec::MirSpecEncMode,
@@ -1052,6 +1054,34 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                 | mir::AggregateKind::Closure(..)),
                 fields,
             ) => self.encode_aggregate_snap(rvalue_ty, kind, fields, curr_ver),
+            mir::Rvalue::Aggregate(box mir::AggregateKind::Array(..), elements) => {
+                let elements = elements
+                    .iter()
+                    .map(|element| self.encode_operand_snap(element, curr_ver))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let e_ty = self.ty_use(rvalue_ty);
+                Ok(e_ty.expect_array().elems_to_snap(&elements).upcast_ty())
+            }
+            mir::Rvalue::Repeat(operand, len) => {
+                let usize_ty = self.vcx.tcx().types.usize;
+                let len = self.deps.require_dep::<ConstEnc>(ConstEncTask::Ty {
+                    const_: *len,
+                    ty: usize_ty,
+                    context: self.context(),
+                })?;
+                let len = self
+                    .ty_use(usize_ty)
+                    .expect_primitive()
+                    .snap_to_prim(len.lift())
+                    .downcast_ty();
+                let seq_repeat = seq_repeat_function(self.deps)?;
+                let element = self.encode_operand_snap(operand, curr_ver)?;
+                let e_ty = self.ty_use(rvalue_ty);
+                Ok(e_ty
+                    .expect_array()
+                    .repeat_to_snap(element, len, seq_repeat)
+                    .upcast_ty())
+            }
             mir::Rvalue::Discriminant(place) => {
                 let place_ty = place.ty(self.body, self.vcx.tcx());
                 let ty = self.ty_use(place_ty.ty);

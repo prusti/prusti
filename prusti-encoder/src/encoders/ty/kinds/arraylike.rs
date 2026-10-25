@@ -23,10 +23,25 @@ pub(crate) fn ty_pure<'vir>(
     );
     let args = (vir::TYPE_REF, vir::TYPE_INT, builder.params.ty_args());
     let ref_to_index_ref = builder.function("index_ref", args, vir::TYPE_REF);
+
+    // The array-like with the elements of a sequence, for array values built
+    // in pure code. Indices outside the sequence are unspecified.
+    let seq_ty = builder.vcx.mk_ty_seq(vir::TYPE_PSNAP);
+    let from_seq = builder.function("from_seq", seq_ty, builder.self_type());
+    let zero = builder.vcx.mk_uint::<0>();
+    builder.axiom(
+        "from_seq",
+        vir::expr! {
+            forall s: [seq_ty], i: Int :: {[index_access](([from_seq](s)), i)}
+                ((([zero]) <= (i)) && ((i) < (|s|)))
+                    ==> (([index_access](([from_seq](s)), i)) == (((s)[i]) as PSnap))
+        },
+    );
     Ok(ArrayData::new(
         TyPureArrayData {
             index_access,
             ref_to_index_ref,
+            from_seq,
         },
         data.slice,
     ))

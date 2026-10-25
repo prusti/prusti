@@ -83,6 +83,8 @@ pub struct TyPureArrayData<'vir> {
     pub(super) index_access: FunctionIdn<'vir, (vir::CSnap, vir::Int), vir::PSnap>,
     /// Function to access the ref at the given index.
     pub ref_to_index_ref: vir::FunctionIdn<'vir, (vir::Ref, vir::Int, vir::ManyTyVal), vir::Ref>,
+    /// Function to build the array-like with the elements of a sequence.
+    pub(super) from_seq: FunctionIdn<'vir, vir::Seq, vir::CSnap>,
 }
 
 #[derive(Debug, Clone, Copy)]

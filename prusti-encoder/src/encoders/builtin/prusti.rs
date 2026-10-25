@@ -1313,12 +1313,15 @@ impl<'enc, 'vir> BuiltinCtxt<'enc, 'vir> {
 ///   two.
 /// - `MapSetminus` (key removal) has no native Viper correspondent at all;
 ///   it is total and axiomatized by its domain and its lookups.
+/// - `SeqRepeat` (`n` copies of a value) has no native correspondent either;
+///   it is total and axiomatized by its length and its elements.
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 enum CollectionOp {
     SeqLookup,
     SeqUpdate,
     SeqSliceFrom,
     SeqSliceTo,
+    SeqRepeat,
     MapLookup,
     MapSetminus,
 }
@@ -1332,8 +1335,19 @@ enum CollectionOpFn<'vir> {
     SeqUpdate(FunctionIdn<'vir, (vir::Seq, vir::Int, vir::PSnap), vir::Seq>),
     SeqSliceFrom(FunctionIdn<'vir, (vir::Seq, vir::Int), vir::Seq>),
     SeqSliceTo(FunctionIdn<'vir, (vir::Seq, vir::Int), vir::Seq>),
+    SeqRepeat(FunctionIdn<'vir, (vir::PSnap, vir::Int), vir::Seq>),
     MapLookup(FunctionIdn<'vir, (vir::Map, vir::PSnap), vir::PSnap>),
     MapSetminus(FunctionIdn<'vir, (vir::Map, vir::Set), vir::Map>),
+}
+
+/// The function of [`CollectionOp::SeqRepeat`], for encoders outside the
+/// collection builtins (e.g. array repeats `[x; N]` in pure code).
+pub(crate) fn seq_repeat_function<'vir, E: TaskEncoder>(
+    deps: &mut TaskEncoderDependencies<'vir, E>,
+) -> Result<FunctionIdn<'vir, (vir::PSnap, vir::Int), vir::Seq>, EncodeFullError<'vir, E>> {
+    Ok(deps
+        .require_ref::<CollectionOpsEnc>(CollectionOp::SeqRepeat)?
+        .expect_seq_repeat())
 }
 
 impl task_encoder::OutputRefAny for CollectionOpFn<'_> {}
@@ -1366,6 +1380,13 @@ impl<'vir> CollectionOpFn<'vir> {
         match self {
             Self::SeqSliceTo(fn_idn) => fn_idn,
             other => panic!("expected `SeqSliceTo`, got {other:?}"),
+        }
+    }
+
+    pub fn expect_seq_repeat(self) -> FunctionIdn<'vir, (vir::PSnap, vir::Int), vir::Seq> {
+        match self {
+            Self::SeqRepeat(fn_idn) => fn_idn,
+            other => panic!("expected `SeqRepeat`, got {other:?}"),
         }
     }
 
@@ -1464,6 +1485,20 @@ impl TaskEncoder for CollectionOpsEnc {
                         CollectionOpOutput::Function(Self::seq_slice_one_sided_function(
                             vcx, fn_idn, true,
                         )),
+                    )
+                }
+                CollectionOp::SeqRepeat => {
+                    let fn_idn = FunctionIdn::new(
+                        vir::ViperIdent::new("prusti_seq_repeat"),
+                        (vir::TYPE_PSNAP, vir::TYPE_INT),
+                        seq_ty,
+                    );
+                    (
+                        CollectionOpFn::SeqRepeat(fn_idn),
+                        CollectionOpOutput::DomainMember(
+                            vcx.mk_domain_function(fn_idn, false, None),
+                            Self::seq_repeat_axioms(vcx, fn_idn),
+                        ),
                     )
                 }
                 CollectionOp::MapLookup => {
@@ -1634,6 +1669,39 @@ impl CollectionOpsEnc {
             },
         );
         vec![domain_axiom, lookup_axiom]
+    }
+
+    // forall v, n :: { prusti_seq_repeat(v, n) }
+    //     0 <= n ==> |prusti_seq_repeat(v, n)| == n
+    // forall v, n, i :: { prusti_seq_repeat(v, n)[i] }
+    //     0 <= i && i < n ==> prusti_seq_repeat(v, n)[i] == v
+    fn seq_repeat_axioms<'vir>(
+        vcx: &'vir vir::VirCtxt<'vir>,
+        fn_idn: FunctionIdn<'vir, (vir::PSnap, vir::Int), vir::Seq>,
+    ) -> Vec<vir::DomainAxiom<'vir>> {
+        let v_decl = vcx.mk_local_decl("v", vir::TYPE_PSNAP);
+        let n_decl = vcx.mk_local_decl("n", vir::TYPE_INT);
+        let i_decl = vcx.mk_local_decl("i", vir::TYPE_INT);
+        let v = vcx.mk_local_ex(v_decl);
+        let n = vcx.mk_local_ex(n_decl);
+        let i = vcx.mk_local_ex(i_decl);
+        let zero = vcx.mk_uint::<0>();
+        let sr = fn_idn(v, n);
+        let length_axiom = vcx.mk_domain_axiom(
+            vir::ViperIdent::new("prusti_seq_repeat_length"),
+            vir::expr! { vcx;
+                forall [v_decl], [n_decl] :: {[sr]} ((zero) <= (n)) ==> ((|sr|) == (n))
+            },
+        );
+        let sr_index = vcx.mk_seq_index_expr(sr, i);
+        let index_axiom = vcx.mk_domain_axiom(
+            vir::ViperIdent::new("prusti_seq_repeat_index"),
+            vir::expr! { vcx;
+                forall [v_decl], [n_decl], [i_decl] :: {[sr_index]}
+                    (((zero) <= (i)) && ((i) < (n))) ==> (((sr_index) as PSnap) == (v))
+            },
+        );
+        vec![length_axiom, index_axiom]
     }
 
     // function prusti_seq_slice(s: Seq[s_Param], lo: Int, hi: Int): Seq[s_Param]
