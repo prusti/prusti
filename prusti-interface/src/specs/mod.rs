@@ -723,19 +723,42 @@ impl<'a, 'tcx> intravisit::Visitor<'tcx> for SpecCollector<'a, 'tcx> {
                 // The contract of dropping a value of type `X`, declared as
                 // `#[extern_spec] impl Drop for X`: a never-called function
                 // `fn drop(_self: &mut X)`, registered on `X`.
-                let adt = self.env.query.tcx().fn_sig(fn_id).skip_binder().inputs().skip_binder()
+                let self_ty = self.env.query.tcx().fn_sig(fn_id).skip_binder().inputs().skip_binder()
                     [0]
-                    .builtin_deref(true)
-                    .and_then(|ty| ty.ty_adt_def());
-                match adt {
-                    Some(adt) => {
-                        self.extern_resolver
+                    .builtin_deref(true);
+                match self_ty.map(|ty| *ty.kind()) {
+                    Some(ty::TyKind::Adt(adt, args)) => {
+                        // Applied to every value of the type, with its type
+                        // and const arguments by position (its lifetimes are
+                        // erased), so, like a `Drop` impl, it must be generic
+                        // over exactly the type's parameters, in order.
+                        let own = ty::GenericArgs::identity_for_item(self.env.query.tcx(), fn_id);
+                        let identity = args.types().eq(own.types())
+                            && args.consts().eq(own.consts());
+                        let entry = self
+                            .extern_resolver
                             .extern_ty_map
                             .entry(adt.did())
-                            .or_default()
-                            .drop_spec = Some(fn_id);
+                            .or_default();
+                        if !identity {
+                            PrustiError::incorrect(
+                                "a `Drop` specification must be for the type with its own \
+                                 generic parameters, in order (like a `Drop` impl)"
+                                    .to_string(),
+                                MultiSpan::from_span(span),
+                            )
+                            .emit(&self.env.diagnostic);
+                        } else if entry.drop_spec.is_some() {
+                            PrustiError::incorrect(
+                                "a type has more than one `Drop` specification".to_string(),
+                                MultiSpan::from_span(span),
+                            )
+                            .emit(&self.env.diagnostic);
+                        } else {
+                            entry.drop_spec = Some(fn_id);
+                        }
                     }
-                    None => PrustiError::incorrect(
+                    _ => PrustiError::incorrect(
                         "a `Drop` specification must be for a struct, enum or union".to_string(),
                         MultiSpan::from_span(span),
                     )

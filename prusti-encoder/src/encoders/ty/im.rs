@@ -312,9 +312,24 @@ impl TaskEncoder for ImOpaqueEnc {
                 ));
             }
             let mut dep_body = Vec::new();
+            // A struct has one dependent atom, with one amount.
+            let mut dependents = amounts
+                .iter()
+                .filter(|(kind, ..)| *kind == ImAmountKind::Dependent)
+                .map(|(_, _, method)| *method);
+            let dependent = dependents.next();
+            if dependents.next().is_some() {
+                vcx.emit_early_error(prusti_interface::PrustiError::unsupported(
+                    "more than one `#[im_dependent]` annotation on a struct",
+                    vcx.tcx().def_span(*did).into(),
+                ));
+            }
             for (kind, field, method) in &amounts {
                 // The other annotations hold nothing in the atom.
                 if !matches!(kind, ImAmountKind::Perm | ImAmountKind::Dependent) {
+                    continue;
+                }
+                if *kind == ImAmountKind::Dependent && Some(*method) != dependent {
                     continue;
                 }
                 let contents = contents_of(deps, ty, self_ex, field.unwrap())?;
@@ -1106,13 +1121,14 @@ fn footprint_into<'vir, E: TaskEncoder>(
                 deps.require_dep::<TyUseImpureEnc>(generic)?
                     .ref_to_snap(r_addr),
             );
+            // Reached through a shared reference, it is shared too.
             footprint_into(
                 deps,
                 referent,
                 r_addr,
                 r_snap,
                 true,
-                false,
+                shared,
                 with_dependent,
                 out,
             )?;
@@ -2355,7 +2371,9 @@ pub(crate) fn generic_positions<'vir, E: TaskEncoder>(
                         .ref_to_snap(r_addr),
                 );
                 let referent_start = out.len();
-                generic_positions(deps, inner, referent, r_addr, r_snap, true, true, out)?;
+                // Behind a shared reference, it is not mutable.
+                let mutable = mutable || !reached;
+                generic_positions(deps, inner, referent, r_addr, r_snap, true, mutable, out)?;
                 for pos in &mut out[referent_start..] {
                     if !pos.nested {
                         pos.reread = Some((generic, caster));
