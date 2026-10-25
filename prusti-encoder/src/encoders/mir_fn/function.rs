@@ -95,12 +95,14 @@ fn field_projection_body<'vir>(
     )))
 }
 
-/// The body of a `#[container_of(a.b, f)]` spec function: a shared reference
-/// to the struct (the return type's referent) whose field `f` is what the
-/// reference at the field path `a.b` of the first argument's referent points
-/// to. Its shallow snapshot is left arbitrary. The outer error is an encoding
-/// failure, the inner one a malformed annotation.
-fn container_of_body<'vir>(
+/// The postcondition of a `#[container_of(a.b, f)]` spec function: its
+/// `result` is a shared reference to the struct (the return type's referent)
+/// whose field `f` is what the reference at the field path `a.b` of the first
+/// argument's referent points to. Its shallow snapshot is unspecified (the
+/// function has no body). The outer error is an encoding failure, the inner
+/// one a malformed annotation.
+#[allow(clippy::too_many_arguments)]
+fn container_of_post<'vir>(
     vcx: &'vir vir::VirCtxt<'vir>,
     deps: &mut TaskEncoderDependencies<'vir, FunctionEnc>,
     def_id: DefId,
@@ -108,7 +110,8 @@ fn container_of_body<'vir>(
     path: &[String],
     field: &str,
     arg: vir::ExprSnap<'vir>,
-) -> Result<Result<vir::ExprSnap<'vir>, String>, task_encoder::EncodeFullError<'vir, FunctionEnc>> {
+    result: vir::ExprSnap<'vir>,
+) -> Result<Result<vir::ExprBool<'vir>, String>, task_encoder::EncodeFullError<'vir, FunctionEnc>> {
     let sig = vcx
         .tcx()
         .fn_sig(def_id)
@@ -174,34 +177,33 @@ fn container_of_body<'vir>(
         .unwrap()
         .metadata
         .decompose_normalize(ret_decomp.args);
-    let metadata = match deps.require_dep::<TyUsePureEnc>(metadata_ty)?.zst_to_snap() {
-        Some(metadata) => metadata.upcast_ty(),
-        None => deps
-            .require_ref::<TyUsePureEnc>(metadata_ty)?
-            .arbitrary_to_snap(),
-    };
-    let value = deps
-        .require_ref::<TyUsePureEnc>(container)?
-        .arbitrary_to_snap();
+    let metadata = deps.require_dep::<TyUsePureEnc>(metadata_ty)?.zst_to_snap();
     let ret_use = deps.require_dep::<TyUsePureEnc>(ret_decomp)?;
-    Ok(Ok(ret_use
-        .expect_immref()
-        .prim_to_snap(addr, metadata, value)
-        .upcast_ty()))
+    let ret_data = ret_use.expect_immref();
+    let mut conjs = vec![vcx.mk_eq_expr(ret_data.addr_access(result.downcast_ty()), addr)];
+    if let Some(metadata) = metadata {
+        conjs.push(vcx.mk_eq_expr(
+            ret_data.metadata_access(result.downcast_ty()),
+            metadata.upcast_ty(),
+        ));
+    }
+    Ok(Ok(vcx.mk_conj(&conjs)))
 }
 
-/// The body of a `#[pointee_of(a.b)]` spec function: a shared reference to
-/// what the pointer at the field path `a.b` of the first argument's referent
-/// points to. Its shallow snapshot is left arbitrary. The outer error is an
-/// encoding failure, the inner one a malformed annotation.
-fn pointee_of_body<'vir>(
+/// The postcondition of a `#[pointee_of(a.b)]` spec function: its `result`
+/// is a shared reference to what the pointer at the field path `a.b` of the
+/// first argument's referent points to. Its shallow snapshot is unspecified
+/// (the function has no body). The outer error is an encoding failure, the
+/// inner one a malformed annotation.
+fn pointee_of_post<'vir>(
     vcx: &'vir vir::VirCtxt<'vir>,
     deps: &mut TaskEncoderDependencies<'vir, FunctionEnc>,
     def_id: DefId,
     params: GParams<'vir>,
     path: &[String],
     arg: vir::ExprSnap<'vir>,
-) -> Result<Result<vir::ExprSnap<'vir>, String>, task_encoder::EncodeFullError<'vir, FunctionEnc>> {
+    result: vir::ExprSnap<'vir>,
+) -> Result<Result<vir::ExprBool<'vir>, String>, task_encoder::EncodeFullError<'vir, FunctionEnc>> {
     let sig = vcx
         .tcx()
         .fn_sig(def_id)
@@ -232,17 +234,15 @@ fn pointee_of_body<'vir>(
     let (addr, metadata) =
         crate::encoders::ty::use_pure::pointer_parts(deps, params, ptr_ty, snap.downcast_ty())?;
     let ret_ty = sig.output();
-    let ty::TyKind::Ref(_, pointee_ty, ty::Mutability::Not) = *ret_ty.kind() else {
+    if !matches!(ret_ty.kind(), ty::TyKind::Ref(_, _, ty::Mutability::Not)) {
         return Ok(Err("the return type must be a shared reference".to_string()));
-    };
-    let value = deps
-        .require_ref::<TyUsePureEnc>(RustTyDecomposition::from_ty(pointee_ty, params))?
-        .arbitrary_to_snap();
+    }
     let ret_use = deps.require_dep::<TyUsePureEnc>(RustTyDecomposition::from_ty(ret_ty, params))?;
-    Ok(Ok(ret_use
-        .expect_immref()
-        .prim_to_snap(addr, metadata, value)
-        .upcast_ty()))
+    let ret_data = ret_use.expect_immref();
+    Ok(Ok(vcx.mk_conj(&[
+        vcx.mk_eq_expr(ret_data.addr_access(result.downcast_ty()), addr),
+        vcx.mk_eq_expr(ret_data.metadata_access(result.downcast_ty()), metadata),
+    ])))
 }
 
 // Function wrapper
@@ -433,21 +433,34 @@ impl TaskEncoder for FunctionEnc {
             let spec =
                 deps.require_dep::<MirSpecEnc>((def_id, def_id, MirSpecEncMode::PureWithResult))?;
 
+            let mut address_post = None;
             let expr = if let Some(body_kind) = address_body(def_id) {
                 let arg = vcx.mk_local_ex(local_defs.local_decl_args().next().unwrap());
+                let result = vcx.mk_result(return_type);
                 let body = match &body_kind {
                     AddressBody::FieldProjection(path) => {
-                        field_projection_body(vcx, deps, def_id, params, path, arg)?
+                        field_projection_body(vcx, deps, def_id, params, path, arg)?.map(Some)
                     }
+                    // The referent's value is unspecified: only an
+                    // uninterpreted function of the argument.
                     AddressBody::ContainerOf(path, field) => {
-                        container_of_body(vcx, deps, def_id, params, path, field, arg)?
+                        container_of_post(vcx, deps, def_id, params, path, field, arg, result)?
+                            .map(|post| {
+                                address_post = Some(post);
+                                None
+                            })
                     }
                     AddressBody::PointeeOf(path) => {
-                        pointee_of_body(vcx, deps, def_id, params, path, arg)?
+                        pointee_of_post(vcx, deps, def_id, params, path, arg, result)?.map(
+                            |post| {
+                                address_post = Some(post);
+                                None
+                            },
+                        )
                     }
                 };
                 match body {
-                    Ok(expr) => Some(expr),
+                    Ok(expr) => expr,
                     Err(message) => {
                         vcx.emit_early_error(PrustiError::incorrect(
                             format!("invalid `#[{}]`: {message}", body_kind.attribute()),
@@ -529,6 +542,7 @@ impl TaskEncoder for FunctionEnc {
                     // that's checked in the method encoding of this function.
                     vcx.mk_inhale_exhale_expr(*post, vcx.mk_bool::<true>())
                 })
+                .chain(address_post)
                 .collect::<Vec<_>>();
             let func_args = local_defs.local_decl_args().collect::<Vec<_>>();
             let posts = vcx.alloc_slice(&posts);

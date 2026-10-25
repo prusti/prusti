@@ -121,11 +121,15 @@ impl TaskEncoder for TraitImplEnc {
                 // TODO: wands
                 // The referents of the arguments and their IM footprints, which
                 // the specifications read (as in the method's contract).
-                let wands = deps.require_dep::<crate::encoders::WandEnc>(
+                // Unsupported ones are reported by the method's encoding,
+                // whose refinement is then not checked.
+                let Ok(wands) = deps.require_dep::<crate::encoders::WandEnc>(
                     crate::encoders::WandEncTask {
                         data: pcg::borrow_pcg::FunctionData::new(impl_item_def_id),
                     },
-                )?;
+                ) else {
+                    continue;
+                };
                 impure_arg_preds.extend(wands.indirect_pres(vcx, &local_defs, deps));
                 let mut fp_args = Vec::new();
                 for arg in local_defs.args() {

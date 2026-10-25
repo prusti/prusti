@@ -4314,7 +4314,8 @@ fn has_drop_contract<'tcx>(
     let ty::TyKind::Adt(adt, args) = *ty.kind() else {
         return false;
     };
-    if seen.contains(&ty) {
+    // The contents of a `ManuallyDrop` or of a union are never dropped.
+    if adt.is_manually_drop() || adt.is_union() || seen.contains(&ty) {
         return false;
     }
     seen.push(ty);

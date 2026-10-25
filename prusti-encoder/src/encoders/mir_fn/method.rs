@@ -548,6 +548,16 @@ impl TaskEncoder for MethodEnc {
                     );
                     continue;
                 }
+                // Shared atoms cannot be consumed: they come back at their
+                // keys in the pre-state too, also where the referent of a
+                // mutable reference no longer reaches them (e.g. a `&Cell`
+                // field pointed elsewhere); one key is granted once.
+                fp_post.extend(
+                    entries
+                        .iter()
+                        .filter(|e| e.reached && e.shared)
+                        .map(|e| e.in_state(vir::OldLabel::None)),
+                );
                 let old_entries = crate::encoders::ty::im::footprint(
                     deps,
                     arg.ty,
