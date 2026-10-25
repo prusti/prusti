@@ -87,15 +87,28 @@ pub(crate) fn ptr_holds<'tcx>(
             Some((name, sub)) => (name.to_string(), Some(sub.to_string())),
             None => (path, None),
         };
-        let field_of = |adt: ty::AdtDef<'tcx>, name: &str| {
-            adt.non_enum_variant()
-                .fields
-                .iter_enumerated()
-                .find(|(_, f)| f.name.as_str() == name)
-                .map(|(idx, f)| (idx, f.did))
-                .unwrap_or_else(|| panic!("`#[ptr_holds]` names no field `{name}`"))
+        // A malformed annotation is reported, and the struct holds nothing.
+        let malformed = |message: String| {
+            vcx.emit_early_error(prusti_interface::PrustiError::incorrect(
+                format!("invalid `#[ptr_holds]`: {message}"),
+                vcx.tcx().def_span(did).into(),
+            ));
+            None
         };
-        let (idx, field) = field_of(vcx.tcx().adt_def(did), &name);
+        let field_of = |adt: ty::AdtDef<'tcx>, name: &str| {
+            adt.is_struct()
+                .then(|| {
+                    adt.non_enum_variant()
+                        .fields
+                        .iter_enumerated()
+                        .find(|(_, f)| f.name.as_str() == name)
+                        .map(|(idx, f)| (idx, f.did))
+                })
+                .flatten()
+        };
+        let Some((idx, field)) = field_of(vcx.tcx().adt_def(did), &name) else {
+            return malformed(format!("no field `{name}`"));
+        };
         let ptr_ty = vcx
             .tcx()
             .type_of(field)
@@ -110,15 +123,17 @@ pub(crate) fn ptr_holds<'tcx>(
             {
                 args.type_at(0)
             }
-            _ => panic!("`#[ptr_holds]` field `{name}` is not a raw pointer or a `NonNull`"),
+            _ => return malformed(format!("the field `{name}` is not a raw pointer or a `NonNull`")),
         };
         let Some(sub) = sub else {
             return Some((idx, None, pointee));
         };
         let ty::TyKind::Adt(pointee_adt, pointee_args) = *pointee.kind() else {
-            panic!("`#[ptr_holds]` pointee `{pointee}` is not a struct");
+            return malformed(format!("the pointee `{pointee}` is not a struct"));
         };
-        let (sub_idx, sub_field) = field_of(pointee_adt, &sub);
+        let Some((sub_idx, sub_field)) = field_of(pointee_adt, &sub) else {
+            return malformed(format!("the pointee `{pointee}` has no field `{sub}`"));
+        };
         let held = vcx
             .tcx()
             .type_of(sub_field)
@@ -150,9 +165,13 @@ pub(crate) fn im_amounts(did: DefId) -> Vec<(ImAmountKind, Option<abi::FieldIdx>
                 .iter_enumerated()
                 .find(|(_, f)| f.name.as_str() == name)
                 .map(|(idx, _)| idx)
-                .unwrap_or_else(|| {
-                    panic!("an interior-mutability annotation names no field `{name}`")
-                })
+        };
+        // A malformed annotation is reported and ignored.
+        let malformed = |message: String| {
+            vcx.emit_early_error(prusti_interface::PrustiError::incorrect(
+                format!("invalid interior-mutability annotation: {message}"),
+                vcx.tcx().def_span(did).into(),
+            ));
         };
         let mut out = Vec::new();
         for impl_did in vcx.tcx().inherent_impls(did) {
@@ -165,16 +184,26 @@ pub(crate) fn im_amounts(did: DefId) -> Vec<(ImAmountKind, Option<abi::FieldIdx>
                 };
                 let mut words = kind.split_whitespace();
                 let (kind, field) = match (words.next(), words.next()) {
-                    (Some("perm"), Some(f)) => (ImAmountKind::Perm, Some(field_idx(f))),
-                    (Some("dependent"), Some(f)) => (ImAmountKind::Dependent, Some(field_idx(f))),
-                    (Some("holds"), Some(f)) => (ImAmountKind::Holds, Some(field_idx(f))),
+                    (Some("perm"), Some(f)) => (ImAmountKind::Perm, Some(f)),
+                    (Some("dependent"), Some(f)) => (ImAmountKind::Dependent, Some(f)),
+                    (Some("holds"), Some(f)) => (ImAmountKind::Holds, Some(f)),
                     (Some("shares"), None) => (ImAmountKind::Shares { dependent: false }, None),
                     (Some("shares"), Some("dependent")) => {
                         (ImAmountKind::Shares { dependent: true }, None)
                     }
                     (Some("assume"), None) => (ImAmountKind::Assume, None),
                     (Some("shares_if"), None) => (ImAmountKind::SharesIf, None),
-                    _ => panic!("malformed interior-mutability annotation `{kind}`"),
+                    _ => {
+                        malformed(format!("`{kind}`"));
+                        continue;
+                    }
+                };
+                let field = match field.map(|name| (name, field_idx(name))) {
+                    Some((name, None)) => {
+                        malformed(format!("no field `{name}`"));
+                        continue;
+                    }
+                    field => field.and_then(|(_, idx)| idx),
                 };
                 out.push((kind, field, *item));
             }
@@ -1787,8 +1816,78 @@ pub(crate) fn nested_im<'tcx>(ty: ty::Ty<'tcx>, params: GParams<'tcx>) -> Option
             {
                 true
             }
+            ty::TyKind::Adt(adt, _) if unsupported_im_fields(adt.did(), *inner, params) => true,
             _ => reaches_im_array(RustTyDecomposition::from_ty(*inner, params)),
         })
+}
+
+/// Whether the struct `did` (as `ty`) has fields whose interior-mutable values
+/// the encoding cannot follow yet: those an `#[im_opaque]` struct's atom folds
+/// that are not inline at fixed addresses (e.g. inside an enum or a box), or
+/// those a `#[ptr_holds]` struct holds inline besides its pointer.
+fn unsupported_im_fields<'tcx>(did: DefId, ty: ty::Ty<'tcx>, params: GParams<'tcx>) -> bool {
+    fn fixed(ty: RustTyDecomposition<'_>) -> bool {
+        if ty.ty.im_opaque.is_some() || !reaches_concrete_im(ty) {
+            return true;
+        }
+        match &ty.ty.specifics {
+            TySpecifics::StructLike(data)
+                if ty.ty.special != crate::encoders::ty::RustTySpecial::Box
+                    && data.fields.iter().all(|f| {
+                        matches!(f.address, crate::encoders::ty::RustFieldAddress::Constant)
+                    }) =>
+            {
+                data.fields
+                    .iter()
+                    .all(|f| fixed(f.decompose_normalize(ty.args)))
+            }
+            _ => false,
+        }
+    }
+    fn inline(ty: RustTyDecomposition<'_>) -> bool {
+        if ty.ty.im_opaque.is_some() || ty.ty.im_annotated.is_some() {
+            return true;
+        }
+        match &ty.ty.specifics {
+            TySpecifics::StructLike(data)
+                if ty.ty.special != crate::encoders::ty::RustTySpecial::Box =>
+            {
+                data.fields
+                    .iter()
+                    .any(|f| inline(f.decompose_normalize(ty.args)))
+            }
+            TySpecifics::EnumLike(data) => data
+                .variants
+                .iter()
+                .flat_map(|variant| variant.inner.fields.iter())
+                .any(|f| inline(f.decompose_normalize(ty.args))),
+            _ => false,
+        }
+    }
+    let decomp = RustTyDecomposition::from_ty(ty, params);
+    let TySpecifics::StructLike(data) = &decomp.ty.specifics else {
+        return false;
+    };
+    // The struct's own fields (not the pointee a `#[ptr_holds]` adds).
+    let count = vir::with_vcx(|vcx| vcx.tcx().adt_def(did).non_enum_variant().fields.len());
+    let fields = || {
+        data.fields
+            .iter()
+            .take(count)
+            .enumerate()
+            .map(|(idx, f)| (abi::FieldIdx::from_usize(idx), f.decompose_normalize(decomp.args)))
+    };
+    if is_im_opaque(did) {
+        let annotated = im_amounts(did)
+            .into_iter()
+            .filter_map(|(_, field, _)| field)
+            .collect::<Vec<_>>();
+        return fields().any(|(idx, field)| !annotated.contains(&idx) && !fixed(field));
+    }
+    if let Some((ptr, _)) = ptr_holds_field(did) {
+        return fields().any(|(idx, field)| idx != ptr && inline(field));
+    }
+    false
 }
 
 /// Whether an unsize coercion from `src` to `dst` hides interior-mutable
