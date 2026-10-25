@@ -70,6 +70,9 @@ pub struct MirPureEncOutput<'vir> {
     /// Whether the body (or a spec closure in it) calls a `#[pure_unstable]`
     /// function, which reads deep values.
     pub calls_pure_unstable: bool,
+    /// Whether the body states a permission (`acc`, `im_atoms`; `true` in a
+    /// pure context).
+    pub states_permission: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -140,7 +143,7 @@ impl TaskEncoder for MirPureEnc {
         let (_, kind, def_id, gargs) = *task_key;
 
         tracing::debug!("encoding {def_id:?}");
-        let (inputs, expr, calls_pure_unstable) = vir::with_vcx(move |vcx| {
+        let (inputs, expr, calls_pure_unstable, states_permission) = vir::with_vcx(move |vcx| {
             // The bodies are encoded generically, so they are fetched at the
             // compiler's identity arguments. The one exception is a trait's
             // specification encoded for an `impl` of that trait, which is
@@ -193,6 +196,7 @@ impl TaskEncoder for MirPureEnc {
                 .collect::<Vec<_>>();
             let inputs_expected = inputs.len();
             let calls_pure_unstable = enc.calls_pure_unstable;
+            let states_permission = enc.states_permission;
 
             // We wrap the expression with an additional lazy that will perform
             // some sanity checks. These requirements cannot be expressed using
@@ -228,7 +232,7 @@ impl TaskEncoder for MirPureEnc {
                 )
             });
             add_debug_note!(expr.debug_info, "Inner expr: {}", expr_inner.debug_info);
-            Ok((inputs, expr, calls_pure_unstable))
+            Ok((inputs, expr, calls_pure_unstable, states_permission))
         })?;
         tracing::debug!("finished {def_id:?}");
 
@@ -238,6 +242,7 @@ impl TaskEncoder for MirPureEnc {
                 inputs,
                 expr,
                 calls_pure_unstable,
+                states_permission,
             },
         ))
     }
@@ -327,7 +332,9 @@ struct Enc<'vir: 'enc, 'enc> {
     before_expiry_mode: bool,
     impure_context: bool,
     spec_closure: bool,
+    pure_fn_body: bool,
     calls_pure_unstable: bool,
+    states_permission: bool,
 }
 
 struct EncodedPlace<'vir> {
@@ -441,7 +448,9 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                 } | PureKind::SpecBlock(..)
             ),
             spec_closure: kind == PureKind::Closure,
+            pure_fn_body: kind == PureKind::Pure,
             calls_pure_unstable: false,
+            states_permission: false,
         }
     }
 
@@ -1277,7 +1286,14 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                     }
                     // The address is the pointer's (e.g. `&raw const (*p).f`);
                     // the value is read from the heap, where a specification
-                    // holds the permission (`acc`).
+                    // holds the permission (`acc`). A pure function's `f_`
+                    // holds none.
+                    TyKind::RawPtr(..) if self.pure_fn_body => {
+                        return Err(self.unsupported_rvalue(
+                            "dereferencing a raw pointer in a `#[pure]` function".to_string(),
+                            self.current_span(),
+                        ));
+                    }
                     TyKind::RawPtr(pointee, _) => {
                         let e_ty = e_ty.expect_raw();
                         let snap = encoded_place.snap.downcast_ty();
@@ -1608,13 +1624,13 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                 };
                 mk_bool(res)
             }
-            // A permission at the pointer's address: only meaningful as the
-            // whole of a pre- or postcondition (an assertion, not a value).
-            // Spec closures (quantifier bodies) are not whole clauses.
+            // A permission at the pointer's address: only meaningful in a
+            // pre- or postcondition (an assertion, not a value). Spec
+            // closures (quantifier bodies, spec blocks) are not.
             SpecBuiltin::Acc | SpecBuiltin::ImAtoms if self.spec_closure => {
                 return Err(self.unsupported_rvalue(
-                    "`acc` and `im_atoms` must be a whole pre- or postcondition, not inside \
-                     a quantifier"
+                    "`acc` and `im_atoms` are only supported in pre- and postconditions, not \
+                     in quantifiers, assertions or loop invariants"
                         .to_string(),
                     args[0].span,
                 ));
@@ -1622,9 +1638,11 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
             // Pure contexts (trait axioms, functions' contracts) state values
             // only; the methods' contracts hold the permission.
             SpecBuiltin::Acc | SpecBuiltin::ImAtoms if !self.impure_context => {
+                self.states_permission = true;
                 mk_bool(self.vcx.mk_bool::<true>().lift())
             }
             SpecBuiltin::Acc | SpecBuiltin::ImAtoms => {
+                self.states_permission = true;
                 let pointee = arg_tys[0].expect_ty();
                 let encoded_args = args
                     .iter()

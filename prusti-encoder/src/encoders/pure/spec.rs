@@ -405,8 +405,11 @@ impl TaskEncoder for MirSpecEnc {
                     let expr = spec.expr.downcast_ty::<vir::Bool>();
                     let span = vcx.tcx().def_span(*spec_def_id);
                     // Calls through the pure modes' contract (the trait stub)
-                    // cannot establish such a precondition.
-                    if !keep_spec(&spec, span) {
+                    // cannot establish such a precondition, nor one stating a
+                    // permission.
+                    if !keep_spec(&spec, span)
+                        || (enc_mode != MirSpecEncMode::Impure && spec.states_permission)
+                    {
                         return Some((vcx.mk_bool::<false>(), span));
                     }
                     // Reify *inside* the span scope: the nodes created by the
@@ -419,6 +422,10 @@ impl TaskEncoder for MirSpecEnc {
                             (*spec_def_id, pre_args, vir::OldLabel::None, pre_addrs),
                         )
                     });
+                    if spec.states_permission && !permissions_positive(expr.as_dyn(), &[]) {
+                        vcx.emit_early_error(misplaced_permission(span));
+                        return Some((vcx.mk_bool::<false>(), span));
+                    }
                     Some((expr, span))
                 })
                 .collect();
@@ -487,12 +494,29 @@ impl TaskEncoder for MirSpecEnc {
                                 span.into(),
                             )])
                         });
+                        if spec.states_permission {
+                            // A permission the body does not give back (`acc`).
+                            vcx.handle_error(
+                                "postcondition.violated:insufficient.permission",
+                                move |_| {
+                                    Some(vec![PrustiError::verification(
+                                        "the permission this postcondition states might not be \
+                                         held at the end of the function",
+                                        span.into(),
+                                    )])
+                                },
+                            );
+                        }
                         handle_spec_permission_errors(vcx, span);
                         let expr = spec.expr.downcast_ty::<vir::Bool>();
                         let expr = expr.reify(
                             vcx,
                             (*spec_def_id, post_args, vir::OldLabel::None, post_addrs),
                         );
+                        if spec.states_permission && !permissions_positive(expr.as_dyn(), &[]) {
+                            vcx.emit_early_error(misplaced_permission(span));
+                            return None;
+                        }
                         let expr = expr.realloc_span();
                         Some((expr, span))
                     })
@@ -584,6 +608,68 @@ impl MirSpecEnc {
             ))
         })
         .ok()
+    }
+}
+
+fn misplaced_permission(span: Span) -> PrustiError {
+    PrustiError::incorrect(
+        "`acc` and `im_atoms` may only be conjuncts of a pre- or postcondition (not under a \
+         negation, a disjunction or a condition)",
+        span.into(),
+    )
+}
+
+/// Whether `expr` states a permission: a predicate or field access (outside
+/// an `unfolding`'s target), or a let-bound variable in `perms` bound to
+/// one.
+fn has_permission(expr: vir::ExprGenDyn<'_, (), !>, perms: &[&str]) -> bool {
+    use vir::{Visitable, Visitor};
+    struct Finds<'a>(bool, &'a [&'a str]);
+    impl<'vir> Visitor<'vir, (), !> for Finds<'_> {
+        fn visit_expr(&mut self, e: vir::ExprGenDyn<'vir, (), !>) {
+            match e.kind {
+                vir::ExprKindGenData::PredicateApp(_) | vir::ExprKindGenData::AccField(_) => {
+                    self.0 = true
+                }
+                vir::ExprKindGenData::Local(local) if self.1.contains(&local.name) => {
+                    self.0 = true
+                }
+                vir::ExprKindGenData::Unfolding(unfolding) => unfolding.expr.visit_with(self),
+                _ => e.super_visit_with(self),
+            }
+        }
+    }
+    let mut finds = Finds(false, perms);
+    expr.visit_with(&mut finds);
+    finds.0
+}
+
+/// Whether the permissions `expr` states (`acc`, `im_atoms`) are only in
+/// positive positions: conjuncts, the right of an implication, the branches
+/// of a conditional, and the values and bodies of let-bindings (a variable
+/// bound to a permission, in `perms`, counts as one).
+fn permissions_positive<'vir>(expr: vir::ExprGenDyn<'vir, (), !>, perms: &[&'vir str]) -> bool {
+    match expr.kind {
+        vir::ExprKindGenData::PredicateApp(_) | vir::ExprKindGenData::AccField(_) => true,
+        vir::ExprKindGenData::Local(local) if perms.contains(&local.name) => true,
+        vir::ExprKindGenData::BinOp(op) if op.kind == vir::BinOpKind::And => {
+            permissions_positive(op.lhs, perms) && permissions_positive(op.rhs, perms)
+        }
+        vir::ExprKindGenData::BinOp(op) if op.kind == vir::BinOpKind::Implies => {
+            !has_permission(op.lhs, perms) && permissions_positive(op.rhs, perms)
+        }
+        vir::ExprKindGenData::Let(binding) if has_permission(binding.val, perms) => {
+            let mut inner = perms.to_vec();
+            inner.push(binding.name);
+            permissions_positive(binding.val, perms) && permissions_positive(binding.expr, &inner)
+        }
+        vir::ExprKindGenData::Let(binding) => permissions_positive(binding.expr, perms),
+        vir::ExprKindGenData::Ternary(ternary) => {
+            !has_permission(ternary.cond.as_dyn(), perms)
+                && permissions_positive(ternary.then, perms)
+                && permissions_positive(ternary.else_, perms)
+        }
+        _ => !has_permission(expr, perms),
     }
 }
 

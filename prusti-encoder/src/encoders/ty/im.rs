@@ -1674,7 +1674,10 @@ fn reaches_im_array(ty: RustTyDecomposition<'_>) -> bool {
         }
         seen.push(ty);
         match &ty.ty.specifics {
-            TySpecifics::ArrayLike(data) => reaches_im(data.data.decompose_normalize(ty.args)),
+            TySpecifics::ArrayLike(data) => {
+                let elem = data.data.decompose_normalize(ty.args);
+                reaches_im(elem) || go(elem, seen)
+            }
             TySpecifics::StructLike(data) => data
                 .fields
                 .iter()
