@@ -719,6 +719,26 @@ impl<'vir> TyUsePureEnum<'vir> {
     }
 }
 
+/// Whether `ty` is a pointer as [`pointer_parts`] takes it.
+pub(crate) fn is_pointer(mut ty: ty::Ty<'_>) -> bool {
+    loop {
+        match *ty.kind() {
+            ty::TyKind::RawPtr(..) => return true,
+            ty::TyKind::Pat(base, _) => ty = base,
+            ty::TyKind::Adt(adt, substs)
+                if adt.is_struct() && !adt.non_enum_variant().fields.is_empty() =>
+            {
+                ty = vir::with_vcx(|vcx| {
+                    adt.non_enum_variant().fields[abi::FieldIdx::ZERO]
+                        .ty(vcx.tcx(), substs)
+                        .skip_normalization()
+                });
+            }
+            _ => return false,
+        }
+    }
+}
+
 /// The address and metadata of a pointer of type `ty` (a raw pointer, or
 /// structs around one in their first field, as `NonNull`) with snapshot
 /// `snap`.

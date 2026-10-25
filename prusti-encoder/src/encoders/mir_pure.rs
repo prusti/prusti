@@ -967,6 +967,16 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                     if let Some(intrinsic) = intrinsic {
                         self.encode_intrinsic(intrinsic, arg_tys, args, &new_curr_ver)
                     } else if let Some(builtin) = PrustiBuiltin::new(def_id, self.gargs(arg_tys)) {
+                        // Comparing snapshots reads the contents of the
+                        // interior-mutable values they reach.
+                        if matches!(builtin, PrustiBuiltin::SnapEq | PrustiBuiltin::SnapNe) {
+                            self.reads_im |= args.iter().any(|arg| {
+                                crate::encoders::ty::im::reaches_im(RustTyDecomposition::from_ty(
+                                    arg.node.ty(self.body, self.vcx.tcx()),
+                                    self.context,
+                                ))
+                            });
+                        }
                         match self.encode_prusti_builtin(
                             builtin,
                             def_id,

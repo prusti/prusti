@@ -154,6 +154,9 @@ fn container_of_post<'vir>(
     let ty::TyKind::Adt(adt, _) = *container_ty.kind() else {
         return Ok(Err(format!("`{container_ty}` is not a struct")));
     };
+    if !adt.is_struct() {
+        return Ok(Err(format!("`{container_ty}` is not a struct")));
+    }
     let Some((idx, _)) = adt
         .non_enum_variant()
         .fields
@@ -231,6 +234,9 @@ fn pointee_of_post<'vir>(
         Ok(projected) => projected,
         Err(message) => return Ok(Err(message)),
     };
+    if !crate::encoders::ty::use_pure::is_pointer(ptr_ty) {
+        return Ok(Err(format!("the field path ends at `{ptr_ty}`, not a pointer")));
+    }
     let (addr, metadata) =
         crate::encoders::ty::use_pure::pointer_parts(deps, params, ptr_ty, snap.downcast_ty())?;
     let ret_ty = sig.output();
@@ -330,8 +336,13 @@ impl TaskEncoder for FunctionCallEnc {
             })
             .collect::<Result<Vec<_>, _>>()?;
         // A field projection, container or pointee is an address computation:
-        // it needs the address of its reference argument.
-        let keeps_addresses = address_body(callee_def_id).is_some();
+        // it needs the address of its reference argument. So does a result
+        // that reaches interior-mutable values (e.g. a `&Cell` into an
+        // argument), whose atoms are keyed by their addresses.
+        let keeps_addresses = address_body(callee_def_id).is_some()
+            || crate::encoders::ty::im::reaches_im(
+                signature.output.decompose_normalize(task_key.gargs),
+            );
         Ok((
             (),
             FunctionCallEncOutput {

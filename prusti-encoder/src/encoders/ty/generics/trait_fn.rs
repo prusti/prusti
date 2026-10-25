@@ -337,22 +337,26 @@ impl TaskEncoder for TraitFnEnc {
                     item_generics.ty_exprs(),
                     item_generics.const_exprs(),
                 ));
-                // TODO: mutable arguments should also have a post-state
-                stub_posts.push(post_func.call()(
-                    local_defs.ret().impure_snap,
-                    vcx.alloc_slice(
-                        &local_defs
-                            .args()
-                            .map(|arg| vcx.mk_old_expr(arg.impure_snap))
-                            .collect::<Vec<_>>(),
-                    ),
-                    item_generics.ty_exprs(),
-                    item_generics.const_exprs(),
-                ));
-
                 // The result of a pure trait method is tied to the pure stub
                 // by the caller, on the deep values of the arguments (see the
-                // call encoding in `ImpureEncVisitor`).
+                // call encoding in `ImpureEncVisitor`): the stub's
+                // postcondition holds there. Stated here, on the shallow
+                // values, it would not hold for the interior-mutable contents
+                // pure functions see.
+                // TODO: mutable arguments should also have a post-state
+                if !(is_pure && crate::encoders::pure_sees_deep(def_id)) {
+                    stub_posts.push(post_func.call()(
+                        local_defs.ret().impure_snap,
+                        vcx.alloc_slice(
+                            &local_defs
+                                .args()
+                                .map(|arg| vcx.mk_old_expr(arg.impure_snap))
+                                .collect::<Vec<_>>(),
+                        ),
+                        item_generics.ty_exprs(),
+                        item_generics.const_exprs(),
+                    ));
+                }
 
                 methods.push(vcx.mk_method(
                     call_stub_impure,

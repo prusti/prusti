@@ -3971,11 +3971,44 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                                 .into_iter()
                                 .map(|arg| self.vcx.mk_old(arg, before))
                                 .collect();
-                            let (_, result, _, _) =
+                            let dest_ty = destination.ty(self.local_decls, self.vcx.tcx()).ty;
+                            let dest_ty = RustTyDecomposition::from_ty(dest_ty, self.def_id);
+                            let (result, snap, _, _) =
                                 self.encode_place_with_snap(Place::from(*destination))?;
-                            self.stmt(self.vcx.mk_inhale_stmt(
-                                self.vcx.mk_eq_expr(result, pure_func.call_pure(deep_args)),
-                            ));
+                            // The result's own atoms are new. Those it reaches
+                            // through references are at addresses the stub
+                            // does not determine (not supported yet).
+                            let (reached, owned): (Vec<_>, Vec<_>) =
+                                crate::encoders::ty::im::footprint(
+                                    self.deps,
+                                    dest_ty,
+                                    result.expr.address,
+                                    snap,
+                                )?
+                                .into_iter()
+                                .partition(|entry| entry.reached);
+                            if !owned.is_empty() {
+                                self.stmt(self.vcx.mk_inhale_stmt(
+                                    crate::encoders::ty::im::footprint_assertion(&owned),
+                                ));
+                            }
+                            if reached.is_empty() {
+                                let deep = crate::encoders::ty::im::deep_snap(
+                                    self.deps,
+                                    dest_ty,
+                                    result.expr.address,
+                                    snap,
+                                )?;
+                                self.stmt(self.vcx.mk_inhale_stmt(
+                                    self.vcx.mk_eq_expr(deep, pure_func.call_pure(deep_args)),
+                                ));
+                            } else {
+                                self.vcx.emit_early_error(PrustiError::unsupported(
+                                    "a pure trait method called through its trait, whose result \
+                                     refers to interior-mutable values",
+                                    span.into(),
+                                ));
+                            }
                         }
                         if !stub_call {
                             self.im_generic_returned(
