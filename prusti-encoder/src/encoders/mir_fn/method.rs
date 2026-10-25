@@ -230,6 +230,36 @@ impl TaskEncoder for MethodEnc {
                     span.into(),
                 ));
             }
+            // Nor are interior-mutable values behind trait objects.
+            if let Some(body) = crate::encoders::impure_body_with_facts(def_id) {
+                let body = &body.body;
+                for data in body.basic_blocks.iter() {
+                    for stmt in &data.statements {
+                        if let mir::StatementKind::Assign(box (
+                            _,
+                            mir::Rvalue::Cast(
+                                mir::CastKind::PointerCoercion(
+                                    prusti_rustc_interface::middle::ty::adjustment::PointerCoercion::Unsize,
+                                    _,
+                                ),
+                                operand,
+                                target,
+                            ),
+                        )) = &stmt.kind
+                            && crate::encoders::ty::im::hides_im(
+                                operand.ty(body, vcx.tcx()),
+                                *target,
+                                params,
+                            )
+                        {
+                            vcx.emit_early_error(PrustiError::unsupported(
+                                format!("interior-mutable values behind the trait object `{target}`"),
+                                stmt.source_info.span.into(),
+                            ));
+                        }
+                    }
+                }
+            }
             let function_data = FunctionData::new(def_id);
             let wands = deps
                 .require_dep_spanned::<WandEnc>(

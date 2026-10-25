@@ -146,6 +146,7 @@ pub fn test_entrypoint<'tcx>(
 
     program.header("interior mutability");
     encoders::ty::im::ImUnsetEnc::emit_outputs(&mut program);
+    encoders::ty::im::ParamImEnc::emit_outputs(&mut program);
     encoders::ty::im::ImOpaqueEnc::emit_outputs(&mut program);
     encoders::ty::im::DeepFnEnc::emit_outputs(&mut program);
     encoders::ty::im::ContainerOfEnc::emit_outputs(&mut program);

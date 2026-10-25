@@ -43,6 +43,10 @@ pub struct GParams<'tcx> {
     is_trait_extern_spec: bool,
     /// A suffix to disambiguate generic parameters of different contexts
     suffix: Option<&'static str>,
+    /// The parameters are those of an item of the interior-mutability
+    /// library, i.e. the contents of interior-mutable values, which reach no
+    /// interior-mutable value themselves (see `im::is_im_library`).
+    im_contents: bool,
 }
 
 impl<'tcx> GParams<'tcx> {
@@ -56,7 +60,19 @@ impl<'tcx> GParams<'tcx> {
             env,
             is_trait_extern_spec,
             suffix: None,
+            im_contents: false,
         }
+    }
+
+    pub fn with_im_contents(self, im_contents: bool) -> Self {
+        GParams {
+            im_contents,
+            ..self
+        }
+    }
+
+    pub fn im_contents(self) -> bool {
+        self.im_contents
     }
 
     /// Gets the generic params for a given def_id. Additionally if this is a
@@ -68,6 +84,7 @@ impl<'tcx> GParams<'tcx> {
             let env = vcx.tcx().param_env(def_id);
             let is_trait_extern_spec = matches!(kind, Some(ExternSpecKind::Trait));
             Self::new(params, env, is_trait_extern_spec)
+                .with_im_contents(crate::encoders::ty::im::is_im_library(def_id))
         })
     }
 

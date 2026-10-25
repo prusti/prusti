@@ -799,6 +799,333 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         Ok(Some((ty, addr)))
     }
 
+    /// The values of `callee`'s type parameters in the arguments of a call,
+    /// passed at `refs` (see [`crate::encoders::ty::im::generic_positions`]).
+    fn call_arg_generic_positions(
+        &mut self,
+        callee: DefId,
+        args: &[Spanned<mir::Operand<'vir>>],
+        refs: &[vir::ExprRef<'vir>],
+    ) -> EncodeResult<'vir, Vec<crate::encoders::ty::im::GenericPos<'vir>>, E> {
+        let mut out = Vec::new();
+        if !crate::encoders::ty::im::program_uses_im() || self.vcx.tcx().is_closure_like(callee)
+        {
+            return Ok(out);
+        }
+        let inputs = self
+            .vcx
+            .tcx()
+            .fn_sig(callee)
+            .instantiate_identity()
+            .skip_normalization()
+            .skip_binder()
+            .inputs();
+        for ((arg, declared), addr) in args.iter().zip(inputs.iter()).zip(refs) {
+            let ty = arg.node.ty(self.local_decls, self.vcx.tcx());
+            let snap = self.ty_use_impure(ty).ref_to_snap(*addr);
+            let ty = RustTyDecomposition::from_ty(ty, self.def_id);
+            crate::encoders::ty::im::generic_positions(
+                self.deps, *declared, ty, *addr, snap, false, false, &mut out,
+            )?;
+        }
+        out.retain(|pos| self.converts_generic(callee, pos));
+        Ok(out)
+    }
+
+    /// Whether the value at `pos` (for a call to `callee`) is converted to and
+    /// from its generic atom: if the callee takes generic atoms (it is no item
+    /// of the interior-mutability library, see `im::is_im_library`), unless
+    /// the caller passes on its own generic atom (a value of its own type
+    /// parameter, which it holds unless it is a library item itself).
+    fn converts_generic(&self, callee: DefId, pos: &crate::encoders::ty::im::GenericPos<'vir>) -> bool {
+        let callee_takes = !crate::encoders::ty::im::is_im_library(callee);
+        let caller_holds = !crate::encoders::ty::im::is_im_library(self.def_id);
+        callee_takes && !(pos.identity && caller_holds)
+    }
+
+    /// Whether `callee` gets bare generic tokens, keeping the concrete atoms
+    /// with the caller: `mem::drop` (the caller applies the drop contract of
+    /// the dropped value before the call) and `mem::forget` (a forgotten
+    /// value's effects stay as they are).
+    fn generic_token_only(&self, callee: DefId) -> bool {
+        [
+            prusti_rustc_interface::span::symbol::sym::mem_drop,
+            prusti_rustc_interface::span::symbol::sym::mem_forget,
+        ]
+        .into_iter()
+        .any(|item| self.vcx.tcx().is_diagnostic_item(item, callee))
+    }
+
+    /// The pure caster of the value at `pos`, between the caller's type and
+    /// `callee`'s type parameter.
+    fn generic_pos_caster(
+        &mut self,
+        callee: DefId,
+        substs: ty::GenericArgsRef<'vir>,
+        pos: &crate::encoders::ty::im::GenericPos<'vir>,
+    ) -> EncodeResult<'vir, crate::encoders::ty::generics::GArgCaster<'vir, crate::Pure>, E> {
+        let normalized = crate::encoders::ty::LazyRustTy::new(pos.param)
+            .decompose_compare_normalize(GParams::from(callee), GArgs::new(self.def_id, substs));
+        Ok(self
+            .deps
+            .require_dep::<crate::GArgsCastEnc<crate::Pure>>(normalized)?)
+    }
+
+    /// Converts the concrete atoms of the values at `positions` (for a call
+    /// to `callee`) into their generic atoms, which the callee takes, keeping
+    /// their deep values.
+    fn im_to_generic(
+        &mut self,
+        callee: DefId,
+        substs: ty::GenericArgsRef<'vir>,
+        positions: &[crate::encoders::ty::im::GenericPos<'vir>],
+    ) -> EncodeResult<'vir, (), E> {
+        if positions.is_empty() {
+            return Ok(());
+        }
+        let vcx = self.vcx;
+        let token_only = self.generic_token_only(callee);
+        let before = vir::OldLabel::Label(self.new_label("im_generic"));
+        let conditional = |condition: Option<vir::ExprBool<'vir>>, expr: vir::ExprBool<'vir>| {
+            match condition {
+                Some(condition) => vcx
+                    .mk_bin_op_expr(vir::BinOpKind::Implies, condition, expr)
+                    .downcast_ty(),
+                None => expr,
+            }
+        };
+        let mut exhales = Vec::new();
+        let mut inhales = Vec::new();
+        for pos in positions {
+            let ty_expr = self
+                .deps
+                .require_dep::<crate::encoders::ty::generics::TyExprEnc>(pos.ty)?;
+            if token_only {
+                let acc = crate::encoders::ty::im::param_atom_acc(self.deps, pos.addr, ty_expr)?;
+                inhales.push(conditional(pos.condition, acc));
+                continue;
+            }
+            let entries = crate::encoders::ty::im::footprint(self.deps, pos.ty, pos.addr, pos.snap)?;
+            let deep = crate::encoders::ty::im::deep_snap(self.deps, pos.ty, pos.addr, pos.snap)?;
+            let caster = self.generic_pos_caster(callee, substs, pos)?;
+            for release in crate::encoders::ty::im::footprint_release(&entries) {
+                exhales.push(conditional(pos.condition, release));
+            }
+            let acc = crate::encoders::ty::im::param_atom_acc(self.deps, pos.addr, ty_expr)?;
+            let snap = crate::encoders::ty::im::param_atom_snap(
+                self.deps,
+                pos.addr,
+                caster.cast_to_callee_ctx(pos.snap),
+                ty_expr,
+            )?;
+            let same = vcx.mk_eq_expr(snap, caster.cast_to_callee_ctx(vcx.mk_old(deep, before)));
+            inhales.push(conditional(pos.condition, vcx.mk_conj(&[acc, same])));
+        }
+        for exhale in exhales {
+            self.stmt(vcx.mk_exhale_stmt(exhale));
+        }
+        for inhale in inhales {
+            self.stmt(vcx.mk_inhale_stmt(inhale));
+        }
+        Ok(())
+    }
+
+    /// Converts the generic atoms of the values at `positions` (returned by a
+    /// call to `callee`) back into their concrete atoms, keeping their deep
+    /// values.
+    fn im_from_generic(
+        &mut self,
+        callee: DefId,
+        substs: ty::GenericArgsRef<'vir>,
+        positions: &[crate::encoders::ty::im::GenericPos<'vir>],
+    ) -> EncodeResult<'vir, (), E> {
+        if positions.is_empty() {
+            return Ok(());
+        }
+        let vcx = self.vcx;
+        let conditional = |condition: Option<vir::ExprBool<'vir>>, expr: vir::ExprBool<'vir>| {
+            match condition {
+                Some(condition) => vcx
+                    .mk_bin_op_expr(vir::BinOpKind::Implies, condition, expr)
+                    .downcast_ty(),
+                None => expr,
+            }
+        };
+        let before = vir::OldLabel::Label(self.new_label("im_concrete"));
+        // Positions may alias (e.g. a shared reference the callee returns):
+        // a generic atom is exhaled once, the concrete ones are inhaled as
+        // one footprint (which grants each atom once).
+        let mut entries = Vec::new();
+        let mut relations = Vec::new();
+        for (idx, pos) in positions.iter().enumerate() {
+            let ty_expr = self
+                .deps
+                .require_dep::<crate::encoders::ty::generics::TyExprEnc>(pos.ty)?;
+            let caster = self.generic_pos_caster(callee, substs, pos)?;
+            let acc = crate::encoders::ty::im::param_atom_acc(self.deps, pos.addr, ty_expr)?;
+            let distinct = positions[..idx]
+                .iter()
+                .filter(|other| other.ty == pos.ty)
+                .map(|other| vcx.mk_bin_op_expr(vir::BinOpKind::CmpNe, pos.addr, other.addr))
+                .map(|ne| ne.downcast_ty())
+                .collect::<Vec<_>>();
+            let condition = match (pos.condition, distinct.is_empty()) {
+                (condition, true) => condition,
+                (Some(condition), false) => {
+                    Some(vcx.mk_conj(&[&[condition][..], &distinct].concat()))
+                }
+                (None, false) => Some(vcx.mk_conj(&distinct)),
+            };
+            self.stmt(vcx.mk_exhale_stmt(conditional(condition, acc)));
+            // A value without interior-mutable parts only drops its token.
+            if !crate::encoders::ty::im::reaches_im(pos.ty) {
+                continue;
+            }
+            let generic = crate::encoders::ty::im::param_atom_snap(
+                self.deps,
+                pos.addr,
+                caster.cast_to_callee_ctx(pos.snap),
+                ty_expr,
+            )?;
+            for entry in crate::encoders::ty::im::footprint(self.deps, pos.ty, pos.addr, pos.snap)? {
+                entries.push(entry.with_condition(pos.condition));
+            }
+            let deep = crate::encoders::ty::im::deep_snap(self.deps, pos.ty, pos.addr, pos.snap)?;
+            relations.push(conditional(
+                pos.condition,
+                vcx.mk_eq_expr(deep, caster.cast_to_caller_ctx(vcx.mk_old(generic, before))),
+            ));
+        }
+        if !entries.is_empty() || !relations.is_empty() {
+            let mut concrete = vec![crate::encoders::ty::im::footprint_assertion(&entries)];
+            concrete.extend(relations);
+            self.stmt(vcx.mk_inhale_stmt(vcx.mk_conj(&concrete)));
+        }
+        Ok(())
+    }
+
+    /// After a call to `callee`, converts back the generic atoms it returns:
+    /// those of the values of its type parameters reached through references
+    /// in the arguments (`args`, with expressions of the state `pre`), and
+    /// those in the result at `destination`.
+    #[allow(clippy::too_many_arguments)]
+    fn im_generic_returned(
+        &mut self,
+        callee: DefId,
+        substs: ty::GenericArgsRef<'vir>,
+        args: Vec<crate::encoders::ty::im::GenericPos<'vir>>,
+        pre: Option<vir::OldLabel<'vir>>,
+        destination: mir::Place<'vir>,
+        span: Span,
+    ) -> EncodeResult<'vir, (), E> {
+        if !crate::encoders::ty::im::program_uses_im() || self.vcx.tcx().is_closure_like(callee)
+        {
+            return Ok(());
+        }
+        let vcx = self.vcx;
+        let unsupported = |message: &str| {
+            vcx.emit_early_error(PrustiError::unsupported(
+                format!("interior-mutable values passed generically: {message}"),
+                span.into(),
+            ));
+        };
+        // The atoms a value passed by value reaches (e.g. those a guard
+        // shares) stay in their pool: they come back at their keys, with
+        // unknown contents.
+        if !self.generic_token_only(callee) {
+            let mut regranted = Vec::new();
+            for pos in args.iter().filter(|pos| !pos.reached) {
+                let pre = pre.unwrap();
+                let addr = vcx.mk_old(pos.addr, pre);
+                let snap = vcx.mk_old(pos.snap, pre);
+                let condition = pos.condition.map(|condition| vcx.mk_old(condition, pre));
+                for entry in crate::encoders::ty::im::footprint(self.deps, pos.ty, addr, snap)? {
+                    if entry.reached {
+                        regranted.push(entry.with_condition(condition));
+                    }
+                }
+            }
+            if !regranted.is_empty() {
+                self.stmt(vcx.mk_inhale_stmt(crate::encoders::ty::im::footprint_assertion(
+                    &regranted,
+                )));
+            }
+        }
+        let mut returned = Vec::new();
+        for pos in args.into_iter().filter(|pos| pos.reached) {
+            let pre = pre.unwrap();
+            if pos.mutable && pos.nested {
+                unsupported("inside the referent of a mutable reference");
+                continue;
+            }
+            let addr = vcx.mk_old(pos.addr, pre);
+            // The referent of a mutable reference is read anew.
+            let snap = match pos.reread_snap(self.deps, addr)? {
+                Some(snap) if pos.mutable => snap,
+                _ => vcx.mk_old(pos.snap, pre),
+            };
+            returned.push(crate::encoders::ty::im::GenericPos {
+                addr,
+                snap,
+                condition: pos.condition.map(|condition| vcx.mk_old(condition, pre)),
+                ..pos
+            });
+        }
+        let output = vcx
+            .tcx()
+            .fn_sig(callee)
+            .instantiate_identity()
+            .skip_normalization()
+            .skip_binder()
+            .output();
+        let dest_ty = destination.ty(self.local_decls, vcx.tcx()).ty;
+        let dest_ty = RustTyDecomposition::from_ty(dest_ty, self.def_id);
+        let (result, snap, _, _) = self.encode_place_with_snap(Place::from(destination))?;
+        let mut result_positions = Vec::new();
+        crate::encoders::ty::im::generic_positions(
+            self.deps,
+            output,
+            dest_ty,
+            result.expr.address,
+            snap,
+            false,
+            false,
+            &mut result_positions,
+        )?;
+        // A value of the caller's type parameter that a library item returns
+        // (the contents of an interior-mutable value, which reach none) gets
+        // its generic atom.
+        let (converted, granted): (Vec<_>, Vec<_>) = result_positions
+            .into_iter()
+            .partition(|pos| self.converts_generic(callee, pos));
+        result_positions = converted;
+        let caller_holds = !crate::encoders::ty::im::is_im_library(self.def_id);
+        for pos in granted.iter().filter(|pos| pos.identity && caller_holds) {
+            let ty_expr = self
+                .deps
+                .require_dep::<crate::encoders::ty::generics::TyExprEnc>(pos.ty)?;
+            let acc = crate::encoders::ty::im::param_atom_acc(self.deps, pos.addr, ty_expr)?;
+            let snap =
+                crate::encoders::ty::im::param_atom_snap(self.deps, pos.addr, pos.snap, ty_expr)?;
+            let granted = vcx.mk_conj(&[acc, vcx.mk_eq_expr(snap, pos.snap)]);
+            self.stmt(vcx.mk_inhale_stmt(match pos.condition {
+                Some(condition) => vcx
+                    .mk_bin_op_expr(vir::BinOpKind::Implies, condition, granted)
+                    .downcast_ty(),
+                None => granted,
+            }));
+        }
+        let borrows = output
+            .walk()
+            .any(|arg| arg.as_type().is_some_and(|ty| ty.is_ref()));
+        if borrows && returned.iter().any(|pos| pos.mutable) {
+            unsupported("in an argument the result may borrow from");
+            returned.retain(|pos| !pos.mutable);
+        }
+        returned.extend(result_positions);
+        self.im_from_generic(callee, substs, &returned)
+    }
+
     /// The path condition under which `edge` is valid; `None` if unconditional.
     fn edge_path_condition(&mut self, edge: &BorrowPcgEdge<'vir>) -> Option<vir::ExprBool<'vir>> {
         let conditions = edge.conditions();
@@ -3384,8 +3711,16 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                         // those reached through references and the result's,
                         // as the callee's own contract would state.
                         let stub_call = self.vcx.tcx().trait_of_assoc(func_def_id).is_some();
+                        // A pure one changes nothing; its result is that of
+                        // the pure stub on the deep values of the arguments,
+                        // as in specifications.
+                        let pure_stub = stub_call
+                            && crate::encoders::is_function_pure(
+                                func_def_id,
+                                GArgs::new(self.def_id, caller_substs),
+                            );
                         let mut stub_reached = Vec::new();
-                        if stub_call {
+                        if stub_call && !pure_stub {
                             let before = vir::OldLabel::Label(self.new_label("im_release"));
                             let mut entries = Vec::new();
                             for arg in args.iter() {
@@ -3423,6 +3758,31 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                             .iter()
                             .map(|arg| self.encode_operand(&arg.node).unwrap())
                             .collect::<Vec<_>>();
+
+                        // A callee taking values of its type parameters
+                        // generically takes their generic atoms.
+                        let generic_args = if stub_call {
+                            Vec::new()
+                        } else {
+                            self.call_arg_generic_positions(func_def_id, args, &method_in)?
+                        };
+                        let generic_pre = (!generic_args.is_empty())
+                            .then(|| vir::OldLabel::Label(self.new_label("generic_pre")));
+                        self.im_to_generic(func_def_id, caller_substs, &generic_args)?;
+                        let pure_stub_args = if pure_stub {
+                            let mut deep_args = Vec::new();
+                            for (arg, addr) in args.iter().zip(&method_in) {
+                                let ty = arg.node.ty(self.local_decls, self.vcx.tcx());
+                                let snap = self.ty_use_impure(ty).ref_to_snap(*addr);
+                                let ty = RustTyDecomposition::from_ty(ty, self.def_id);
+                                deep_args.push(crate::encoders::ty::im::deep_snap(
+                                    self.deps, ty, *addr, snap,
+                                )?);
+                            }
+                            Some((deep_args, vir::OldLabel::Label(self.new_label("pure_stub"))))
+                        } else {
+                            None
+                        };
 
                         let call = func_out.call(method_in, dest);
 
@@ -3489,7 +3849,31 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                                 self.stmt(self.vcx.mk_inhale_stmt(uninit));
                             }
                         }
-                        if stub_call {
+                        if let Some((deep_args, before)) = pure_stub_args {
+                            let pure_func = self.deps.require_dep::<crate::encoders::FunctionCallEnc>(
+                                CallTaskDescription::new(self.def_id, caller_substs, func_def_id),
+                            )?;
+                            let deep_args = deep_args
+                                .into_iter()
+                                .map(|arg| self.vcx.mk_old(arg, before))
+                                .collect();
+                            let (_, result, _, _) =
+                                self.encode_place_with_snap(Place::from(*destination))?;
+                            self.stmt(self.vcx.mk_inhale_stmt(
+                                self.vcx.mk_eq_expr(result, pure_func.call_pure(deep_args)),
+                            ));
+                        }
+                        if !stub_call {
+                            self.im_generic_returned(
+                                func_def_id,
+                                caller_substs,
+                                generic_args,
+                                generic_pre,
+                                *destination,
+                                span,
+                            )?;
+                        }
+                        if stub_call && !pure_stub {
                             let mut returned = stub_reached.clone();
                             let dest_ty = destination.ty(self.local_decls, self.vcx.tcx()).ty;
                             let dest_ty = RustTyDecomposition::from_ty(dest_ty, self.def_id);

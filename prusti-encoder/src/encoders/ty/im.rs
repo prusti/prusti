@@ -685,6 +685,20 @@ impl<'vir> FpEntry<'vir> {
         })
     }
 
+    /// The entry, reached only where `condition` holds as well.
+    pub(crate) fn with_condition(self, condition: Option<vir::ExprBool<'vir>>) -> Self {
+        let Some(condition) = condition else {
+            return self;
+        };
+        Self {
+            condition: Some(match self.condition {
+                Some(inner) => vir::with_vcx(|vcx| vcx.mk_conj(&[condition, inner])),
+                None => condition,
+            }),
+            ..self
+        }
+    }
+
     /// The permission to the atom.
     pub(crate) fn acc(&self) -> vir::ExprBool<'vir> {
         vir::with_vcx(|vcx| vcx.mk_predicate_app_expr(self.app(self.amount())))
@@ -699,6 +713,11 @@ impl<'vir> FpEntry<'vir> {
     ) -> Result<Vec<vir::ExprSnap<'vir>>, EncodeFullError<'vir, E>> {
         if self.amount.is_some() {
             return Ok(Vec::new());
+        }
+        // A generic atom's contents are its deep value.
+        if let TySpecifics::Param(_) = self.ty.ty.specifics {
+            let param = deps.require_dep::<ParamImEnc>(())?;
+            return Ok(vec![param.snap.call()(self.addr, self.snap, self.tys[0])]);
         }
         let did = self.ty.ty.im_opaque.unwrap();
         let vcx = vir::with_vcx(|vcx| vcx);
@@ -948,6 +967,23 @@ fn footprint_into<'vir, E: TaskEncoder>(
         return Ok(());
     }
     match &ty.ty.specifics {
+        // The generic atom of the value.
+        TySpecifics::Param(_) if param_reaches_im(ty) => {
+            let param = deps.require_dep::<ParamImEnc>(())?;
+            let ty_expr = deps.require_dep::<crate::encoders::ty::generics::TyExprEnc>(ty)?;
+            out.push(FpEntry {
+                ty,
+                atom: param.atom,
+                addr,
+                snap,
+                tys: vir::with_vcx(|vcx| vcx.alloc_slice(&[ty_expr])),
+                consts: &[],
+                amount: None,
+                reached,
+                shared,
+                condition: None,
+            });
+        }
         TySpecifics::StructLike(data)
             if data
                 .fields
@@ -1543,6 +1579,12 @@ fn deep_with<'vir, E: TaskEncoder>(
     }
     let shared = shared_target(deps, ty, addr, snap)?;
     match &ty.ty.specifics {
+        // Read through the value's generic atom.
+        TySpecifics::Param(_) => {
+            let param = deps.require_dep::<ParamImEnc>(())?;
+            let ty_expr = deps.require_dep::<crate::encoders::ty::generics::TyExprEnc>(ty)?;
+            Ok(param.snap.call()(addr, snap, ty_expr))
+        }
         TySpecifics::StructLike(data) if !data.fields.is_empty() => {
             let ty_use = deps.require_dep::<TyUsePureEnc>(ty)?;
             let variant = ty_use.expect_variant_opt(None);
@@ -1655,14 +1697,24 @@ pub(crate) fn nested_im<'tcx>(ty: ty::Ty<'tcx>, params: GParams<'tcx>) -> Option
         .find(|inner| match *inner.kind() {
             ty::TyKind::Adt(adt, args)
                 if (is_im_opaque(adt.did()) || is_im_sharer(adt.did()))
-                    && args
-                        .types()
-                        .any(|arg| reaches_im(RustTyDecomposition::from_ty(arg, params))) =>
+                    && args.types().any(|arg| {
+                        reaches_concrete_im(RustTyDecomposition::from_ty(arg, params))
+                    }) =>
             {
                 true
             }
             _ => reaches_im_array(RustTyDecomposition::from_ty(*inner, params)),
         })
+}
+
+/// Whether an unsize coercion from `src` to `dst` hides interior-mutable
+/// values behind a trait object, whose footprint the encoding cannot follow
+/// (not supported yet).
+pub(crate) fn hides_im<'tcx>(src: ty::Ty<'tcx>, dst: ty::Ty<'tcx>, params: GParams<'tcx>) -> bool {
+    dst.walk()
+        .filter_map(|arg| arg.as_type())
+        .any(|ty| matches!(ty.kind(), ty::TyKind::Dynamic(..)))
+        && reaches_im(RustTyDecomposition::from_ty(src, params))
 }
 
 /// Whether a value of `ty` holds, inline or behind references, an array or
@@ -1676,7 +1728,7 @@ fn reaches_im_array(ty: RustTyDecomposition<'_>) -> bool {
         match &ty.ty.specifics {
             TySpecifics::ArrayLike(data) => {
                 let elem = data.data.decompose_normalize(ty.args);
-                reaches_im(elem) || go(elem, seen)
+                reaches_concrete_im(elem) || go(elem, seen)
             }
             TySpecifics::StructLike(data) => data
                 .fields
@@ -1697,9 +1749,24 @@ fn reaches_im_array(ty: RustTyDecomposition<'_>) -> bool {
 }
 
 /// Whether a value of `ty` reaches an `#[im_opaque]` value, i.e. whether its
-/// deep snapshot differs from its shallow one.
+/// deep snapshot differs from its shallow one. A value of a type parameter
+/// may, if the crate uses interior mutability at all.
 pub(crate) fn reaches_im(ty: RustTyDecomposition<'_>) -> bool {
-    fn go<'tcx>(ty: RustTyDecomposition<'tcx>, seen: &mut Vec<RustTyDecomposition<'tcx>>) -> bool {
+    reaches_im_with(ty, program_uses_im())
+}
+
+/// Whether a value of `ty` reaches an `#[im_opaque]` value whatever its type
+/// parameters are instantiated with.
+fn reaches_concrete_im(ty: RustTyDecomposition<'_>) -> bool {
+    reaches_im_with(ty, false)
+}
+
+fn reaches_im_with(ty: RustTyDecomposition<'_>, params: bool) -> bool {
+    fn go<'tcx>(
+        ty: RustTyDecomposition<'tcx>,
+        params: bool,
+        seen: &mut Vec<RustTyDecomposition<'tcx>>,
+    ) -> bool {
         if ty.ty.im_opaque.is_some() || ty.ty.im_annotated.is_some() {
             return true;
         }
@@ -1708,22 +1775,23 @@ pub(crate) fn reaches_im(ty: RustTyDecomposition<'_>) -> bool {
         }
         seen.push(ty);
         match &ty.ty.specifics {
+            TySpecifics::Param(_) => params && param_reaches_im(ty),
             TySpecifics::StructLike(data) => data
                 .fields
                 .iter()
-                .any(|f| go(f.decompose_normalize(ty.args), seen)),
+                .any(|f| go(f.decompose_normalize(ty.args), params, seen)),
             TySpecifics::ImmRef(data) | TySpecifics::MutRef(data) => {
-                go(data.referent.decompose_normalize(ty.args), seen)
+                go(data.referent.decompose_normalize(ty.args), params, seen)
             }
             TySpecifics::EnumLike(data) => data
                 .variants
                 .iter()
                 .flat_map(|variant| variant.inner.fields.iter())
-                .any(|f| go(f.decompose_normalize(ty.args), seen)),
+                .any(|f| go(f.decompose_normalize(ty.args), params, seen)),
             _ => false,
         }
     }
-    go(ty, &mut Vec::new())
+    go(ty, params, &mut Vec::new())
 }
 
 /// The deep snapshot of a value of the `#[im_opaque]` or `#[im_shares]`
@@ -1905,6 +1973,405 @@ impl TaskEncoder for ContainerOfEnc {
             program.add_domain(domain);
         }
     }
+}
+
+/// Whether the crate's bodies mention an interior-mutable type. Only then can
+/// a type parameter be instantiated with one, and generic code holds the
+/// footprints of the values of its type parameters (see [`ParamImEnc`]).
+pub(crate) fn program_uses_im() -> bool {
+    thread_local! {
+        static USES_IM: std::cell::LazyCell<bool> = std::cell::LazyCell::new(|| {
+            vir::with_vcx(|vcx| {
+                let tcx = vcx.tcx();
+                tcx.hir_body_owners().any(|owner| {
+                    tcx.typeck(owner)
+                        .node_types()
+                        .items_in_stable_order()
+                        .into_iter()
+                        .any(|(_, ty)| {
+                            ty.walk().filter_map(|arg| arg.as_type()).any(|inner| {
+                                matches!(*inner.kind(), ty::TyKind::Adt(adt, _)
+                                    if is_im_opaque(adt.did()) || is_im_sharer(adt.did()))
+                            })
+                        })
+                })
+            })
+        });
+    }
+    USES_IM.with(|uses| **uses)
+}
+
+/// Whether `def_id` belongs to the interior-mutability library, whose type
+/// parameters are the contents of interior-mutable values (which reach none
+/// themselves, see `nested_im`): an interior-mutable type, a method of an
+/// impl for one, or a function all of whose type parameters occur only in
+/// the arguments of interior-mutable types in its inputs (e.g.
+/// `refcell_value<T>(c: &RefCell<T>)`).
+pub(crate) fn is_im_library(def_id: DefId) -> bool {
+    vir::with_vcx(|vcx| {
+        let tcx = vcx.tcx();
+        let def_id = tcx.typeck_root_def_id(def_id);
+        let im_adt = |ty: &ty::Ty<'_>| {
+            matches!(*ty.kind(), ty::TyKind::Adt(adt, _)
+                if adt.is_unsafe_cell() || is_im_opaque(adt.did()) || is_im_sharer(adt.did()))
+        };
+        if matches!(
+            tcx.def_kind(def_id),
+            prusti_rustc_interface::hir::def::DefKind::Struct
+                | prusti_rustc_interface::hir::def::DefKind::Enum
+        ) {
+            return is_im_opaque(def_id) || is_im_sharer(def_id);
+        }
+        if let Some(impl_did) = tcx.impl_of_assoc(def_id) {
+            let self_ty = tcx.type_of(impl_did).instantiate_identity().skip_normalization();
+            return self_ty
+                .walk()
+                .filter_map(|arg| arg.as_type())
+                .any(|ty| im_adt(&ty));
+        }
+        if !matches!(
+            tcx.def_kind(def_id),
+            prusti_rustc_interface::hir::def::DefKind::Fn
+        ) {
+            return false;
+        }
+        let inputs = tcx
+            .fn_sig(def_id)
+            .instantiate_identity()
+            .skip_normalization()
+            .skip_binder()
+            .inputs();
+        // The type parameters inside the arguments of interior-mutable types.
+        let contents = inputs
+            .iter()
+            .flat_map(|ty| ty.walk())
+            .filter_map(|arg| arg.as_type())
+            .filter(im_adt)
+            .flat_map(|ty| ty.walk().skip(1))
+            .filter_map(|arg| arg.as_type())
+            .filter(|ty| matches!(ty.kind(), ty::TyKind::Param(_)))
+            .collect::<Vec<_>>();
+        !contents.is_empty()
+            && inputs
+                .iter()
+                .flat_map(|ty| ty.walk())
+                .filter_map(|arg| arg.as_type())
+                .filter(|ty| matches!(ty.kind(), ty::TyKind::Param(_)))
+                .all(|ty| contents.contains(&ty))
+    })
+}
+
+/// Whether a value of the type parameter `ty` may reach interior-mutable
+/// values: unless it is the contents of one (see `is_im_library`), if the
+/// crate uses interior mutability at all.
+fn param_reaches_im(ty: RustTyDecomposition<'_>) -> bool {
+    program_uses_im() && !ty.args.context().im_contents()
+}
+
+/// The atom of a value of a type parameter `T`, holding the footprint of
+/// whatever `T` is instantiated with, and the deep value read through it:
+/// `predicate p_im_Param(self: Ref, T: Type)` and
+/// `function im_snap_Param(self: Ref, s: s_Param, T: Type): s_Param`, both
+/// abstract. At a call instantiating `T`, the caller converts the concrete
+/// atoms into the generic one and back (see [`to_generic`]).
+pub(crate) struct ParamImEnc;
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ParamIm<'vir> {
+    pub(crate) atom: ImAtomIdn<'vir>,
+    pub(crate) snap: vir::FunctionIdn<'vir, (vir::Ref, vir::Snap, vir::TyVal), vir::Snap>,
+}
+
+impl TaskEncoder for ParamImEnc {
+    task_encoder::encoder_cache!(ParamImEnc);
+    const ENCODER_NAME: &'static str = "interior mutability type parameter atom encoder";
+    type TaskDescription<'vir> = ();
+    type OutputFullDependency<'vir> = ParamIm<'vir>;
+    type OutputFullLocal<'vir> = (vir::Predicate<'vir>, vir::Function<'vir>);
+
+    fn task_to_key<'vir>(task: &Self::TaskDescription<'vir>) -> Self::TaskKey<'vir> {
+        *task
+    }
+
+    fn do_encode_full<'vir>(
+        _task_key: &Self::TaskKey<'vir>,
+        deps: &mut task_encoder::TaskEncoderDependencies<'vir, Self>,
+    ) -> task_encoder::EncodeFullResult<'vir, Self> {
+        deps.emit_output_ref((), ())?;
+        vir::with_vcx(|vcx| {
+            let s_param = vir::TYPE_PSNAP.upcast_ty();
+            let atom: ImAtomIdn<'vir> = vir::PredicateIdn::new(
+                vir::vir_format_identifier!(vcx, "p_im_Param"),
+                (vir::TYPE_REF, vcx.alloc_slice(&[vir::TYPE_TYVAL]), Default::default()),
+            );
+            let snap = vir::FunctionIdn::new(
+                vir::vir_format_identifier!(vcx, "im_snap_Param"),
+                (vir::TYPE_REF, s_param, vir::TYPE_TYVAL),
+                s_param,
+            );
+            let self_decl = vcx.mk_local_decl("self", vir::TYPE_REF);
+            let s_decl = vcx.mk_local_decl("s", s_param);
+            let ty_decl = vcx.mk_local_decl("T", vir::TYPE_TYVAL);
+            let self_ex = vcx.mk_local_ex(self_decl);
+            let ty_ex = vcx.mk_local_ex(ty_decl);
+            let predicate =
+                vcx.mk_predicate(atom, (self_decl, vcx.alloc_slice(&[ty_decl]), &[]), None);
+            let held = atom.call()(self_ex, vcx.alloc_slice(&[ty_ex]), &[])(Some(
+                vcx.mk_wildcard(),
+            ));
+            let function = vcx.mk_function(
+                snap,
+                (self_decl, s_decl, ty_decl),
+                vcx.alloc_slice(&[vcx.mk_predicate_app_expr(held)]),
+                &[],
+                None,
+                None,
+            );
+            Ok(((predicate, function), ParamIm { atom, snap }))
+        })
+    }
+
+    fn emit_outputs<'vir>(program: &mut task_encoder::Program<'vir>) {
+        for (predicate, function) in Self::all_outputs_local_no_errors(program) {
+            program.add_predicate(predicate);
+            program.add_function(function);
+        }
+    }
+}
+
+/// The permission to the generic atom of the value at `addr` of the type
+/// `ty_expr`, if `condition`.
+pub(crate) fn param_atom_acc<'vir, E: TaskEncoder>(
+    deps: &mut TaskEncoderDependencies<'vir, E>,
+    addr: vir::ExprRef<'vir>,
+    ty_expr: vir::ExprTyVal<'vir>,
+) -> Result<vir::ExprBool<'vir>, EncodeFullError<'vir, E>> {
+    let param = deps.require_dep::<ParamImEnc>(())?;
+    Ok(vir::with_vcx(|vcx| {
+        vcx.mk_predicate_app_expr(param.atom.call()(addr, vcx.alloc_slice(&[ty_expr]), &[])(
+            Some(vcx.mk_full_perm()),
+        ))
+    }))
+}
+
+/// The deep value read through the generic atom of the value at `addr` of
+/// the type `ty_expr` with the generic snapshot `snap`.
+pub(crate) fn param_atom_snap<'vir, E: TaskEncoder>(
+    deps: &mut TaskEncoderDependencies<'vir, E>,
+    addr: vir::ExprRef<'vir>,
+    snap: vir::ExprSnap<'vir>,
+    ty_expr: vir::ExprTyVal<'vir>,
+) -> Result<vir::ExprSnap<'vir>, EncodeFullError<'vir, E>> {
+    let param = deps.require_dep::<ParamImEnc>(())?;
+    Ok(param.snap.call()(addr, snap, ty_expr))
+}
+
+/// A value of one of a callee's type parameters inside an argument or the
+/// result of a call: the parameter, its instantiation (in the caller's
+/// context), and where the value is.
+pub(crate) struct GenericPos<'vir> {
+    pub(crate) param: ty::Ty<'vir>,
+    pub(crate) ty: RustTyDecomposition<'vir>,
+    pub(crate) addr: vir::ExprRef<'vir>,
+    pub(crate) snap: vir::ExprSnap<'vir>,
+    /// Reached through a reference: its atoms come back after the call.
+    pub(crate) reached: bool,
+    /// Behind a mutable reference: its value may change in the call.
+    pub(crate) mutable: bool,
+    /// Inside a field (of the referent, if behind a reference).
+    pub(crate) nested: bool,
+    /// The instantiation is a type parameter of the caller.
+    pub(crate) identity: bool,
+    pub(crate) condition: Option<vir::ExprBool<'vir>>,
+    /// For the referent of a mutable reference: how to read its snapshot
+    /// anew at its address (it is held generically, as the reference type's
+    /// parameter).
+    pub(crate) reread: Option<(
+        RustTyDecomposition<'vir>,
+        crate::encoders::ty::generics::GArgCaster<'vir, crate::Pure>,
+    )>,
+}
+
+impl<'vir> GenericPos<'vir> {
+    /// The snapshot of the value at `addr`, read anew (see `reread`).
+    pub(crate) fn reread_snap<E: TaskEncoder>(
+        &self,
+        deps: &mut TaskEncoderDependencies<'vir, E>,
+        addr: vir::ExprRef<'vir>,
+    ) -> Result<Option<vir::ExprSnap<'vir>>, EncodeFullError<'vir, E>> {
+        let Some((generic, caster)) = self.reread else {
+            return Ok(None);
+        };
+        Ok(Some(caster.cast_to_caller_ctx(
+            deps.require_dep::<TyUseImpureEnc>(generic)?
+                .ref_to_snap(addr),
+        )))
+    }
+}
+
+/// The values of the callee's type parameters inside a value of the callee's
+/// declared type `declared`, which is the value of the caller's type `ty` at
+/// `addr` with snapshot `snap`. The positions mirror those of the callee's
+/// footprint (see `footprint_into`).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn generic_positions<'vir, E: TaskEncoder>(
+    deps: &mut TaskEncoderDependencies<'vir, E>,
+    declared: ty::Ty<'vir>,
+    ty: RustTyDecomposition<'vir>,
+    addr: vir::ExprRef<'vir>,
+    snap: vir::ExprSnap<'vir>,
+    reached: bool,
+    mutable: bool,
+    out: &mut Vec<GenericPos<'vir>>,
+) -> Result<(), EncodeFullError<'vir, E>> {
+    if !program_uses_im() {
+        return Ok(());
+    }
+    let vcx = vir::with_vcx(|vcx| vcx);
+    let start = out.len();
+    match *declared.kind() {
+        ty::TyKind::Param(_) => out.push(GenericPos {
+            param: declared,
+            ty,
+            addr,
+            snap,
+            reached,
+            mutable,
+            nested: false,
+            identity: matches!(ty.ty.specifics, TySpecifics::Param(_)),
+            condition: None,
+            reread: None,
+        }),
+        ty::TyKind::Ref(_, inner, _) => match &ty.ty.specifics {
+            TySpecifics::ImmRef(data) => {
+                let ref_use = deps.require_dep::<TyUsePureEnc>(ty)?;
+                let ref_use = ref_use.expect_immref();
+                let snap_c = snap.downcast_ty();
+                generic_positions(
+                    deps,
+                    inner,
+                    data.referent.decompose_normalize(ty.args),
+                    ref_use.addr_access(snap_c),
+                    ref_use.value_access(snap_c),
+                    true,
+                    false,
+                    out,
+                )?;
+            }
+            TySpecifics::MutRef(data) => {
+                let ty_use = deps.require_dep::<TyUsePureEnc>(ty)?;
+                let referent = data.referent.decompose_normalize(ty.args);
+                let r_addr = ty_use.expect_mutref().deref_access(snap.downcast_ty());
+                // As in `footprint_into`.
+                let generic = data.referent.decompose_context(ty.ty.params, ty.args);
+                let caster = deps.require_dep::<crate::GArgsCastEnc<crate::Pure>>(
+                    data.referent
+                        .decompose_compare_normalize(ty.ty.params, ty.args),
+                )?;
+                let r_snap = caster.cast_to_caller_ctx(
+                    deps.require_dep::<TyUseImpureEnc>(generic)?
+                        .ref_to_snap(r_addr),
+                );
+                let referent_start = out.len();
+                generic_positions(deps, inner, referent, r_addr, r_snap, true, true, out)?;
+                for pos in &mut out[referent_start..] {
+                    if !pos.nested {
+                        pos.reread = Some((generic, caster));
+                    }
+                }
+            }
+            _ => (),
+        },
+        ty::TyKind::Adt(adt, dargs) if !is_im_opaque(adt.did()) && !is_im_sharer(adt.did()) => {
+            let ty_use = deps.require_dep::<TyUsePureEnc>(ty)?;
+            let snap_c = snap.downcast_ty();
+            match &ty.ty.specifics {
+                TySpecifics::StructLike(data)
+                    if data.fields.iter().all(|f| {
+                        matches!(f.address, crate::encoders::ty::RustFieldAddress::Constant)
+                    }) =>
+                {
+                    for (idx, field) in data.fields.iter().enumerate() {
+                        let declared_field = adt.non_enum_variant().fields
+                            [abi::FieldIdx::from_usize(idx)]
+                        .ty(vcx.tcx(), dargs)
+                        .skip_normalization();
+                        let proj = &ty_use.expect_variant_opt(None).fields[idx];
+                        generic_positions(
+                            deps,
+                            declared_field,
+                            field.decompose_normalize(ty.args),
+                            proj.field_ref(addr),
+                            proj.read(snap_c),
+                            reached,
+                            mutable,
+                            out,
+                        )?;
+                    }
+                }
+                TySpecifics::EnumLike(data) => {
+                    for variant in &data.variants {
+                        let start = out.len();
+                        let variant_use = ty_use.expect_variant_opt(Some(variant.data.vid));
+                        for (idx, field) in variant.inner.fields.iter().enumerate() {
+                            let declared_field = adt.variant(variant.data.vid).fields
+                                [abi::FieldIdx::from_usize(idx)]
+                            .ty(vcx.tcx(), dargs)
+                            .skip_normalization();
+                            let proj = &variant_use.fields[idx];
+                            generic_positions(
+                                deps,
+                                declared_field,
+                                field.decompose_normalize(ty.args),
+                                proj.field_ref(addr),
+                                proj.read(snap_c),
+                                reached,
+                                mutable,
+                                out,
+                            )?;
+                        }
+                        if out.len() == start {
+                            continue;
+                        }
+                        let is = is_variant(deps, ty, data, variant.data, snap_c)?;
+                        for pos in &mut out[start..] {
+                            pos.condition = Some(match pos.condition {
+                                Some(inner) => vcx.mk_conj(&[is, inner]),
+                                None => is,
+                            });
+                        }
+                    }
+                }
+                _ => (),
+            }
+        }
+        ty::TyKind::Tuple(declared_fields) => {
+            if let TySpecifics::StructLike(data) = &ty.ty.specifics {
+                let ty_use = deps.require_dep::<TyUsePureEnc>(ty)?;
+                let snap_c = snap.downcast_ty();
+                for (idx, field) in data.fields.iter().enumerate() {
+                    let proj = &ty_use.expect_variant_opt(None).fields[idx];
+                    generic_positions(
+                        deps,
+                        declared_fields[idx],
+                        field.decompose_normalize(ty.args),
+                        proj.field_ref(addr),
+                        proj.read(snap_c),
+                        reached,
+                        mutable,
+                        out,
+                    )?;
+                }
+            }
+        }
+        _ => (),
+    }
+    if matches!(declared.kind(), ty::TyKind::Adt(..) | ty::TyKind::Tuple(_)) {
+        for pos in &mut out[start..] {
+            pos.nested = true;
+        }
+    }
+    Ok(())
 }
 
 /// `im_unset(T): s_Param`, the slot of a shallow `UnsafeCell<T>` snapshot.

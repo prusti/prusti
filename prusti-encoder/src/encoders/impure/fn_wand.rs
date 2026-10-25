@@ -180,7 +180,10 @@ impl<'vir> WandEncOutput<'vir> {
                 self.function_data.identity_substs(vcx.tcx()),
                 self.function_data.param_env(vcx.tcx()),
                 false,
-            ),
+            )
+            .with_im_contents(crate::encoders::ty::im::is_im_library(
+                self.function_data.def_id(),
+            )),
         }
     }
 
