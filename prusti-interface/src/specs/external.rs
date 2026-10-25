@@ -4,7 +4,7 @@ use prusti_rustc_interface::{
         def_id::{DefId, LocalDefId},
         intravisit::{self, Visitor},
     },
-    span::Span,
+    span::{Span, Symbol},
 };
 
 use crate::{
@@ -37,6 +37,11 @@ pub enum ExternSpecResolverError {
 
     /// Occurs when a trait impl extern spec resolves to the trait method.
     ResolvedToDefault(DefId, Span),
+
+    /// Occurs when a type or const parameter of the extern spec does not stand
+    /// for exactly one generic parameter of the target, e.g. `T` in
+    /// `#[extern_spec] impl<T> Foo<Vec<T>>` for `impl<U> Foo<U>`.
+    UnmatchedGenericParam(DefId, Span, Symbol),
 }
 
 #[derive(Debug, Eq, PartialEq, Hash, Clone)]
@@ -100,6 +105,11 @@ pub struct ExternSpecResolver<'tcx> {
     /// Maps real functions to Prusti-generated fake functions with specifications.
     pub extern_fn_map: FxHashMap<ExternSpecDeclaration, DefId>,
 
+    /// For each Prusti-generated fake function, the generic parameter of the
+    /// specified function that each of its type and const parameters stands
+    /// for (see `ProcedureSpecification::extern_spec_params`).
+    pub extern_spec_params: FxHashMap<DefId, Vec<(Symbol, u32)>>,
+
     /// Duplicate specifications detected, keyed by the `DefId` of the function
     /// to be specified.
     spec_duplicates: FxHashMap<DefId, Vec<(DefId, Span)>>,
@@ -114,6 +124,7 @@ impl<'tcx> ExternSpecResolver<'tcx> {
             env_name: env.name,
             env_query: env.query,
             extern_fn_map: FxHashMap::default(),
+            extern_spec_params: FxHashMap::default(),
             spec_duplicates: FxHashMap::default(),
             errors: vec![],
         }
@@ -164,7 +175,7 @@ impl<'tcx> ExternSpecResolver<'tcx> {
             {
                 // TODO: this resolution happens here but also in SpecCollector
                 // maybe it can be done once only?
-                let (resolved_def_id, _) =
+                let (resolved_def_id, resolved_substs) =
                     self.env_query
                         .resolve_method_call(current_def_id, target_def_id, substs);
                 if matches!(extern_spec_kind, ExternSpecKind::TraitImpl)
@@ -197,6 +208,20 @@ impl<'tcx> ExternSpecResolver<'tcx> {
                             resolved_def_id,
                             span,
                         ));
+                    } else {
+                        match self.match_generic_params(current_def_id, resolved_substs) {
+                            Ok(params) => {
+                                self.extern_spec_params.insert(current_def_id, params);
+                            }
+                            Err(param) => {
+                                self.errors
+                                    .push(ExternSpecResolverError::UnmatchedGenericParam(
+                                        resolved_def_id,
+                                        span,
+                                        param,
+                                    ))
+                            }
+                        }
                     }
                 }
             }
@@ -209,6 +234,39 @@ impl<'tcx> ExternSpecResolver<'tcx> {
                     .insert(extern_spec_decl.clone(), current_def_id);
             }
         }
+    }
+
+    /// The generic parameter of the target, by index, that each type and const
+    /// parameter of the extern-spec function `spec_def_id` stands for, read off
+    /// the generic arguments `target_args` of its call to the target. Its
+    /// lifetimes are not matched: they need not be the target's (e.g. elided
+    /// ones in the extern spec's impl header), and the encoding erases them.
+    /// Returns the name of a parameter that is not exactly one of
+    /// `target_args`.
+    fn match_generic_params(
+        &self,
+        spec_def_id: DefId,
+        target_args: GenericArgsRef<'tcx>,
+    ) -> Result<Vec<(Symbol, u32)>, Symbol> {
+        let generics = self.env_query.tcx().generics_of(spec_def_id);
+        self.env_query
+            .identity_substs(spec_def_id)
+            .iter()
+            .enumerate()
+            .filter(|(_, arg)| arg.as_region().is_none())
+            .map(|(index, arg)| {
+                let name = generics.param_at(index, self.env_query.tcx()).name;
+                let mut positions = target_args
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, target_arg)| *target_arg == arg)
+                    .map(|(position, _)| position as u32);
+                match (positions.next(), positions.next()) {
+                    (Some(position), None) => Ok((name, position)),
+                    _ => Err(name),
+                }
+            })
+            .collect()
     }
 
     fn register_duplicate_spec(&mut self, decl_def_id: DefId, dup_spec_def_id: DefId, span: Span) {
@@ -268,6 +326,16 @@ impl<'tcx> ExternSpecResolver<'tcx> {
                 ExternSpecResolverError::ResolvedToDefault(def_id, span) => {
                     let function_name = self.env_name.get_item_name(*def_id);
                     let err_note = format!("Specified method ('{function_name}') resolved to the trait's implementation. Add specification to the trait instead.");
+                    PrustiError::incorrect(
+                        "Invalid external specification",
+                        MultiSpan::from_span(*span),
+                    )
+                    .add_note(err_note, None)
+                    .emit(env_diagnostic);
+                }
+                ExternSpecResolverError::UnmatchedGenericParam(def_id, span, param) => {
+                    let function_name = self.env_name.get_item_name(*def_id);
+                    let err_note = format!("The generic parameter `{param}` does not stand for exactly one generic parameter of '{function_name}'.");
                     PrustiError::incorrect(
                         "Invalid external specification",
                         MultiSpan::from_span(*span),

@@ -8,9 +8,8 @@ use prusti_interface::{
     },
 };
 use prusti_rustc_interface::{
-    hir::def::DefKind,
     middle::{mir, ty},
-    span::{Span, def_id::DefId},
+    span::{Span, Symbol, def_id::DefId},
 };
 
 use rustc_hash::FxHashMap;
@@ -20,7 +19,7 @@ use vir::{CastType, HasType, Reify};
 use crate::encoders::{
     MirLocalDefEncTask, MirPureEnc,
     mir_pure::{ExprInput, MirPureEncOutput, PureKind},
-    ty::generics::{GArgs, GParams},
+    ty::generics::{GArgs, GParams, identity_params},
 };
 pub struct MirSpecEnc;
 
@@ -130,52 +129,57 @@ struct SpecEncCtx<'vir> {
     extern_spec: Option<ExternSpecKind>,
     enc_mode: MirSpecEncMode,
     context_def_id: DefId,
-    /// The substs of the context as the TRAIT method it implements (its own
-    /// identity if it implements none), see `closure_substs`.
-    substs: ty::GenericArgsRef<'vir>,
+    /// The generic arguments, in the context, of the function the spec items
+    /// were declared for (the context itself, or the trait method it
+    /// implements).
+    owner_args: ty::GenericArgsRef<'vir>,
+    /// The parameter of that function, by index, that each type and const
+    /// parameter of the spec items stands for, by name.
+    owner_params: &'vir [(Symbol, u32)],
 }
 
-/// The substs instantiating the generics of the spec closure `closure` in
-/// the context `ctx`. A closure declared on a trait method (the context's
-/// own trait, or the stub of a trait-level extern spec) has the trait
-/// method's generics (`Self` first): it is instantiated with the trait
-/// method's substs of the context. A closure declared on the context itself
-/// has its generics. Otherwise it was declared on an extern-spec item
-/// mirroring the context's signature: its generics correspond to the
-/// context's own, kind by kind (the mirror may lack the impl's lifetimes).
-fn closure_substs<'vir>(
-    vcx: &'vir vir::VirCtxt<'vir>,
-    ctx: SpecEncCtx<'vir>,
-    closure: DefId,
-) -> ty::GenericArgsRef<'vir> {
-    let Some(parent) = vcx.tcx().generics_of(closure).parent else {
-        return ctx.substs;
-    };
-    if vcx.tcx().trait_of_assoc(parent).is_some()
-        || matches!(vcx.tcx().def_kind(parent), DefKind::Trait)
-        || matches!(ctx.extern_spec, Some(ExternSpecKind::Trait))
-    {
-        return ctx.substs;
+impl<'vir> SpecEncCtx<'vir> {
+    /// The generic arguments of the spec item `spec_def_id` (see
+    /// `identity_params`). Its lifetimes are erased: those of an extern spec
+    /// need not be the specified function's.
+    fn spec_args(
+        self,
+        vcx: &'vir vir::VirCtxt<'vir>,
+        spec_def_id: DefId,
+    ) -> ty::GenericArgsRef<'vir> {
+        let generics = vcx.tcx().generics_of(spec_def_id);
+        vcx.tcx().mk_args_from_iter(
+            identity_params(vcx.tcx(), spec_def_id)
+                .iter()
+                .enumerate()
+                .map(|(index, arg)| {
+                    if arg.as_region().is_some() {
+                        return vcx.tcx().lifetimes.re_erased.into();
+                    }
+                    let name = generics.param_at(index, vcx.tcx()).name;
+                    let (_, owner_index) = self
+                        .owner_params
+                        .iter()
+                        .find(|(owner_name, _)| *owner_name == name)
+                        .expect(
+                            "generic parameter of a spec item not found in the specified function",
+                        );
+                    self.owner_args[*owner_index as usize]
+                }),
+        )
     }
-    if parent == ctx.context_def_id {
-        return ty::GenericArgs::identity_for_item(vcx.tcx(), ctx.context_def_id);
-    }
-    let context_identity = ty::GenericArgs::identity_for_item(vcx.tcx(), ctx.context_def_id);
-    let mut tys = context_identity
+}
+
+/// The type and const parameters of `def_id` (see `identity_params`), by name.
+fn param_names<'vir>(vcx: &'vir vir::VirCtxt<'vir>, def_id: DefId) -> &'vir [(Symbol, u32)] {
+    let generics = vcx.tcx().generics_of(def_id);
+    let params = identity_params(vcx.tcx(), def_id)
         .iter()
-        .filter(|arg| arg.as_type().is_some());
-    let mut consts = context_identity
-        .iter()
-        .filter(|arg| arg.as_const().is_some());
-    ty::GenericArgs::for_item(vcx.tcx(), parent, |param, _| match param.kind {
-        ty::GenericParamDefKind::Lifetime => vcx.tcx().lifetimes.re_erased.into(),
-        ty::GenericParamDefKind::Type { .. } => tys
-            .next()
-            .expect("extern spec item with more type parameters than the specified item"),
-        ty::GenericParamDefKind::Const { .. } => consts
-            .next()
-            .expect("extern spec item with more const parameters than the specified item"),
-    })
+        .enumerate()
+        .filter(|(_, arg)| arg.as_region().is_none())
+        .map(|(index, _)| (generics.param_at(index, vcx.tcx()).name, index as u32))
+        .collect::<Vec<_>>();
+    vcx.alloc_slice(&params)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -223,25 +227,12 @@ impl TaskEncoder for MirSpecEnc {
         vir::with_vcx(|vcx| {
             let base_params = GParams::from(def_id);
             let context_params = GParams::from(context_def_id);
-            let substs =
-                find_trait_method_substs(vcx.tcx(), context_def_id, context_params.rust_params())
-                    .map(|s| s.1)
-                    .unwrap_or(base_params.rust_params());
+            let trait_method =
+                find_trait_method_substs(vcx.tcx(), context_def_id, context_params.rust_params());
+            let substs = trait_method
+                .map(|s| s.1)
+                .unwrap_or(base_params.rust_params());
             let substs = vcx.tcx().mk_args(substs);
-            let substs_for = |inherited: bool| {
-                // if the spec is not inherited and we are currently building the spec for the actual function we're encoding,
-                // do not use substitution
-                if !inherited && def_id == context_def_id {
-                    vcx.tcx().mk_args_from_iter(
-                        context_params
-                            .rust_params()
-                            .iter()
-                            .filter(|arg| arg.as_region().is_none()),
-                    )
-                } else {
-                    substs
-                }
-            };
 
             let local_defs = deps.require_dep::<crate::encoders::local_def::MirLocalDefEnc>(
                 MirLocalDefEncTask::LocalSubsts {
@@ -260,24 +251,40 @@ impl TaskEncoder for MirSpecEnc {
             let (pres, pres_inherited) = crate::encoders::spec_items(&specs.pres);
             let (posts, posts_inherited) = crate::encoders::spec_items(&specs.posts);
             let (pledges, pledges_inherited) = crate::encoders::spec_items(&specs.pledges);
-            let pre_ctx = SpecEncCtx {
-                extern_spec: specs.extern_spec,
-                enc_mode,
-                context_def_id,
-                substs: substs_for(pres_inherited),
+            // Inherited spec items are declared for the trait method, and its
+            // spec says how they relate to it.
+            let inherited_from = if pres_inherited || posts_inherited || pledges_inherited {
+                let (trait_method_def_id, _) =
+                    trait_method.expect("spec items inherited without a trait method");
+                let trait_specs =
+                    deps.require_dep::<crate::encoders::SpecEnc>(crate::encoders::SpecEncTask {
+                        def_id: trait_method_def_id,
+                    })?;
+                Some((trait_method_def_id, trait_specs.extern_spec_params))
+            } else {
+                None
             };
-            let post_ctx = SpecEncCtx {
-                extern_spec: specs.extern_spec,
-                enc_mode,
-                context_def_id,
-                substs: substs_for(posts_inherited),
+            let ctx_for = |inherited: bool| {
+                let (owner, owner_params) = if inherited {
+                    inherited_from.unwrap()
+                } else {
+                    (def_id, specs.extern_spec_params)
+                };
+                SpecEncCtx {
+                    extern_spec: specs.extern_spec,
+                    enc_mode,
+                    context_def_id,
+                    owner_args: if owner == context_def_id {
+                        context_params.rust_params()
+                    } else {
+                        substs
+                    },
+                    owner_params: owner_params.unwrap_or_else(|| param_names(vcx, owner)),
+                }
             };
-            let pledge_ctx = SpecEncCtx {
-                extern_spec: specs.extern_spec,
-                enc_mode,
-                context_def_id,
-                substs: substs_for(pledges_inherited),
-            };
+            let pre_ctx = ctx_for(pres_inherited);
+            let post_ctx = ctx_for(posts_inherited);
+            let pledge_ctx = ctx_for(pledges_inherited);
 
             let local_iter = (1..=local_defs.arg_count).map(mir::Local::from);
             let all_args: FxHashMap<mir::Local, _> = match enc_mode {
@@ -431,7 +438,7 @@ impl MirSpecEnc {
             parent_def_id: def_id,
             gargs: GArgs::new(
                 GParams::new_maybe_extern(ctx.context_def_id, ctx.extern_spec),
-                closure_substs(vcx, ctx, def_id),
+                ctx.spec_args(vcx, def_id),
             ),
         });
         spec.inspect_err(|err| {
