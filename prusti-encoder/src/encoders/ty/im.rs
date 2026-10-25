@@ -671,8 +671,9 @@ pub(crate) struct FpEntry<'vir> {
     snap: vir::ExprSnap<'vir>,
     tys: &'vir [vir::ExprTyVal<'vir>],
     consts: &'vir [vir::ExprCSnap<'vir>],
-    /// The amount of a dependent atom (`None`: the full atom).
-    amount: Option<vir::ExprPerm<'vir>>,
+    /// The amount of a dependent atom, read at its key in the current state
+    /// (`None`: the full atom).
+    amount: Option<ImAmountIdn<'vir>>,
     /// Reached through a reference (or a guard): returned to the caller, and
     /// possibly aliased with other such entries.
     pub(crate) reached: bool,
@@ -693,7 +694,10 @@ impl<'vir> FpEntry<'vir> {
 
     fn amount(&self) -> vir::ExprPerm<'vir> {
         vir::with_vcx(|vcx| {
-            let amount = self.amount.unwrap_or_else(|| vcx.mk_full_perm());
+            let amount = self.amount.map_or_else(
+                || vcx.mk_full_perm(),
+                |amount| amount.call()(self.addr, self.tys, self.consts),
+            );
             match self.condition {
                 Some(condition) => vcx.mk_ternary_expr(condition, amount, vcx.mk_no_perm()),
                 None => amount,
@@ -701,12 +705,11 @@ impl<'vir> FpEntry<'vir> {
         })
     }
 
-    /// The entry with its key, amount and condition evaluated in the state
-    /// `label`.
+    /// The entry with its key and condition evaluated in the state `label`
+    /// (the amount of a dependent atom is that of the current state).
     pub(crate) fn in_state(&self, label: vir::OldLabel<'vir>) -> Self {
         vir::with_vcx(|vcx| Self {
             addr: vcx.mk_old(self.addr, label),
-            amount: self.amount.map(|amount| vcx.mk_old(amount, label)),
             condition: self.condition.map(|condition| vcx.mk_old(condition, label)),
             ..*self
         })
@@ -965,11 +968,9 @@ fn footprint_into<'vir, E: TaskEncoder>(
         if let Some(dependent) = atoms.dependent
             && with_dependent
         {
-            let amount =
-                atoms.dependent_amount.unwrap().call()(addr, args.get_ty(), args.get_const());
             out.push(FpEntry {
                 atom: dependent,
-                amount: Some(amount),
+                amount: atoms.dependent_amount,
                 ..entry
             });
         }
@@ -2426,7 +2427,14 @@ pub(crate) fn generic_positions<'vir, E: TaskEncoder>(
                 let mutable = mutable || !reached;
                 generic_positions(deps, inner, referent, r_addr, r_snap, true, mutable, out)?;
                 for pos in &mut out[referent_start..] {
-                    if !pos.nested {
+                    if pos.nested {
+                        continue;
+                    }
+                    // Behind another mutable reference, which the callee
+                    // may point elsewhere: as inside a value.
+                    if pos.reread.is_some() {
+                        pos.nested = true;
+                    } else {
                         pos.reread = Some((generic, caster));
                     }
                 }
