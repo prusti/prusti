@@ -142,9 +142,8 @@ pub(crate) enum ImAmountKind {
 /// are about (if any), and the method.
 pub(crate) fn im_amounts(did: DefId) -> Vec<(ImAmountKind, Option<abi::FieldIdx>, DefId)> {
     vir::with_vcx(|vcx| {
-        let tcx = vcx.tcx();
-        let env = prusti_interface::environment::EnvQuery::new(tcx);
-        let fields = &tcx.adt_def(did).non_enum_variant().fields;
+        let env = prusti_interface::environment::EnvQuery::new(vcx.tcx());
+        let fields = &vcx.tcx().adt_def(did).non_enum_variant().fields;
         let field_idx = |name: &str| {
             fields
                 .iter_enumerated()
@@ -155,8 +154,8 @@ pub(crate) fn im_amounts(did: DefId) -> Vec<(ImAmountKind, Option<abi::FieldIdx>
                 })
         };
         let mut out = Vec::new();
-        for impl_did in tcx.inherent_impls(did) {
-            for item in tcx.associated_item_def_ids(*impl_did) {
+        for impl_did in vcx.tcx().inherent_impls(did) {
+            for item in vcx.tcx().associated_item_def_ids(*impl_did) {
                 let Some(kind) = prusti_interface::utils::read_prusti_attr(
                     "im_amount",
                     env.get_attributes(*item),
@@ -619,9 +618,9 @@ fn self_ref_snap<'vir, E: TaskEncoder>(
     snap: vir::ExprSnap<'vir>,
 ) -> Result<vir::ExprSnap<'vir>, EncodeFullError<'vir, E>> {
     let self_ty = vir::with_vcx(|vcx| {
-        let tcx = vcx.tcx();
-        tcx.fn_sig(method)
-            .instantiate(tcx, ty.args.args())
+        vcx.tcx()
+            .fn_sig(method)
+            .instantiate(vcx.tcx(), ty.args.args())
             .skip_normalization()
             .skip_binder()
             .inputs()[0]
@@ -881,9 +880,9 @@ fn shared_target<'vir, E: TaskEncoder>(
     ))?;
     let target = func.call_pure(vec![self_ref]);
     let target_ty = vir::with_vcx(|vcx| {
-        let tcx = vcx.tcx();
-        tcx.fn_sig(method)
-            .instantiate(tcx, ty.args.args())
+        vcx.tcx()
+            .fn_sig(method)
+            .instantiate(vcx.tcx(), ty.args.args())
             .skip_normalization()
             .skip_binder()
             .output()
@@ -2029,9 +2028,9 @@ pub(crate) fn program_uses_im() -> bool {
     thread_local! {
         static USES_IM: std::cell::LazyCell<bool> = std::cell::LazyCell::new(|| {
             vir::with_vcx(|vcx| {
-                let tcx = vcx.tcx();
-                tcx.hir_body_owners().any(|owner| {
-                    tcx.typeck(owner)
+                vcx.tcx().hir_body_owners().any(|owner| {
+                    vcx.tcx()
+                        .typeck(owner)
                         .node_types()
                         .items_in_stable_order()
                         .into_iter()
@@ -2056,10 +2055,9 @@ pub(crate) fn program_uses_im() -> bool {
 /// inputs (e.g. `T` of `Cell<T>::get` or of `refcell_value<T>(&RefCell<T>)`).
 pub(crate) fn im_contents_params(def_id: DefId) -> u64 {
     vir::with_vcx(|vcx| {
-        let tcx = vcx.tcx();
-        let def_id = tcx.typeck_root_def_id(def_id);
+        let def_id = vcx.tcx().typeck_root_def_id(def_id);
         let is_im = |did: DefId| is_im_opaque(did) || is_im_sharer(did);
-        let kind = tcx.def_kind(def_id);
+        let kind = vcx.tcx().def_kind(def_id);
         if matches!(
             kind,
             prusti_rustc_interface::hir::def::DefKind::Struct
@@ -2085,15 +2083,16 @@ pub(crate) fn im_contents_params(def_id: DefId) -> u64 {
                 }
             }
         };
-        if let Some(impl_did) = tcx.impl_of_assoc(def_id) {
-            add(tcx.type_of(impl_did).instantiate_identity().skip_normalization());
+        if let Some(impl_did) = vcx.tcx().impl_of_assoc(def_id) {
+            add(vcx.tcx().type_of(impl_did).instantiate_identity().skip_normalization());
         }
         if matches!(
             kind,
             prusti_rustc_interface::hir::def::DefKind::Fn
                 | prusti_rustc_interface::hir::def::DefKind::AssocFn
         ) {
-            for input in tcx
+            for input in vcx
+                .tcx()
                 .fn_sig(def_id)
                 .instantiate_identity()
                 .skip_normalization()

@@ -723,8 +723,8 @@ impl<'a, 'tcx> intravisit::Visitor<'tcx> for SpecCollector<'a, 'tcx> {
                 // The contract of dropping a value of type `X`, declared as
                 // `#[extern_spec] impl Drop for X`: a never-called function
                 // `fn drop(_self: &mut X)`, registered on `X`.
-                let tcx = self.env.query.tcx();
-                let adt = tcx.fn_sig(fn_id).skip_binder().inputs().skip_binder()[0]
+                let adt = self.env.query.tcx().fn_sig(fn_id).skip_binder().inputs().skip_binder()
+                    [0]
                     .builtin_deref(true)
                     .and_then(|ty| ty.ty_adt_def());
                 match adt {

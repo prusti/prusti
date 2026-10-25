@@ -235,16 +235,17 @@ pub fn resolve_specced_trait_call<'tcx>(
     def_id: DefId,
     substs: ty::GenericArgsRef<'tcx>,
 ) -> (DefId, ty::GenericArgsRef<'tcx>) {
-    let tcx = vir::with_vcx(|vcx| vcx.tcx());
-    if tcx.trait_of_assoc(def_id).is_none() {
+    if vir::with_vcx(|vcx| vcx.tcx().trait_of_assoc(def_id)).is_none() {
         return (def_id, substs);
     }
-    let (resolved, resolved_substs) =
-        EnvQuery::new(tcx).resolve_method_call_in(typing_env, def_id, substs);
+    let (resolved, resolved_substs) = vir::with_vcx(|vcx| {
+        EnvQuery::new(vcx.tcx()).resolve_method_call_in(typing_env, def_id, substs)
+    });
     if resolved == def_id {
         return (def_id, substs);
     }
-    let identity = ty::GenericArgs::identity_for_item(tcx, resolved);
+    let identity =
+        vir::with_vcx(|vcx| ty::GenericArgs::identity_for_item(vcx.tcx(), resolved));
     let (has_extern_spec, pure, trusted_with_posts) =
         with_proc_spec(SpecQuery::GetProcKind(resolved, identity), |proc_spec| {
             (

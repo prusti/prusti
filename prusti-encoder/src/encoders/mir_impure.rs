@@ -2547,8 +2547,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         place: mir::Place<'vir>,
         span: Span,
     ) -> EncodeResult<'vir, (), E> {
-        let tcx = self.vcx.tcx();
-        let ty = place.ty(self.local_decls, tcx).ty;
+        let ty = place.ty(self.local_decls, self.vcx.tcx()).ty;
         let Some(drop_spec) = crate::encoders::get_type_drop_spec(ty) else {
             return self.apply_glue_drop_contracts(place, ty, span);
         };
@@ -2559,8 +2558,8 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         // parameters, in order (its lifetimes are its own).
         let mut types = adt_args.types();
         let mut consts = adt_args.consts();
-        let substs = ty::GenericArgs::for_item(tcx, drop_spec, |param, _| match param.kind {
-            ty::GenericParamDefKind::Lifetime => tcx.lifetimes.re_erased.into(),
+        let substs = ty::GenericArgs::for_item(self.vcx.tcx(), drop_spec, |param, _| match param.kind {
+            ty::GenericParamDefKind::Lifetime => self.vcx.tcx().lifetimes.re_erased.into(),
             ty::GenericParamDefKind::Type { .. } => types.next().unwrap().into(),
             ty::GenericParamDefKind::Const { .. } => consts.next().unwrap().into(),
         });
@@ -2572,7 +2571,8 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                     drop_spec,
                 ))?;
 
-        let ref_ty = ty::Ty::new_mut_ref(tcx, tcx.lifetimes.re_erased, ty);
+        let ref_ty =
+            ty::Ty::new_mut_ref(self.vcx.tcx(), self.vcx.tcx().lifetimes.re_erased, ty);
         let p_ref_ty = self.ty_use_impure(ref_ty);
         let place_expr = self.encode_place(Place::from(place))?;
         let metadata = place_expr
@@ -2589,7 +2589,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         self.stmts(p_ref_ty.fold(None, tmp, None, None, None));
         let borrowed = self.new_label("drop");
         let dest: vir::ExprRef<'vir> = self.new_tmp(vir::TYPE_REF);
-        let unit = self.ty_use_impure(tcx.types.unit);
+        let unit = self.ty_use_impure(self.vcx.tcx().types.unit);
         self.stmt(self.vcx.mk_inhale_stmt(unit.uninit_pred(self.vcx, dest)));
         let call = self.vcx.with_span(span, |vcx| {
             vcx.handle_error("call.precondition:assertion.false", move |reason_span_opt| {
@@ -2622,8 +2622,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         ty: ty::Ty<'vir>,
         span: Span,
     ) -> EncodeResult<'vir, (), E> {
-        let tcx = self.vcx.tcx();
-        if !has_drop_contract(tcx, ty, &mut Vec::new()) {
+        if !has_drop_contract(self.vcx.tcx(), ty, &mut Vec::new()) {
             return Ok(());
         }
         if let ty::TyKind::Tuple(field_tys) = *ty.kind() {
@@ -2634,12 +2633,13 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 .expect_predicate();
             self.stmts(ty_use.unfold(None, addr, None, None, None));
             for (idx, field_ty) in field_tys.iter().enumerate() {
-                if has_drop_contract(tcx, field_ty, &mut Vec::new()) {
+                if has_drop_contract(self.vcx.tcx(), field_ty, &mut Vec::new()) {
                     let field = mir::ProjectionElem::Field(
                         prusti_rustc_interface::abi::FieldIdx::from_usize(idx),
                         field_ty,
                     );
-                    self.apply_drop_contract(place.project_deeper(&[field], tcx), span)?;
+                    let field = place.project_deeper(&[field], self.vcx.tcx());
+                    self.apply_drop_contract(field, span)?;
                 }
             }
             self.stmts(ty_use.fold(None, addr, None, None, None));
@@ -2659,8 +2659,10 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             let fields = variant
                 .fields
                 .iter_enumerated()
-                .map(|(idx, field)| (idx, field.ty(tcx, args).skip_normalization()))
-                .filter(|(_, field_ty)| has_drop_contract(tcx, *field_ty, &mut Vec::new()))
+                .map(|(idx, field)| (idx, field.ty(self.vcx.tcx(), args).skip_normalization()))
+                .filter(|(_, field_ty)| {
+                    has_drop_contract(self.vcx.tcx(), *field_ty, &mut Vec::new())
+                })
                 .collect::<Vec<_>>();
             if fields.is_empty() {
                 continue;
@@ -2690,7 +2692,8 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                         elems.push(mir::ProjectionElem::Downcast(None, vid));
                     }
                     elems.push(mir::ProjectionElem::Field(idx, field_ty));
-                    this.apply_drop_contract(place.project_deeper(&elems, tcx), span)?;
+                    let field = place.project_deeper(&elems, this.vcx.tcx());
+                    this.apply_drop_contract(field, span)?;
                 }
                 if variant.is_some() {
                     this.stmts(ty_use.fold(variant, addr, None, None, None));
