@@ -16,7 +16,6 @@ use crate::{
             generics::{GArgs, GParams, GenericParamsEnc, r#trait::TraitEnc, trait_impls},
             lifted::TyConstructorEnc,
             use_inhabited::TyUseInhabitedEnc,
-            use_pure::TyUsePureEnc,
         },
     },
     trait_support::is_function_with_body,
@@ -351,32 +350,9 @@ impl TaskEncoder for TraitFnEnc {
                     item_generics.const_exprs(),
                 ));
 
-                if let Some(pure_function) = call_stub_pure_function {
-                    // The result of a pure trait method is the pure stub's
-                    // application (cf. the same tie in `MethodEnc`), with the
-                    // addresses of shared references dummied as in every
-                    // pure application (`FunctionCallEncOutput::call_pure`).
-                    let pure_args = local_defs
-                        .args()
-                        .map(|arg| {
-                            let ty = deps.require_dep::<TyUsePureEnc>(arg.ty)?;
-                            Ok(ty.dummy_ref_address(vcx.mk_old_expr(arg.impure_snap)))
-                        })
-                        .collect::<Result<Vec<_>, _>>()?;
-                    stub_posts.push(
-                        vcx.mk_inhale_exhale_expr(
-                            vcx.mk_eq_expr(
-                                local_defs.ret().impure_snap,
-                                pure_function.call()(
-                                    vcx.alloc_slice(&pure_args),
-                                    item_generics.ty_exprs(),
-                                    item_generics.const_exprs(),
-                                ),
-                            ),
-                            vcx.mk_bool::<true>(),
-                        ),
-                    );
-                }
+                // The result of a pure trait method is tied to the pure stub
+                // by the caller, on the deep values of the arguments (see the
+                // call encoding in `ImpureEncVisitor`).
 
                 methods.push(vcx.mk_method(
                     call_stub_impure,

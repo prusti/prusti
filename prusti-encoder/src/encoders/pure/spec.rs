@@ -381,6 +381,18 @@ impl TaskEncoder for MirSpecEnc {
             let args_reach_im = (1..=local_defs.arg_count)
                 .any(|local| crate::encoders::ty::im::reaches_im(local_defs[local.into()].ty));
             let keep_spec = |spec: &MirPureEncOutput<'vir>, span: Span| {
+                // Likewise for one reading the heap through a raw pointer,
+                // whose value `f_` cannot depend on.
+                if enc_mode != MirSpecEncMode::Impure && spec.reads_raw {
+                    if enc_mode == MirSpecEncMode::PureWithResult {
+                        vcx.emit_early_error(PrustiError::incorrect(
+                            "the specification of a `#[pure]` function reads memory through a \
+                             raw pointer",
+                            span.into(),
+                        ));
+                    }
+                    return false;
+                }
                 if !shallow || !spec.calls_pure_unstable {
                     return true;
                 }

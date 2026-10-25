@@ -46,6 +46,9 @@ pub enum ConstEncError {
     /// whose Rust value is a dummy carrying no information: the constant must
     /// be encoded from its MIR body instead.
     LossyBuiltin,
+    /// A trait's associated constant whose impl is not known: its body (the
+    /// trait's default, if any) need not be its value.
+    GenericAssociated,
 }
 
 /// Encodes constants into snapshot expressions. The evaluation of a constant
@@ -344,6 +347,9 @@ impl TaskEncoder for ConstEnc {
             ConstEncError::LossyBuiltin => "the value of a builtin-typed (e.g. `Real`) constant \
                 carries no information and no MIR body is available to encode it from"
                 .to_string(),
+            ConstEncError::GenericAssociated => {
+                "an associated constant of a trait for a generic type".to_string()
+            }
         }
     }
     type OutputFullDependency<'vir> = vir::ExprCSnap<'vir>;
@@ -395,6 +401,13 @@ impl TaskEncoder for ConstEnc {
                             }
                             res => return res,
                         }
+                    } else if uneval.promoted.is_none()
+                        && vcx.tcx().trait_of_assoc(uneval.def).is_some()
+                    {
+                        return Err(EncodeFullError::EncodingError(
+                            ConstEncError::GenericAssociated,
+                            None,
+                        ));
                     }
                     let (kind, gargs) = match uneval.promoted {
                         // The promoted MIR is encoded at identity substs, so

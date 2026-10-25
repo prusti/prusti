@@ -103,12 +103,19 @@ fn generate_new_struct(
         }
     };
     // Propagate the declared supertraits (e.g. `trait Default: Sized`) as
-    // bounds on the self type parameter.
+    // bounds on the self type parameter, where `Self` is that parameter (e.g.
+    // `trait Ord: PartialOrd<Self>`).
+    let mut supertraits = syn::WhereClause {
+        where_token: Default::default(),
+        predicates: Default::default(),
+    };
     for supertrait in &item_trait.supertraits {
-        self_where_clause
+        supertraits
             .predicates
             .push(parse_quote! { #self_type_ident: #supertrait });
     }
+    supertraits.rewrite_self_type(&parse_quote! { #self_type_ident }, Some(&self_type_trait));
+    self_where_clause.predicates.extend(supertraits.predicates);
     new_struct.generics.where_clause = Some(self_where_clause);
 
     add_phantom_data_for_generic_params(&mut new_struct);

@@ -454,9 +454,21 @@ pub(crate) fn unsafe_cell_contract<'vir, E: TaskEncoder>(
     let Some(item) = vcx.tcx().opt_associated_item(def_id) else {
         return Ok(Default::default());
     };
+    // Only `UnsafeCell`'s own methods.
+    let of_unsafe_cell = vcx.tcx().impl_of_assoc(def_id).is_some_and(|impl_did| {
+        vcx.tcx()
+            .type_of(impl_did)
+            .instantiate_identity()
+            .skip_normalization()
+            .ty_adt_def()
+            .is_some_and(|adt| adt.is_unsafe_cell())
+    });
+    if !of_unsafe_cell {
+        return Ok(Default::default());
+    }
     let full = vcx.mk_full_perm();
     match item.name().as_str() {
-        "new" if is_unsafe_cell(args[0].ty) => {
+        "new" if args.len() == 2 && is_unsafe_cell(args[0].ty) => {
             let contents = unsafe_cell_contents(deps, args[0].ty, args[0].local_ex)?;
             let value = vcx.mk_old_expr(args[1].impure_snap);
             let post = vcx.mk_conj(&[contents.acc(full), vcx.mk_eq_expr(contents.snap(), value)]);
@@ -983,6 +995,24 @@ fn footprint_into<'vir, E: TaskEncoder>(
                 shared,
                 condition: None,
             });
+        }
+        // The value a box owns, at its pointee address.
+        TySpecifics::StructLike(data)
+            if ty.ty.special == crate::encoders::ty::RustTySpecial::Box =>
+        {
+            let ty_use = deps.require_dep::<TyUsePureEnc>(ty)?;
+            let variant = ty_use.expect_variant_opt(None);
+            let snap_c = snap.downcast_ty();
+            footprint_into(
+                deps,
+                data.fields.last().unwrap().decompose_normalize(ty.args),
+                variant.box_address_access(snap_c),
+                variant.fields.last().unwrap().read(snap_c),
+                reached,
+                shared,
+                with_dependent,
+                out,
+            )?;
         }
         TySpecifics::StructLike(data)
             if data
@@ -1600,8 +1630,19 @@ fn deep_with<'vir, E: TaskEncoder>(
                         proj.read(snap_c),
                         nested,
                     )?,
-                    // A held pointee (of a `Box` or a `#[ptr_holds]`) is
-                    // shallow.
+                    // The value a box owns, deep.
+                    crate::encoders::ty::RustFieldAddress::Dynamic
+                        if ty.ty.special == crate::encoders::ty::RustTySpecial::Box =>
+                    {
+                        deep_with(
+                            deps,
+                            field.decompose_normalize(ty.args),
+                            variant.box_address_access(snap_c),
+                            proj.read(snap_c),
+                            nested,
+                        )?
+                    }
+                    // A held pointee (of a `#[ptr_holds]`) is shallow.
                     crate::encoders::ty::RustFieldAddress::Dynamic => proj.read(snap_c),
                     // The shared value, deep.
                     crate::encoders::ty::RustFieldAddress::Slot => {
@@ -2001,71 +2042,92 @@ pub(crate) fn program_uses_im() -> bool {
     USES_IM.with(|uses| **uses)
 }
 
-/// Whether `def_id` belongs to the interior-mutability library, whose type
-/// parameters are the contents of interior-mutable values (which reach none
-/// themselves, see `nested_im`): an interior-mutable type, a method of an
-/// impl for one, or a function all of whose type parameters occur only in
-/// the arguments of interior-mutable types in its inputs (e.g.
-/// `refcell_value<T>(c: &RefCell<T>)`).
-pub(crate) fn is_im_library(def_id: DefId) -> bool {
+/// The type parameters of `def_id` that are the contents of interior-mutable
+/// values, which reach none themselves (see `nested_im`), as a set of
+/// parameter indices: all those of an interior-mutable type, and those that
+/// occur directly as arguments of an interior-mutable type (or of an
+/// `UnsafeCell`) in the self type of a method's impl or in a function's
+/// inputs (e.g. `T` of `Cell<T>::get` or of `refcell_value<T>(&RefCell<T>)`).
+pub(crate) fn im_contents_params(def_id: DefId) -> u64 {
     vir::with_vcx(|vcx| {
         let tcx = vcx.tcx();
         let def_id = tcx.typeck_root_def_id(def_id);
-        let im_adt = |ty: &ty::Ty<'_>| {
-            matches!(*ty.kind(), ty::TyKind::Adt(adt, _)
-                if adt.is_unsafe_cell() || is_im_opaque(adt.did()) || is_im_sharer(adt.did()))
-        };
+        let is_im = |did: DefId| is_im_opaque(did) || is_im_sharer(did);
+        let kind = tcx.def_kind(def_id);
         if matches!(
-            tcx.def_kind(def_id),
+            kind,
             prusti_rustc_interface::hir::def::DefKind::Struct
                 | prusti_rustc_interface::hir::def::DefKind::Enum
         ) {
-            return is_im_opaque(def_id) || is_im_sharer(def_id);
+            return if is_im(def_id) { u64::MAX } else { 0 };
         }
+        let mut contents = 0;
+        let mut add = |ty: ty::Ty<'_>| {
+            for inner in ty.walk().filter_map(|arg| arg.as_type()) {
+                let ty::TyKind::Adt(adt, args) = *inner.kind() else {
+                    continue;
+                };
+                if !adt.is_unsafe_cell() && !is_im(adt.did()) {
+                    continue;
+                }
+                for arg in args.types() {
+                    if let ty::TyKind::Param(param) = *arg.kind()
+                        && param.index < 64
+                    {
+                        contents |= 1 << param.index;
+                    }
+                }
+            }
+        };
         if let Some(impl_did) = tcx.impl_of_assoc(def_id) {
-            let self_ty = tcx.type_of(impl_did).instantiate_identity().skip_normalization();
-            return self_ty
-                .walk()
-                .filter_map(|arg| arg.as_type())
-                .any(|ty| im_adt(&ty));
+            add(tcx.type_of(impl_did).instantiate_identity().skip_normalization());
         }
-        if !matches!(
-            tcx.def_kind(def_id),
+        if matches!(
+            kind,
             prusti_rustc_interface::hir::def::DefKind::Fn
+                | prusti_rustc_interface::hir::def::DefKind::AssocFn
         ) {
-            return false;
+            for input in tcx
+                .fn_sig(def_id)
+                .instantiate_identity()
+                .skip_normalization()
+                .skip_binder()
+                .inputs()
+            {
+                add(*input);
+            }
         }
-        let inputs = tcx
-            .fn_sig(def_id)
-            .instantiate_identity()
-            .skip_normalization()
-            .skip_binder()
-            .inputs();
-        // The type parameters inside the arguments of interior-mutable types.
-        let contents = inputs
-            .iter()
-            .flat_map(|ty| ty.walk())
-            .filter_map(|arg| arg.as_type())
-            .filter(im_adt)
-            .flat_map(|ty| ty.walk().skip(1))
-            .filter_map(|arg| arg.as_type())
-            .filter(|ty| matches!(ty.kind(), ty::TyKind::Param(_)))
-            .collect::<Vec<_>>();
-        !contents.is_empty()
-            && inputs
-                .iter()
-                .flat_map(|ty| ty.walk())
-                .filter_map(|arg| arg.as_type())
-                .filter(|ty| matches!(ty.kind(), ty::TyKind::Param(_)))
-                .all(|ty| contents.contains(&ty))
+        contents
     })
 }
 
+/// Whether `ty` is a type parameter of `def_id` that is the contents of
+/// interior-mutable values (see [`im_contents_params`]).
+pub(crate) fn is_im_contents(def_id: DefId, ty: ty::Ty<'_>) -> bool {
+    match *ty.kind() {
+        ty::TyKind::Param(param) => {
+            param.index < 64 && im_contents_params(def_id) & (1 << param.index) != 0
+        }
+        _ => false,
+    }
+}
+
 /// Whether a value of the type parameter `ty` may reach interior-mutable
-/// values: unless it is the contents of one (see `is_im_library`), if the
-/// crate uses interior mutability at all.
+/// values: if the crate uses interior mutability at all, unless it is the
+/// contents of one (see [`im_contents_params`]). Trait objects and
+/// projections, decomposed like type parameters, do not carry generic atoms.
 fn param_reaches_im(ty: RustTyDecomposition<'_>) -> bool {
-    program_uses_im() && !ty.args.context().im_contents()
+    let Some(ty::TyKind::Param(param)) = ty
+        .args
+        .args()
+        .first()
+        .and_then(|arg| arg.as_type())
+        .map(|ty| *ty.kind())
+    else {
+        return false;
+    };
+    program_uses_im()
+        && (param.index >= 64 || ty.args.context().im_contents() & (1 << param.index) == 0)
 }
 
 /// The atom of a value of a type parameter `T`, holding the footprint of
@@ -2193,6 +2255,21 @@ pub(crate) struct GenericPos<'vir> {
 }
 
 impl<'vir> GenericPos<'vir> {
+    /// The concrete atoms of the value, as reached from the argument or the
+    /// result it is in (through a shared reference: possibly aliased).
+    pub(crate) fn footprint<E: TaskEncoder>(
+        &self,
+        deps: &mut TaskEncoderDependencies<'vir, E>,
+    ) -> Result<Vec<FpEntry<'vir>>, EncodeFullError<'vir, E>> {
+        let mut entries = footprint(deps, self.ty, self.addr, self.snap)?;
+        for entry in &mut entries {
+            entry.reached |= self.reached;
+            entry.shared |= self.reached && !self.mutable;
+            *entry = entry.with_condition(self.condition);
+        }
+        Ok(entries)
+    }
+
     /// The snapshot of the value at `addr`, read anew (see `reread`).
     pub(crate) fn reread_snap<E: TaskEncoder>(
         &self,
@@ -2286,6 +2363,20 @@ pub(crate) fn generic_positions<'vir, E: TaskEncoder>(
             let ty_use = deps.require_dep::<TyUsePureEnc>(ty)?;
             let snap_c = snap.downcast_ty();
             match &ty.ty.specifics {
+                // The value a box owns, at its pointee address.
+                TySpecifics::StructLike(data) if adt.is_box() => {
+                    let variant = ty_use.expect_variant_opt(None);
+                    generic_positions(
+                        deps,
+                        dargs.type_at(0),
+                        data.fields.last().unwrap().decompose_normalize(ty.args),
+                        variant.box_address_access(snap_c),
+                        variant.fields.last().unwrap().read(snap_c),
+                        reached,
+                        mutable,
+                        out,
+                    )?;
+                }
                 TySpecifics::StructLike(data)
                     if data.fields.iter().all(|f| {
                         matches!(f.address, crate::encoders::ty::RustFieldAddress::Constant)

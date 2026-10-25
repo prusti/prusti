@@ -73,6 +73,9 @@ pub struct MirPureEncOutput<'vir> {
     /// Whether the body states a permission (`acc`, `im_atoms`; `true` in a
     /// pure context).
     pub states_permission: bool,
+    /// Whether the body (or a spec closure in it) dereferences a raw pointer
+    /// outside an impure context, i.e. reads the heap without a permission.
+    pub reads_raw: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -143,7 +146,8 @@ impl TaskEncoder for MirPureEnc {
         let (_, kind, def_id, gargs) = *task_key;
 
         tracing::debug!("encoding {def_id:?}");
-        let (inputs, expr, calls_pure_unstable, states_permission) = vir::with_vcx(move |vcx| {
+        let (inputs, expr, (calls_pure_unstable, states_permission, reads_raw)) =
+            vir::with_vcx(move |vcx| {
             // The bodies are encoded generically, so they are fetched at the
             // compiler's identity arguments. The one exception is a trait's
             // specification encoded for an `impl` of that trait, which is
@@ -195,8 +199,7 @@ impl TaskEncoder for MirPureEnc {
                 .sorted()
                 .collect::<Vec<_>>();
             let inputs_expected = inputs.len();
-            let calls_pure_unstable = enc.calls_pure_unstable;
-            let states_permission = enc.states_permission;
+            let flags = (enc.calls_pure_unstable, enc.states_permission, enc.reads_raw);
 
             // We wrap the expression with an additional lazy that will perform
             // some sanity checks. These requirements cannot be expressed using
@@ -232,7 +235,7 @@ impl TaskEncoder for MirPureEnc {
                 )
             });
             add_debug_note!(expr.debug_info, "Inner expr: {}", expr_inner.debug_info);
-            Ok((inputs, expr, calls_pure_unstable, states_permission))
+            Ok((inputs, expr, flags))
         })?;
         tracing::debug!("finished {def_id:?}");
 
@@ -243,6 +246,7 @@ impl TaskEncoder for MirPureEnc {
                 expr,
                 calls_pure_unstable,
                 states_permission,
+                reads_raw,
             },
         ))
     }
@@ -335,6 +339,7 @@ struct Enc<'vir: 'enc, 'enc> {
     pure_fn_body: bool,
     calls_pure_unstable: bool,
     states_permission: bool,
+    reads_raw: bool,
 }
 
 struct EncodedPlace<'vir> {
@@ -451,6 +456,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
             pure_fn_body: kind == PureKind::Pure,
             calls_pure_unstable: false,
             states_permission: false,
+            reads_raw: false,
         }
     }
 
@@ -1295,6 +1301,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                         ));
                     }
                     TyKind::RawPtr(pointee, _) => {
+                        self.reads_raw |= !self.impure_context;
                         let e_ty = e_ty.expect_raw();
                         let snap = encoded_place.snap.downcast_ty();
                         let metadata = e_ty.metadata_access(snap);
@@ -1454,8 +1461,9 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
         // TODO: factor this out (duplication with impure encoder)?
         for elem in place.projection {
             // The snapshots of the arguments and the result are pinned to a
-            // state, so the only read of the heap is the dereference of a
-            // mutable reference in an impure context; only that is wrapped.
+            // state, so the only reads of the heap are the dereferences of a
+            // mutable reference or a raw pointer in an impure context; only
+            // those are wrapped.
             // An `old` around a pinned snapshot is a no-op, but breaks the
             // match with the callee's wand at a call site, where the `old` is
             // labelled. Silicon evaluates the heap-independent parts of a wand
@@ -1464,7 +1472,10 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
             // too.
             let heap_read = self.impure_context
                 && matches!(elem, mir::ProjectionElem::Deref)
-                && matches!(place_ty.ty.kind(), TyKind::Ref(.., ty::Mutability::Mut));
+                && matches!(
+                    place_ty.ty.kind(),
+                    TyKind::Ref(.., ty::Mutability::Mut) | TyKind::RawPtr(..)
+                );
             encoded_place = self.encode_place_element(curr_ver, place_ty, *elem, encoded_place)?;
             place_ty = place_ty.projection_ty(self.vcx.tcx(), *elem);
             if heap_read && should_wrap && self.old_mode {
@@ -1570,6 +1581,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
             gargs: GParams::from(cl_def_id).identity_args(),
         })?;
         self.calls_pure_unstable |= body.calls_pure_unstable;
+        self.reads_raw |= body.reads_raw;
         let body = body.expr;
         let reify_args = self.vcx.alloc(reify_args);
         let no_addrs = self.vcx.alloc(FxHashMap::default());

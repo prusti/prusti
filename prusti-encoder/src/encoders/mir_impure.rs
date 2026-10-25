@@ -833,14 +833,13 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
     }
 
     /// Whether the value at `pos` (for a call to `callee`) is converted to and
-    /// from its generic atom: if the callee takes generic atoms (it is no item
-    /// of the interior-mutability library, see `im::is_im_library`), unless
-    /// the caller passes on its own generic atom (a value of its own type
-    /// parameter, which it holds unless it is a library item itself).
+    /// from its generic atom: if the callee takes one (its type parameter is
+    /// not the contents of interior-mutable values, see
+    /// `im::im_contents_params`), unless the caller passes on its own generic
+    /// atom (of a value of its own type parameter that may reach some).
     fn converts_generic(&self, callee: DefId, pos: &crate::encoders::ty::im::GenericPos<'vir>) -> bool {
-        let callee_takes = !crate::encoders::ty::im::is_im_library(callee);
-        let caller_holds = !crate::encoders::ty::im::is_im_library(self.def_id);
-        callee_takes && !(pos.identity && caller_holds)
+        let callee_takes = !crate::encoders::ty::im::is_im_contents(callee, pos.param);
+        callee_takes && !(pos.identity && crate::encoders::ty::im::reaches_im(pos.ty))
     }
 
     /// Whether `callee` gets bare generic tokens, keeping the concrete atoms
@@ -894,24 +893,22 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 None => expr,
             }
         };
-        let mut exhales = Vec::new();
+        // Positions may alias (e.g. `f(&c, &c)`): the concrete atoms are
+        // released as one footprint, a generic atom is inhaled once.
+        let mut entries = Vec::new();
         let mut inhales = Vec::new();
-        for pos in positions {
+        for (idx, pos) in positions.iter().enumerate() {
             let ty_expr = self
                 .deps
                 .require_dep::<crate::encoders::ty::generics::TyExprEnc>(pos.ty)?;
+            let acc = crate::encoders::ty::im::param_atom_acc(self.deps, pos.addr, ty_expr)?;
+            inhales.push(conditional(Self::generic_token_condition(positions, idx), acc));
             if token_only {
-                let acc = crate::encoders::ty::im::param_atom_acc(self.deps, pos.addr, ty_expr)?;
-                inhales.push(conditional(pos.condition, acc));
                 continue;
             }
-            let entries = crate::encoders::ty::im::footprint(self.deps, pos.ty, pos.addr, pos.snap)?;
+            entries.extend(pos.footprint(self.deps)?);
             let deep = crate::encoders::ty::im::deep_snap(self.deps, pos.ty, pos.addr, pos.snap)?;
             let caster = self.generic_pos_caster(callee, substs, pos)?;
-            for release in crate::encoders::ty::im::footprint_release(&entries) {
-                exhales.push(conditional(pos.condition, release));
-            }
-            let acc = crate::encoders::ty::im::param_atom_acc(self.deps, pos.addr, ty_expr)?;
             let snap = crate::encoders::ty::im::param_atom_snap(
                 self.deps,
                 pos.addr,
@@ -919,15 +916,40 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 ty_expr,
             )?;
             let same = vcx.mk_eq_expr(snap, caster.cast_to_callee_ctx(vcx.mk_old(deep, before)));
-            inhales.push(conditional(pos.condition, vcx.mk_conj(&[acc, same])));
+            inhales.push(conditional(pos.condition, same));
         }
-        for exhale in exhales {
-            self.stmt(vcx.mk_exhale_stmt(exhale));
+        for release in crate::encoders::ty::im::footprint_release(&entries) {
+            self.stmt(vcx.mk_exhale_stmt(release));
         }
         for inhale in inhales {
             self.stmt(vcx.mk_inhale_stmt(inhale));
         }
         Ok(())
+    }
+
+    /// Where the generic atom of the value at `positions[idx]` is held: where
+    /// the value is, and no earlier position of the same type behind a shared
+    /// reference, as this one is, is at the same address (other positions
+    /// cannot alias).
+    fn generic_token_condition(
+        positions: &[crate::encoders::ty::im::GenericPos<'vir>],
+        idx: usize,
+    ) -> Option<vir::ExprBool<'vir>> {
+        let shared = |pos: &crate::encoders::ty::im::GenericPos<'vir>| pos.reached && !pos.mutable;
+        vir::with_vcx(|vcx| {
+            let pos = &positions[idx];
+            let mut conjs = pos.condition.into_iter().collect::<Vec<_>>();
+            conjs.extend(
+                positions[..idx]
+                    .iter()
+                    .filter(|other| shared(pos) && shared(other) && other.ty == pos.ty)
+                    .map(|other| {
+                        vcx.mk_bin_op_expr(vir::BinOpKind::CmpNe, pos.addr, other.addr)
+                            .downcast_ty()
+                    }),
+            );
+            (!conjs.is_empty()).then(|| vcx.mk_conj(&conjs))
+        })
     }
 
     /// Converts the generic atoms of the values at `positions` (returned by a
@@ -963,33 +985,25 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 .require_dep::<crate::encoders::ty::generics::TyExprEnc>(pos.ty)?;
             let caster = self.generic_pos_caster(callee, substs, pos)?;
             let acc = crate::encoders::ty::im::param_atom_acc(self.deps, pos.addr, ty_expr)?;
-            let distinct = positions[..idx]
-                .iter()
-                .filter(|other| other.ty == pos.ty)
-                .map(|other| vcx.mk_bin_op_expr(vir::BinOpKind::CmpNe, pos.addr, other.addr))
-                .map(|ne| ne.downcast_ty())
-                .collect::<Vec<_>>();
-            let condition = match (pos.condition, distinct.is_empty()) {
-                (condition, true) => condition,
-                (Some(condition), false) => {
-                    Some(vcx.mk_conj(&[&[condition][..], &distinct].concat()))
-                }
-                (None, false) => Some(vcx.mk_conj(&distinct)),
-            };
-            self.stmt(vcx.mk_exhale_stmt(conditional(condition, acc)));
-            // A value without interior-mutable parts only drops its token.
-            if !crate::encoders::ty::im::reaches_im(pos.ty) {
-                continue;
-            }
+            let condition = Self::generic_token_condition(positions, idx);
             let generic = crate::encoders::ty::im::param_atom_snap(
                 self.deps,
                 pos.addr,
                 caster.cast_to_callee_ctx(pos.snap),
                 ty_expr,
             )?;
-            for entry in crate::encoders::ty::im::footprint(self.deps, pos.ty, pos.addr, pos.snap)? {
-                entries.push(entry.with_condition(pos.condition));
+            // A value without interior-mutable parts drops its token; its deep
+            // value is its value.
+            if !crate::encoders::ty::im::reaches_im(pos.ty) {
+                self.stmt(vcx.mk_inhale_stmt(conditional(
+                    condition,
+                    vcx.mk_eq_expr(pos.snap, caster.cast_to_caller_ctx(generic)),
+                )));
+                self.stmt(vcx.mk_exhale_stmt(conditional(condition, acc)));
+                continue;
             }
+            self.stmt(vcx.mk_exhale_stmt(conditional(condition, acc)));
+            entries.extend(pos.footprint(self.deps)?);
             let deep = crate::encoders::ty::im::deep_snap(self.deps, pos.ty, pos.addr, pos.snap)?;
             relations.push(conditional(
                 pos.condition,
@@ -1099,8 +1113,10 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             .into_iter()
             .partition(|pos| self.converts_generic(callee, pos));
         result_positions = converted;
-        let caller_holds = !crate::encoders::ty::im::is_im_library(self.def_id);
-        for pos in granted.iter().filter(|pos| pos.identity && caller_holds) {
+        for pos in granted
+            .iter()
+            .filter(|pos| pos.identity && crate::encoders::ty::im::reaches_im(pos.ty))
+        {
             let ty_expr = self
                 .deps
                 .require_dep::<crate::encoders::ty::generics::TyExprEnc>(pos.ty)?;
@@ -2348,7 +2364,8 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
     ) -> EncodeResult<'vir, (), E> {
         let mir::Rvalue::Aggregate(box kind, operands) = rvalue else {
             if let Some(moved) = moved.into_iter().next() {
-                self.im_give_moved_to(ty, dest, moved)?;
+                let snap = self.ty_use_impure(ty).ref_to_snap(dest);
+                self.im_give_moved_to(ty, dest, snap, moved)?;
             }
             return Ok(());
         };
@@ -2362,13 +2379,15 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 _ => None,
             };
             let ty_use = self.ty_use_pure(ty);
+            // The fields are read from the value's (folded) snapshot.
+            let snap = self.ty_use_impure(ty).ref_to_snap(dest).downcast_ty();
             for ((idx, operand), moved) in operands.iter_enumerated().zip(moved) {
                 if moved.is_empty() {
                     continue;
                 }
                 let field_ty = operand.ty(self.local_decls, self.vcx.tcx());
-                let field = ty_use.expect_variant_opt(variant).fields[idx.as_usize()].field_ref(dest);
-                self.im_give_moved_to(field_ty, field, moved)?;
+                let proj = &ty_use.expect_variant_opt(variant).fields[idx.as_usize()];
+                self.im_give_moved_to(field_ty, proj.field_ref(dest), proj.read(snap), moved)?;
             }
         }
         let ty = RustTyDecomposition::from_ty(ty, self.def_id);
@@ -2377,11 +2396,13 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         Ok(())
     }
 
-    /// The place `dest` of type `ty` receives the `moved` parts of a value.
+    /// The place `dest` of type `ty` with snapshot `snap` receives the `moved`
+    /// parts of a value.
     fn im_give_moved_to(
         &mut self,
         ty: ty::Ty<'vir>,
         dest: vir::ExprRef<'vir>,
+        snap: vir::ExprSnap<'vir>,
         moved: Moved<'vir>,
     ) -> EncodeResult<'vir, (), E> {
         let decomp = RustTyDecomposition::from_ty(ty, self.def_id);
@@ -2397,9 +2418,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             return Ok(());
         }
         let contents = moved.contents;
-        let ty_out = self.ty_use_impure(ty);
         let ty = RustTyDecomposition::from_ty(ty, self.def_id);
-        let snap = ty_out.ref_to_snap(dest);
         let entries = crate::encoders::ty::im::footprint(self.deps, ty, dest, snap)?;
         let mut moved = contents.into_iter();
         for entry in entries.into_iter().filter(|e| !e.reached) {
@@ -2593,8 +2612,27 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         if !has_drop_contract(tcx, ty, &mut Vec::new()) {
             return Ok(());
         }
+        if let ty::TyKind::Tuple(field_tys) = *ty.kind() {
+            let ty_use = self.ty_use_impure(ty);
+            let addr = self
+                .encode_place(Place::from(place))?
+                .expr
+                .expect_predicate();
+            self.stmts(ty_use.unfold(None, addr, None, None, None));
+            for (idx, field_ty) in field_tys.iter().enumerate() {
+                if has_drop_contract(tcx, field_ty, &mut Vec::new()) {
+                    let field = mir::ProjectionElem::Field(
+                        prusti_rustc_interface::abi::FieldIdx::from_usize(idx),
+                        field_ty,
+                    );
+                    self.apply_drop_contract(place.project_deeper(&[field], tcx), span)?;
+                }
+            }
+            self.stmts(ty_use.fold(None, addr, None, None, None));
+            return Ok(());
+        }
         let ty::TyKind::Adt(adt, args) = *ty.kind() else {
-            unreachable!("only ADTs hold drop contracts")
+            unreachable!("only ADTs and tuples hold drop contracts")
         };
         let ty_use = self.ty_use_impure(ty);
         let addr = self
@@ -4191,6 +4229,11 @@ fn has_drop_contract<'tcx>(
 ) -> bool {
     if crate::encoders::get_type_drop_spec(ty).is_some() {
         return true;
+    }
+    if let ty::TyKind::Tuple(field_tys) = *ty.kind() {
+        return field_tys
+            .iter()
+            .any(|field_ty| has_drop_contract(tcx, field_ty, seen));
     }
     let ty::TyKind::Adt(adt, args) = *ty.kind() else {
         return false;
