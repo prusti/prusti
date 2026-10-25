@@ -3,7 +3,7 @@
 //! An `UnsafeCell`'s contents are an interior location: its predicate holds
 //! only the place component, and its snapshot has a slot for the contents.
 //! Shallow snapshots (what predicates hold) have [`ImUnsetEnc`] in the slot,
-//! deep snapshots (what specifications and `#[pure_unstable]` functions see)
+//! deep snapshots (what specifications and `#[pure]` functions see)
 //! have the contents.
 //!
 //! An `#[im_opaque]` struct has a key, the address of a value of it, and an
@@ -2096,7 +2096,7 @@ pub(crate) fn program_uses_im() -> bool {
 
 /// Whether `ty` mentions a type that holds an interior-mutable one (in its
 /// fields, transitively).
-pub(crate) fn holds_im<'tcx>(
+fn holds_im<'tcx>(
     tcx: ty::TyCtxt<'tcx>,
     ty: ty::Ty<'tcx>,
     seen: &mut FxHashSet<ty::Ty<'tcx>>,

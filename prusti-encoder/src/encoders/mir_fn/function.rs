@@ -482,23 +482,6 @@ impl TaskEncoder for FunctionEnc {
                     parent_def_id: def_id,
                     gargs: params.identity_args(),
                 }) {
-                    // A `#[pure]` function sees shallow values, whose
-                    // interior-mutable contents are a constant.
-                    Ok(out)
-                        if out.calls_pure_unstable
-                            && !crate::encoders::is_pure_unstable(def_id) =>
-                    {
-                        vcx.emit_early_error(PrustiError::incorrect(
-                            format!(
-                                "the `#[pure]` function `{}` reads interior-mutable state \
-                                 (through a `#[pure_unstable]` function); mark it \
-                                 `#[pure_unstable]`",
-                                vcx.tcx().def_path_str(def_id),
-                            ),
-                            vcx.tcx().def_span(def_id).into(),
-                        ));
-                        None
-                    }
                     Ok(out) => {
                         let expr = out.expr.reify(
                             vcx,

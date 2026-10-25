@@ -309,7 +309,7 @@ pub struct Cell<T: ?Sized> {
 }
 
 /// The contents of an `UnsafeCell`: its slot in the deep snapshot.
-#[pure_unstable]
+#[pure]
 #[trusted]
 #[field_projection(value)]
 pub fn im_get<T: ?Sized>(_c: &UnsafeCell<T>) -> &T {
@@ -338,7 +338,7 @@ const fn mem_replace<T>(dest: &mut T, src: T) -> T {
 }
 
 /// The current value of a `Cell`.
-#[pure_unstable]
+#[pure]
 pub fn cell_value<T: ?Sized>(c: &Cell<T>) -> &T {
     im_get(&c.value)
 }
@@ -377,7 +377,7 @@ const impl<T: [const] Default> Default for Cell<T> {
 impl<T: PartialEq + Copy> PartialEq for Cell<T> {
     #[inline]
     // `PartialEq::eq` is pure; it reads the contents.
-    #[pure_unstable]
+    #[pure]
     fn eq(&self, other: &Cell<T>) -> bool {
         self.get() == other.get()
     }
@@ -573,7 +573,7 @@ impl<T: Copy> Cell<T> {
     /// let five = c.get();
     /// ```
     #[inline]
-    #[pure_unstable]
+    #[pure]
     #[trusted]
     #[ensures(result === *cell_value(self))]
     pub const fn get(&self) -> T {
@@ -957,13 +957,13 @@ pub fn ref_token() -> Real {
 
 /// The borrow flag of a `RefCell`: `0` = free, `n > 0` = `n` shared borrows,
 /// `-1` = mutably borrowed.
-#[pure_unstable]
+#[pure]
 pub fn refcell_count<T: ?Sized>(c: &RefCell<T>) -> isize {
     c.borrow.get()
 }
 
 /// The contents of a `RefCell` (meaningful while the flag is not negative).
-#[pure_unstable]
+#[pure]
 pub fn refcell_value<T: ?Sized>(c: &RefCell<T>) -> &T {
     im_get(&c.value)
 }
@@ -1025,13 +1025,13 @@ pub fn refmut_flag<'b, T: ?Sized>(_r: &RefMut<'b, T>) -> &'b Cell<BorrowCounter>
 }
 
 /// The borrow flag as seen through a `Ref`.
-#[pure_unstable]
+#[pure]
 pub fn ref_count<'b, T: ?Sized>(r: &Ref<'b, T>) -> isize {
     ref_flag(r).get()
 }
 
 /// The borrow flag as seen through a `RefMut`.
-#[pure_unstable]
+#[pure]
 pub fn refmut_count<'b, T: ?Sized>(r: &RefMut<'b, T>) -> isize {
     refmut_flag(r).get()
 }
@@ -1603,7 +1603,7 @@ impl<T: ?Sized + PartialEq> PartialEq for RefCell<T> {
     /// Panics if the value in either `RefCell` is currently mutably borrowed.
     #[inline]
     // `PartialEq::eq` is pure, the body is not. It reads the contents.
-    #[pure_unstable]
+    #[pure]
     #[trusted]
     fn eq(&self, other: &RefCell<T>) -> bool {
         *self.borrow() == *other.borrow()

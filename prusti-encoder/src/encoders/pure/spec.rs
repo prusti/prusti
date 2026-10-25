@@ -368,18 +368,14 @@ impl TaskEncoder for MirSpecEnc {
             };
             let pre_addrs = vcx.alloc(arg_addrs);
 
-            // In the pure modes (a function's `f_`, trait axioms), the
+            // In the pure modes of an impure method (trait axioms), the
             // arguments and the result are shallow snapshots, whose
-            // interior-mutable contents are a constant, unless the function
-            // is `#[pure_unstable]`. A spec reading them (calling a
-            // `#[pure_unstable]` function) is kept in the method's contract
-            // alone (a precondition becomes `false` in the pure modes). For
-            // `f_`, it is an error if the arguments reach any, since the
-            // method's result is tied to `f_`.
+            // interior-mutable contents are a constant (pure functions see
+            // deep values). A spec reading them is kept in the method's
+            // contract alone (a precondition becomes `false` in the pure
+            // modes).
             let shallow = enc_mode != MirSpecEncMode::Impure
-                && !crate::encoders::is_pure_unstable(context_def_id);
-            let args_reach_im = (1..=local_defs.arg_count)
-                .any(|local| crate::encoders::ty::im::reaches_im(local_defs[local.into()].ty));
+                && !crate::encoders::pure_sees_deep(context_def_id);
             let keep_spec = |spec: &MirPureEncOutput<'vir>, span: Span| {
                 // Likewise for one reading the heap through a raw pointer,
                 // whose value `f_` cannot depend on.
@@ -393,17 +389,7 @@ impl TaskEncoder for MirSpecEnc {
                     }
                     return false;
                 }
-                if !shallow || !spec.calls_pure_unstable {
-                    return true;
-                }
-                if enc_mode == MirSpecEncMode::PureWithResult && args_reach_im {
-                    vcx.emit_early_error(PrustiError::incorrect(
-                        "the specification of a `#[pure]` function reads the interior-mutable \
-                         state its arguments reach; mark the function `#[pure_unstable]`",
-                        span.into(),
-                    ));
-                }
-                false
+                !shallow || !spec.reads_im
             };
 
             // Encode each functional precondition; if one cannot be encoded (e.g.

@@ -92,7 +92,6 @@ fn extract_prusti_attributes(
                     }
                     // Nothing to do for attributes without arguments.
                     SpecAttributeKind::Pure
-                    | SpecAttributeKind::PureUnstable
                     | SpecAttributeKind::Terminates
                     | SpecAttributeKind::Trusted
                     | SpecAttributeKind::Predicate
@@ -180,9 +179,6 @@ fn generate_spec_and_assertions(
                 generate_for_assert_on_expiry(attr_tokens, attr_span, item)
             }
             SpecAttributeKind::Pure => generate_for_pure(attr_tokens, attr_span, item),
-            SpecAttributeKind::PureUnstable => {
-                generate_for_pure_unstable(attr_tokens, attr_span, item)
-            }
             SpecAttributeKind::Verified => generate_for_verified(attr_tokens, attr_span, item),
             SpecAttributeKind::Terminates => generate_for_terminates(attr_tokens, attr_span, item),
             SpecAttributeKind::Trusted => generate_for_trusted(attr_tokens, attr_span, item),
@@ -331,33 +327,6 @@ fn generate_for_pure(attr: TokenStream, span: Span, _item: &untyped::AnyFnItem) 
         vec![parse_quote_spanned! {span=>
             #[prusti::pure]
         }],
-    ))
-}
-
-/// Generate attributes to mark a function as `pure_unstable`: a pure function
-/// that sees the deep values of interior-mutable objects.
-fn generate_for_pure_unstable(
-    attr: TokenStream,
-    span: Span,
-    _item: &untyped::AnyFnItem,
-) -> GeneratedResult {
-    if !attr.is_empty() {
-        return Err(syn::Error::new(
-            attr.span(),
-            "the `#[pure_unstable]` attribute does not take parameters",
-        ));
-    }
-
-    Ok((
-        vec![],
-        vec![
-            parse_quote_spanned! {span=>
-                #[prusti::pure]
-            },
-            parse_quote_spanned! {span=>
-                #[prusti::pure_unstable]
-            },
-        ],
     ))
 }
 
@@ -1133,7 +1102,7 @@ pub fn im_type_attribute(name: &str, attr: TokenStream, tokens: TokenStream) -> 
                 #[doc(hidden)]
                 #[allow(non_snake_case, dead_code, unused_variables)]
                 #[prusti::im_amount = #kind]
-                #[::prusti_contracts::pure_unstable]
+                #[::prusti_contracts::pure]
                 fn #fn_name(&self) -> ::prusti_contracts::Real {
                     #amount
                 }
@@ -1145,7 +1114,7 @@ pub fn im_type_attribute(name: &str, attr: TokenStream, tokens: TokenStream) -> 
                 #[doc(hidden)]
                 #[allow(non_snake_case, dead_code)]
                 #[prusti::im_amount = "assume"]
-                #[::prusti_contracts::pure_unstable]
+                #[::prusti_contracts::pure]
                 fn prusti_im_assume(&self) -> bool {
                     #expr
                 }
@@ -1538,7 +1507,6 @@ fn extract_prusti_attributes_for_types(
                     SpecAttributeKind::AssertOnExpiry => unreachable!("assert_on_expiry on type"),
                     SpecAttributeKind::RefineSpec => unreachable!("refine_spec on type"),
                     SpecAttributeKind::Pure => unreachable!("pure on type"),
-                    SpecAttributeKind::PureUnstable => unreachable!("pure_unstable on type"),
                     SpecAttributeKind::Verified => unreachable!("verified on type"),
                     SpecAttributeKind::Invariant => unreachable!("invariant on type"),
                     SpecAttributeKind::Predicate => unreachable!("predicate on type"),
@@ -1585,7 +1553,6 @@ fn generate_spec_and_assertions_for_types(
             SpecAttributeKind::AfterExpiry => unreachable!(),
             SpecAttributeKind::AssertOnExpiry => unreachable!(),
             SpecAttributeKind::Pure => unreachable!(),
-            SpecAttributeKind::PureUnstable => unreachable!(),
             SpecAttributeKind::Verified => unreachable!(),
             SpecAttributeKind::Predicate => unreachable!(),
             SpecAttributeKind::Invariant => unreachable!(),

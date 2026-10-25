@@ -214,34 +214,24 @@ pub fn address_body(def_id: DefId) -> Option<AddressBody> {
     })
 }
 
-/// Whether `def_id` is `#[pure_unstable]`: a pure function that sees deep
-/// values (the contents of the interior-mutable values its arguments reach).
-/// A method derived (e.g. by `#[derive(PartialEq)]`) for a type holding
-/// interior-mutable values reads them, so it is too.
-pub fn is_pure_unstable(def_id: DefId) -> bool {
+/// Whether `def_id` is a pure function that sees deep values (the contents of
+/// the interior-mutable values its arguments reach): every one, if the crate
+/// uses interior mutability (otherwise deep values are shallow ones).
+pub fn pure_sees_deep(def_id: DefId) -> bool {
     let substs = ty::GenericArgs::identity_for_item(vir::with_vcx(|vcx| vcx.tcx()), def_id);
-    with_proc_spec(SpecQuery::GetProcKind(def_id, substs), |proc_spec| {
-        proc_spec.pure_unstable.extract_inherit().unwrap_or(false)
-    })
-    .unwrap_or(false)
-        || vir::with_vcx(|vcx| {
-            vcx.tcx().impl_of_assoc(def_id).is_some_and(|impl_did| {
-                vcx.tcx().is_builtin_derived(impl_did)
-                    && crate::encoders::ty::im::holds_im(
-                        vcx.tcx(),
-                        vcx.tcx().type_of(impl_did).instantiate_identity().skip_normalization(),
-                        &mut Default::default(),
-                    )
-            })
+    crate::encoders::ty::im::program_uses_im()
+        && with_proc_spec(SpecQuery::GetProcKind(def_id, substs), |proc_spec| {
+            kind_is_pure(&proc_spec.kind)
         })
+        .unwrap_or(false)
 }
 
 /// A call to a trait method whose statically known impl carries its own
-/// specification (an `extern_spec`, a trusted impl with postconditions, a
-/// pure impl of an impure method, or a `#[pure_unstable]` function) goes
-/// directly to the impl: such a contract may read the heap (deep values,
-/// pledges of a `&mut` result), so it cannot be stated by the axioms of the
-/// trait method's stub. `typing_env` is the context of `substs`.
+/// specification (an `extern_spec`, a trusted impl with postconditions, or a
+/// pure impl of an impure method) goes directly to the impl: such a contract
+/// may read the heap (deep values, pledges of a `&mut` result), so it cannot
+/// be stated by the axioms of the trait method's stub. `typing_env` is the
+/// context of `substs`.
 pub fn resolve_specced_trait_call<'tcx>(
     typing_env: ty::TypingEnv<'tcx>,
     def_id: DefId,
@@ -281,7 +271,7 @@ pub fn resolve_specced_trait_call<'tcx>(
             kind_is_pure(&proc_spec.kind)
         })
         .unwrap_or(false);
-    if has_extern_spec || pure_impl || trusted_with_posts || is_pure_unstable(resolved) {
+    if has_extern_spec || pure_impl || trusted_with_posts {
         (resolved, resolved_substs)
     } else {
         (def_id, substs)

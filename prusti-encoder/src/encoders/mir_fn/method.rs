@@ -315,14 +315,14 @@ impl TaskEncoder for MethodEnc {
             // method's body by construction. Closures have no `f_`.
             let is_pure =
                 crate::encoders::is_function_pure(def_id, GArgs::new(params, params.rust_params()));
+            let mut pure_tie = None;
             if is_pure && !vcx.tcx().is_closure_like(def_id) {
                 let pure_func = deps.require_dep_spanned::<FunctionCallEnc>(
                     CallTaskDescription::new(def_id, params.rust_params(), def_id)
                         .resolve_trait_calls(false),
                     span,
                 )?;
-                // A `#[pure_unstable]` function sees deep values.
-                let deep = crate::encoders::is_pure_unstable(def_id);
+                let deep = crate::encoders::pure_sees_deep(def_id);
                 let arg_snaps = (1..arg_count)
                     .map(mir::Local::from)
                     .map(|arg_idx| {
@@ -340,11 +340,21 @@ impl TaskEncoder for MethodEnc {
                         Ok(vcx.mk_old_expr(snap))
                     })
                     .collect::<Result<Vec<_>, EncodeFullError<'vir, MethodEnc>>>()?;
-                posts.push(vcx.mk_inhale_exhale_expr(
-                    vcx.mk_eq_expr(
-                        arg_defs[mir::RETURN_PLACE].impure_snap,
-                        pure_func.call_pure(arg_snaps),
-                    ),
+                // The result's deep value reads the atoms its footprint
+                // grants: the tie follows the footprints.
+                let result = &arg_defs[mir::RETURN_PLACE];
+                let result_snap = if deep {
+                    crate::encoders::ty::im::deep_snap(
+                        deps,
+                        result.ty,
+                        result.local_ex,
+                        result.impure_snap,
+                    )?
+                } else {
+                    result.impure_snap
+                };
+                pure_tie = Some(vcx.mk_inhale_exhale_expr(
+                    vcx.mk_eq_expr(result_snap, pure_func.call_pure(arg_snaps)),
                     vcx.mk_bool::<true>(),
                 ));
             }
@@ -592,6 +602,7 @@ impl TaskEncoder for MethodEnc {
                 crate::encoders::ty::im::unsafe_cell_contract(deps, def_id, &defs)?;
             pres.extend(cell_pres);
             posts.extend(cell_posts);
+            posts.extend(pure_tie);
             // A pure function changes no interior-mutable state: the deep
             // values of its arguments are framed.
             if is_pure {

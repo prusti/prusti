@@ -298,14 +298,14 @@ fn rc_ptr<T: ?Sized, A: Allocator>(_r: &Rc<T, A>) -> NonNull<RcInner<T>> {
 }
 
 /// The strong count of an `Rc`'s allocation.
-#[pure_unstable]
+#[pure]
 fn rc_strong<T: ?Sized, A: Allocator>(r: &Rc<T, A>) -> usize {
     rc_inner(r).strong.get()
 }
 
 /// The weak count of an `Rc`'s allocation (with the implicit weak pointer
 /// of the strong ones).
-#[pure_unstable]
+#[pure]
 fn rc_weak<T: ?Sized, A: Allocator>(r: &Rc<T, A>) -> usize {
     rc_inner(r).weak.get()
 }
@@ -344,13 +344,13 @@ fn weak_dangles<T: ?Sized, A: Allocator>(w: &Weak<T, A>) -> bool {
 }
 
 /// The strong count of a (not dangling) `Weak`'s allocation.
-#[pure_unstable]
+#[pure]
 fn weak_strong<T: ?Sized, A: Allocator>(w: &Weak<T, A>) -> usize {
     weak_inner(w).strong.get()
 }
 
 /// The weak count of a (not dangling) `Weak`'s allocation.
-#[pure_unstable]
+#[pure]
 fn weak_weak<T: ?Sized, A: Allocator>(w: &Weak<T, A>) -> usize {
     weak_inner(w).weak.get()
 }
@@ -690,7 +690,7 @@ impl<T: ?Sized, A: Allocator> Rc<T, A> {
     /// assert_eq!(1, Rc::weak_count(&five));
     /// ```
     #[inline]
-    #[pure_unstable]
+    #[pure]
     #[trusted]
     #[ensures(result == rc_weak(this) - 1)]
     pub fn weak_count(this: &Self) -> usize {
@@ -710,7 +710,7 @@ impl<T: ?Sized, A: Allocator> Rc<T, A> {
     /// assert_eq!(2, Rc::strong_count(&five));
     /// ```
     #[inline]
-    #[pure_unstable]
+    #[pure]
     #[trusted]
     #[ensures(result == rc_strong(this))]
     pub fn strong_count(this: &Self) -> usize {
@@ -1145,7 +1145,7 @@ impl<T: ?Sized, A: Allocator> Weak<T, A> {
     ///
     /// If `self` was created using [`Weak::new`], this will return 0.
     #[must_use]
-    #[pure_unstable]
+    #[pure]
     #[trusted]
     #[ensures(result == if weak_dangles(self) { 0 } else { weak_strong(self) })]
     pub fn strong_count(&self) -> usize {
@@ -1156,7 +1156,7 @@ impl<T: ?Sized, A: Allocator> Weak<T, A> {
     ///
     /// If no strong pointers remain, this will return zero.
     #[must_use]
-    #[pure_unstable]
+    #[pure]
     #[trusted]
     #[ensures(result == if weak_dangles(self) {
         0

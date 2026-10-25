@@ -18,7 +18,6 @@ pub enum SpecAttributeKind {
     Terminates = 10,
     PrintCounterexample = 11,
     Verified = 12,
-    PureUnstable = 13,
 }
 
 impl TryFrom<String> for SpecAttributeKind {
@@ -39,7 +38,6 @@ impl TryFrom<String> for SpecAttributeKind {
             "model" => Ok(SpecAttributeKind::Model),
             "print_counterexample" => Ok(SpecAttributeKind::PrintCounterexample),
             "verified" => Ok(SpecAttributeKind::Verified),
-            "pure_unstable" => Ok(SpecAttributeKind::PureUnstable),
             _ => Err(name),
         }
     }

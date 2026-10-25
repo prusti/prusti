@@ -136,11 +136,6 @@ pub use prusti_contracts_proc_macros::im_shares;
 /// re-read after a call.
 pub use prusti_contracts_proc_macros::im_assume;
 
-/// A macro for marking a function as pure but seeing the deep values of the
-/// interior-mutable objects reachable from its arguments (so its result may
-/// change between two calls with equal arguments).
-pub use prusti_contracts_proc_macros::pure_unstable;
-
 /// A macro for marking a function as trusted.
 pub use prusti_contracts_proc_macros::trusted;
 

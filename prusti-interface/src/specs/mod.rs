@@ -42,7 +42,6 @@ use prusti_specs::specifications::common::SpecificationId;
 struct ProcedureSpecRefs {
     spec_id_refs: Vec<SpecIdRef>,
     pure: bool,
-    pure_unstable: bool,
     abstract_predicate: bool,
     trusted: bool,
 }
@@ -232,10 +231,6 @@ impl<'a, 'tcx> SpecCollector<'a, 'tcx> {
                         spec.set_terminates(*self.spec_functions.get(spec_id).unwrap());
                     }
                 }
-            }
-
-            if refs.pure_unstable {
-                spec.set_pure_unstable();
             }
 
             // An `#[extern_spec]` is assumed whether or not it says
@@ -597,7 +592,6 @@ fn get_procedure_spec_ids(def_id: DefId, attrs: &[hir::Attribute]) -> Option<Pro
     );
 
     let pure = has_prusti_attr(attrs, "pure");
-    let pure_unstable = has_prusti_attr(attrs, "pure_unstable");
     let trusted = has_prusti_attr(attrs, "trusted")
         || (!is_predicate && config::opt_in_verification() && !has_prusti_attr(attrs, "verified"));
     let abstract_predicate = has_abstract_predicate_attr(attrs);
@@ -606,7 +600,6 @@ fn get_procedure_spec_ids(def_id: DefId, attrs: &[hir::Attribute]) -> Option<Pro
         Some(ProcedureSpecRefs {
             spec_id_refs,
             pure,
-            pure_unstable,
             abstract_predicate,
             trusted,
         })

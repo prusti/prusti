@@ -67,9 +67,9 @@ type SpecClosure<'vir> = (
 pub struct MirPureEncOutput<'vir> {
     pub inputs: Vec<mir::Local>,
     pub expr: ExprRet<'vir>,
-    /// Whether the body (or a spec closure in it) calls a `#[pure_unstable]`
-    /// function, which reads deep values.
-    pub calls_pure_unstable: bool,
+    /// Whether the body (or a spec closure in it) calls a pure function on
+    /// values that reach interior-mutable ones, which reads their contents.
+    pub reads_im: bool,
     /// Whether the body states a permission (`acc`, `im_atoms`; `true` in a
     /// pure context).
     pub states_permission: bool,
@@ -146,7 +146,7 @@ impl TaskEncoder for MirPureEnc {
         let (_, kind, def_id, gargs) = *task_key;
 
         tracing::debug!("encoding {def_id:?}");
-        let (inputs, expr, (calls_pure_unstable, states_permission, reads_raw)) =
+        let (inputs, expr, (reads_im, states_permission, reads_raw)) =
             vir::with_vcx(move |vcx| {
             // The bodies are encoded generically, so they are fetched at the
             // compiler's identity arguments. The one exception is a trait's
@@ -199,7 +199,7 @@ impl TaskEncoder for MirPureEnc {
                 .sorted()
                 .collect::<Vec<_>>();
             let inputs_expected = inputs.len();
-            let flags = (enc.calls_pure_unstable, enc.states_permission, enc.reads_raw);
+            let flags = (enc.reads_im, enc.states_permission, enc.reads_raw);
 
             // We wrap the expression with an additional lazy that will perform
             // some sanity checks. These requirements cannot be expressed using
@@ -244,7 +244,7 @@ impl TaskEncoder for MirPureEnc {
             MirPureEncOutput {
                 inputs,
                 expr,
-                calls_pure_unstable,
+                reads_im,
                 states_permission,
                 reads_raw,
             },
@@ -337,7 +337,7 @@ struct Enc<'vir: 'enc, 'enc> {
     impure_context: bool,
     spec_closure: bool,
     pure_fn_body: bool,
-    calls_pure_unstable: bool,
+    reads_im: bool,
     states_permission: bool,
     reads_raw: bool,
 }
@@ -454,7 +454,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
             ),
             spec_closure: kind == PureKind::Closure,
             pure_fn_body: kind == PureKind::Pure,
-            calls_pure_unstable: false,
+            reads_im: false,
             states_permission: false,
             reads_raw: false,
         }
@@ -990,7 +990,13 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                             }
                         }
                     } else if is_pure {
-                        self.calls_pure_unstable |= crate::encoders::is_pure_unstable(def_id);
+                        self.reads_im |= crate::encoders::pure_sees_deep(def_id)
+                            && args.iter().any(|arg| {
+                                crate::encoders::ty::im::reaches_im(RustTyDecomposition::from_ty(
+                                    arg.node.ty(self.body, self.vcx.tcx()),
+                                    self.context,
+                                ))
+                            });
                         let pure_func = self
                             .deps
                             .require_dep::<FunctionCallEnc>(CallTaskDescription::new(
@@ -1580,7 +1586,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
             parent_def_id: cl_def_id,
             gargs: GParams::from(cl_def_id).identity_args(),
         })?;
-        self.calls_pure_unstable |= body.calls_pure_unstable;
+        self.reads_im |= body.reads_im;
         self.reads_raw |= body.reads_raw;
         let body = body.expr;
         let reify_args = self.vcx.alloc(reify_args);

@@ -212,9 +212,6 @@ pub struct ProcedureSpecification {
     pub trusted: SpecificationItem<bool>,
     pub terminates: SpecificationItem<Option<LocalDefId>>,
     pub purity: SpecificationItem<Option<DefId>>, // for type-conditional spec refinements
-    /// Whether this pure function is `#[pure_unstable]`, i.e. sees deep
-    /// values of interior-mutable objects.
-    pub pure_unstable: SpecificationItem<bool>,
 }
 
 impl ProcedureSpecification {
@@ -231,7 +228,6 @@ impl ProcedureSpecification {
             trusted: SpecificationItem::Inherent(false),
             terminates: SpecificationItem::Inherent(None),
             purity: SpecificationItem::Inherent(None),
-            pure_unstable: SpecificationItem::Inherent(false),
         }
     }
 
@@ -251,7 +247,6 @@ impl ProcedureSpecification {
             trusted: SpecificationItem::Empty,
             terminates: SpecificationItem::Empty,
             purity: SpecificationItem::Empty,
-            pure_unstable: SpecificationItem::Empty,
         }
     }
 }
@@ -518,15 +513,6 @@ impl SpecGraph<ProcedureSpecification> {
         self.specs_with_constraints
             .values_mut()
             .for_each(|s| s.trusted.set(trusted));
-    }
-
-    /// Sets the `#[pure_unstable]` flag for the base spec and all constrained
-    /// specs.
-    pub fn set_pure_unstable(&mut self) {
-        self.base_spec.pure_unstable.set(true);
-        self.specs_with_constraints
-            .values_mut()
-            .for_each(|s| s.pure_unstable.set(true));
     }
 
     /// Sets the termination flag for the base spec and all constrained specs.
@@ -866,7 +852,6 @@ impl Refinable for ProcedureSpecification {
             trusted: self.trusted,
             terminates: self.terminates.refine(&other.terminates),
             purity: self.purity.refine(&other.purity),
-            pure_unstable: self.pure_unstable.refine(&other.pure_unstable),
         }
     }
 }
