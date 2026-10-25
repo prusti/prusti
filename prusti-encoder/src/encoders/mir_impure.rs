@@ -806,6 +806,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         callee: DefId,
         args: &[Spanned<mir::Operand<'vir>>],
         refs: &[vir::ExprRef<'vir>],
+        span: Span,
     ) -> EncodeResult<'vir, Vec<crate::encoders::ty::im::GenericPos<'vir>>, E> {
         let mut out = Vec::new();
         if !crate::encoders::ty::im::program_uses_im() || self.vcx.tcx().is_closure_like(callee)
@@ -824,6 +825,12 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             let ty = arg.node.ty(self.local_decls, self.vcx.tcx());
             let snap = self.ty_use_impure(ty).ref_to_snap(*addr);
             let ty = RustTyDecomposition::from_ty(ty, self.def_id);
+            if crate::encoders::ty::im::alias_hides_im(*declared, ty) {
+                self.vcx.emit_early_error(PrustiError::unsupported(
+                    "interior-mutable values passed as values of an associated or opaque type",
+                    span.into(),
+                ));
+            }
             crate::encoders::ty::im::generic_positions(
                 self.deps, *declared, ty, *addr, snap, false, false, &mut out,
             )?;
@@ -954,14 +961,15 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
 
     /// Converts the generic atoms of the values at `positions` (returned by a
     /// call to `callee`) back into their concrete atoms, keeping their deep
-    /// values.
+    /// values, together with the atoms `regranted` (with unknown contents).
     fn im_from_generic(
         &mut self,
         callee: DefId,
         substs: ty::GenericArgsRef<'vir>,
         positions: &[crate::encoders::ty::im::GenericPos<'vir>],
+        regranted: Vec<crate::encoders::ty::im::FpEntry<'vir>>,
     ) -> EncodeResult<'vir, (), E> {
-        if positions.is_empty() {
+        if positions.is_empty() && regranted.is_empty() {
             return Ok(());
         }
         let vcx = self.vcx;
@@ -974,10 +982,12 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             }
         };
         let before = vir::OldLabel::Label(self.new_label("im_concrete"));
-        // Positions may alias (e.g. a shared reference the callee returns):
-        // a generic atom is exhaled once, the concrete ones are inhaled as
-        // one footprint (which grants each atom once).
-        let mut entries = Vec::new();
+        // Positions may alias (e.g. a shared reference the callee returns),
+        // also with the regranted atoms (e.g. an `Rc`'s allocation, reached
+        // by an argument and by the result): a generic atom is exhaled once,
+        // the concrete ones are inhaled as one footprint (which grants each
+        // atom once).
+        let mut entries = regranted;
         let mut relations = Vec::new();
         for (idx, pos) in positions.iter().enumerate() {
             let ty_expr = self
@@ -1029,7 +1039,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         substs: ty::GenericArgsRef<'vir>,
         args: Vec<crate::encoders::ty::im::GenericPos<'vir>>,
         pre: Option<vir::OldLabel<'vir>>,
-        destination: mir::Place<'vir>,
+        destination: Option<mir::Place<'vir>>,
         span: Span,
     ) -> EncodeResult<'vir, (), E> {
         if !crate::encoders::ty::im::program_uses_im() || self.vcx.tcx().is_closure_like(callee)
@@ -1046,8 +1056,8 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         // The atoms a value passed by value reaches (e.g. those a guard
         // shares) stay in their pool: they come back at their keys, with
         // unknown contents.
+        let mut regranted = Vec::new();
         if !self.generic_token_only(callee) {
-            let mut regranted = Vec::new();
             for pos in args.iter().filter(|pos| !pos.reached) {
                 let pre = pre.unwrap();
                 let addr = vcx.mk_old(pos.addr, pre);
@@ -1059,20 +1069,30 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                     }
                 }
             }
-            if !regranted.is_empty() {
-                self.stmt(vcx.mk_inhale_stmt(crate::encoders::ty::im::footprint_assertion(
-                    &regranted,
-                )));
-            }
         }
         let mut returned = Vec::new();
         for pos in args.into_iter().filter(|pos| pos.reached) {
             let pre = pre.unwrap();
+            let addr = vcx.mk_old(pos.addr, pre);
             if pos.mutable && pos.nested {
-                unsupported("inside the referent of a mutable reference");
+                if crate::encoders::ty::im::reaches_im(pos.ty) {
+                    unsupported("inside the referent of a mutable reference");
+                    continue;
+                }
+                // A value without interior-mutable parts only drops its token
+                // (its value is read as any other).
+                let ty_expr = self
+                    .deps
+                    .require_dep::<crate::encoders::ty::generics::TyExprEnc>(pos.ty)?;
+                let acc = crate::encoders::ty::im::param_atom_acc(self.deps, addr, ty_expr)?;
+                self.stmt(vcx.mk_exhale_stmt(match pos.condition {
+                    Some(condition) => vcx
+                        .mk_bin_op_expr(vir::BinOpKind::Implies, vcx.mk_old(condition, pre), acc)
+                        .downcast_ty(),
+                    None => acc,
+                }));
                 continue;
             }
-            let addr = vcx.mk_old(pos.addr, pre);
             // The referent of a mutable reference is read anew.
             let snap = match pos.reread_snap(self.deps, addr)? {
                 Some(snap) if pos.mutable => snap,
@@ -1085,6 +1105,9 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 ..pos
             });
         }
+        let Some(destination) = destination else {
+            return self.im_from_generic(callee, substs, &returned, regranted);
+        };
         let output = vcx
             .tcx()
             .fn_sig(callee)
@@ -1139,7 +1162,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             returned.retain(|pos| !pos.mutable);
         }
         returned.extend(result_positions);
-        self.im_from_generic(callee, substs, &returned)
+        self.im_from_generic(callee, substs, &returned, regranted)
     }
 
     /// The path condition under which `edge` is valid; `None` if unconditional.
@@ -2486,11 +2509,13 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
     fn terminator_exclusive_locals(&self) -> Vec<mir::Local> {
         self.local_decls
             .indices()
-            .filter(|local| self.terminator_holds_exclusive(mir::Place::from(*local)))
+            .filter(|local| {
+                self.terminator_holds_exclusive(mir::Place::from(*local), EvalStmtPhase::PreOperands)
+            })
             .collect()
     }
 
-    fn terminator_holds_exclusive(&self, place: mir::Place<'vir>) -> bool {
+    fn terminator_holds_exclusive(&self, place: mir::Place<'vir>, phase: EvalStmtPhase) -> bool {
         let cfpcs = self
             .current_fpcs
             .as_ref()
@@ -2498,7 +2523,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             .statements
             .last()
             .unwrap();
-        cfpcs.states[EvalStmtPhase::PreOperands]
+        cfpcs.states[phase]
             .places_with_capapability(CapabilityKind::Exclusive)
             .contains(&Place::from(place))
     }
@@ -2506,7 +2531,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
     /// The places inside `place` (not behind references) held whole before
     /// the current terminator, if `place` is partially moved out of.
     fn terminator_held_parts(&self, place: mir::Place<'vir>) -> Vec<mir::Place<'vir>> {
-        if self.terminator_holds_exclusive(place) {
+        if self.terminator_holds_exclusive(place, EvalStmtPhase::PreOperands) {
             return Vec::new();
         }
         let cfpcs = self
@@ -2591,6 +2616,31 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         let dest: vir::ExprRef<'vir> = self.new_tmp(vir::TYPE_REF);
         let unit = self.ty_use_impure(self.vcx.tcx().types.unit);
         self.stmt(self.vcx.mk_inhale_stmt(unit.uninit_pred(self.vcx, dest)));
+        // The values of the type's parameters are passed generically, as to
+        // any generic callee.
+        let declared = self
+            .vcx
+            .tcx()
+            .fn_sig(drop_spec)
+            .instantiate_identity()
+            .skip_normalization()
+            .skip_binder()
+            .inputs()[0];
+        let mut generic_args = Vec::new();
+        crate::encoders::ty::im::generic_positions(
+            self.deps,
+            declared,
+            RustTyDecomposition::from_ty(ref_ty, self.def_id),
+            tmp,
+            p_ref_ty.ref_to_snap(tmp),
+            false,
+            false,
+            &mut generic_args,
+        )?;
+        generic_args.retain(|pos| self.converts_generic(drop_spec, pos));
+        let generic_pre = (!generic_args.is_empty())
+            .then(|| vir::OldLabel::Label(self.new_label("generic_pre")));
+        self.im_to_generic(drop_spec, substs, &generic_args)?;
         let call = self.vcx.with_span(span, |vcx| {
             vcx.handle_error("call.precondition:assertion.false", move |reason_span_opt| {
                 let mut error = PrustiError::verification(
@@ -2605,6 +2655,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             contract.call(vec![tmp], dest)
         });
         self.stmts(call);
+        self.im_generic_returned(drop_spec, substs, generic_args, generic_pre, None, span)?;
         self.stmts(p_ref_ty.unfold(None, tmp, None, None, Some(vir::OldLabel::Label(borrowed))));
         if place.projection.is_empty() {
             self.guard_rereads([place.local], false)?;
@@ -2653,6 +2704,13 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             .encode_place(Place::from(place))?
             .expr
             .expect_predicate();
+        if adt.is_box() {
+            self.stmts(ty_use.unfold(None, addr, None, None, None));
+            let value = place.project_deeper(&[mir::ProjectionElem::Deref], self.vcx.tcx());
+            self.apply_drop_contract(value, span)?;
+            self.stmts(ty_use.fold(None, addr, None, None, None));
+            return Ok(());
+        }
         // Which variant the value is, read before its predicate is unfolded.
         let mut variants = Vec::new();
         for (vid, variant) in adt.variants().iter_enumerated() {
@@ -3589,9 +3647,10 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 // its goto remains to be encoded here, preceded by the
                 // effects of the type's drop contract. The MIR is not
                 // drop-elaborated: a place already moved out holds nothing
-                // and has nothing to drop.
+                // and has nothing to drop. A place inside a value held whole
+                // (e.g. an overwritten field) is expanded to in `PreMain`.
                 if let mir::TerminatorKind::Drop { place, .. } = &terminator.kind
-                    && self.terminator_holds_exclusive(*place)
+                    && self.terminator_holds_exclusive(*place, EvalStmtPhase::PreMain)
                 {
                     self.apply_drop_contract(*place, span)?;
                 }
@@ -3819,7 +3878,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                         let generic_args = if stub_call {
                             Vec::new()
                         } else {
-                            self.call_arg_generic_positions(func_def_id, args, &method_in)?
+                            self.call_arg_generic_positions(func_def_id, args, &method_in, span)?
                         };
                         let generic_pre = (!generic_args.is_empty())
                             .then(|| vir::OldLabel::Label(self.new_label("generic_pre")));
@@ -3924,7 +3983,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                                 caller_substs,
                                 generic_args,
                                 generic_pre,
-                                *destination,
+                                Some(*destination),
                                 span,
                             )?;
                         }
@@ -4255,10 +4314,14 @@ fn has_drop_contract<'tcx>(
     let ty::TyKind::Adt(adt, args) = *ty.kind() else {
         return false;
     };
-    if adt.is_box() || seen.contains(&ty) {
+    if seen.contains(&ty) {
         return false;
     }
     seen.push(ty);
+    // A box owns its value.
+    if adt.is_box() {
+        return has_drop_contract(tcx, args.type_at(0), seen);
+    }
     adt.all_fields()
         .any(|field| has_drop_contract(tcx, field.ty(tcx, args).skip_normalization(), seen))
 }

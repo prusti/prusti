@@ -18,6 +18,7 @@ use prusti_rustc_interface::{
     middle::ty,
     span::{def_id::DefId, symbol},
 };
+use rustc_hash::FxHashSet;
 use task_encoder::{EncodeFullError, TaskEncoder, TaskEncoderDependencies};
 use vir::{CallableIdn, CastType};
 
@@ -1254,8 +1255,19 @@ pub(crate) fn footprint_release<'vir>(entries: &[FpEntry<'vir>]) -> Vec<vir::Exp
 }
 
 /// The reference parameter of the `#[im_open(PARAM)]` function `def_id`
-/// (see `prusti_contracts::im_open`), if any.
+/// (see `prusti_contracts::im_open`), if any and valid (see
+/// [`im_open_attr`]).
 pub(crate) fn im_open_param(def_id: DefId) -> Option<prusti_rustc_interface::middle::mir::Local> {
+    let (param, valid) = im_open_attr(def_id)?;
+    valid.then_some(param)
+}
+
+/// The parameter named by the `#[im_open(PARAM)]` attribute of `def_id`, if
+/// any, and whether it is valid: a shared reference to an `#[im_opaque]`
+/// value.
+pub(crate) fn im_open_attr(
+    def_id: DefId,
+) -> Option<(prusti_rustc_interface::middle::mir::Local, bool)> {
     vir::with_vcx(|vcx| {
         let attrs = prusti_interface::environment::EnvQuery::new(vcx.tcx()).get_attributes(def_id);
         let name = prusti_interface::utils::read_prusti_attr("im_open", attrs)?;
@@ -1266,7 +1278,16 @@ pub(crate) fn im_open_param(def_id: DefId) -> Option<prusti_rustc_interface::mid
             .iter()
             .position(|ident| ident.is_some_and(|ident| ident.name.as_str() == name))
             .unwrap();
-        Some(prusti_rustc_interface::middle::mir::Local::from_usize(idx + 1))
+        let input = vcx
+            .tcx()
+            .fn_sig(def_id)
+            .instantiate_identity()
+            .skip_normalization()
+            .skip_binder()
+            .inputs()[idx];
+        let valid = matches!(*input.kind(), ty::TyKind::Ref(_, referent, ty::Mutability::Not)
+            if matches!(*referent.kind(), ty::TyKind::Adt(adt, _) if is_im_opaque(adt.did())));
+        Some((prusti_rustc_interface::middle::mir::Local::from_usize(idx + 1), valid))
     })
 }
 
@@ -1758,7 +1779,7 @@ pub(crate) fn nested_im<'tcx>(ty: ty::Ty<'tcx>, params: GParams<'tcx>) -> Option
         .filter_map(|arg| arg.as_type())
         .find(|inner| match *inner.kind() {
             ty::TyKind::Adt(adt, args)
-                if (is_im_opaque(adt.did()) || is_im_sharer(adt.did()))
+                if (is_im_opaque(adt.did()) || is_im_sharer(adt.did()) || adt.is_unsafe_cell())
                     && args.types().any(|arg| {
                         reaches_concrete_im(RustTyDecomposition::from_ty(arg, params))
                     }) =>
@@ -1777,6 +1798,18 @@ pub(crate) fn hides_im<'tcx>(src: ty::Ty<'tcx>, dst: ty::Ty<'tcx>, params: GPara
         .filter_map(|arg| arg.as_type())
         .any(|ty| matches!(ty.kind(), ty::TyKind::Dynamic(..)))
         && reaches_im(RustTyDecomposition::from_ty(src, params))
+}
+
+/// Whether a value of the caller's type `ty`, passed as a value of a callee's
+/// declared type `declared`, may reach interior-mutable values hidden behind an
+/// associated or opaque type of `declared`, which carries no generic atom (not
+/// supported yet).
+pub(crate) fn alias_hides_im<'tcx>(declared: ty::Ty<'tcx>, ty: RustTyDecomposition<'tcx>) -> bool {
+    declared
+        .walk()
+        .filter_map(|arg| arg.as_type())
+        .any(|inner| matches!(inner.kind(), ty::TyKind::Alias(..)))
+        && reaches_im(ty)
 }
 
 /// Whether a value of `ty` holds, inline or behind references, an array or
@@ -2037,30 +2070,48 @@ impl TaskEncoder for ContainerOfEnc {
     }
 }
 
-/// Whether the crate's bodies mention an interior-mutable type. Only then can
-/// a type parameter be instantiated with one, and generic code holds the
-/// footprints of the values of its type parameters (see [`ParamImEnc`]).
+/// Whether the crate's bodies mention a type that holds an interior-mutable
+/// one. Only then can a type parameter be instantiated with one, and generic
+/// code holds the footprints of the values of its type parameters (see
+/// [`ParamImEnc`]).
 pub(crate) fn program_uses_im() -> bool {
     thread_local! {
         static USES_IM: std::cell::LazyCell<bool> = std::cell::LazyCell::new(|| {
             vir::with_vcx(|vcx| {
+                let mut seen = FxHashSet::default();
                 vcx.tcx().hir_body_owners().any(|owner| {
                     vcx.tcx()
                         .typeck(owner)
                         .node_types()
                         .items_in_stable_order()
                         .into_iter()
-                        .any(|(_, ty)| {
-                            ty.walk().filter_map(|arg| arg.as_type()).any(|inner| {
-                                matches!(*inner.kind(), ty::TyKind::Adt(adt, _)
-                                    if is_im_opaque(adt.did()) || is_im_sharer(adt.did()))
-                            })
-                        })
+                        .any(|(_, ty)| holds_im(vcx.tcx(), *ty, &mut seen))
                 })
             })
         });
     }
     USES_IM.with(|uses| **uses)
+}
+
+/// Whether `ty` mentions a type that holds an interior-mutable one (in its
+/// fields, transitively).
+pub(crate) fn holds_im<'tcx>(
+    tcx: ty::TyCtxt<'tcx>,
+    ty: ty::Ty<'tcx>,
+    seen: &mut FxHashSet<ty::Ty<'tcx>>,
+) -> bool {
+    ty.walk().filter_map(|arg| arg.as_type()).any(|inner| {
+        let ty::TyKind::Adt(adt, args) = *inner.kind() else {
+            return false;
+        };
+        if is_im_opaque(adt.did()) || is_im_sharer(adt.did()) {
+            return true;
+        }
+        seen.insert(inner)
+            && adt
+                .all_fields()
+                .any(|field| holds_im(tcx, field.ty(tcx, args).skip_normalization(), seen))
+    })
 }
 
 /// The type parameters of `def_id` that are the contents of interior-mutable

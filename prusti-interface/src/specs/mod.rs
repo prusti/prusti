@@ -366,6 +366,15 @@ impl<'a, 'tcx> SpecCollector<'a, 'tcx> {
             def_spec.proc_specs.insert(target_def_id, spec);
         }
         for (extern_ty, specs) in self.extern_resolver.extern_ty_map.iter() {
+            // A `Drop` specification joins the type's own specification.
+            let only_drop = specs.invariants.is_empty()
+                && !specs.trusted
+                && specs.model.is_none()
+                && specs.countexample_print.is_empty();
+            if let Some(spec) = def_spec.type_specs.get_mut(extern_ty).filter(|_| only_drop) {
+                spec.drop_spec = specs.drop_spec;
+                continue;
+            }
             if def_spec.type_specs.contains_key(extern_ty) {
                 PrustiError::incorrect(
                     format!(

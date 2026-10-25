@@ -394,9 +394,14 @@ impl TaskEncoder for MethodEnc {
                 }
                 // An `#[im_open]` function works on the opened atom (closed
                 // again at its return).
-                if let Some(param) = crate::encoders::ty::im::im_open_param(def_id) {
+                if let Some((param, valid)) = crate::encoders::ty::im::im_open_attr(def_id) {
                     let arg = &local_defs[param];
-                    match crate::encoders::ty::im::im_open_referent(deps, arg.ty, arg.impure_snap)? {
+                    let referent = if valid {
+                        crate::encoders::ty::im::im_open_referent(deps, arg.ty, arg.impure_snap)?
+                    } else {
+                        None
+                    };
+                    match referent {
                         Some((referent, addr)) => start_stmts.extend(
                             crate::encoders::ty::im::open_or_close(deps, referent, addr, true)?,
                         ),

@@ -216,12 +216,24 @@ pub fn address_body(def_id: DefId) -> Option<AddressBody> {
 
 /// Whether `def_id` is `#[pure_unstable]`: a pure function that sees deep
 /// values (the contents of the interior-mutable values its arguments reach).
+/// A method derived (e.g. by `#[derive(PartialEq)]`) for a type holding
+/// interior-mutable values reads them, so it is too.
 pub fn is_pure_unstable(def_id: DefId) -> bool {
     let substs = ty::GenericArgs::identity_for_item(vir::with_vcx(|vcx| vcx.tcx()), def_id);
     with_proc_spec(SpecQuery::GetProcKind(def_id, substs), |proc_spec| {
         proc_spec.pure_unstable.extract_inherit().unwrap_or(false)
     })
     .unwrap_or(false)
+        || vir::with_vcx(|vcx| {
+            vcx.tcx().impl_of_assoc(def_id).is_some_and(|impl_did| {
+                vcx.tcx().is_builtin_derived(impl_did)
+                    && crate::encoders::ty::im::holds_im(
+                        vcx.tcx(),
+                        vcx.tcx().type_of(impl_did).instantiate_identity().skip_normalization(),
+                        &mut Default::default(),
+                    )
+            })
+        })
 }
 
 /// A call to a trait method whose statically known impl carries its own
