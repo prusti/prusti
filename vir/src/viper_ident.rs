@@ -1,4 +1,7 @@
-use prusti_rustc_interface::{hir::definitions::DefPathData, span::def_id::DefId};
+use prusti_rustc_interface::{
+    hir::definitions::DefPathData,
+    span::def_id::{CrateNum, DefId, LOCAL_CRATE},
+};
 use serde::{Deserialize, Serialize};
 
 use crate::{IdentStyle, VirCtxt};
@@ -48,9 +51,20 @@ impl<'vir> ViperIdent<'vir> {
 /// defined in two `const _: () = { .. };` blocks of one module (as
 /// `bitflags!` generates), which would then share one Viper identity. Those
 /// disambiguators are appended (closures and impls already print theirs, or
-/// are told apart by what they print).
+/// are told apart by what they print). It also omits the name of the local
+/// crate, which is prepended so that a local item's name always has a path
+/// separator and so cannot coincide with a name that is not a def path, such
+/// as a built-in type's `Array`.
+///
+/// Crate names are not unique either: two versions of one dependency share a
+/// name, as may a dependency and the local crate. An item of such a crate gets
+/// the crate's `StableCrateId` appended. A crate name may also start with a
+/// digit, which is escaped since some Viper identifiers start with the name.
 fn def_path_name(vcx: &VirCtxt<'_>, def_id: DefId) -> String {
     let mut name = vcx.tcx().def_path_str(def_id);
+    if def_id.is_local() {
+        name = format!("{}::{name}", vcx.tcx().crate_name(def_id.krate));
+    }
     for (idx, component) in vcx.tcx().def_path(def_id).data.iter().enumerate() {
         if component.disambiguator != 0
             && matches!(
@@ -61,7 +75,22 @@ fn def_path_name(vcx: &VirCtxt<'_>, def_id: DefId) -> String {
             name.push_str(&format!("#{idx}_{}", component.disambiguator));
         }
     }
+    if crate_name_is_shared(vcx, def_id.krate) {
+        let stable_id = vcx.tcx().stable_crate_id(def_id.krate).as_u64();
+        name.push_str(&format!("#crate_{stable_id:x}"));
+    }
+    if name.starts_with(|c: char| c.is_ascii_digit()) {
+        name.insert(0, '$');
+    }
     name
+}
+
+/// Whether another crate, local or external, has the same name as `krate`.
+fn crate_name_is_shared(vcx: &VirCtxt<'_>, krate: CrateNum) -> bool {
+    let name = vcx.tcx().crate_name(krate);
+    std::iter::once(LOCAL_CRATE)
+        .chain(vcx.tcx().crates(()).iter().copied())
+        .any(|other| other != krate && vcx.tcx().crate_name(other) == name)
 }
 
 /// Asking for the `item_name` of a closure triggers an ICE in the compiler, so

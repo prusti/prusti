@@ -18,12 +18,13 @@ fn rtype_same(foo1: &Foo, foo2: &Foo) -> bool {
     foo1.r#type == foo2.r#type
 }
 
-struct Pair(i32, i32);
+// Named like the built-in array type; its constructor's fn item type is a
+// type of its own.
+struct Array(u8);
 
-// The constructor's fn item type is distinct from the struct type.
-fn constructor_as_value() -> Pair {
-    let make = Pair;
-    make(1, 2)
+fn constructor_as_value(_a: [u8; 1]) -> Array {
+    let make = Array;
+    make(0)
 }
 
 fn main(){
