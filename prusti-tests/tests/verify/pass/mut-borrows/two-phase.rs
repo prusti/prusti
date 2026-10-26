@@ -75,3 +75,36 @@ fn inc(i: &mut usize) {
 fn reborrow_argument(x: &mut usize) {
     inc(x);
 }
+
+// A borrow of the referent of a shared reference field outlives mutable
+// borrows of the struct holding the reference.
+struct Table {
+    size: usize,
+}
+
+struct Cache<'a> {
+    table: &'a Table,
+    hits: usize,
+}
+
+impl<'a> Cache<'a> {
+    #[ensures(self.hits == x)]
+    fn record(&mut self, x: usize) {
+        self.hits = x;
+    }
+}
+
+#[ensures(result == old(cache.table.size) && cache.hits == old(cache.table.size))]
+fn activation_behind_shared_ref(cache: &mut Cache) -> usize {
+    let size = &cache.table.size;
+    cache.record(*size);
+    *size
+}
+
+#[ensures(result == old(cache.table.size) && cache.hits == 0)]
+fn reborrow_behind_shared_ref(cache: &mut Cache) -> usize {
+    let size = &cache.table.size;
+    let r = &mut *cache;
+    r.hits = 0;
+    *size
+}
