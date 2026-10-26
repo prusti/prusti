@@ -222,6 +222,10 @@ where
     /// The locals each loop's invariant holds whole: inside the loop, the
     /// others are framed out.
     pub loop_kept_locals: FxHashMap<LoopId, FxHashSet<mir::Local>>,
+    /// The locals each loop only reads: its invariant holds a part of their
+    /// permission (see [Self::loop_read_part]), the rest stays outside the
+    /// loop, so their values stay the same.
+    pub loop_read_locals: FxHashMap<LoopId, FxHashSet<mir::Local>>,
 
     // for the current basic block
     pub current_fpcs: Option<PcgBasicBlock<'enc, 'vir>>,
@@ -1803,12 +1807,16 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 let index = guide.and_then(|guide| {
                     self.expansion_index(guide, matches!(repack_op, RepackOp::Expand(..)))
                 });
+                // A loop holds a part of a place it only reads.
+                let perm = (matches!(capability_kind, CapabilityKind::Read)
+                    && self.read_in_loop(place.local))
+                .then(|| self.loop_read_part());
                 if matches!(repack_op, pcg::free_pcs::RepackOp::Expand(..)) {
-                    self.stmts(data.unfold(place_ty.variant_index, place_enc, index, None, None));
+                    self.stmts(data.unfold(place_ty.variant_index, place_enc, index, perm, None));
                     self.open_or_close_atoms(place, None, true)?;
                 } else if matches!(repack_op, pcg::free_pcs::RepackOp::Collapse(..)) {
                     self.open_or_close_atoms(place, None, false)?;
-                    self.stmts(data.fold(place_ty.variant_index, place_enc, index, None, None));
+                    self.stmts(data.fold(place_ty.variant_index, place_enc, index, perm, None));
                 } else {
                     unreachable!()
                 }
@@ -2521,6 +2529,26 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                     .get(&l)
                     .is_some_and(|kept| !kept.contains(&local))
             })
+    }
+
+    /// The part of the permission of a place a loop only reads that its
+    /// invariant holds.
+    pub(crate) fn loop_read_part(&self) -> vir::ExprPerm<'vir> {
+        let int = |n| self.vcx.mk_const_expr(vir::ConstData::Int(n));
+        self.vcx
+            .mk_bin_op_expr(vir::BinOpKind::FracPerm, int(1), int(2))
+            .downcast_ty()
+    }
+
+    /// Whether `local` is one a loop the current block is in (past the
+    /// loop's head) only reads, holding a part of its permission.
+    fn read_in_loop(&self, local: mir::Local) -> bool {
+        let block = self.current_block.unwrap();
+        let pres = self.current_block_pres.as_deref().unwrap_or_default();
+        self.loop_analysis()
+            .loops(block)
+            .filter(|l| !pres.contains(&l.index()))
+            .any(|l| self.loop_read_locals.get(&l).is_some_and(|read| read.contains(&local)))
     }
 
     /// The locals held whole (exclusively) before the current terminator.
@@ -3345,6 +3373,12 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 .map(|(place, _)| place.local)
                 .collect();
             self.loop_kept_locals.insert(loop_id, kept);
+            let read = place_capabilities
+                .iter()
+                .filter(|(_, capability)| matches!(capability, CapabilityKind::Read))
+                .map(|(place, _)| place.local)
+                .collect();
+            self.loop_read_locals.insert(loop_id, read);
             let pcg_state = &cfpcs.statements[0].states[EvalStmtPhase::PreOperands];
             let functional = invariants
                 .into_iter()

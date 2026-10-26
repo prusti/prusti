@@ -692,7 +692,7 @@ impl<'vir> TyUseImpureStruct<'vir> {
     ) -> impl Iterator<Item = vir::Stmt<'vir>> + '_ {
         let pred_app = self.ref_to_pred_app(self_ref, perm);
         let fold = vir::with_vcx(|vcx| vcx.mk_fold_stmt(pred_app));
-        self.cast_to_callee_ctx(self_ref).chain([fold])
+        self.cast_to_callee_ctx(self_ref, perm).chain([fold])
     }
 
     /// Unfold the predicate (including generic casts).
@@ -705,25 +705,27 @@ impl<'vir> TyUseImpureStruct<'vir> {
         let unfold = vir::with_vcx(|vcx| vcx.mk_unfold_stmt(pred_app));
         [unfold]
             .into_iter()
-            .chain(self.cast_to_caller_ctx(self_ref))
+            .chain(self.cast_to_caller_ctx(self_ref, perm))
     }
 
     fn cast_to_caller_ctx(
         &self,
         self_ref: vir::ExprRef<'vir>,
+        perm: Option<vir::ExprPerm<'vir>>,
     ) -> impl Iterator<Item = vir::Stmt<'vir>> {
         self.fields
             .iter()
-            .filter_map(|f| f.cast_to_caller_ctx(self_ref))
+            .filter_map(move |f| f.caster.cast_part_to_caller_ctx(f.field_ref(self_ref), perm))
     }
 
     fn cast_to_callee_ctx(
         &self,
         self_ref: vir::ExprRef<'vir>,
+        perm: Option<vir::ExprPerm<'vir>>,
     ) -> impl Iterator<Item = vir::Stmt<'vir>> {
         self.fields
             .iter()
-            .filter_map(|f| f.cast_to_callee_ctx(self_ref))
+            .filter_map(move |f| f.caster.cast_part_to_callee_ctx(f.field_ref(self_ref), perm))
     }
 }
 

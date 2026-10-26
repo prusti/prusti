@@ -40,8 +40,16 @@ impl PurityCasters for Pure {
 }
 
 impl PurityCasters for Impure {
-    type MakeGeneric<'vir> = MethodIdn<'vir, (vir::Ref, vir::ManyTyVal, vir::ManyCSnap)>;
-    type MakeConcrete<'vir> = MethodIdn<'vir, (vir::Ref, vir::ManyTyVal, vir::ManyCSnap)>;
+    type MakeGeneric<'vir> = ImpureCast<'vir>;
+    type MakeConcrete<'vir> = ImpureCast<'vir>;
+}
+
+/// An impure cast: of the whole predicate, and of a `part` of it (e.g. a
+/// place a loop only reads, of which it holds a part).
+#[derive(Debug, Clone, Copy)]
+pub struct ImpureCast<'vir> {
+    pub(super) full: MethodIdn<'vir, (vir::Ref, vir::ManyTyVal, vir::ManyCSnap)>,
+    pub(super) part: MethodIdn<'vir, (vir::Ref, vir::ManyTyVal, vir::ManyCSnap, vir::Perm)>,
 }
 
 impl<'vir, P: PurityCasters> task_encoder::OutputRefAny for GArgCasters<'vir, P> {}
@@ -337,12 +345,32 @@ impl TaskEncoder for CastersEnc<Impure> {
                 vir::vir_format_identifier!(vcx, "make_concrete_{base_name}"),
                 (vir::TYPE_REF, generics.ty_args(), generics.const_args()),
             );
+            let part_args = (
+                vir::TYPE_REF,
+                generics.ty_args(),
+                generics.const_args(),
+                vir::TYPE_PERM,
+            );
+            let make_generic_part_ident = MethodIdn::new(
+                vir::vir_format_identifier!(vcx, "make_generic_part_{base_name}"),
+                part_args,
+            );
+            let make_concrete_part_ident = MethodIdn::new(
+                vir::vir_format_identifier!(vcx, "make_concrete_part_{base_name}"),
+                part_args,
+            );
 
             deps.emit_output_ref(
                 *task_key,
                 GArgCasters {
-                    make_generic: make_generic_ident,
-                    make_concrete: make_concrete_ident,
+                    make_generic: ImpureCast {
+                        full: make_generic_ident,
+                        part: make_generic_part_ident,
+                    },
+                    make_concrete: ImpureCast {
+                        full: make_concrete_ident,
+                        part: make_concrete_part_ident,
+                    },
                 },
             )?;
             let make_generic_pure = deps
@@ -354,6 +382,22 @@ impl TaskEncoder for CastersEnc<Impure> {
 
             let predicate_ref = deps.require_ref::<TyImpureEnc>(concrete)?;
             let generic_ref = deps.require_ref::<TyImpureEnc>(param)?;
+
+            let part_decl = vcx.mk_local_decl("p", vir::TYPE_PERM);
+            let part = vcx.mk_local_ex(part_decl);
+            let part_decls = (
+                self_decl,
+                generics.ty_decls(),
+                generics.const_decls(),
+                part_decl,
+            );
+            let concrete_predicate_at = |perm| {
+                vcx.mk_predicate_app_expr((predicate_ref.ref_to_pred)(
+                    self_expr,
+                    generics.ty_exprs(),
+                    generics.const_exprs(),
+                )(perm))
+            };
 
             let concrete_predicate = (predicate_ref.ref_to_pred)(
                 self_expr,
@@ -370,6 +414,13 @@ impl TaskEncoder for CastersEnc<Impure> {
             let lifted_ty_expr =
                 (ty_constructor.ty_constructor)(generics.ty_exprs(), generics.const_exprs());
 
+            let generic_predicate_at = |perm| {
+                vcx.mk_predicate_app_expr((generic_ref.ref_to_pred)(
+                    self_expr,
+                    &[lifted_ty_expr],
+                    &[],
+                )(perm))
+            };
             let generic_predicate =
                 (generic_ref.ref_to_pred)(self_expr, &[lifted_ty_expr], &[])(None);
 
@@ -409,7 +460,29 @@ impl TaskEncoder for CastersEnc<Impure> {
                 vcx.alloc_slice(&[concrete_predicate, make_concrete_same_snap]),
                 None,
             );
-            Ok((vec![make_generic, make_concrete], ()))
+            let positive = vcx
+                .mk_bin_op_expr(vir::BinOpKind::CmpLt, vcx.mk_no_perm(), part)
+                .downcast_ty();
+            let make_generic_part = vcx.mk_method(
+                make_generic_part_ident,
+                part_decls,
+                &[],
+                vcx.alloc_slice(&[positive, concrete_predicate_at(Some(part))]),
+                vcx.alloc_slice(&[generic_predicate_at(Some(part)), make_generic_same_snap]),
+                None,
+            );
+            let make_concrete_part = vcx.mk_method(
+                make_concrete_part_ident,
+                part_decls,
+                &[],
+                vcx.alloc_slice(&[positive, generic_predicate_at(Some(part))]),
+                vcx.alloc_slice(&[concrete_predicate_at(Some(part)), make_concrete_same_snap]),
+                None,
+            );
+            Ok((
+                vec![make_generic, make_concrete, make_generic_part, make_concrete_part],
+                (),
+            ))
         })
     }
 

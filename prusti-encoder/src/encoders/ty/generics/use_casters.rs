@@ -67,13 +67,47 @@ impl<'vir> GArgCaster<'vir, Pure> {
 
 impl<'vir> GArgCaster<'vir, Impure> {
     pub fn cast_to_callee_ctx(&self, e: vir::ExprRef<'vir>) -> Option<vir::Stmt<'vir>> {
-        self.get()
-            .map(|c| (c.cast.make_generic)(e, c.ty_args.get_ty(), c.ty_args.get_const()).alloc())
+        self.get().map(|c| {
+            (c.cast.make_generic.full)(e, c.ty_args.get_ty(), c.ty_args.get_const()).alloc()
+        })
     }
 
     pub fn cast_to_caller_ctx(&self, e: vir::ExprRef<'vir>) -> Option<vir::Stmt<'vir>> {
-        self.get()
-            .map(|c| (c.cast.make_concrete)(e, c.ty_args.get_ty(), c.ty_args.get_const()).alloc())
+        self.get().map(|c| {
+            (c.cast.make_concrete.full)(e, c.ty_args.get_ty(), c.ty_args.get_const()).alloc()
+        })
+    }
+
+    /// Like [`Self::cast_to_callee_ctx`], of the part `perm` of the
+    /// permission (the whole permission if `None`).
+    pub fn cast_part_to_callee_ctx(
+        &self,
+        e: vir::ExprRef<'vir>,
+        perm: Option<vir::ExprPerm<'vir>>,
+    ) -> Option<vir::Stmt<'vir>> {
+        let Some(perm) = perm else {
+            return self.cast_to_callee_ctx(e);
+        };
+        self.get().map(|c| {
+            (c.cast.make_generic.part)(e, c.ty_args.get_ty(), c.ty_args.get_const(), perm)
+                .alloc()
+        })
+    }
+
+    /// Like [`Self::cast_to_caller_ctx`], of the part `perm` of the
+    /// permission (the whole permission if `None`).
+    pub fn cast_part_to_caller_ctx(
+        &self,
+        e: vir::ExprRef<'vir>,
+        perm: Option<vir::ExprPerm<'vir>>,
+    ) -> Option<vir::Stmt<'vir>> {
+        let Some(perm) = perm else {
+            return self.cast_to_caller_ctx(e);
+        };
+        self.get().map(|c| {
+            (c.cast.make_concrete.part)(e, c.ty_args.get_ty(), c.ty_args.get_const(), perm)
+                .alloc()
+        })
     }
 }
 

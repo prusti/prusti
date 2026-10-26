@@ -64,7 +64,12 @@ impl<'vir: 'a, 'a, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             let ty = (*place).ty(self.pcg_ctxt());
             let task = RustTyDecomposition::from_ty(ty.ty, self.def_id);
             let ty_out = self.deps.require_dep::<TyUseImpureEnc>(task).unwrap();
-            let pred = ty_out.ref_to_pred(self.vcx, place_res.expr.expect_predicate(), None);
+            // A place the loop only reads keeps the rest of its permission
+            // outside the loop, so its value (e.g. the address a `&Cell`'s
+            // atom is keyed on) stays the same.
+            let perm =
+                matches!(capability, CapabilityKind::Read).then(|| self.loop_read_part());
+            let pred = ty_out.ref_to_pred(self.vcx, place_res.expr.expect_predicate(), perm);
             inv.push(pred);
             if crate::encoders::ty::im::reaches_im(task) {
                 let addr = place_res.expr.expect_predicate();
