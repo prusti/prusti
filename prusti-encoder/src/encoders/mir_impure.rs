@@ -1203,10 +1203,10 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
 
         let place_enc = self.encode_place(place)?;
         comment!(self, "exhale due to weaken to Write");
-        self.stmt(self.vcx.mk_exhale_stmt(place_ty_out.ref_to_pred(
-            self.vcx,
-            place_enc.expr.expect_predicate(),
-            None,
+        // Only the permission is given up; inhabitedness is a pure fact that
+        // need not be known for a place assigned a value.
+        self.stmt(self.vcx.mk_exhale_stmt(self.vcx.mk_predicate_app_expr(
+            place_ty_out.ref_to_pred_app(place_enc.expr.expect_predicate(), None),
         )));
         Ok(())
     }
