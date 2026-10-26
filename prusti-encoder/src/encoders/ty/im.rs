@@ -1231,9 +1231,9 @@ fn is_variant<'vir, E: TaskEncoder>(
     Ok(vir::with_vcx(|vcx| vcx.mk_eq_expr(discr, value)))
 }
 
-/// The atoms a value of `ty` with snapshot `snap` reaches other than through
-/// shared references: what a borrow of it lends to the borrow's result (in a
-/// magic wand).
+/// The atoms a value of `ty` with snapshot `snap` reaches through mutable
+/// references: what a borrow of it lends to the borrow's result (in a magic
+/// wand). Atoms held inline belong to the value itself.
 pub(crate) fn lent_footprint<'vir, E: TaskEncoder>(
     deps: &mut TaskEncoderDependencies<'vir, E>,
     ty: RustTyDecomposition<'vir>,
@@ -1245,7 +1245,7 @@ pub(crate) fn lent_footprint<'vir, E: TaskEncoder>(
     let vcx = vir::with_vcx(|vcx| vcx);
     let entries = footprint(deps, ty, vcx.mk_null(), snap)?
         .into_iter()
-        .filter(|entry| !entry.shared)
+        .filter(|entry| entry.reached && !entry.shared)
         .collect::<Vec<_>>();
     Ok((!entries.is_empty()).then(|| footprint_assertion_with(&entries, false)))
 }

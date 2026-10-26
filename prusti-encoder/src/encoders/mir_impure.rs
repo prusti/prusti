@@ -219,6 +219,9 @@ where
     /// latest unfolding of an array at it: the array is folded again at that
     /// index after the local may have died.
     pub array_indices: FxHashMap<mir::Local, vir::LocalDeclInt<'vir>>,
+    /// The locals each loop's invariant holds whole: inside the loop, the
+    /// others are framed out.
+    pub loop_kept_locals: FxHashMap<LoopId, FxHashSet<mir::Local>>,
 
     // for the current basic block
     pub current_fpcs: Option<PcgBasicBlock<'enc, 'vir>>,
@@ -2505,6 +2508,21 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         Ok(())
     }
 
+    /// Whether `local` is framed out by the invariant of a loop the current
+    /// block is in (past the loop's head).
+    fn framed_by_loop(&self, local: mir::Local) -> bool {
+        let block = self.current_block.unwrap();
+        let pres = self.current_block_pres.as_deref().unwrap_or_default();
+        self.loop_analysis()
+            .loops(block)
+            .filter(|l| !pres.contains(&l.index()))
+            .any(|l| {
+                self.loop_kept_locals
+                    .get(&l)
+                    .is_some_and(|kept| !kept.contains(&local))
+            })
+    }
+
     /// The locals held whole (exclusively) before the current terminator.
     fn terminator_exclusive_locals(&self) -> Vec<mir::Local> {
         self.local_decls
@@ -3318,8 +3336,15 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 .loop_place_usages(loop_spec.loop_id)
                 .clone();
             let invariants = loop_spec.invariants.clone();
+            let loop_id = loop_spec.loop_id;
             let (permissions, place_capabilities) =
                 self.get_loop_inv(&cfpcs, &loop_place_usages, self.pcg_ctxt())?;
+            let kept = place_capabilities
+                .iter()
+                .filter(|(place, capability)| place.projection.is_empty() && !capability.is_write())
+                .map(|(place, _)| place.local)
+                .collect();
+            self.loop_kept_locals.insert(loop_id, kept);
             let pcg_state = &cfpcs.statements[0].states[EvalStmtPhase::PreOperands];
             let functional = invariants
                 .into_iter()
@@ -4050,7 +4075,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                             })
                             .collect::<Vec<_>>();
                         let mut held = self.terminator_exclusive_locals();
-                        held.retain(|local| !moved.contains(local));
+                        held.retain(|local| !moved.contains(local) && !self.framed_by_loop(*local));
                         if destination.projection.is_empty() {
                             held.push(destination.local);
                         }

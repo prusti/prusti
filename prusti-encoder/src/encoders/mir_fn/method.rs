@@ -458,6 +458,7 @@ impl TaskEncoder for MethodEnc {
                     entry_vars: Default::default(),
                     blocks_encoded: Default::default(),
                     array_indices: Default::default(),
+                    loop_kept_locals: Default::default(),
 
                     current_block: None,
                     current_block_pres: None,

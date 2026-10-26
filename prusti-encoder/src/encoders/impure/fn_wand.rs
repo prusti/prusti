@@ -4,7 +4,7 @@ use crate::encoders::{
     ty::{
         RustTyDecomposition,
         generics::{GArgs, GArgsTyEnc, GParams, GenericParamsEnc},
-        im::{deep_snap, lent_footprint, on_expiry},
+        im::{deep_snap, footprint, lent_footprint, on_expiry},
         indirect::{IndirectPredicatesEnc, projection_for_generalized_idx},
     },
 };
@@ -368,7 +368,17 @@ impl<'vir> WandEncOutput<'vir> {
                 fn_sig.inputs()[local.index() - 1]
             };
             let ty = RustTyDecomposition::from_ty(ty, g_params);
-            deep_snap(deps, ty, vcx.mk_null(), snap).unwrap()
+            // A value holding atoms inline was moved into the call: only its
+            // shallow value is left.
+            let inline = footprint(deps, ty, vcx.mk_null(), snap)
+                .unwrap()
+                .iter()
+                .any(|entry| !entry.reached);
+            if inline {
+                snap
+            } else {
+                deep_snap(deps, ty, vcx.mk_null(), snap).unwrap()
+            }
         });
         let pledge_expr = |pledge: &PledgeExpr<'vir>| match pledge_old_label {
             Some(label) => {
