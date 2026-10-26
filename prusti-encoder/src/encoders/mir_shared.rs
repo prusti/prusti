@@ -6,6 +6,7 @@ use crate::encoders::{
     ConstEnc, MirBuiltinBinOpEnc, MirBuiltinBinOpTask, MirBuiltinUnOpEnc, MirBuiltinUnOpTask,
     MirBuiltinUseCastEnc, MirBuiltinUseCastTask, PrustiBuiltin, PrustiBuiltinEnc,
     PrustiBuiltinTask,
+    builtin::seq_repeat_function,
     r#const::ConstEncTask,
     ty::{
         RustTyDecomposition,
@@ -268,6 +269,50 @@ pub(crate) trait PureRvalueEnc<'vir> {
             _ => e_rvalue_ty.expect_structlike(),
         };
         Ok(sl.field_snaps_to_snap(encoded_fields).upcast_ty())
+    }
+
+    /// An array literal `[a, b, c]`.
+    fn encode_array_snap(
+        &mut self,
+        rvalue_ty: ty::Ty<'vir>,
+        elements: &IndexVec<abi::FieldIdx, mir::Operand<'vir>>,
+        ctxt: &Self::EncodePlaceCtxt,
+    ) -> ExprResult<'vir, Self> {
+        let elements = elements
+            .iter()
+            .map(|element| self.encode_operand_snap(element, ctxt))
+            .collect::<Result<Vec<_>, _>>()?;
+        let e_ty = self.ty_use_pure(rvalue_ty);
+        Ok(e_ty.expect_array().elems_to_snap(&elements).upcast_ty())
+    }
+
+    /// An array repeat `[operand; len]`.
+    fn encode_repeat_snap(
+        &mut self,
+        rvalue_ty: ty::Ty<'vir>,
+        operand: &mir::Operand<'vir>,
+        len: ty::Const<'vir>,
+        ctxt: &Self::EncodePlaceCtxt,
+    ) -> ExprResult<'vir, Self> {
+        let usize_ty = self.vcx().tcx().types.usize;
+        let context = self.context();
+        let len = self.deps().require_dep::<ConstEnc>(ConstEncTask::Ty {
+            const_: len,
+            ty: usize_ty,
+            context,
+        })?;
+        let len = self
+            .ty_use_pure(usize_ty)
+            .expect_primitive()
+            .snap_to_prim(len.lazy())
+            .downcast_ty();
+        let seq_repeat = seq_repeat_function(self.deps())?;
+        let element = self.encode_operand_snap(operand, ctxt)?;
+        let e_ty = self.ty_use_pure(rvalue_ty);
+        Ok(e_ty
+            .expect_array()
+            .repeat_to_snap(element, len, seq_repeat)
+            .upcast_ty())
     }
 
     fn encode_intrinsic(

@@ -62,6 +62,8 @@ fn symbolic_index(i: usize) {}
 fn impure() {
     let a = literal();
     assert!(a[1] == 20);
+    let c = [10, 20, 30];
+    prusti_assert!(c === literal());
     let b = repeated_adt();
     assert!(b[0].0 == 5);
     assert!(foo() == 1);

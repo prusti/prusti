@@ -340,29 +340,10 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 .map_err(EncodeRvalueError::from)?
                 .into()),
 
-            mir::Rvalue::Aggregate(box _kind @ mir::AggregateKind::Array(..), elements) => {
-                let e_rvalue_ty = self.ty_use_pure(rvalue_ty);
-                let al = e_rvalue_ty.expect_array();
-                let tmp_exp: vir::ExprCSnap<'vir> =
-                    self.new_tmp(e_rvalue_ty.snapshot.downcast_ty());
-                for (idx, element) in elements.iter().enumerate() {
-                    let element_snap = self.encode_operand_snap(element, operand_snaps)?;
-                    self.stmt(
-                        self.vcx.mk_inhale_stmt(
-                            self.vcx.mk_eq_expr(
-                                al.index(
-                                    tmp_exp,
-                                    self.vcx
-                                        .mk_const_expr(vir::ConstData::Int(idx as u128))
-                                        .downcast_ty(),
-                                ),
-                                element_snap,
-                            ),
-                        ),
-                    );
-                }
-                Ok(tmp_exp.upcast_ty().into())
-            }
+            mir::Rvalue::Aggregate(box mir::AggregateKind::Array(..), elements) => Ok(self
+                .encode_array_snap(rvalue_ty, elements, operand_snaps)
+                .map_err(EncodeRvalueError::from)?
+                .into()),
 
             mir::Rvalue::Aggregate(
                 box kind @ (mir::AggregateKind::Adt(..)
@@ -374,18 +355,10 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 .map_err(EncodeRvalueError::from)?
                 .into()),
 
-            mir::Rvalue::Repeat(operand, _len) => {
-                let e_rvalue_ty = self.ty_use_pure(rvalue_ty);
-                let al = e_rvalue_ty.expect_array();
-                let tmp_exp: vir::ExprCSnap<'vir> =
-                    self.new_tmp(e_rvalue_ty.snapshot.downcast_ty());
-                let operand_snap = self.encode_operand_snap(operand, operand_snaps)?;
-                self.stmt(self.vcx.mk_inhale_stmt(vir::expr! {
-                    forall idx: Int :: {[al.index(tmp_exp, idx)]}
-                        ([al.index(tmp_exp, idx)]) == ([operand_snap])
-                }));
-                Ok(tmp_exp.upcast_ty().into())
-            }
+            mir::Rvalue::Repeat(operand, len) => Ok(self
+                .encode_repeat_snap(rvalue_ty, operand, *len, operand_snaps)
+                .map_err(EncodeRvalueError::from)?
+                .into()),
 
             mir::Rvalue::Discriminant(place) => {
                 let e_rvalue_ty = self.ty_use_pure(rvalue_ty);

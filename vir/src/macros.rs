@@ -424,7 +424,17 @@ macro_rules! expr_inner {
     (@expr_iter; , $($last:tt)+) => { [$crate::expr_inner!(@expr_one; $($last)*)].into_iter() };
     (@expr_iter; $($tokens:tt)+) => { compile_error!(concat!("VIR malformed expression list: `" , stringify!($($tokens)*), "`")) };
 
-    (@forall_qvars($qvars:ident); :: $({ $($triggers:tt)+ })+ $($tokens:tt)+) => { vcx!().mk_forall_expr(
+    // The trigger sets are collected one `{ .. }` group at a time, since a
+    // repetition of them directly followed by the body is ambiguous. A body
+    // never starts with `{`.
+    (@forall_qvars($qvars:ident); :: $($tokens:tt)+) => {
+        $crate::expr_inner!(@forall_triggers($qvars;); $($tokens)*)
+    };
+    (@forall_qvars($qvars:ident); :: $($tokens:tt)*) => { compile_error!(concat!("VIR missing triggers or body: `" , stringify!($($tokens)*), "`")) };
+    (@forall_triggers($qvars:ident; $($done:tt)*); { $($trigger:tt)+ } $($tokens:tt)+) => {
+        $crate::expr_inner!(@forall_triggers($qvars; $($done)* { $($trigger)* }); $($tokens)*)
+    };
+    (@forall_triggers($qvars:ident; $({ $($triggers:tt)+ })+); $($tokens:tt)+) => { vcx!().mk_forall_expr(
         vcx!().alloc_slice($qvars.as_slice()),
         vcx!().alloc_slice(
             [$($crate::expr_inner!(@expr_list; $($triggers)*)),*].into_iter()
@@ -433,7 +443,7 @@ macro_rules! expr_inner {
         ),
         $crate::expr_inner!(@expr_one; $($tokens)*),
     ) };
-    (@forall_qvars($qvars:ident); :: $($tokens:tt)*) => { compile_error!(concat!("VIR missing triggers or body: `" , stringify!($($tokens)*), "`")) };
+    (@forall_triggers($qvars:ident; $($done:tt)*); $($tokens:tt)*) => { compile_error!(concat!("VIR missing triggers or body: `" , stringify!($($tokens)*), "`")) };
 
     (@forall_qvars($qvars:ident); , ..[$outer_decls:expr] $($tokens:tt)*) => { {
         $qvars.extend($outer_decls.iter().map(|local| $crate::CastType::as_dyn(local.clone())));

@@ -198,19 +198,16 @@ impl TaskEncoder for ValueCastAxiomEnc {
             // Compare the elements in their generic (`p_Param`) form: the array and
             // slice share the same element type, so the concrete element conversion
             // would be redundant.
-            let idx_body = vcx.mk_eq_expr(
-                array_pure.index_generic(arr, idx),
-                slice_pure.index_generic(sli, idx),
-            );
-            let idx_forall = vcx.mk_forall_expr(
-                vcx.alloc_slice(&[idx_decl]),
-                vcx.alloc_slice(&[vcx.mk_trigger(&[array_pure.index_generic(arr, idx)])]),
-                idx_body,
-            );
+            let arr_index = array_pure.index_generic(arr, idx);
+            let sli_index = slice_pure.index_generic(sli, idx);
+            // Triggered by a read on either side: facts known about the array
+            // are needed when reading the slice, and facts known about the
+            // (e.g. mutated) slice when reading the array. An array read only
+            // triggers it for an array that was unsized.
             let axiom_expr = vir::expr! {
-                forall [arr_decl], ..[array_gen.ty_decls()], ..[array_gen.const_decls()]
-                    :: { [arr_vc] }
-                    [idx_forall]
+                forall [arr_decl], [idx_decl], ..[array_gen.ty_decls()], ..[array_gen.const_decls()]
+                    :: { ([arr_vc.upcast_ty()]), ([arr_index]) } { [sli_index] }
+                    ([arr_index]) == ([sli_index])
             };
             let axiom = vcx.mk_domain_axiom(
                 vir::ViperIdent::new("unsize_value_cast_array_slice"),
