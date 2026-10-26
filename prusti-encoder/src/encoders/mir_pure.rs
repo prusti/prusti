@@ -156,7 +156,10 @@ impl TaskEncoder for MirPureEnc {
                 body.span
             };
             let mut enc = Enc::new(vcx, task_key.0, def_id, kind, gargs, &body, deps);
-            let expr_inner = vcx.with_span(body_span, |_| {
+            let expr_inner = vcx.with_span(body_span, |vcx| {
+                if let PureKind::Spec { .. } = kind {
+                    crate::encoders::pure::spec::handle_spec_permission_errors(vcx, body_span);
+                }
                 if let PureKind::SpecBlock(block) = kind {
                     enc.encode_spec_block(block)
                 } else {

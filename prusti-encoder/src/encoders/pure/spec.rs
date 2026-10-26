@@ -398,3 +398,41 @@ impl MirSpecEnc {
         .ok()
     }
 }
+
+/// Registers handlers for permission failures of heap-dependent function
+/// applications inside a specification (e.g. a spec dereferencing memory that
+/// is not accessible in the state it is evaluated in, such as reading through
+/// a reference whose permission is blocked by a reborrow). Must be registered
+/// on the span of the spec's own body encoding, which is where the nodes of
+/// such applications are positioned.
+pub(crate) fn handle_spec_permission_errors(
+    vcx: &vir::VirCtxt<'_>,
+    span: prusti_rustc_interface::span::Span,
+) {
+    vcx.handle_error(
+        "application.precondition:insufficient.permission",
+        move |reason_span_opt| {
+            let mut error = PrustiError::verification(
+                "this specification requires memory permissions that are not available \
+                at the point where it is evaluated",
+                span.into(),
+            );
+            if let Some(reason_span) = reason_span_opt {
+                error.add_note_mut(
+                    "the inaccessible memory is read here",
+                    Some(reason_span.into()),
+                );
+            }
+            // A permission failure is a user error only for a spec that
+            // reads through a blocked borrow (e.g. `*x` in the postcondition
+            // of a function returning a reborrow of `x: &mut T`); anywhere
+            // else it indicates a Prusti encoding bug.
+            error.add_note_mut(
+                "if this specification does not read through a blocked borrow, this is \
+                likely a bug in Prusti's encoding",
+                None,
+            );
+            Some(vec![error])
+        },
+    );
+}
