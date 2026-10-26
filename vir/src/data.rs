@@ -64,6 +64,8 @@ pub enum BinOpKind {
     PermSub,
     PermMul,
     PermPermDiv,
+    /// The fraction `lhs / rhs` of two `Int`s as a `Perm`.
+    FracPerm,
     Mod,
 }
 impl From<mir::BinOp> for BinOpKind {

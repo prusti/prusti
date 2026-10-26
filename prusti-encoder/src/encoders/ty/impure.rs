@@ -76,8 +76,26 @@ pub struct TyImpureArrayData<'vir> {
         vir::FunctionIdn<'vir, (vir::Ref, vir::Int, vir::ManyTyVal, vir::ManyCSnap), vir::CSnap>,
     #[allow(dead_code)]
     pub index_predicate: PredicateIdn<'vir, (vir::Ref, vir::Int, vir::ManyTyVal, vir::ManyCSnap)>,
-    pub method_fold: vir::MethodIdn<'vir, (vir::Int, vir::Ref, vir::ManyTyVal, vir::ManyCSnap)>,
-    pub method_unfold: vir::MethodIdn<'vir, (vir::Int, vir::Ref, vir::ManyTyVal, vir::ManyCSnap)>,
+    pub method_fold: vir::MethodIdn<
+        'vir,
+        (
+            vir::Int,
+            vir::Ref,
+            vir::Perm,
+            vir::ManyTyVal,
+            vir::ManyCSnap,
+        ),
+    >,
+    pub method_unfold: vir::MethodIdn<
+        'vir,
+        (
+            vir::Int,
+            vir::Ref,
+            vir::Perm,
+            vir::ManyTyVal,
+            vir::ManyCSnap,
+        ),
+    >,
 }
 
 #[derive(Debug, Clone, Copy)]

@@ -104,17 +104,35 @@ pub(crate) fn ty_impure<'vir>(
 
     let element_ty = data.0.decompose(task_key.0.params);
     let element_ty_out = deps.require_dep::<TyUseImpureEnc>(element_ty)?;
-    let element_pred = element_ty_out.ref_to_pred(builder.vcx, index_ref, None);
+    let perm_decl = builder.vcx.mk_local_decl("amount", vir::TYPE_PERM);
+    let perm = builder.vcx.mk_local_ex(perm_decl);
+    let positive_perm = builder
+        .vcx
+        .mk_bin_op_expr(vir::BinOpKind::CmpLt, builder.vcx.mk_no_perm(), perm)
+        .downcast_ty();
+    let element_pred = element_ty_out.ref_to_pred(builder.vcx, index_ref, Some(perm));
+    let index_pred = builder.vcx.mk_predicate_app_expr(index_predicate(
+        ref_self,
+        index,
+        builder.params.ty_exprs(),
+        builder.params.const_exprs(),
+    )(Some(perm)));
+    let array_pred = builder.vcx.mk_predicate_app_expr((builder.ref_to_pred)(
+        ref_self,
+        builder.params.ty_exprs(),
+        builder.params.const_exprs(),
+    )(Some(perm)));
 
     let array_snap = vir::expr! { [builder.ref_to_snap](ref_self, [..[builder.params.ty_exprs()]], [..[builder.params.const_exprs()]]) }.downcast_ty();
     let array_index = data.1.index_access.call()(array_snap, index);
     let method_fold = builder
         .inner
-        .method::<(vir::Int, vir::Ref, vir::ManyTyVal, vir::ManyCSnap)>(
+        .method::<(vir::Int, vir::Ref, vir::Perm, vir::ManyTyVal, vir::ManyCSnap)>(
             "fold_index",
             (
                 vir::TYPE_INT,
                 ref_self_decl.ty(),
+                vir::TYPE_PERM,
                 builder.params.ty_args(),
                 builder.params.const_args(),
             ),
@@ -122,15 +140,13 @@ pub(crate) fn ty_impure<'vir>(
             (
                 index_decl,
                 ref_self_decl,
+                perm_decl,
                 builder.params.ty_decls(),
                 builder.params.const_decls(),
             ),
+            &[positive_perm, element_pred, index_pred],
             &[
-                element_pred,
-                vir::expr! { [index_predicate](ref_self, index, [..[builder.params.ty_exprs()]], [..[builder.params.const_exprs()]]) },
-            ],
-            &[
-                vir::expr! { [builder.ref_to_pred](ref_self, [..[builder.params.ty_exprs()]], [..[builder.params.const_exprs()]]) },
+                array_pred,
                 vir::expr! {
                     forall idx: Int :: {[data.1.index_access](array_snap, idx)}
                         ([data.1.index_access](array_snap, idx)) == (
@@ -143,11 +159,12 @@ pub(crate) fn ty_impure<'vir>(
         );
     let method_unfold = builder
         .inner
-        .method::<(vir::Int, vir::Ref, vir::ManyTyVal, vir::ManyCSnap)>(
+        .method::<(vir::Int, vir::Ref, vir::Perm, vir::ManyTyVal, vir::ManyCSnap)>(
             "unfold_index",
             (
                 vir::TYPE_INT,
                 ref_self_decl.ty(),
+                vir::TYPE_PERM,
                 builder.params.ty_args(),
                 builder.params.const_args(),
             ),
@@ -155,15 +172,14 @@ pub(crate) fn ty_impure<'vir>(
             (
                 index_decl,
                 ref_self_decl,
+                perm_decl,
                 builder.params.ty_decls(),
                 builder.params.const_decls(),
             ),
-            &[
-                vir::expr! { [builder.ref_to_pred](ref_self, [..[builder.params.ty_exprs()]], [..[builder.params.const_exprs()]]) },
-            ],
+            &[positive_perm, array_pred],
             &[
                 element_pred,
-                vir::expr! { [index_predicate](ref_self, index, [..[builder.params.ty_exprs()]], [..[builder.params.const_exprs()]]) },
+                index_pred,
                 vir::expr! {
                     ([element_ty_out.ref_to_snap(index_ref)])
                     == ([builder.vcx.mk_old_expr(array_index).upcast_ty()])

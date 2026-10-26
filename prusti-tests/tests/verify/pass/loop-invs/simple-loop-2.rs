@@ -1,4 +1,3 @@
-//@ known-failure
 use prusti_contracts::*;
 
 fn test1(n: u32) -> u32 {

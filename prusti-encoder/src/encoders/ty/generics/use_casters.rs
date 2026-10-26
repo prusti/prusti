@@ -66,14 +66,28 @@ impl<'vir> GArgCaster<'vir, Pure> {
 }
 
 impl<'vir> GArgCaster<'vir, Impure> {
-    pub fn cast_to_callee_ctx(&self, e: vir::ExprRef<'vir>) -> Option<vir::Stmt<'vir>> {
-        self.get()
-            .map(|c| (c.cast.make_generic)(e, c.ty_args.get_ty(), c.ty_args.get_const()).alloc())
+    /// Casts `perm` (`None` for all) of the permission to `e`.
+    pub fn cast_to_callee_ctx(
+        &self,
+        e: vir::ExprRef<'vir>,
+        perm: Option<vir::ExprPerm<'vir>>,
+    ) -> Option<vir::Stmt<'vir>> {
+        self.get().map(|c| {
+            let perm = perm.unwrap_or_else(|| vir::with_vcx(|vcx| vcx.mk_full_perm()));
+            (c.cast.make_generic)(e, perm, c.ty_args.get_ty(), c.ty_args.get_const()).alloc()
+        })
     }
 
-    pub fn cast_to_caller_ctx(&self, e: vir::ExprRef<'vir>) -> Option<vir::Stmt<'vir>> {
-        self.get()
-            .map(|c| (c.cast.make_concrete)(e, c.ty_args.get_ty(), c.ty_args.get_const()).alloc())
+    /// Casts `perm` (`None` for all) of the permission to `e`.
+    pub fn cast_to_caller_ctx(
+        &self,
+        e: vir::ExprRef<'vir>,
+        perm: Option<vir::ExprPerm<'vir>>,
+    ) -> Option<vir::Stmt<'vir>> {
+        self.get().map(|c| {
+            let perm = perm.unwrap_or_else(|| vir::with_vcx(|vcx| vcx.mk_full_perm()));
+            (c.cast.make_concrete)(e, perm, c.ty_args.get_ty(), c.ty_args.get_const()).alloc()
+        })
     }
 }
 
