@@ -55,7 +55,7 @@ fn loop_with_invariant() {
     let c = Cell::new(0);
     let mut i = 0;
     while i < 10 {
-        body_invariant!(0 <= i && i <= 10);
+        body_invariant!(0 <= i && i < 10);
         body_invariant!(c.get() == i);
         c.set(c.get() + 1);
         i += 1;

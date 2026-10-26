@@ -402,6 +402,16 @@ impl TaskEncoder for MethodEnc {
                         start_stmts.push(vcx.mk_inhale_stmt(local_defs[local].impure_uninit));
                     }
                 }
+                // A guard argument's `#[im_assume]` fact holds, as after a
+                // call returning one.
+                for local in (1..arg_count).map(mir::Local::from) {
+                    let arg = &local_defs[local];
+                    if let Some(fact) =
+                        crate::encoders::ty::im::guard_assumption(deps, arg.ty, arg.local_ex)?
+                    {
+                        start_stmts.push(vcx.mk_inhale_stmt(fact));
+                    }
+                }
                 // An `#[im_open]` function works on the opened atom (closed
                 // again at its return).
                 if let Some((param, valid)) = crate::encoders::ty::im::im_open_attr(def_id) {
