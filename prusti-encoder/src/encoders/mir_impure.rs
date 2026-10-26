@@ -1069,11 +1069,10 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
     ) -> EncodeResult<'vir, (), E> {
         let mut to_skip = Vec::new();
         match action.kind() {
-            //Restore(RestoreCapability<'tcx>),
             //MakePlaceOld(Place<'tcx>),
             //SetLatest(Place<'tcx>, Location),
             //AddRegionProjectionMember(RegionProjectionMember<'tcx>, PathConditions),
-            BorrowPcgActionKind::RemoveEdge(edge) => self.pcs_handle_edge(
+            BorrowPcgActionKind::RemoveEdge { edge, .. } => self.pcs_handle_edge(
                 pcg.borrow_pcg(),
                 edge,
                 EdgeAction::Remove,
@@ -1081,7 +1080,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 &mut to_skip,
                 None,
             ),
-            BorrowPcgActionKind::AddEdge { edge } => self.pcs_handle_edge(
+            BorrowPcgActionKind::AddEdge { edge, .. } => self.pcs_handle_edge(
                 pcg.borrow_pcg(),
                 edge,
                 EdgeAction::Add,
@@ -1118,7 +1117,6 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
 
         fn should_ignore(repack_op: &RepackOp<'_>) -> bool {
             match repack_op {
-                RepackOp::RegainLoanedCapability(..) => true,
                 RepackOp::Weaken(weaken) => {
                     weaken.from_cap().is_exclusive()
                         && matches!(
