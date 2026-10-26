@@ -1,3 +1,4 @@
+use pcg::borrow_pcg::FunctionData;
 use prusti_rustc_interface::{middle::ty, span::def_id::DefId};
 
 use crate::encoders::ty::{LazyRustTy, generics::GParams};
@@ -10,12 +11,9 @@ pub struct RustSignature<'tcx> {
 
 impl<'tcx> RustSignature<'tcx> {
     pub fn new(def_id: DefId) -> Self {
-        let fn_sig = vir::with_vcx(|vcx| {
-            vcx.tcx()
-                .fn_sig(def_id)
-                .instantiate_identity()
-                .skip_binder()
-        });
+        // For a closure, this is the signature of its body: the environment
+        // followed by the untupled arguments.
+        let fn_sig = vir::with_vcx(|vcx| FunctionData::new(def_id).identity_fn_sig(vcx.tcx()));
         let gparams = GParams::from(def_id);
         let inputs = LazyRustTy::new_slice(fn_sig.inputs());
         let output = LazyRustTy::new(fn_sig.output());

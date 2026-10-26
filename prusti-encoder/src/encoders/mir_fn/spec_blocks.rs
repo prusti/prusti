@@ -35,9 +35,7 @@ pub struct GhostBlock {
     pub erased_block: BasicBlock,
 }
 
-/// The `ghost!` blocks of a MIR body (see [`GhostBlock`]). Unlike the full
-/// [`SpecBlocks`], this needs no PCG analysis, so the pure encoder can use
-/// the same detection.
+/// The `ghost!` blocks of a MIR body (see [`GhostBlock`]).
 #[derive(Clone, Default)]
 pub struct GhostBlocks {
     /// Ghost blocks, keyed by the block whose `if false` switch guards them.
@@ -48,16 +46,6 @@ pub struct GhostBlocks {
 }
 
 impl GhostBlocks {
-    /// Determine the ghost blocks of the given MIR body. A ghost block is
-    /// recognized by its (single-block) runtime stand-in arm calling
-    /// `ghost_erased`: the sibling arm of the guarding `if false` switch is
-    /// the ghost arm, holding the inline ghost body up to its `ghost_call`
-    /// terminator.
-    pub fn new<'vir>(def_id: DefId, body: &mir::Body<'vir>) -> Self {
-        let visitor = SpecVisitor::run(def_id, body);
-        Self::from_erased(body, visitor.erased_blocks)
-    }
-
     /// Builds the ghost blocks from the blocks of the runtime `ghost_erased`
     /// stand-in arms (as collected by [SpecVisitor]).
     fn from_erased<'vir>(
@@ -161,6 +149,20 @@ pub struct SpecArms {
 }
 
 impl SpecArms {
+    /// The `ghost!` and `closure!` arms of the given MIR body. Unlike the full
+    /// [`SpecBlocks`], this needs no PCG analysis, so the pure encoder can use
+    /// it on the body it encodes.
+    pub fn for_body(def_id: DefId, body: &mir::Body<'_>) -> Self {
+        let visitor = SpecVisitor::run(def_id, body);
+        let ghost = GhostBlocks::from_erased(body, visitor.erased_blocks);
+        Self::new(
+            body,
+            &ghost,
+            visitor.closure_marker_blocks,
+            visitor.phantom_operands,
+        )
+    }
+
     fn new(
         body: &mir::Body<'_>,
         ghost: &GhostBlocks,

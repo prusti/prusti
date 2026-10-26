@@ -1,6 +1,6 @@
 use crate::encoders::{
     FunctionCallEnc, Mode, PrustiBuiltin, SpecBuiltin, ViperTupleEnc,
-    mir_fn::{CallTaskDescription, GhostBlocks, RustSignature},
+    mir_fn::{CallTaskDescription, RustSignature, SpecArms},
     mir_shared::{EncodeResult, PureRvalueEnc, RustcIntrinsic},
     pure::spec::MirSpecEncMode,
     ty::{
@@ -280,9 +280,9 @@ struct Enc<'vir: 'enc, 'enc> {
     context: GParams<'vir>,
     body: &'enc mir::Body<'vir>,
     rev_doms: rev_doms::ReverseDominators,
-    /// The `ghost!` blocks of the body (the same detection the impure
-    /// encoder uses, via `SpecBlocks`).
-    ghost: GhostBlocks,
+    /// The `ghost!` and `closure!` arms of the body (the same detection the
+    /// impure encoder uses, via `SpecBlocks`).
+    spec_arms: SpecArms,
     deps: &'enc mut TaskEncoderDependencies<'vir, MirPureEnc>,
     /// Always holds the next version to be used for a local.
     version_ctr: IndexVec<mir::Local, usize>,
@@ -383,7 +383,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
             context: gargs.context(),
             body,
             rev_doms,
-            ghost: GhostBlocks::new(def_id, body),
+            spec_arms: SpecArms::for_body(def_id, body),
             deps,
             // visited: IndexVec::from_elem_n(false, body.basic_blocks.len()),
             version_ctr: IndexVec::from_elem_n(0, body.local_decls.len()),
@@ -665,12 +665,12 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
             }
 
             mir::TerminatorKind::SwitchInt { discr, targets } => {
-                // A `ghost!` block's `if false` switch: continue straight
-                // into the ghost arm (the inline ghost body); the runtime
-                // `ghost_erased` stand-in arm is skipped.
-                if let Some(ghost) = self.ghost.switches.get(&curr) {
-                    let rest_update =
-                        self.encode_cfg(&new_curr_ver, ghost.arm_block, join_point)?;
+                // The `if false` switch of a `ghost!` block or a `closure!`
+                // spec marker: continue straight into the live target (the
+                // inline ghost body, or the continuation); the other arm is
+                // skipped.
+                if let Some(live) = self.spec_arms.switches.get(&curr) {
+                    let rest_update = self.encode_cfg(&new_curr_ver, *live, join_point)?;
                     return Ok(stmt_update.merge(rest_update));
                 }
 

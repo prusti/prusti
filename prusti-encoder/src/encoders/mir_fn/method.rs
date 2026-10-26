@@ -252,13 +252,11 @@ impl TaskEncoder for MethodEnc {
             // with the addresses of `&T` arguments nulled, exactly as a call
             // `f(args)` in a specification is encoded. So an impure call
             // learns the same value; the body proves it like any other
-            // postcondition. Pure closures are skipped: `FunctionCallEnc`
-            // cannot take a closure's signature.
+            // postcondition.
             let tie = if crate::encoders::is_function_pure(
                 def_id,
                 GArgs::new(params, params.rust_params()),
-            ) && !vcx.tcx().is_closure_like(def_id)
-            {
+            ) {
                 let pure_func = deps.require_dep_spanned::<FunctionCallEnc>(
                     CallTaskDescription::new(def_id, params.rust_params(), def_id)
                         .resolve_trait_calls(false),
