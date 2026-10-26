@@ -317,9 +317,19 @@ impl TaskEncoder for ImOpaqueEnc {
             };
 
             let folded = folded(deps, ty, self_ex, snap)?;
-            let mut body = folded.iter().map(FpEntry::acc).collect::<Vec<_>>();
+            // A folded dependent atom's amount is clamped, as below.
+            let mut body = folded
+                .iter()
+                .map(|entry| match entry.amount {
+                    Some(_) => vcx.mk_predicate_app_expr(entry.app(nonneg(entry.amount()))),
+                    None => entry.acc(),
+                })
+                .collect::<Vec<_>>();
+            // A dependent atom may be held at no amount: only the others are
+            // read.
             let reads_folded = folded
                 .iter()
+                .filter(|entry| entry.amount.is_none())
                 .map(|entry| vcx.mk_predicate_app_expr(entry.app(vcx.mk_wildcard())))
                 .collect::<Vec<_>>();
             let inner = deep_with(deps, ty, self_ex, snap, DeepMode::Atom)?;
@@ -828,6 +838,24 @@ impl<'vir> FpEntry<'vir> {
         if self.atom.name() != other.atom.name() {
             return None;
         }
+        // Different fields of one value are at different addresses (the
+        // contents of zero-sized ones are unobservable).
+        let field_of = |addr: vir::ExprRef<'vir>| match addr.kind {
+            vir::ExprKindGenData::FuncApp(app) => {
+                let (prefix, idx) = app.target.rsplit_once("_field_")?;
+                idx.parse::<usize>().ok()?;
+                Some((prefix, idx, *app.args.first()?))
+            }
+            _ => None,
+        };
+        if let (Some((prefix, idx, base)), Some((other_prefix, other_idx, other_base))) =
+            (field_of(self.addr), field_of(other.addr))
+            && prefix == other_prefix
+            && idx != other_idx
+            && std::ptr::eq(base, other_base)
+        {
+            return None;
+        }
         vir::with_vcx(|vcx| {
             let mut eqs = vec![vcx.mk_eq_expr(self.addr, other.addr)];
             eqs.extend(
@@ -1204,7 +1232,8 @@ fn is_variant<'vir, E: TaskEncoder>(
 }
 
 /// The atoms a value of `ty` with snapshot `snap` reaches other than through
-/// shared references: what a borrow of it lends to the borrow's result.
+/// shared references: what a borrow of it lends to the borrow's result (in a
+/// magic wand).
 pub(crate) fn lent_footprint<'vir, E: TaskEncoder>(
     deps: &mut TaskEncoderDependencies<'vir, E>,
     ty: RustTyDecomposition<'vir>,
@@ -1218,7 +1247,7 @@ pub(crate) fn lent_footprint<'vir, E: TaskEncoder>(
         .into_iter()
         .filter(|entry| !entry.shared)
         .collect::<Vec<_>>();
-    Ok((!entries.is_empty()).then(|| footprint_assertion(&entries)))
+    Ok((!entries.is_empty()).then(|| footprint_assertion_with(&entries, false)))
 }
 
 /// What holds of an argument of type `ty` with snapshot `snap` when the
@@ -1429,6 +1458,15 @@ pub(crate) fn loop_footprint_assertion<'vir>(entries: &[FpEntry<'vir>]) -> vir::
 /// entry (assumed on inhale); entries reached through shared references are
 /// granted once per key.
 pub(crate) fn footprint_assertion<'vir>(entries: &[FpEntry<'vir>]) -> vir::ExprBool<'vir> {
+    footprint_assertion_with(entries, true)
+}
+
+/// Like [`footprint_assertion`], without assuming that owned entries are
+/// distinct (a magic wand cannot assume anything).
+fn footprint_assertion_with<'vir>(
+    entries: &[FpEntry<'vir>],
+    assume_distinct: bool,
+) -> vir::ExprBool<'vir> {
     vir::with_vcx(|vcx| {
         let mut conjs = Vec::new();
         let mut distinct = Vec::new();
@@ -1454,7 +1492,7 @@ pub(crate) fn footprint_assertion<'vir>(entries: &[FpEntry<'vir>]) -> vir::ExprB
             }
             conjs.push(vcx.mk_predicate_app_expr(entry.app(perm)));
         }
-        if !distinct.is_empty() {
+        if assume_distinct && !distinct.is_empty() {
             conjs.insert(
                 0,
                 vcx.mk_inhale_exhale_expr(vcx.mk_conj(&distinct), vcx.mk_bool::<true>()),
