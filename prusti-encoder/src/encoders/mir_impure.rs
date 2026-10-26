@@ -3533,6 +3533,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                     "application.precondition:insufficient.permission",
                     "exhale.failed:insufficient.permission",
                     "call.precondition:insufficient.permission",
+                    "call.failed:insufficient.permission",
                 ] {
                     self.vcx.handle_error(kind, move |_| {
                         Some(vec![PrustiError::verification(
