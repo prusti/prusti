@@ -3375,7 +3375,12 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             self.loop_kept_locals.insert(loop_id, kept);
             let read = place_capabilities
                 .iter()
-                .filter(|(_, capability)| matches!(capability, CapabilityKind::Read))
+                .filter(|(place, capability)| {
+                    matches!(capability, CapabilityKind::Read)
+                        && super::impure::read_part_supported(
+                            place.ty(self.pcg_ctxt()).ty,
+                        )
+                })
                 .map(|(place, _)| place.local)
                 .collect();
             self.loop_read_locals.insert(loop_id, read);

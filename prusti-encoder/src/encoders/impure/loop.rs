@@ -13,7 +13,7 @@ use pcg::{
         maybe_remote::MaybeRemotePlace,
     },
 };
-use prusti_rustc_interface::middle::mir;
+use prusti_rustc_interface::middle::{mir, ty};
 
 use task_encoder::TaskEncoder;
 use vir::Reify;
@@ -67,8 +67,8 @@ impl<'vir: 'a, 'a, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             // A place the loop only reads keeps the rest of its permission
             // outside the loop, so its value (e.g. the address a `&Cell`'s
             // atom is keyed on) stays the same.
-            let perm =
-                matches!(capability, CapabilityKind::Read).then(|| self.loop_read_part());
+            let perm = (matches!(capability, CapabilityKind::Read) && read_part_supported(ty.ty))
+                .then(|| self.loop_read_part());
             let pred = ty_out.ref_to_pred(self.vcx, place_res.expr.expect_predicate(), perm);
             inv.push(pred);
             if crate::encoders::ty::im::reaches_im(task) {
@@ -265,4 +265,27 @@ impl SnapOrRef for vir::Ref {
     fn as_result<'vir>(d: vir::LocalDecl<'vir, Self>, e: vir::Expr<'vir, Self>) -> LetBind<'vir> {
         Err((d, e))
     }
+}
+
+/// Whether a place of type `ty` can be held (and repacked) at a part of its
+/// permission: it holds no array or slice and no mutable reference inline,
+/// whose repacks need the whole permission.
+pub(crate) fn read_part_supported(ty: ty::Ty<'_>) -> bool {
+    fn go<'tcx>(tcx: ty::TyCtxt<'tcx>, ty: ty::Ty<'tcx>, seen: &mut Vec<ty::Ty<'tcx>>) -> bool {
+        if seen.contains(&ty) {
+            return true;
+        }
+        seen.push(ty);
+        match *ty.kind() {
+            ty::TyKind::Array(..) | ty::TyKind::Slice(_) | ty::TyKind::Ref(_, _, ty::Mutability::Mut) => {
+                false
+            }
+            ty::TyKind::Tuple(tys) => tys.iter().all(|ty| go(tcx, ty, seen)),
+            ty::TyKind::Adt(adt, args) => adt
+                .all_fields()
+                .all(|field| go(tcx, field.ty(tcx, args).skip_normalization(), seen)),
+            _ => true,
+        }
+    }
+    vir::with_vcx(|vcx| go(vcx.tcx(), ty, &mut Vec::new()))
 }
