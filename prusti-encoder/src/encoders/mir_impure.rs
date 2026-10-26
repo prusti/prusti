@@ -423,7 +423,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 .into())
             }
 
-            mir::Rvalue::Ref(_reg, _kind, place) => Ok(match rvalue_ty.kind() {
+            mir::Rvalue::Ref(_reg, kind, place) => Ok(match rvalue_ty.kind() {
                 TyKind::Ref(.., ty::Mutability::Not) => {
                     let (address, snap, _, _) = self.encode_place_with_snap((*place).into())?;
                     let metadata = address.expr.metadata;
@@ -444,11 +444,21 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                         metadata.unwrap_or_else(|| self.expect_thin_ptr_metadata(rvalue_ty));
                     let inner = p_rvalue_ty.expect_mutref();
                     let place_ref = place_expr.expr.expect_predicate();
+                    // A two-phase borrow keeps the place's permission until
+                    // the PCG activates it.
+                    let two_phase = matches!(
+                        kind,
+                        mir::BorrowKind::Mut {
+                            kind: mir::MutBorrowKind::TwoPhaseBorrow
+                        }
+                    );
                     EncodedRvalue {
                         expr: inner.prim_to_snap_assign(place_ref, metadata).upcast_ty(),
-                        post_assign_folds: Some(Box::new(move |lhs_place| {
-                            p_rvalue_ty.fold(None, lhs_place, None, None, None)
-                        })),
+                        post_assign_folds: (!two_phase).then(|| {
+                            Box::new(move |lhs_place| {
+                                p_rvalue_ty.fold(None, lhs_place, None, None, None)
+                            }) as Box<dyn FnOnce(_) -> _>
+                        }),
                     }
                 }
                 _ => unreachable!(),
@@ -1086,6 +1096,11 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 ) && matches!(weaken.to_cap(), None | Some(CapabilityKind::Write)) =>
             {
                 self.pcg_weaken(weaken.place(), weaken.is_for_storage_dead())
+            }
+            BorrowPcgActionKind::ActivateTwoPhaseBorrow { borrow } => {
+                // The permission the reservation kept moves into the reference.
+                self.fold_or_unfold(borrow.assigned_ref(), FoldOrUnfold::Fold, None, None)?;
+                Ok(())
             }
             //RenamePlace {
             //    old: MaybeLabelledPlace<'tcx>,
