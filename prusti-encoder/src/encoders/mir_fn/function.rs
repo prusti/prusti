@@ -1,7 +1,7 @@
 use prusti_interface::PrustiError;
 use prusti_rustc_interface::span::def_id::DefId;
 use task_encoder::{EncodeFullResult, OutputRefAny, TaskEncoder, TaskEncoderDependencies};
-use vir::{FunctionIdn, Reify};
+use vir::{CastType, FunctionIdn, Reify};
 
 use crate::encoders::{
     MirLocalDefEnc, MirLocalDefEncTask, MirPureEnc, MirPureEncTask, MirSpecEnc, Pure, PureKind,
@@ -10,7 +10,7 @@ use crate::encoders::{
     pure::spec::MirSpecEncMode,
     ty::{
         generics::{GArgCaster, GArgsCastEnc, GArgsTy, GArgsTyEnc, GParams, GenericParamsEnc},
-        use_pure::TyUsePure,
+        use_pure::TyUsePureImmRef,
     },
 };
 
@@ -22,40 +22,32 @@ pub struct FunctionCallEnc;
 pub struct FunctionCallEncOutput<'vir> {
     function: FunctionEncOutputRef<'vir>,
     ty_args: GArgsTy<'vir>,
-    arg_tys: Vec<TyUsePure<'vir>>,
+    /// The (instantiated) types of the arguments the callee declares as
+    /// shared references, whose addresses are dummied.
+    shared_ref_args: Vec<Option<TyUsePureImmRef<'vir>>>,
     inputs: Vec<GArgCaster<'vir, Pure>>,
     output: GArgCaster<'vir, Pure>,
 }
 
 impl<'vir> FunctionCallEncOutput<'vir> {
-    /// Calls the definitional function `f_`, used in pure/spec contexts.
+    /// Calls the definitional function `f_`. In impure code a pure function
+    /// is called as a method (its `MethodEnc`), whose postcondition ties the
+    /// result to this application.
     pub fn call_pure<Curr, Next>(
         &self,
-        args: Vec<vir::ExprGenSnap<'vir, Curr, Next>>,
-    ) -> vir::ExprGenSnap<'vir, Curr, Next> {
-        self.call_casted(self.function.function_ref, args)
-    }
-
-    /// Calls the caller wrapper `cf_`, used when encoding impure assignments.
-    pub fn call_impure<Curr, Next>(
-        &self,
-        args: Vec<vir::ExprGenSnap<'vir, Curr, Next>>,
-    ) -> vir::ExprGenSnap<'vir, Curr, Next> {
-        self.call_casted(self.function.caller_ref, args)
-    }
-
-    fn call_casted<Curr, Next>(
-        &self,
-        function: FunctionIdn<'vir, (vir::ManySnap, vir::ManyTyVal, vir::ManyCSnap), vir::Snap>,
         mut args: Vec<vir::ExprGenSnap<'vir, Curr, Next>>,
     ) -> vir::ExprGenSnap<'vir, Curr, Next> {
+        let function = self.function.function_ref;
         assert_eq!(self.inputs.len(), args.len());
         for ((arg, caster), ty) in args
             .iter_mut()
             .zip(self.inputs.iter())
-            .zip(self.arg_tys.iter())
+            .zip(self.shared_ref_args.iter())
         {
-            *arg = caster.cast_to_callee_ctx(ty.dummy_ref_address(*arg));
+            if let Some(ty) = ty {
+                *arg = ty.value_snap_of(arg.downcast_ty()).upcast_ty();
+            }
+            *arg = caster.cast_to_callee_ctx(*arg);
         }
         let call = function.call()(&args, self.ty_args.get_ty(), self.ty_args.get_const());
         self.output.cast_to_caller_ctx(call)
@@ -80,7 +72,6 @@ impl TaskEncoder for FunctionCallEnc {
         let (callee_def_id, assoc_enc) = task_key.trait_call(deps)?;
         let function_ref = if let Some(assoc_enc) = assoc_enc {
             FunctionEncOutputRef {
-                caller_ref: assoc_enc.call_stub_pure_caller.unwrap(),
                 function_ref: assoc_enc.call_stub_pure_function.unwrap(),
             }
         } else {
@@ -100,12 +91,20 @@ impl TaskEncoder for FunctionCallEnc {
             .output
             .decompose_compare_normalize(signature.gparams, task_key.gargs);
         let output = deps.require_dep::<GArgsCastEnc<Pure>>(normalized)?;
-        let arg_tys = signature
+        // Only arguments declared as shared references are dummied, not ones
+        // of a type parameter instantiated with a reference: the dummying
+        // must agree with the callee's (generic) contract, which ties its
+        // result to `f_` on the same dummied arguments.
+        let shared_ref_args = signature
             .inputs
             .iter()
             .map(|ty| {
+                if !ty.is_immref() {
+                    return Ok(None);
+                }
                 let ty_task = ty.decompose_normalize(task_key.gargs);
-                deps.require_dep::<TyUsePureEnc>(ty_task)
+                let ty = deps.require_dep::<TyUsePureEnc>(ty_task)?;
+                Ok(Some(*ty.expect_immref()))
             })
             .collect::<Result<Vec<_>, _>>()?;
         Ok((
@@ -115,7 +114,7 @@ impl TaskEncoder for FunctionCallEnc {
                 ty_args,
                 inputs,
                 output,
-                arg_tys,
+                shared_ref_args,
             },
         ))
     }
@@ -131,7 +130,6 @@ struct FunctionEnc;
 
 #[derive(Debug, Clone)]
 struct FunctionEncOutputRef<'vir> {
-    caller_ref: FunctionIdn<'vir, (vir::ManySnap, vir::ManyTyVal, vir::ManyCSnap), vir::Snap>,
     function_ref: FunctionIdn<'vir, (vir::ManySnap, vir::ManyTyVal, vir::ManyCSnap), vir::Snap>,
 }
 
@@ -139,7 +137,6 @@ impl<'vir> OutputRefAny for FunctionEncOutputRef<'vir> {}
 
 #[derive(Debug, Clone, Copy)]
 struct FunctionEncOutput<'vir> {
-    caller: vir::Function<'vir>,
     function: vir::Function<'vir>,
 }
 
@@ -174,29 +171,17 @@ impl TaskEncoder for FunctionEnc {
             tracing::debug!("encoding {def_id:?}");
 
             let name = vir::ViperIdent::from_def_id(vcx, def_id);
-            let caller_ident = vir::vir_format_identifier!(vcx, "cf_{name}");
             let function_ident = vir::vir_format_identifier!(vcx, "f_{name}");
             let arg_types = vcx.alloc_slice(&local_defs.snap_ty_args().collect::<Vec<_>>());
             let return_type = local_defs.snap_ty_return();
             let params = GParams::from(def_id);
             let generics = deps.require_dep::<GenericParamsEnc>(params)?;
-            let caller_ref = FunctionIdn::new(
-                caller_ident,
-                (arg_types, generics.ty_args(), generics.const_args()),
-                return_type,
-            );
             let function_ref = FunctionIdn::new(
                 function_ident,
                 (arg_types, generics.ty_args(), generics.const_args()),
                 return_type,
             );
-            deps.emit_output_ref(
-                def_id,
-                FunctionEncOutputRef {
-                    caller_ref,
-                    function_ref,
-                },
-            )?;
+            deps.emit_output_ref(def_id, FunctionEncOutputRef { function_ref })?;
 
             let spec =
                 deps.require_dep::<MirSpecEnc>((def_id, def_id, MirSpecEncMode::PureWithResult))?;
@@ -255,23 +240,6 @@ impl TaskEncoder for FunctionEnc {
             let posts = vcx.alloc_slice(&posts);
 
             let func_args = local_defs.local_decl_args().collect::<Vec<_>>();
-            let wrapped_call_args = func_args
-                .iter()
-                .map(|arg| vcx.mk_local_ex(arg))
-                .collect::<Vec<_>>();
-            let wrapped_call = function_ref.call()(
-                &wrapped_call_args,
-                generics.ty_exprs(),
-                generics.const_exprs(),
-            );
-            let caller = vcx.mk_function(
-                caller_ref,
-                (&func_args, generics.ty_decls(), generics.const_decls()),
-                vcx.alloc_slice(&spec.pre_exprs().collect::<Vec<_>>()),
-                posts,
-                None,
-                Some(wrapped_call),
-            );
             let function = vcx.mk_function(
                 function_ref,
                 (&func_args, generics.ty_decls(), generics.const_decls()),
@@ -280,13 +248,12 @@ impl TaskEncoder for FunctionEnc {
                 expr.is_none().then_some(&vir::DecreasesGenData::Star),
                 expr,
             );
-            Ok((FunctionEncOutput { caller, function }, ()))
+            Ok((FunctionEncOutput { function }, ()))
         })
     }
 
     fn emit_outputs<'vir>(program: &mut task_encoder::Program<'vir>) {
         for output in Self::all_outputs_local_no_errors(program) {
-            program.add_function(output.caller);
             program.add_function(output.function);
         }
     }

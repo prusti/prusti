@@ -7,11 +7,12 @@ use task_encoder::{
 use vir::MethodIdn;
 
 use crate::encoders::{
-    Impure, ImpureEncVisitor, MirLocalDefEnc, MirLocalDefEncTask, MirSpecEnc, WandEnc, WandEncTask,
+    FunctionCallEnc, Impure, ImpureEncVisitor, MirLocalDefEnc, MirLocalDefEncTask, MirSpecEnc,
+    WandEnc, WandEncTask,
     mir_fn::{CallTaskDescription, RustSignature, SpecBlocks, SpecBlocksEnc},
     pure::spec::MirSpecEncMode,
     ty::generics::{
-        GArgCaster, GArgsCastEnc, GArgsTy, GArgsTyEnc, GParams, GenericParamsEnc,
+        GArgCaster, GArgs, GArgsCastEnc, GArgsTy, GArgsTyEnc, GParams, GenericParamsEnc,
         trait_impls::TraitImplEnc,
     },
 };
@@ -72,7 +73,7 @@ impl TaskEncoder for MethodCallEnc {
         let (callee_def_id, assoc_enc) = task_key.trait_call(deps)?;
         let method_ref = if let Some(assoc_enc) = assoc_enc {
             MethodEncOutputRef {
-                method_ref: assoc_enc.call_stub_impure.unwrap(),
+                method_ref: assoc_enc.call_stub_impure,
             }
         } else {
             deps.require_ref::<MethodEnc>(task_key.callee)?
@@ -246,6 +247,50 @@ impl TaskEncoder for MethodEnc {
             posts.extend(wands.indirect_posts(vcx, &arg_defs, deps));
             posts.extend(wands.wand_posts(vcx, &arg_defs, deps));
 
+            // The method of a pure function `f` gets the postcondition
+            //     ensures snap(result) == f_(old(snap(args)))
+            // with the addresses of `&T` arguments nulled, exactly as a call
+            // `f(args)` in a specification is encoded. So an impure call
+            // learns the same value; the body proves it like any other
+            // postcondition. Pure closures are skipped: `FunctionCallEnc`
+            // cannot take a closure's signature.
+            let tie = if crate::encoders::is_function_pure(
+                def_id,
+                GArgs::new(params, params.rust_params()),
+            ) && !vcx.tcx().is_closure_like(def_id)
+            {
+                let pure_func = deps.require_dep_spanned::<FunctionCallEnc>(
+                    CallTaskDescription::new(def_id, params.rust_params(), def_id)
+                        .resolve_trait_calls(false),
+                    span,
+                )?;
+                let arg_snaps = (1..arg_count)
+                    .map(mir::Local::from)
+                    .map(|arg_idx| vcx.mk_old_expr(arg_defs[arg_idx].impure_snap))
+                    .collect::<Vec<_>>();
+                let name = vcx.tcx().def_path_str(def_id);
+                Some(vcx.with_span(span, |vcx| {
+                    vcx.handle_error("postcondition.violated:assertion.false", move |_| {
+                        Some(vec![PrustiError::verification(
+                            format!(
+                                "the result of pure function `{name}` might not match its \
+                                 definition with the addresses of its shared-reference \
+                                 arguments ignored: either the result depends on those \
+                                 addresses, which a pure function must not, or Prusti's \
+                                 impure and pure encodings of the function disagree"
+                            ),
+                            span.into(),
+                        )])
+                    });
+                    vcx.mk_eq_expr(
+                        arg_defs[mir::RETURN_PLACE].impure_snap,
+                        pure_func.call_pure(arg_snaps),
+                    )
+                }))
+            } else {
+                None
+            };
+
             // Trusted functions, call stubs, external functions and trait
             // functions without a default implementation have no body to
             // encode; only their contract is emitted.
@@ -375,6 +420,14 @@ impl TaskEncoder for MethodEnc {
             // Add functional specification as the last pre- and postconditions.
             pres.extend(spec.pre_exprs());
             posts.extend(spec.post_exprs());
+            // After the functional postconditions: applying `f_` assumes its
+            // (unchecked) postconditions, so they must be checked first.
+            // Proving the tie still assumes them on the dummied arguments.
+            // A postcondition that holds on the real arguments but not on the
+            // dummied ones (e.g. `x as *const i32 != null`) is then assumed
+            // false, which makes the tie vacuously provable and lets callers
+            // derive false.
+            posts.extend(tie);
 
             Ok((
                 MethodEncOutput {

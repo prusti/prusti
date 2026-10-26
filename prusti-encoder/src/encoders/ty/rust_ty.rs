@@ -116,6 +116,11 @@ impl<'tcx> LazyRustTy<'tcx> {
         Self::new(TySpecifics::new_param_ty(index))
     }
 
+    /// Whether this is a shared reference `&T` (before any substitution).
+    pub fn is_immref(&self) -> bool {
+        matches!(self.0.kind(), ty::TyKind::Ref(_, _, ty::Mutability::Not))
+    }
+
     /// The pointer metadata type of a pointer to this type.
     fn pointee_metadata(self) -> Self {
         vir::with_vcx(|vcx| {

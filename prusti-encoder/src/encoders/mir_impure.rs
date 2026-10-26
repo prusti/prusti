@@ -43,14 +43,14 @@ use task_encoder::{EncodeFullError, TaskEncoder, TaskEncoderDependencies};
 use vir::{CastType, CompType, LocalDeclData};
 
 use crate::encoders::{
-    self, FunctionCallEnc, MirBuiltinUseCastEnc, MirBuiltinUseCastTask, MirPureEnc, MirPureEncTask,
-    PrustiBuiltin, PureKind, TyUseImpureEnc, WandEnc, WandEncTask,
+    self, MirBuiltinUseCastEnc, MirBuiltinUseCastTask, MirPureEnc, MirPureEncTask, PrustiBuiltin,
+    PureKind, TyUseImpureEnc, WandEnc, WandEncTask,
     impure::WandOldOuter,
     mir_fn::{CallTaskDescription, RustSignature, SpecBlockKind, SpecBlocks},
     mir_shared::{EncodeResult, PureRvalueEnc, RustcIntrinsic},
     ty::{
         RustFieldAddress, RustTyDecomposition, RustTySpecial,
-        generics::{GArgs, GParams},
+        generics::GParams,
         use_impure::TyUseImpure,
         use_pure::{TyUsePure, TyUsePureEnc},
     },
@@ -168,7 +168,7 @@ where
     pub label_ctr: usize,
     pub call_labels: FxHashMap<mir::BasicBlock, (&'vir str, &'vir str)>,
     /// Blocks whose call terminator was not encoded as an impure method call
-    /// (pure functions, intrinsics, `prusti_contracts` builtins) and thus
+    /// (intrinsics, `prusti_contracts` builtins) and thus
     /// created no wand to apply on expiry.
     pub wandless_calls: FxHashSet<mir::BasicBlock>,
     pub from_to_vars: FromToVars<'vir>,
@@ -824,7 +824,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                         if self.wandless_calls.contains(&call.location().block) {
                             return Ok(());
                         }
-                        let (_, caller_substs, _) = self.get_call_data(func);
+                        let (_, caller_substs) = self.get_call_data(func);
 
                         let (_, dest_snap, _, _) =
                             self.encode_place_with_snap((*destination).into())?;
@@ -1510,12 +1510,9 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         })
     }
 
-    fn get_call_data(&self, func: &mir::Operand<'vir>) -> (DefId, ty::GenericArgsRef<'vir>, bool) {
+    fn get_call_data(&self, func: &mir::Operand<'vir>) -> (DefId, ty::GenericArgsRef<'vir>) {
         let func_ty = func.ty(self.body, self.vcx.tcx());
-        let (func_def_id, caller_substs) = RustSignature::get_def_id_and_caller_substs(func_ty);
-        let is_pure =
-            crate::encoders::is_function_pure(func_def_id, GArgs::new(self.def_id, caller_substs));
-        (func_def_id, caller_substs, is_pure)
+        RustSignature::get_def_id_and_caller_substs(func_ty)
     }
 
     fn new_tmp<T: CompType>(&mut self, ty: vir::Type<'vir, T>) -> vir::Expr<'vir, T> {
@@ -2378,7 +2375,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                     ),
                 );
 
-                let (func_def_id, caller_substs, is_pure) = self.get_call_data(func);
+                let (func_def_id, caller_substs) = self.get_call_data(func);
                 // A call whose span comes from a macro expansion (e.g. the
                 // `core::panicking::panic` call inside a failing `assert!`)
                 // was not written by the user, so reporting "precondition
@@ -2400,28 +2397,12 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                     .expr
                     .expect_predicate();
                 self.vcx.with_span(span, |vcx| {
-                    let pure =
-                        self.pure_call_result(func_def_id, caller_substs, args, is_pure, span)?;
-                    if let Some((can_fail, pure)) = pure {
+                    let pure = self.pure_call_result(func_def_id, caller_substs, args, span)?;
+                    if let Some(pure) = pure {
                         self.wandless_calls.insert(self.current_block.unwrap());
                         let return_ty = destination.ty(self.local_decls, self.vcx.tcx()).ty;
                         let return_ty_use = self.ty_use_impure(return_ty);
                         let assign_stmt = return_ty_use.apply_method_assign(self.vcx, dest, pure);
-                        if can_fail {
-                            vcx.handle_error(
-                                "application.precondition:assertion.false",
-                                move |reason_span_opt| {
-                                    let mut error = verification_error.clone();
-                                    if let Some(reason_span) = reason_span_opt {
-                                        error.add_note_mut(
-                                            "the failing precondition is here",
-                                            Some(reason_span.into()),
-                                        );
-                                    }
-                                    Some(vec![error])
-                                },
-                            );
-                        }
                         self.stmt(assign_stmt);
                         // The call returned a value of the return type, therefore
                         // it is inhabited.
@@ -2618,18 +2599,14 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         func_def_id: DefId,
         caller_substs: ty::GenericArgsRef<'vir>,
         args: &[Spanned<mir::Operand<'vir>>],
-        is_pure: bool,
         span: Span,
-    ) -> EncodeResult<'vir, Option<(bool, vir::ExprSnap<'vir>)>, E> {
+    ) -> EncodeResult<'vir, Option<vir::ExprSnap<'vir>>, E> {
         // The bodiless `ptr_metadata` intrinsic is only lowered to
         // `UnOp::PtrMetadata` in optimized MIR; do the lowering here.
         let intrinsic = self.vcx.tcx().intrinsic(func_def_id);
         let intrinsic = intrinsic.and_then(RustcIntrinsic::from_intrinsic);
         Ok(if let Some(intrinsic) = intrinsic {
-            Some((
-                false,
-                self.encode_intrinsic(intrinsic, caller_substs, args, &None)?,
-            ))
+            Some(self.encode_intrinsic(intrinsic, caller_substs, args, &None)?)
         } else if let Some(builtin) = PrustiBuiltin::new(func_def_id, self.gargs(caller_substs)) {
             // A `prusti_contracts` builtin used in executable code
             // (e.g. `Int::from(2) + Int::from(3)`): encode it with
@@ -2664,25 +2641,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                     &None,
                 )?
                 .unwrap();
-            Some((false, expr))
-        } else if is_pure {
-            let pure_func = self
-                .deps
-                .require_dep::<FunctionCallEnc>(CallTaskDescription::new(
-                    self.def_id,
-                    caller_substs,
-                    func_def_id,
-                ))
-                .unwrap();
-            let snap_args = args
-                .iter()
-                .map(|arg| {
-                    self.vcx.with_span(arg.span, |_| {
-                        self.encode_operand_snap(&arg.node, &None).unwrap()
-                    })
-                })
-                .collect::<Vec<_>>();
-            Some((true, pure_func.call_impure(snap_args)))
+            Some(expr)
         } else {
             None
         })
