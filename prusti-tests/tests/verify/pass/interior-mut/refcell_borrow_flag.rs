@@ -2,12 +2,10 @@
 // The `RefCell` borrow flag: `try_borrow`/`try_borrow_mut` succeed or fail
 // depending on which guards (`Ref`/`RefMut`) are currently alive. Proving the
 // `unreachable!()` arms and the `is_ok`/`is_err` assertions requires precise
-// tracking of the borrow state.
+// tracking of the borrow state. The cases Prusti does not verify yet are in
+// `refcell_borrow_flag_failing.rs`.
 
-use prusti_contracts::{
-    cell::{Ref, RefCell, refcell_count},
-    *,
-};
+use prusti_contracts::cell::{Ref, RefCell};
 
 fn free_state() {
     let c = RefCell::new(1);
@@ -62,31 +60,10 @@ fn ref_clone_keeps_shared() {
     assert!(c.try_borrow_mut().is_ok());
 }
 
-fn interleaved_borrow_cycles() {
-    let c = RefCell::new(0);
-    let mut i = 0;
-    while i < 3 {
-        body_invariant!(0 <= i && i <= 3);
-        // Each iteration takes and fully releases an exclusive borrow, so the
-        // next iteration's `borrow_mut` cannot panic. The borrow state is
-        // interior-mutable, so its preservation is part of the invariant.
-        body_invariant!(refcell_count(&c) == 0);
-        let mut m = c.borrow_mut();
-        *m += 1;
-        drop(m);
-        let r = c.borrow();
-        let _v = *r;
-        drop(r);
-        i += 1;
-    }
-    assert!(c.try_borrow_mut().is_ok());
-}
-
 fn main() {
     free_state();
     shared_state();
     exclusive_state();
     try_borrow_values();
     ref_clone_keeps_shared();
-    interleaved_borrow_cycles();
 }

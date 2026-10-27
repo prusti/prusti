@@ -1,7 +1,7 @@
 //@ compile-flags: -Passert_timeout=45000
-// `Cell` with different content types (Copy and non-Copy structs, `Option`,
-// nested cells, slices of cells), generic functions over `Cell<T>`, and the
-// `Cell` trait implementations (`Clone`, `Default`, `From`, comparisons).
+// `Cell` with different content types (Copy and non-Copy structs, `Option`)
+// and the `Cell` trait implementations (`Clone`, `Default`, `From`). The
+// cases Prusti does not verify yet are in `cell_types_failing.rs`.
 
 use prusti_contracts::cell::Cell;
 
@@ -40,39 +40,6 @@ fn option_content() {
     assert!(c.get() == Some(4));
 }
 
-fn nested_cell() {
-    let outer = Cell::new(Cell::new(1));
-    let inner = outer.replace(Cell::new(2));
-    assert!(inner.get() == 1);
-    assert!(outer.into_inner().get() == 2);
-}
-
-fn generic_set_then_get<T: Copy + PartialEq>(c: &Cell<T>, v: T) {
-    c.set(v);
-    assert!(c.get() == v);
-}
-
-fn generic_callers() {
-    let a = Cell::new(0u8);
-    generic_set_then_get(&a, 5);
-    let b = Cell::new(false);
-    generic_set_then_get(&b, true);
-    let p = Cell::new(Point { x: 0, y: 0 });
-    generic_set_then_get(&p, Point { x: 1, y: 1 });
-}
-
-fn slice_of_cells() {
-    let mut data = [1, 2, 3];
-    let all: &Cell<[i32]> = Cell::from_mut(&mut data[..]);
-    let cells: &[Cell<i32>] = all.as_slice_of_cells();
-    cells[0].set(10);
-    cells[2].set(30);
-    assert!(cells[0].get() == 10);
-    assert!(cells[1].get() == 2);
-    assert!(cells[2].get() == 30);
-    assert!(data[0] == 10 && data[1] == 2 && data[2] == 30);
-}
-
 fn clone_is_independent() {
     let a = Cell::new(1);
     let b = a.clone();
@@ -92,25 +59,11 @@ fn from_value() {
     assert!(c.get() == 8);
 }
 
-fn comparisons_use_contents() {
-    let a = Cell::new(1);
-    let b = Cell::new(1);
-    assert!(a == b);
-    b.set(2);
-    assert!(a != b);
-    assert!(a < b);
-    assert!(b > a);
-}
-
 fn main() {
     copy_struct_content();
     non_copy_content();
     option_content();
-    nested_cell();
-    generic_callers();
-    slice_of_cells();
     clone_is_independent();
     default_then_set();
     from_value();
-    comparisons_use_contents();
 }
