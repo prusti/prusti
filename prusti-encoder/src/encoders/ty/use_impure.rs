@@ -491,13 +491,14 @@ impl<'vir> TyData<'vir, UseImpureTyDatas> {
                 let index = index.expect("cannot fold array type without index");
                 array
                     .element_caster
-                    .cast_to_callee_ctx(array.ref_to_index_ref(self_ref, index))
+                    .cast_to_callee_ctx(array.ref_to_index_ref(self_ref, index), perm)
                     .into_iter()
                     .chain([vir::with_vcx(|vcx| {
                         vcx.alloc(vir::StmtData::new(vcx.alloc(
                             (array.data.impure.method_fold)(
                                 index,
                                 self_ref,
+                                perm.unwrap_or_else(|| vcx.mk_full_perm()),
                                 self.args.get_ty(),
                                 self.args.get_const(),
                             ),
@@ -506,7 +507,7 @@ impl<'vir> TyData<'vir, UseImpureTyDatas> {
                     .collect()
             }
             TySpecifics::ImmRef(..) | TySpecifics::Raw(..) => Vec::new(),
-            TySpecifics::MutRef(data) => data.fold(self_ref, label).into_iter().collect(),
+            TySpecifics::MutRef(data) => data.fold(self_ref, perm, label).into_iter().collect(),
             TySpecifics::StructLike(data) => data.fold(self_ref, perm).collect(),
             TySpecifics::EnumLike(..) => {
                 let pred_app = self.ref_to_pred_app(self_ref, perm);
@@ -543,6 +544,7 @@ impl<'vir> TyData<'vir, UseImpureTyDatas> {
                         (array.data.impure.method_unfold)(
                             index,
                             self_ref,
+                            perm.unwrap_or_else(|| vcx.mk_full_perm()),
                             self.args.get_ty(),
                             self.args.get_const(),
                         ),
@@ -552,12 +554,12 @@ impl<'vir> TyData<'vir, UseImpureTyDatas> {
                 .chain(
                     array
                         .element_caster
-                        .cast_to_caller_ctx(array.ref_to_index_ref(self_ref, index)),
+                        .cast_to_caller_ctx(array.ref_to_index_ref(self_ref, index), perm),
                 )
                 .collect()
             }
             TySpecifics::ImmRef(..) | TySpecifics::Raw(..) => Vec::new(),
-            TySpecifics::MutRef(data) => data.unfold(self_ref, old).into_iter().collect(),
+            TySpecifics::MutRef(data) => data.unfold(self_ref, perm, old).into_iter().collect(),
             TySpecifics::StructLike(data) => data.unfold(self_ref, perm).collect(),
             TySpecifics::EnumLike(data) => {
                 let pred_app = self.ref_to_pred_app(self_ref, perm);
@@ -656,7 +658,7 @@ impl<'vir> TyUseImpureStruct<'vir> {
     ) -> impl Iterator<Item = vir::Stmt<'vir>> + '_ {
         let pred_app = self.ref_to_pred_app(self_ref, perm);
         let fold = vir::with_vcx(|vcx| vcx.mk_fold_stmt(pred_app));
-        self.cast_to_callee_ctx(self_ref).chain([fold])
+        self.cast_to_callee_ctx(self_ref, perm).chain([fold])
     }
 
     /// Unfold the predicate (including generic casts).
@@ -669,25 +671,27 @@ impl<'vir> TyUseImpureStruct<'vir> {
         let unfold = vir::with_vcx(|vcx| vcx.mk_unfold_stmt(pred_app));
         [unfold]
             .into_iter()
-            .chain(self.cast_to_caller_ctx(self_ref))
+            .chain(self.cast_to_caller_ctx(self_ref, perm))
     }
 
     fn cast_to_caller_ctx(
         &self,
         self_ref: vir::ExprRef<'vir>,
+        perm: Option<vir::ExprPerm<'vir>>,
     ) -> impl Iterator<Item = vir::Stmt<'vir>> {
         self.fields
             .iter()
-            .filter_map(|f| f.cast_to_caller_ctx(self_ref))
+            .filter_map(move |f| f.cast_to_caller_ctx(self_ref, perm))
     }
 
     fn cast_to_callee_ctx(
         &self,
         self_ref: vir::ExprRef<'vir>,
+        perm: Option<vir::ExprPerm<'vir>>,
     ) -> impl Iterator<Item = vir::Stmt<'vir>> {
         self.fields
             .iter()
-            .filter_map(|f| f.cast_to_callee_ctx(self_ref))
+            .filter_map(move |f| f.cast_to_callee_ctx(self_ref, perm))
     }
 }
 
@@ -701,12 +705,22 @@ impl<'vir> TyUseImpureField<'vir> {
         self.impure.ref_to_field_ref.call()(self_ref, self.args.get_ty(), self.args.get_const())
     }
 
-    fn cast_to_caller_ctx(&self, self_ref: vir::ExprRef<'vir>) -> Option<vir::Stmt<'vir>> {
-        self.caster.cast_to_caller_ctx(self.field_ref(self_ref))
+    fn cast_to_caller_ctx(
+        &self,
+        self_ref: vir::ExprRef<'vir>,
+        perm: Option<vir::ExprPerm<'vir>>,
+    ) -> Option<vir::Stmt<'vir>> {
+        self.caster
+            .cast_to_caller_ctx(self.field_ref(self_ref), perm)
     }
 
-    fn cast_to_callee_ctx(&self, self_ref: vir::ExprRef<'vir>) -> Option<vir::Stmt<'vir>> {
-        self.caster.cast_to_callee_ctx(self.field_ref(self_ref))
+    fn cast_to_callee_ctx(
+        &self,
+        self_ref: vir::ExprRef<'vir>,
+        perm: Option<vir::ExprPerm<'vir>>,
+    ) -> Option<vir::Stmt<'vir>> {
+        self.caster
+            .cast_to_callee_ctx(self.field_ref(self_ref), perm)
     }
 }
 
@@ -751,18 +765,20 @@ impl<'vir> TyUseImpureMutRef<'vir> {
     fn fold(
         &self,
         self_ref: vir::ExprRef<'vir>,
+        perm: Option<vir::ExprPerm<'vir>>,
         label: Option<vir::OldLabel<'vir>>,
     ) -> Option<vir::Stmt<'vir>> {
         self.referent_caster
-            .cast_to_callee_ctx(self.deref(self_ref, label))
+            .cast_to_callee_ctx(self.deref(self_ref, label), perm)
     }
 
     fn unfold(
         &self,
         self_ref: vir::ExprRef<'vir>,
+        perm: Option<vir::ExprPerm<'vir>>,
         label: Option<vir::OldLabel<'vir>>,
     ) -> Option<vir::Stmt<'vir>> {
         self.referent_caster
-            .cast_to_caller_ctx(self.deref(self_ref, label))
+            .cast_to_caller_ctx(self.deref(self_ref, label), perm)
     }
 }

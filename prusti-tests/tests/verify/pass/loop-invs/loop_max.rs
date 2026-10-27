@@ -1,4 +1,3 @@
-//@ known-failure
 use prusti_contracts::*;
 
 #[requires(x > 0 && y > 0)]

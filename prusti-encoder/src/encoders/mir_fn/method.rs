@@ -38,7 +38,7 @@ impl<'vir> MethodCallEncOutput<'vir> {
         assert_eq!(self.inputs.len(), args.len());
         let generics = args.iter().zip(self.inputs.iter());
         let mut stmts: Vec<_> = generics
-            .filter_map(|(arg, caster)| caster.cast_to_callee_ctx(arg))
+            .filter_map(|(arg, caster)| caster.cast_to_callee_ctx(arg, None))
             .collect();
 
         args.insert(0, ret);
@@ -46,7 +46,7 @@ impl<'vir> MethodCallEncOutput<'vir> {
             .alloc();
         stmts.push(call);
 
-        let result = self.output.cast_to_caller_ctx(ret);
+        let result = self.output.cast_to_caller_ctx(ret, None);
         if let Some(result) = result {
             stmts.push(result);
         }
@@ -358,6 +358,7 @@ impl TaskEncoder for MethodEnc {
                     call_labels: Default::default(),
                     wandless_calls: Default::default(),
                     from_to_vars: Default::default(),
+                    loop_read_places: Default::default(),
 
                     current_block: None,
                     current_block_pres: None,

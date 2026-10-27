@@ -172,6 +172,9 @@ where
     /// created no wand to apply on expiry.
     pub wandless_calls: FxHashSet<mir::BasicBlock>,
     pub from_to_vars: FromToVars<'vir>,
+    /// The places each loop's invariant holds only a fraction of, see
+    /// [Self::read_frac].
+    pub loop_read_places: FxHashMap<LoopId, Vec<Place<'vir>>>,
 
     // for the current basic block
     pub current_fpcs: Option<PcgBasicBlock<'enc, 'vir>>,
@@ -582,14 +585,15 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         let index = expansion
             .and_then(|expansion| expansion.guide())
             .and_then(|guide| self.expansion_index(guide));
+        let frac = self.read_frac(place)?;
 
         let (stmts, frame) = match fold_or_unfold {
             FoldOrUnfold::Unfold => (
-                data.unfold(place_ty.variant_index, ref_p, index, None, label),
+                data.unfold(place_ty.variant_index, ref_p, index, frac, label),
                 Vec::new(),
             ),
             FoldOrUnfold::Fold => (
-                data.fold(place_ty.variant_index, ref_p, index, None, label),
+                data.fold(place_ty.variant_index, ref_p, index, frac, label),
                 data.fold_frame(place_ty.variant_index, ref_p, index),
             ),
         };
@@ -1116,10 +1120,11 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                     _ => None,
                 };
                 let index = guide.and_then(|guide| self.expansion_index(guide));
+                let frac = self.read_frac(place)?;
                 if matches!(repack_op, pcg::free_pcs::RepackOp::Expand(..)) {
-                    self.stmts(data.unfold(place_ty.variant_index, place_enc, index, None, None));
+                    self.stmts(data.unfold(place_ty.variant_index, place_enc, index, frac, None));
                 } else if matches!(repack_op, pcg::free_pcs::RepackOp::Collapse(..)) {
-                    self.stmts(data.fold(place_ty.variant_index, place_enc, index, None, None));
+                    self.stmts(data.fold(place_ty.variant_index, place_enc, index, frac, None));
                 } else {
                     unreachable!()
                 }
@@ -1184,7 +1189,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         Ok(())
     }
 
-    fn loop_analysis(&self) -> &LoopAnalysis {
+    pub(crate) fn loop_analysis(&self) -> &LoopAnalysis {
         self.fpcs_analysis.analysis().loop_analysis()
     }
 
@@ -2001,7 +2006,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             let invariants = loop_spec.invariants.clone();
             let loop_id = loop_spec.loop_id;
             let (permissions, place_capabilities) =
-                self.get_loop_inv(&cfpcs, &loop_place_usages, self.pcg_ctxt())?;
+                self.get_loop_inv(loop_id, &cfpcs, &loop_place_usages, self.pcg_ctxt())?;
             let pcg_state = &cfpcs.statements[0].states[EvalStmtPhase::PreOperands];
             // The Viper loop havocs the edge flags set in the loop, including
             // those set between the loop's first block and the body invariant,
