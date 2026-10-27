@@ -119,7 +119,7 @@ impl<T> List<T> {
     #[ensures(!old(self.is_empty()) ==>
         self.head_removed(old(&*self))
         &&
-        match &result { Some(r) => r === old(self.lookup(0)), None => false }
+        match &result { Some(r) => *r === *old(self.lookup(0)), None => false }
     )]
     //// ANCHOR: generic_types
     // Return type changed from `Option<i32>`

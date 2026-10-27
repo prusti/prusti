@@ -30,7 +30,7 @@ In addition to returning a reference, we will have to adjust some of the places 
 {{#rustdoc_include ../../../../prusti-tests/tests/verify/pass/user-guide/generic.rs:lookup_reference}}
 ```
 
-The postcondition of `try_pop` compared `result` with `Some(old(self.lookup(0)))`. Now that `lookup` returns a reference, building a `Some` from the element would move it out of the list, so instead we use a `match` to compare the element inside `result` with the reference: `match &result { Some(r) => r === old(self.lookup(0)), None => false }`.
+The postcondition of `try_pop` compared `result` with `Some(old(self.lookup(0)))`. Now that `lookup` returns a reference, building a `Some` from the element would move it out of the list, so instead we use a `match` to compare the element inside `result` with the element that `lookup(0)` referred to before the call: `match &result { Some(r) => *r === *old(self.lookup(0)), None => false }`. Both references are dereferenced, because `===` on references also compares the addresses, and `r` points into `result`, not into the list.
 
 After all these changes, Prusti is able to verify the code again, so now our linked list can be used to store elements of any type, not just `i32`!
 If you want to see the full code after all the changes, expand the following code block.

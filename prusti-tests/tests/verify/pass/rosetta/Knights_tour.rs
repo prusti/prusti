@@ -219,6 +219,7 @@ macro_rules! simple_try {
     };
 }
 
+#[refine_trait_spec]
 impl fmt::Display for Board {
 
     #[trusted]

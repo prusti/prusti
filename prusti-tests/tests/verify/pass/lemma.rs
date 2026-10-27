@@ -1,4 +1,3 @@
-//@ known-failure
 //@ compile-flags: -Punsafe_core_proof=true
 #![allow(unused)]
 use prusti_contracts::*;
@@ -28,7 +27,7 @@ fn lemma(x: i64) -> bool {
         } else {
             prusti_assert!(x % 2 == 1);
             prusti_assert!((x - 1) % 2 == 0);
-            prusti_assert!((add_3(x) % 2 == 1));
+            prusti_assert!((add_3(x) % 2 != 0));
         }
         prusti_assert!((x % 2 == 0) == (add_3(x) % 2 == 0));
     } else {

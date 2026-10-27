@@ -104,7 +104,7 @@ impl<T> List<T> {
     #[ensures(!old(self.is_empty()) ==>
         self.head_removed(old(&*self))
         &&
-        match &result { Some(r) => r === old(self.lookup(0)), None => false }
+        match &result { Some(r) => *r === *old(self.lookup(0)), None => false }
     )]
     pub fn try_pop(&mut self) -> Option<T> {
         match self.head.take() { // Replace mem::swap with the buildin Option::take
