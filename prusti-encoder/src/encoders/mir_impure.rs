@@ -1088,11 +1088,24 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 &mut to_skip,
                 None,
             ),
+            // Lending a place to a loop abstraction introduces its edge.
+            BorrowPcgActionKind::Lend { edge, .. }
+                if matches!(edge.kind(), BorrowPcgEdgeKind::Abstraction(_)) =>
+            {
+                self.pcs_handle_edge(
+                    pcg.borrow_pcg(),
+                    edge,
+                    EdgeAction::Add,
+                    edge_to_loop,
+                    &mut to_skip,
+                    None,
+                )
+            }
             BorrowPcgActionKind::Weaken(weaken)
                 if matches!(
                     weaken.from_cap(),
                     CapabilityKind::Exclusive | CapabilityKind::ShallowExclusive
-                ) && matches!(weaken.to_cap(), None | Some(CapabilityKind::Write)) =>
+                ) && weaken.to_cap().is_write() =>
             {
                 self.pcg_weaken(weaken.place(), weaken.is_for_storage_dead())
             }
@@ -1114,20 +1127,6 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
 
     fn pcg_repack(&mut self, repack_op: &RepackOp<'vir>) -> EncodeResult<'vir, (), E> {
         comment!(self, "[PCG] {repack_op:?}");
-
-        fn should_ignore(repack_op: &RepackOp<'_>) -> bool {
-            match repack_op {
-                RepackOp::Weaken(weaken) => {
-                    weaken.from_cap().is_exclusive()
-                        && matches!(
-                            weaken.to_cap(),
-                            CapabilityKind::Read | CapabilityKind::ShallowExclusive
-                        )
-                }
-                RepackOp::StorageDead(..) => true,
-                _ => false,
-            }
-        }
 
         match repack_op {
             RepackOp::Expand(_) | RepackOp::Collapse(_) => {
@@ -1165,27 +1164,19 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 }
                 Ok(())
             }
-            RepackOp::Weaken(weaken)
-                if matches!(
-                    weaken.from_cap(),
-                    CapabilityKind::Exclusive | CapabilityKind::ShallowExclusive
-                ) && weaken.to_cap().is_write() =>
-            {
-                self.pcg_weaken(weaken.place(), weaken.is_for_storage_dead())
+            RepackOp::StorageDead(..) => {
+                self.stmt(self.vcx.mk_comment_stmt(vir::vir_format!(
+                    self.vcx,
+                    "ignored repack op: {repack_op:?}"
+                )));
+                Ok(())
             }
             other => {
-                if should_ignore(other) {
-                    self.stmt(self.vcx.mk_comment_stmt(vir::vir_format!(
-                        self.vcx,
-                        "ignored repack op: {other:?}"
-                    )));
-                } else {
-                    self.stmt(self.vcx.mk_comment_stmt(vir::vir_format!(
-                        self.vcx,
-                        "unsupported repack op: {other:?}"
-                    )));
-                    self.stmt(self.vcx.mk_exhale_stmt(self.vcx.mk_bool::<false>()));
-                }
+                self.stmt(self.vcx.mk_comment_stmt(vir::vir_format!(
+                    self.vcx,
+                    "unsupported repack op: {other:?}"
+                )));
+                self.stmt(self.vcx.mk_exhale_stmt(self.vcx.mk_bool::<false>()));
                 Ok(())
             }
         }
