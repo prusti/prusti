@@ -479,7 +479,7 @@ impl<'vir> TyData<'vir, UseImpureTyDatas> {
             return self
                 .expect_variant(variant)
                 .inner
-                .fold(self_ref, perm)
+                .fold(self_ref, perm, label)
                 .collect();
         };
         match &self.specifics {
@@ -507,7 +507,7 @@ impl<'vir> TyData<'vir, UseImpureTyDatas> {
             }
             TySpecifics::ImmRef(..) | TySpecifics::Raw(..) => Vec::new(),
             TySpecifics::MutRef(data) => data.fold(self_ref, label).into_iter().collect(),
-            TySpecifics::StructLike(data) => data.fold(self_ref, perm).collect(),
+            TySpecifics::StructLike(data) => data.fold(self_ref, perm, label).collect(),
             TySpecifics::EnumLike(..) => {
                 let pred_app = self.ref_to_pred_app(self_ref, perm);
                 vec![vir::with_vcx(|vcx| vcx.mk_fold_stmt(pred_app))]
@@ -528,7 +528,7 @@ impl<'vir> TyData<'vir, UseImpureTyDatas> {
             return self
                 .expect_variant(variant)
                 .inner
-                .unfold(self_ref, perm)
+                .unfold(self_ref, perm, old)
                 .collect();
         };
         match &self.specifics {
@@ -558,7 +558,7 @@ impl<'vir> TyData<'vir, UseImpureTyDatas> {
             }
             TySpecifics::ImmRef(..) | TySpecifics::Raw(..) => Vec::new(),
             TySpecifics::MutRef(data) => data.unfold(self_ref, old).into_iter().collect(),
-            TySpecifics::StructLike(data) => data.unfold(self_ref, perm).collect(),
+            TySpecifics::StructLike(data) => data.unfold(self_ref, perm, old).collect(),
             TySpecifics::EnumLike(data) => {
                 let pred_app = self.ref_to_pred_app(self_ref, perm);
                 vir::with_vcx(|vcx| {
@@ -637,7 +637,7 @@ impl<'vir> TyUseImpureStruct<'vir> {
     #[track_caller]
     pub fn box_address(&self, self_ref: vir::ExprRef<'vir>) -> vir::ExprRef<'vir> {
         assert!(self.data.impure.box_data.is_some(), "expected box");
-        self.fields.last().unwrap().field_ref(self_ref)
+        self.fields.last().unwrap().field_ref(self_ref, None)
     }
 
     fn ref_to_pred_app(
@@ -653,10 +653,11 @@ impl<'vir> TyUseImpureStruct<'vir> {
         &self,
         self_ref: vir::ExprRef<'vir>,
         perm: Option<vir::ExprPerm<'vir>>,
+        label: Option<vir::OldLabel<'vir>>,
     ) -> impl Iterator<Item = vir::Stmt<'vir>> + '_ {
         let pred_app = self.ref_to_pred_app(self_ref, perm);
         let fold = vir::with_vcx(|vcx| vcx.mk_fold_stmt(pred_app));
-        self.cast_to_callee_ctx(self_ref).chain([fold])
+        self.cast_to_callee_ctx(self_ref, label).chain([fold])
     }
 
     /// Unfold the predicate (including generic casts).
@@ -664,49 +665,69 @@ impl<'vir> TyUseImpureStruct<'vir> {
         &self,
         self_ref: vir::ExprRef<'vir>,
         perm: Option<vir::ExprPerm<'vir>>,
+        label: Option<vir::OldLabel<'vir>>,
     ) -> impl Iterator<Item = vir::Stmt<'vir>> + '_ {
         let pred_app = self.ref_to_pred_app(self_ref, perm);
         let unfold = vir::with_vcx(|vcx| vcx.mk_unfold_stmt(pred_app));
         [unfold]
             .into_iter()
-            .chain(self.cast_to_caller_ctx(self_ref))
+            .chain(self.cast_to_caller_ctx(self_ref, label))
     }
 
     fn cast_to_caller_ctx(
         &self,
         self_ref: vir::ExprRef<'vir>,
+        label: Option<vir::OldLabel<'vir>>,
     ) -> impl Iterator<Item = vir::Stmt<'vir>> {
         self.fields
             .iter()
-            .filter_map(|f| f.cast_to_caller_ctx(self_ref))
+            .filter_map(move |f| f.cast_to_caller_ctx(self_ref, label))
     }
 
     fn cast_to_callee_ctx(
         &self,
         self_ref: vir::ExprRef<'vir>,
+        label: Option<vir::OldLabel<'vir>>,
     ) -> impl Iterator<Item = vir::Stmt<'vir>> {
         self.fields
             .iter()
-            .filter_map(|f| f.cast_to_callee_ctx(self_ref))
+            .filter_map(move |f| f.cast_to_callee_ctx(self_ref, label))
     }
 }
 
 impl<'vir> TyUseImpureField<'vir> {
-    /// Get the (Ref) address of a field. Identical to the function one would
-    /// call in `use_pure`.
+    /// Get the (Ref) address of a field, wrapped in `label` (it may be
+    /// heap-dependent). For constant addresses and `label = None`, the same as
+    /// `use_pure`'s `field_ref`.
     pub fn field_ref<Curr, Next>(
         &self,
         self_ref: vir::ExprGenRef<'vir, Curr, Next>,
+        label: Option<vir::OldLabel<'vir>>,
     ) -> vir::ExprGenRef<'vir, Curr, Next> {
-        self.impure.ref_to_field_ref.call()(self_ref, self.args.get_ty(), self.args.get_const())
+        let field_ref = self.impure.ref_to_field_ref.call()(
+            self_ref,
+            self.args.get_ty(),
+            self.args.get_const(),
+        );
+        vir::with_vcx(|vcx| vcx.maybe_apply_label(field_ref, label))
     }
 
-    fn cast_to_caller_ctx(&self, self_ref: vir::ExprRef<'vir>) -> Option<vir::Stmt<'vir>> {
-        self.caster.cast_to_caller_ctx(self.field_ref(self_ref))
+    fn cast_to_caller_ctx(
+        &self,
+        self_ref: vir::ExprRef<'vir>,
+        label: Option<vir::OldLabel<'vir>>,
+    ) -> Option<vir::Stmt<'vir>> {
+        self.caster
+            .cast_to_caller_ctx(self.field_ref(self_ref, label))
     }
 
-    fn cast_to_callee_ctx(&self, self_ref: vir::ExprRef<'vir>) -> Option<vir::Stmt<'vir>> {
-        self.caster.cast_to_callee_ctx(self.field_ref(self_ref))
+    fn cast_to_callee_ctx(
+        &self,
+        self_ref: vir::ExprRef<'vir>,
+        label: Option<vir::OldLabel<'vir>>,
+    ) -> Option<vir::Stmt<'vir>> {
+        self.caster
+            .cast_to_callee_ctx(self.field_ref(self_ref, label))
     }
 }
 
