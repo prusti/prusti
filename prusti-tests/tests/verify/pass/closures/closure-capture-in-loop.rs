@@ -1,4 +1,5 @@
-// ignore-test: encodes without panicking, but verification fails with an
+//@ known-failure
+// encodes without panicking, but verification fails with an
 // unbacktranslatable `call.precondition:insufficient.permission` (same issue as
 // other borrows that are live across a loop).
 
@@ -14,5 +15,3 @@ pub fn map_with_counter() {
         let _ = pair;
     }
 }
-
-fn main() {}

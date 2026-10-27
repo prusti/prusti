@@ -2,8 +2,8 @@ use rustc_hash::FxHashMap;
 
 use pcg::{
     borrow_pcg::region_projection::{
-        ExtractRegionsCtxt, LifetimeProjection, PcgLifetimeProjectionBase,
-        PcgLifetimeProjectionBaseLike,
+        ExtractRegionsCtxt, LifetimeProjection, LifetimeProjectionIdx, PcgLifetimeProjectionBase,
+        PcgLifetimeProjectionBaseLike, PcgRegion, Region,
     },
     r#loop::PlaceUsages,
     pcg::{CapabilityKind, EvalStmtPhase, PcgNode},
@@ -13,7 +13,7 @@ use pcg::{
         maybe_remote::MaybeRemotePlace,
     },
 };
-use prusti_rustc_interface::middle::mir;
+use prusti_rustc_interface::{index::IndexVec, middle::mir};
 
 use task_encoder::TaskEncoder;
 use vir::Reify;
@@ -22,10 +22,12 @@ use crate::encoders::{
     EncodeResult, ImpureEncVisitor, TyUseImpureEnc,
     ty::{
         RustTyDecomposition,
-        indirect::{IndirectPredicatesEnc, projection_for_pcg_projection},
+        indirect::{IndirectPredicatesEnc, PrustiPcgCtxt},
         use_impure::TyUseImpure,
     },
 };
+
+use crate::{ty, ty::TyCtxt};
 
 pub(crate) enum WandOldOuter<'vir> {
     LetBind(Vec<LetBind<'vir>>),
@@ -33,6 +35,28 @@ pub(crate) enum WandOldOuter<'vir> {
 }
 
 impl<'vir: 'a, 'a, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
+    /// Rebases a lifetime projection produced by the PCG onto `decomp`.
+    ///
+    /// `proj`'s region index refers to the PCG's region list for `ty`, which can
+    /// differ from `PrustiPcgCtxt`'s list for `decomp` (e.g. the PCG includes the
+    /// regions of closure captures), so reusing the index directly would go out
+    /// of bounds or select the wrong region. We instead look up the region itself
+    /// and find it in `decomp`, returning `None` if it is absent (nothing behind
+    /// the projection is encoded).
+    ///
+    /// The label is dropped: `IndirectPredicatesEnc` does not depend on it.
+    pub fn projection_for_pcg_projection<'tcx, T>(
+        proj: LifetimeProjection<'tcx, T, Region>,
+        ty: ty::Ty<'tcx>,
+        decomp: RustTyDecomposition<'tcx>,
+        tcx: TyCtxt<'tcx>,
+    ) -> Option<LifetimeProjection<'tcx, RustTyDecomposition<'tcx>, Region>> {
+        let regions: IndexVec<LifetimeProjectionIdx<Region>, PcgRegion<'tcx>> =
+            tcx.extract_regions(ty);
+        let region = regions[proj.region_idx()];
+        LifetimeProjection::new(decomp, region, None, PrustiPcgCtxt)
+    }
+
     /// Calculate invariant at loop head
     pub(crate) fn get_loop_inv(
         &mut self,
@@ -68,7 +92,8 @@ impl<'vir: 'a, 'a, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             // an invariant for *x
             let projs = ctxt.extract_lifetime_projections(place.with_inherent_region(ctxt));
             for proj in projs {
-                let Some(proj) = projection_for_pcg_projection(proj, ty.ty, task, self.vcx.tcx())
+                let Some(proj) =
+                    Self::projection_for_pcg_projection(proj, ty.ty, task, self.vcx.tcx())
                 else {
                     continue;
                 };
@@ -143,7 +168,8 @@ impl<'vir: 'a, 'a, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             PcgLifetimeProjectionBase::Const(c) => todo!("{c:?}"),
         };
         let decomp = RustTyDecomposition::from_ty(ty.ty, self.def_id);
-        let Some(proj) = projection_for_pcg_projection(r, ty.ty, decomp, self.vcx.tcx()) else {
+        let Some(proj) = Self::projection_for_pcg_projection(r, ty.ty, decomp, self.vcx.tcx())
+        else {
             return Ok(Vec::new());
         };
         let indirect = self

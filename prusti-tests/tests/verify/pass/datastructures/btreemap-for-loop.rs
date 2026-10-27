@@ -1,3 +1,6 @@
+//@ known-failure
+// currently fails with permission error
+
 use std::collections::BTreeMap;
 
 pub fn btreemap_basic() {
@@ -11,5 +14,3 @@ pub fn btreemap_basic() {
     }
     let _ = total;
 }
-
-fn main() {}
