@@ -70,6 +70,7 @@ pub enum PureKind {
     },
     Pure,
     Constant(mir::Promoted),
+    NamedConstant,
     SpecBlock(mir::BasicBlock),
 }
 
@@ -136,6 +137,10 @@ impl TaskEncoder for MirPureEnc {
                 PureKind::Pure => crate::encoders::pure_body(def_id),
                 PureKind::Constant(promoted) => {
                     vcx.body_mut().get_promoted_constant_body(def_id, promoted)
+                }
+                PureKind::NamedConstant => {
+                    let substs = vcx.tcx().mk_args(gargs.args());
+                    vcx.body_mut().get_const_body(def_id, substs, None)
                 }
                 PureKind::SpecBlock(_) => crate::encoders::impure_body(def_id)
                     .unwrap_or_else(|| panic!("no body to encode for {def_id:?}")),

@@ -3,6 +3,8 @@
 #![cfg_attr(feature = "prusti", feature(unboxed_closures, tuple_trait))]
 #![cfg_attr(feature = "prusti", feature(core_intrinsics))]
 #![cfg_attr(feature = "prusti", feature(auto_traits))]
+#![cfg_attr(feature = "prusti", feature(const_convert))]
+#![cfg_attr(feature = "prusti", feature(const_trait_impl))]
 #![cfg_attr(feature = "prusti", feature(negative_impls))]
 #![cfg_attr(feature = "prusti", feature(try_trait_v2))]
 #![cfg_attr(feature = "prusti", feature(cfg_version))]
@@ -114,12 +116,28 @@ mod private_shared {
 
     macro_rules! __dummy_from_impls__ {
         ($ty:ident: $($src:ty),*) => {$(
+            #[cfg(feature = "prusti")]
+            __dummy_const_from_impl__!($ty: $src);
+            #[cfg(not(feature = "prusti"))]
             impl From<$src> for $ty {
                 fn from(_: $src) -> Self {
                     $ty(())
                 }
             }
         )*}
+    }
+
+    // Const impls need nightly features, so they exist only under Prusti.
+    // Inside a macro body the syntax is not parsed on stable builds.
+    #[cfg(feature = "prusti")]
+    macro_rules! __dummy_const_from_impl__ {
+        ($ty:ident: $src:ty) => {
+            const impl From<$src> for $ty {
+                fn from(_: $src) -> Self {
+                    $ty(())
+                }
+            }
+        };
     }
 
     macro_rules! __dummy_trait_impls__ {
@@ -157,7 +175,7 @@ mod private_shared {
     #[derive(Clone, Copy)]
     pub struct Real(());
 
-    __dummy_from_impls__!(Real: f32, f64);
+    __dummy_from_impls__!(Real: isize, f32, f64);
     #[cfg(feature = "prusti")]
     __dummy_from_impls__!(Real: f16, f128);
     __dummy_trait_impls__!(Real: Add add, Sub sub, Mul mul, Div div);
