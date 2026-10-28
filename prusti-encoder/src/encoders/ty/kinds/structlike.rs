@@ -22,7 +22,31 @@ pub(crate) fn ty_pure<'vir>(
     deps: &mut TaskEncoderDependencies<'vir, TyPureEnc>,
     builder: &mut AdtBuilder<'vir>,
 ) -> Result<StructData<'vir, PureTyDatas>, EncodeFullError<'vir, TyPureEnc>> {
-    ty_pure_variant("", None, task_key, data, deps, builder)
+    let data = ty_pure_variant("", None, task_key, data, deps, builder)?;
+    if builder.has_shallow() {
+        builder.define_to_shallow(|_, snap| Some(variant_to_shallow(&data, snap)));
+    }
+    Ok(data)
+}
+
+/// The shallow snapshot of the deep snapshot `snap` of the variant `data`:
+/// the shallow snapshots of its fields.
+pub(super) fn variant_to_shallow<'vir>(
+    data: &StructData<'vir, PureTyDatas>,
+    snap: vir::ExprCSnap<'vir>,
+) -> vir::ExprCSnap<'vir> {
+    let fields = data
+        .fields
+        .iter()
+        .map(|field| {
+            let value = field.read.call()(snap);
+            match field.to_shallow {
+                Some(to_shallow) => to_shallow.call()(value.downcast_ty()).upcast_ty(),
+                None => value,
+            }
+        })
+        .collect::<Vec<_>>();
+    data.data.field_snaps_to_shallow_snap.unwrap().call()(&fields)
 }
 
 pub(super) fn ty_pure_variant<'vir>(
@@ -33,16 +57,32 @@ pub(super) fn ty_pure_variant<'vir>(
     deps: &mut TaskEncoderDependencies<'vir, TyPureEnc>,
     builder: &mut AdtBuilder<'vir>,
 ) -> Result<StructData<'vir, PureTyDatas>, EncodeFullError<'vir, TyPureEnc>> {
-    let field_tys = data
+    let field_refs = data
         .fields
         .iter()
-        .map(|f| {
-            let ty = f.decompose(task_key.params);
-            Ok(deps.require_ref::<TyUsePureEnc>(ty)?.snapshot)
-        })
+        .map(|f| deps.require_ref::<TyUsePureEnc>(f.decompose(task_key.params)))
         .collect::<Result<Vec<_>, _>>()?;
-    let field_tys = builder.vcx.alloc_slice(&field_tys);
-    let (field_snaps_to_snap, des) = builder.constructor(prefix, field_tys, discr);
+    // Only the deep snapshot holds the deep snapshots of the fields.
+    let shallow_field_tys = builder.vcx.alloc_slice(
+        &field_refs
+            .iter()
+            .map(|f| f.shallow_snapshot)
+            .collect::<Vec<_>>(),
+    );
+    let (field_snaps_to_snap, des, field_snaps_to_shallow_snap, shallow_des) = if builder
+        .has_shallow()
+    {
+        let deep_field_tys = builder
+            .vcx
+            .alloc_slice(&field_refs.iter().map(|f| f.snapshot).collect::<Vec<_>>());
+        let (deep, des) = builder.constructor(prefix, deep_field_tys, discr);
+        let (shallow, shallow_des) = builder.shallow_constructor(prefix, shallow_field_tys, discr);
+        (deep, des, Some(shallow), Some(shallow_des))
+    } else {
+        let (cons, des) = builder.constructor(prefix, shallow_field_tys, discr);
+        (cons, des, None, None)
+    };
+    let shallow_ty = builder.shallow_type();
 
     // For a `Box`, its extras and the address of its (dynamic) value field.
     let box_data = if let RustTySpecial::Box = task_key.special {
@@ -81,6 +121,11 @@ pub(super) fn ty_pure_variant<'vir>(
             };
             TyPureFieldData {
                 read: read.downcast_ty(),
+                read_shallow: shallow_des
+                    .as_ref()
+                    .map(|des| (des[idx].downcast_ty(), shallow_ty)),
+                shallow_ty: field_refs[idx].shallow_snapshot,
+                to_shallow: field_refs[idx].to_shallow,
                 ref_to_field_ref,
             }
         })
@@ -88,6 +133,7 @@ pub(super) fn ty_pure_variant<'vir>(
     Ok(StructData::new(
         TyPureStructData {
             field_snaps_to_snap,
+            field_snaps_to_shallow_snap,
             box_data: box_data.map(|(box_data, _)| box_data),
         },
         des,
@@ -100,16 +146,20 @@ pub(crate) fn ty_impure<'vir>(
     deps: &mut TaskEncoderDependencies<'vir, TyImpureEnc>,
     builder: &mut PredicateBuilder<'vir>,
 ) -> Result<StructData<'vir, ImpureTyDatas>, EncodeFullError<'vir, TyImpureEnc>> {
-    let (data, _, snap_expr) = ty_impure_variant("", task_key, data, deps, builder)?;
+    let (data, _, snap_expr_deep, snap_expr_shallow) =
+        ty_impure_variant("", task_key, data, deps, builder)?;
 
     // Ref-to-snap
-    builder.mk_snap_function(Some(snap_expr), &[]);
+    let deep_pres = builder.indirect_deep_pres(deps)?;
+    builder.mk_deep_snap_function(Some(snap_expr_deep), &deep_pres, &[]);
+    builder.mk_shallow_snap_function(Some(snap_expr_shallow), &[]);
     Ok(data)
 }
 
 pub(super) type ImpureVariant<'vir> = (
     StructData<'vir, ImpureTyDatas>,
     PredicateIdn<'vir, (vir::Ref, vir::ManyTyVal, vir::ManyCSnap)>,
+    vir::ExprCSnap<'vir>,
     vir::ExprCSnap<'vir>,
 );
 
@@ -178,18 +228,39 @@ pub(crate) fn ty_impure_variant<'vir>(
     let pred_owned = builder.mk_predicate(&pred_name, Some(pred_expr));
 
     // Ref-to-snap
-    let snap_args: Vec<&'vir vir::ExprGenData<'vir, (), !, vir::Snap>> = fields
+    let shallow_snap_args: Vec<&'vir vir::ExprGenData<'vir, (), !, vir::Snap>> = fields
         .iter()
         .zip(&field_accessors)
         .map(|(field, TyImpureFieldData { ref_to_field_ref })| {
-            field.ref_to_snap(ref_to_field_ref(
+            field.ref_to_shallow_snap(ref_to_field_ref(
                 ref_self,
                 builder.params.ty_exprs(),
                 builder.params.const_exprs(),
             ))
         })
         .collect::<Vec<_>>();
-    let variant_snap_expr = data.1.field_snaps_to_snap.call()(snap_args.as_slice());
+    let shallow_variant_snap_expr = data
+        .1
+        .field_snaps_to_shallow_snap
+        .unwrap_or(data.1.field_snaps_to_snap)
+        .call()(shallow_snap_args.as_slice());
+
+    let deep_variant_snap_expr = if task_key.0.construct_deep_snapshot {
+        let deep_snap_args: Vec<&'vir vir::ExprGenData<'vir, (), !, vir::Snap>> = fields
+            .iter()
+            .zip(&field_accessors)
+            .map(|(field, TyImpureFieldData { ref_to_field_ref })| {
+                field.ref_to_deep_snap(ref_to_field_ref(
+                    ref_self,
+                    builder.params.ty_exprs(),
+                    builder.params.const_exprs(),
+                ))
+            })
+            .collect::<Vec<_>>();
+        data.1.field_snaps_to_snap.call()(deep_snap_args.as_slice())
+    } else {
+        shallow_variant_snap_expr
+    };
 
     Ok((
         StructData::new(
@@ -199,6 +270,7 @@ pub(crate) fn ty_impure_variant<'vir>(
             field_accessors,
         ),
         pred_owned,
-        variant_snap_expr,
+        deep_variant_snap_expr,
+        shallow_variant_snap_expr,
     ))
 }

@@ -1,3 +1,4 @@
+use pcg::borrow_pcg::FunctionData;
 use prusti_interface::PrustiError;
 use prusti_rustc_interface::{
     data_structures::fx::{FxHashSet, FxIndexMap, FxIndexSet},
@@ -10,14 +11,15 @@ use vir::{CastType, Domain, Method, MethodIdn, ViperIdent, vir_format_identifier
 
 use crate::{
     encoders::{
-        ConstEnc, FunctionCallEnc, MirLocalDefEnc, MirLocalDefEncTask, MirSpecEnc, Pure,
+        ConstEnc, FunctionCallEnc, MirLocalDefEnc, MirLocalDefEncTask, MirSpecEnc, WandEnc,
+        WandEncTask,
         r#const::ConstEncTask,
         mir_fn::{CallTaskDescription, RustSignature},
         pure::spec::MirSpecEncMode,
         ty::{
             RustTy, RustTyDecomposition,
             generics::{
-                GArgs, GArgsCastEnc, GArgsTyEnc, GParams, GenericParamsEnc, r#trait::TraitEnc,
+                GArgs, GArgsTyEnc, GParams, GenericParamsEnc, r#trait::TraitEnc,
                 trait_fn::TraitFnEnc,
             },
             lifted::TyConstructorEnc,
@@ -118,7 +120,20 @@ impl TaskEncoder for TraitImplEnc {
                         impure_arg_preds.push(local_defs[arg_idx].impure_pred);
                     }
                 }
-                // TODO: wands
+                // What the arguments and the result point to, as in the
+                // method's contract: the deep snapshots in the specs read it.
+                // No borrow expires in the checks, so no wand is needed. If the
+                // wands cannot be encoded, the method's own encoding
+                // (`MethodEnc`) reports it, so the checks skip the item.
+                let Ok(wands) = deps.require_dep::<WandEnc>(WandEncTask {
+                    data: FunctionData::new(impl_item_def_id),
+                }) else {
+                    continue;
+                };
+                let indirect_pres = wands
+                    .indirect_pres(vcx, &local_defs, deps)
+                    .collect::<Vec<_>>();
+                impure_arg_preds.extend(indirect_pres.iter().copied());
 
                 let mut pre_weaken_pres = impure_arg_preds.clone();
                 pre_weaken_pres.extend(trait_item_spec.pre_exprs());
@@ -171,12 +186,27 @@ impl TaskEncoder for TraitImplEnc {
                 let mut post_strengthen_pres = impure_arg_preds;
                 post_strengthen_pres.extend(trait_item_spec.pre_exprs());
 
-                // exceptionally, we also put the allocated result in the precondition
-                post_strengthen_pres.push(local_defs[mir::RETURN_PLACE].impure_pred);
-
-                // here we inhale the impl postconditions, since they
-                // can contain "old" variables
+                // The check runs like a call: the method's entry is the
+                // pre-state (which `old` refers to), then the state after the
+                // call is reached by giving up what the arguments point to and
+                // getting it back with new values, along with the result (an
+                // impure impl may change them). Then the impl's postconditions
+                // are inhaled and the trait's exhaled.
                 let mut stmts = bounds;
+                let post_state_preds = if impl_item_is_pure {
+                    wands
+                        .indirect_output_posts(vcx, &local_defs, deps)
+                        .collect::<Vec<_>>()
+                } else {
+                    stmts.extend(indirect_pres.into_iter().map(|pre| vcx.mk_exhale_stmt(pre)));
+                    wands.indirect_posts(vcx, &local_defs, deps).collect()
+                };
+                stmts.push(vcx.mk_inhale_stmt(local_defs[mir::RETURN_PLACE].impure_pred));
+                stmts.extend(
+                    post_state_preds
+                        .into_iter()
+                        .map(|pred| vcx.mk_inhale_stmt(pred)),
+                );
                 for post in impl_item_spec.post_exprs() {
                     stmts.push(vcx.mk_inhale_stmt(post));
                 }
@@ -936,7 +966,6 @@ impl TaskEncoder for TraitImplItemEnc {
             // `impl_item_context` rather than the trait item's context because
             // the parameter indices must match the `impl_item_context` used in
             // `GArgs::new` below.
-            let trait_item_context = GParams::from(trait_item_def_id);
             let item_args = &impl_item_context.rust_params()[impl_context.rust_params().len()..];
             let args = trait_ref.args.iter().chain(item_args.iter().copied());
             let args = tcx.mk_args_from_iter(args);
@@ -1008,6 +1037,7 @@ impl TaskEncoder for TraitImplItemEnc {
                             all_locals: false,
                         })?;
                     let func_args = local_defs.local_decl_args().collect::<Vec<_>>();
+                    let func_args_later = local_defs.local_decl_args_later().collect::<Vec<_>>();
                     let func_ret = local_defs.local_decl_ret();
 
                     let impl_item_is_pure = crate::encoders::is_function_pure(
@@ -1028,20 +1058,19 @@ impl TaskEncoder for TraitImplItemEnc {
 
                     let signature = RustSignature::new(trait_item_def_id);
 
-                    // TODO: clean up: this kind of casting also happens in
-                    //   `FunctionCallEncOutput::call_pure`.
-                    let casted_args = func_args
-                        .iter()
-                        .zip(signature.inputs)
-                        .map(|(arg, ty)| {
-                            let normalized =
-                                ty.decompose_compare_normalize(trait_item_context, impl_item_args);
-                            let caster =
-                                deps.require_dep::<GArgsCastEnc<Pure>>(normalized).unwrap();
-                            caster.cast_to_callee_ctx(vcx.mk_local_ex(arg))
-                        })
-                        .collect::<Vec<_>>();
+                    let (casters, ret_caster) = signature.casters(impl_item_args, deps)?;
+                    let cast_args = |args: &[vir::LocalDeclSnap<'vir>]| {
+                        args.iter()
+                            .zip(&casters)
+                            .map(|(arg, caster)| caster.cast_to_callee_ctx(vcx.mk_local_ex(arg)))
+                            .collect::<Vec<_>>()
+                    };
+                    let casted_args = cast_args(&func_args);
                     let casted_args_slice = vcx.alloc_slice(&casted_args);
+                    // The arguments before the call, then after it (or after
+                    // the expiry of a borrow of the result, for the pledges).
+                    let two_state_casted_args =
+                        vcx.alloc_slice(&[casted_args, cast_args(&func_args_later)].concat());
                     let pre_func_call =
                         assoc_fn.pre_func.call()(casted_args_slice, trait_tys, trait_consts);
                     let arg_decls = func_args
@@ -1080,21 +1109,16 @@ impl TaskEncoder for TraitImplItemEnc {
                         });
                     }
                     let posts = vcx.mk_conj(&posts);
+                    let casted_ret = ret_caster.cast_to_callee_ctx(vcx.mk_local_ex(func_ret));
                     let post_func_call = assoc_fn.post_func.call()(
-                        {
-                            let normalized = signature
-                                .output
-                                .decompose_compare_normalize(trait_item_context, impl_item_args);
-                            let caster =
-                                deps.require_dep::<GArgsCastEnc<Pure>>(normalized).unwrap();
-                            caster.cast_to_callee_ctx(vcx.mk_local_ex(func_ret))
-                        },
-                        casted_args_slice,
+                        casted_ret,
+                        two_state_casted_args,
                         trait_tys,
                         trait_consts,
                     );
                     let ret_and_arg_decls = std::iter::once(func_ret.upcast_ty())
                         .chain(arg_decls)
+                        .chain(func_args_later.iter().map(|arg| arg.upcast_ty()))
                         .collect::<Vec<_>>();
                     axioms.push(vcx.mk_domain_axiom(
                         vir_format_identifier!(vcx, "{impl_name}_fn_post_{item_name}"),
@@ -1108,6 +1132,31 @@ impl TaskEncoder for TraitImplItemEnc {
                             guard_inherited(vir::expr! { (post_func_call) ==> (posts) }),
                         )?,
                     ));
+
+                    // The pledges, for a call through the trait (see
+                    // `trait_fn::trait_pledge`).
+                    if let Some(pledges) =
+                        impl_item_spec.trait_pledges(func_ret, &func_args, &func_args_later)
+                    {
+                        let pledge_func_call = assoc_fn.pledge_func.call()(
+                            casted_ret,
+                            two_state_casted_args,
+                            trait_tys,
+                            trait_consts,
+                        );
+                        axioms.push(vcx.mk_domain_axiom(
+                            vir_format_identifier!(vcx, "{impl_name}_fn_pledge_{item_name}"),
+                            TraitImplEnc::guarded_forall(
+                                vcx,
+                                deps,
+                                impl_did,
+                                impl_item_def_id,
+                                &ret_and_arg_decls,
+                                pledge_func_call.upcast_ty(),
+                                guard_inherited(vir::expr! { (pledge_func_call) ==> (pledges) }),
+                            )?,
+                        ));
+                    }
                 }
                 ty::AssocKind::Const { .. } => (),
             }
@@ -1180,9 +1229,12 @@ impl TaskEncoder for TraitImplDefaultFnEnc {
                     .resolve_trait_calls(false),
             )?;
             let default_body_app = default_body.call_pure(func_arg_exprs.clone());
+            // A pure function cannot change its arguments.
+            let two_state_arg_exprs =
+                vcx.alloc_slice(&[func_arg_exprs.as_slice(), &func_arg_exprs].concat());
             let post_func_call = post_func.call()(
                 vcx.mk_local_ex(func_ret),
-                vcx.alloc_slice(&func_arg_exprs),
+                two_state_arg_exprs,
                 item_generics.ty_exprs(),
                 item_generics.const_exprs(),
             );
@@ -1210,7 +1262,7 @@ impl TaskEncoder for TraitImplDefaultFnEnc {
                 .collect::<Vec<_>>();
             let trigger = post_func.call()(
                 vcx.mk_local_ex(func_ret),
-                vcx.alloc_slice(&func_arg_exprs),
+                two_state_arg_exprs,
                 vcx.alloc_slice(&trigger_tys),
                 vcx.alloc_slice(&trigger_consts),
             );

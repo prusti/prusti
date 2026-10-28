@@ -138,7 +138,10 @@ type EncResult<'vir, T> = Result<T, EncodeFullError<'vir, TyUsePureEnc>>;
 
 #[derive(Debug, Clone, Copy)]
 pub struct TyUsePureRef<'vir> {
+    /// The deep snapshot (see `TyPureRef`).
     pub snapshot: vir::TypeSnap<'vir>,
+    pub shallow_snapshot: vir::TypeSnap<'vir>,
+    pub to_shallow: Option<vir::FunctionIdn<'vir, vir::CSnap, vir::CSnap>>,
     args: GArgsTy<'vir>,
     ty_pure_ref: TyPureRef<'vir>,
 }
@@ -169,10 +172,11 @@ impl TaskEncoder for TyUsePureEnc {
     ) -> EncodeFullResult<'vir, Self> {
         let ty_pure_ref = deps.require_ref::<TyPureEnc>(task_key.ty)?;
         let args = deps.require_dep::<GArgsTyEnc>(task_key.args)?;
-        let snapshot = ty_pure_ref.snapshot;
         let inner = TyUsePureRef {
             args,
-            snapshot,
+            snapshot: ty_pure_ref.deep_snapshot,
+            shallow_snapshot: ty_pure_ref.shallow_snapshot,
+            to_shallow: ty_pure_ref.to_shallow,
             ty_pure_ref,
         };
         deps.emit_output_ref(*task_key, inner)?;
@@ -352,6 +356,29 @@ impl<'vir> TyUsePureRef<'vir> {
     pub fn unreachable_to_snap<Curr, Next>(&self) -> vir::ExprGenSnap<'vir, Curr, Next> {
         self.ty_pure_ref.unreachable_to_snap.call()(self.args.get_ty(), self.args.get_const())
     }
+
+    /// Whether `snap` is the shallow snapshot of a type that constructs a
+    /// separate deep one, i.e. it lacks the values behind mutable references.
+    pub fn is_shallow<Curr, Next>(&self, snap: vir::ExprGenSnap<'vir, Curr, Next>) -> bool {
+        self.to_shallow.is_some() && snap.ty() == self.shallow_snapshot
+    }
+}
+
+/// The shallow snapshot of `snap`, given the conversion and the type of the
+/// shallow snapshot (if the type constructs a deep snapshot).
+pub(super) fn to_shallow<'vir, Curr, Next>(
+    to_shallow: Option<(
+        vir::FunctionIdn<'vir, vir::CSnap, vir::CSnap>,
+        vir::TypeSnap<'vir>,
+    )>,
+    snap: vir::ExprGenSnap<'vir, Curr, Next>,
+) -> vir::ExprGenSnap<'vir, Curr, Next> {
+    match to_shallow {
+        Some((to_shallow, shallow_ty)) if snap.ty() != shallow_ty => {
+            to_shallow.call()(snap.downcast_ty()).upcast_ty()
+        }
+        _ => snap,
+    }
 }
 
 impl<'vir> TyData<'vir, UsePureTyDatas> {
@@ -473,31 +500,60 @@ impl<'vir> TyUsePureMutRef<'vir> {
             .metadata_caster
             .cast_to_callee_ctx(metadata)
             .downcast_ty();
-        self.pure.prim_to_snap.call()(ref_, metadata, self.cast_to_callee_ctx(val))
+        self.pure.prim_to_deep_snap.call()(ref_, metadata, self.cast_to_callee_ctx(val))
+    }
+
+    /// Construct the shallow snapshot (address and metadata only), e.g. for
+    /// assigning a new reference.
+    pub fn prim_to_shallow_snap<Curr, Next>(
+        &self,
+        ref_: vir::ExprGenRef<'vir, Curr, Next>,
+        metadata: vir::ExprGenSnap<'vir, Curr, Next>,
+    ) -> vir::ExprGenCSnap<'vir, Curr, Next> {
+        let metadata = self
+            .metadata_caster
+            .cast_to_callee_ctx(metadata)
+            .downcast_ty();
+        self.pure.prim_to_shallow_snap.call()(ref_, metadata)
+    }
+
+    /// Whether `snap` is the shallow snapshot, without the referent's value.
+    pub fn is_shallow<Curr, Next>(&self, snap: vir::ExprGenCSnap<'vir, Curr, Next>) -> bool {
+        snap.ty() == self.pure.shallow_ty
     }
 
     pub fn deref_access<Curr, Next>(
         &self,
         snap: vir::ExprGenCSnap<'vir, Curr, Next>,
     ) -> vir::ExprGenRef<'vir, Curr, Next> {
-        self.pure.deref_access.call()(snap)
+        if self.is_shallow(snap) {
+            self.pure.shallow_snap_fields.0.call()(snap)
+        } else {
+            self.pure.deep_snap_fields.0.call()(snap)
+        }
     }
 
     pub fn metadata_access<Curr, Next>(
         &self,
         snap: vir::ExprGenCSnap<'vir, Curr, Next>,
     ) -> vir::ExprGenSnap<'vir, Curr, Next> {
-        let metadata = self.pure.metadata_access.call()(snap);
+        let metadata = if self.is_shallow(snap) {
+            self.pure.shallow_snap_fields.1.call()(snap)
+        } else {
+            self.pure.deep_snap_fields.1.call()(snap)
+        };
         self.metadata_caster
             .cast_to_caller_ctx(metadata.upcast_ty())
     }
 
-    /// Function to access the value (beware that this may not be set).
+    /// Function to access the value, only in the deep snapshot.
+    #[track_caller]
     pub fn value_access<Curr, Next>(
         &self,
         snap: vir::ExprGenCSnap<'vir, Curr, Next>,
     ) -> vir::ExprGenSnap<'vir, Curr, Next> {
-        self.cast_to_caller_ctx(self.pure.value_access.call()(snap))
+        assert!(!self.is_shallow(snap), "no value in a shallow snapshot");
+        self.cast_to_caller_ctx(self.pure.deep_snap_fields.2.call()(snap))
     }
 
     pub fn cast_to_caller_ctx<Curr, Next>(
@@ -659,6 +715,8 @@ impl<'vir> TyUsePureStruct<'vir> {
         self.field_snaps_to_snap(snaps)
     }
 
+    /// The snapshot with the given (deep or shallow) snapshots of the fields.
+    /// It is the deep snapshot only if all fields have a deep snapshot.
     pub fn field_snaps_to_snap<Curr, Next>(
         &self,
         mut snaps: Vec<vir::ExprGenSnap<'vir, Curr, Next>>,
@@ -667,16 +725,36 @@ impl<'vir> TyUsePureStruct<'vir> {
         for (snap, field) in snaps.iter_mut().zip(&self.fields) {
             *snap = field.caster.cast_to_callee_ctx(*snap);
         }
-        self.pure.field_snaps_to_snap.call()(&snaps)
+        let deep = |snaps: &[vir::ExprGenSnap<'vir, Curr, Next>]| {
+            snaps.iter().zip(&self.fields).all(|(snap, field)| {
+                field.pure.to_shallow.is_none() || snap.ty() != field.pure.shallow_ty
+            })
+        };
+        match self.pure.field_snaps_to_shallow_snap {
+            Some(_) if deep(&snaps) => self.pure.field_snaps_to_snap.call()(&snaps),
+            shallow_cons => {
+                for (snap, field) in snaps.iter_mut().zip(&self.fields) {
+                    let field_to_shallow =
+                        field.pure.to_shallow.map(|f| (f, field.pure.shallow_ty));
+                    *snap = to_shallow(field_to_shallow, *snap);
+                }
+                shallow_cons.unwrap_or(self.pure.field_snaps_to_snap).call()(&snaps)
+            }
+        }
     }
 }
 
 impl<'vir> TyUsePureField<'vir> {
+    /// Reads the field out of a deep or shallow snapshot; out of the shallow
+    /// snapshot, it is the field's shallow snapshot.
     pub fn read<Curr, Next>(
         &self,
         snap: vir::ExprGenCSnap<'vir, Curr, Next>,
     ) -> vir::ExprGenSnap<'vir, Curr, Next> {
-        let res = self.pure.read.call()(snap);
+        let res = match self.pure.read_shallow {
+            Some((read, shallow_ty)) if snap.ty() == shallow_ty => read.call()(snap),
+            _ => self.pure.read.call()(snap),
+        };
         self.caster.cast_to_caller_ctx(res)
     }
 
@@ -703,6 +781,9 @@ impl<'vir> TyUsePureEnum<'vir> {
         &self,
         snap: vir::ExprGenCSnap<'vir, Curr, Next>,
     ) -> vir::ExprGenCSnap<'vir, Curr, Next> {
-        self.snap_to_discr_snap.call()(snap)
+        match self.shallow_snap_to_discr_snap {
+            Some((discr, shallow_ty)) if snap.ty() == shallow_ty => discr.call()(snap),
+            _ => self.snap_to_discr_snap.call()(snap),
+        }
     }
 }

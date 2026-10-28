@@ -1,7 +1,14 @@
 use pcg::borrow_pcg::FunctionData;
 use prusti_rustc_interface::{middle::ty, span::def_id::DefId};
+use task_encoder::{EncodeFullError, TaskEncoder, TaskEncoderDependencies};
 
-use crate::encoders::ty::{LazyRustTy, generics::GParams};
+use crate::encoders::{
+    Pure,
+    ty::{
+        LazyRustTy,
+        generics::{GArgCaster, GArgs, GArgsCastEnc, GParams},
+    },
+};
 
 pub struct RustSignature<'tcx> {
     pub gparams: GParams<'tcx>,
@@ -22,6 +29,28 @@ impl<'tcx> RustSignature<'tcx> {
             inputs,
             output,
         }
+    }
+
+    /// The casters of the arguments and of the result between a call with
+    /// `args` and the function's own generic context (see `GArgsCastEnc`).
+    #[allow(clippy::type_complexity)]
+    pub fn casters<E: TaskEncoder>(
+        &self,
+        args: GArgs<'tcx>,
+        deps: &mut TaskEncoderDependencies<'tcx, E>,
+    ) -> Result<(Vec<GArgCaster<'tcx, Pure>>, GArgCaster<'tcx, Pure>), EncodeFullError<'tcx, E>>
+    {
+        let mut caster = |ty: &LazyRustTy<'tcx>| {
+            let normalized = ty.decompose_compare_normalize(self.gparams, args);
+            deps.require_dep::<GArgsCastEnc<Pure>>(normalized)
+        };
+        let inputs = self
+            .inputs
+            .iter()
+            .map(&mut caster)
+            .collect::<Result<_, _>>()?;
+        let output = caster(&self.output)?;
+        Ok((inputs, output))
     }
 
     pub fn get_def_id_and_caller_substs(ty: ty::Ty<'tcx>) -> (DefId, ty::GenericArgsRef<'tcx>) {

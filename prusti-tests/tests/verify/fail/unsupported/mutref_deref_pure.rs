@@ -4,17 +4,19 @@ pub struct S {
     v: i32,
 }
 
-// A mutable reference's snapshot is shallow: the value behind it lives in the
-// heap, so a pure function handed only the snapshot cannot read it.
+// A mutable reference argument's snapshot is deep, so a pure function can read
+// the value behind it, but not the value behind a mutable reference behind it:
+// that referent is read through the snapshot of a type parameter, which is
+// shallow.
 
 #[pure]
 fn get(s: &mut S) -> i32 {
-    s.v //~ERROR: dereference of the mutable reference `&mut S` in pure code
+    s.v
 }
 
 #[pure]
-fn get_nested(s: &mut &mut S) -> i32 {
-    s.v //~ERROR: dereference of the mutable reference `&mut &mut S` in pure code
+fn get_nested(s: &mut &mut S) -> i32 { //~ ERROR: the result of pure function `get_nested` might not match its definition
+    s.v //~ERROR: dereference of the mutable reference `&mut S` in pure code
 }
 
 fn client(s: &mut S, t: &mut &mut S) {

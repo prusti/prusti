@@ -8,12 +8,12 @@ use vir::MethodIdn;
 
 use crate::encoders::{
     FunctionCallEnc, Impure, ImpureEncVisitor, MirLocalDefEnc, MirLocalDefEncTask, MirSpecEnc,
-    WandEnc, WandEncTask,
+    WandEnc, WandEncTask, WandPledges,
     mir_fn::{CallTaskDescription, RustSignature, SpecBlocks, SpecBlocksEnc},
     pure::spec::MirSpecEncMode,
     ty::generics::{
         GArgCaster, GArgs, GArgsCastEnc, GArgsTy, GArgsTyEnc, GParams, GenericParamsEnc,
-        trait_impls::TraitImplEnc,
+        trait_fn::TraitFnEnc, trait_impls::TraitImplEnc,
     },
 };
 
@@ -27,6 +27,10 @@ pub struct MethodCallEncOutput<'vir> {
     ty_args: GArgsTy<'vir>,
     inputs: Vec<GArgCaster<'vir, Impure>>,
     output: GArgCaster<'vir, Impure>,
+    /// The pledges that the wands of the callee's contract carry, which the
+    /// caller's wands must also carry to apply them: the function's own, or
+    /// those of the trait's call stub.
+    pub wand_pledges: WandPledges<'vir>,
 }
 
 impl<'vir> MethodCallEncOutput<'vir> {
@@ -71,12 +75,14 @@ impl TaskEncoder for MethodCallEnc {
     ) -> EncodeFullResult<'vir, Self> {
         deps.emit_output_ref(*task_key, ())?;
         let (callee_def_id, assoc_enc) = task_key.trait_call(deps)?;
-        let method_ref = if let Some(assoc_enc) = assoc_enc {
-            MethodEncOutputRef {
+        let (method_ref, wand_pledges) = if let Some(assoc_enc) = assoc_enc {
+            let method_ref = MethodEncOutputRef {
                 method_ref: assoc_enc.call_stub_impure,
-            }
+            };
+            (method_ref, deps.require_dep::<TraitFnEnc>(callee_def_id)?)
         } else {
-            deps.require_ref::<MethodEnc>(task_key.callee)?
+            let method_ref = deps.require_ref::<MethodEnc>(task_key.callee)?;
+            (method_ref, WandPledges::Own)
         };
         let signature = RustSignature::new(callee_def_id);
         let ty_args = deps.require_dep::<GArgsTyEnc>(task_key.gargs)?;
@@ -99,6 +105,7 @@ impl TaskEncoder for MethodCallEnc {
                 ty_args,
                 inputs,
                 output,
+                wand_pledges,
             },
         ))
     }
@@ -245,7 +252,7 @@ impl TaskEncoder for MethodEnc {
             // ..
             pres.extend(wands.indirect_pres(vcx, &arg_defs, deps));
             posts.extend(wands.indirect_posts(vcx, &arg_defs, deps));
-            posts.extend(wands.wand_posts(vcx, &arg_defs, deps));
+            posts.extend(wands.wand_posts(vcx, &arg_defs, WandPledges::Own, deps));
 
             // The method of a pure function `f` gets the postcondition
             //     ensures snap(result) == f_(old(snap(args)))
@@ -355,7 +362,7 @@ impl TaskEncoder for MethodEnc {
 
                     tmp_ctr: 0,
                     label_ctr: 0,
-                    call_labels: Default::default(),
+                    calls: Default::default(),
                     wandless_calls: Default::default(),
                     from_to_vars: Default::default(),
 

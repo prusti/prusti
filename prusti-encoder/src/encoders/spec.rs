@@ -143,6 +143,30 @@ pub fn report_kind_refinement_error(
     });
 }
 
+/// Emit an "unsupported" error if `def_id` implements a trait method that has
+/// pledges and declares pledges of its own (with `#[refine_trait_spec]`). A
+/// call through the trait assumes the trait's pledges for every impl, and an
+/// impl's own pledges are not checked against them. (If the trait has none,
+/// the impl's pledges are only assumed for that impl, which verifies them.)
+pub fn report_pledge_refinement_error(def_id: DefId, pledges: &SpecificationItem<Vec<Pledge>>) {
+    let SpecificationItem::Refined(trait_pledges, refined) = pledges else {
+        return;
+    };
+    let (false, Some(pledge)) = (trait_pledges.is_empty(), refined.first()) else {
+        return;
+    };
+    vir::with_vcx(|vcx| {
+        vcx.emit_early_error(prusti_interface::PrustiError::unsupported(
+            format!(
+                "pledges on `{}`, which refines the specification of a trait method, are not \
+                 supported",
+                vcx.tcx().def_path_str(def_id)
+            ),
+            vcx.tcx().def_span(pledge.rhs).into(),
+        ));
+    });
+}
+
 pub fn is_type_trusted(ty: ty::Ty) -> bool {
     match ty.kind() {
         prusti_rustc_interface::middle::ty::TyKind::Adt(adt_def, _) => with_type_spec(|def_spec| {

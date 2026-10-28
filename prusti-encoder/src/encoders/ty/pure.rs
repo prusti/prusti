@@ -157,7 +157,7 @@ impl<'vir, D: TyDatas<'vir, PrimitiveData = TyPurePrimData<'vir>>> TyData<'vir, 
 
 #[derive(Debug, Clone, Copy)]
 pub struct TyPureImmRefData<'vir> {
-    /// Construct domain from a `Ref` value.
+    /// Construct deep domain from a `Ref` value.
     pub(super) prim_to_snap: FunctionIdn<'vir, (vir::Ref, vir::PSnap, vir::PSnap), vir::CSnap>,
     /// Function to access the referee.
     pub(super) deref_access: AdtDestructor<'vir, vir::CSnap, vir::Ref>,
@@ -169,14 +169,23 @@ pub struct TyPureImmRefData<'vir> {
 
 #[derive(Debug, Clone, Copy)]
 pub struct TyPureMutRefData<'vir> {
-    /// Construct domain from a `Ref` value.
-    pub(super) prim_to_snap: FunctionIdn<'vir, (vir::Ref, vir::PSnap, vir::PSnap), vir::CSnap>,
-    /// Function to access the referee.
-    pub(super) deref_access: AdtDestructor<'vir, vir::CSnap, vir::Ref>,
-    /// Function to access the reference metadata (fat pointer).
-    pub(super) metadata_access: AdtDestructor<'vir, vir::CSnap, vir::PSnap>,
-    /// Function to access the value (beware that this may not be set).
-    pub(super) value_access: AdtDestructor<'vir, vir::CSnap, vir::PSnap>,
+    /// Construct the deep snapshot from a `Ref` value.
+    pub(super) prim_to_deep_snap: FunctionIdn<'vir, (vir::Ref, vir::PSnap, vir::PSnap), vir::CSnap>,
+    /// Construct the shallow snapshot from a `Ref` value.
+    pub(super) prim_to_shallow_snap: FunctionIdn<'vir, (vir::Ref, vir::PSnap), vir::CSnap>,
+    /// Functions to access the fields of the deep snapshot.
+    pub(super) deep_snap_fields: (
+        AdtDestructor<'vir, vir::CSnap, vir::Ref>,
+        AdtDestructor<'vir, vir::CSnap, vir::PSnap>,
+        AdtDestructor<'vir, vir::CSnap, vir::PSnap>,
+    ),
+    /// Functions to access the fields of the shallow snapshot.
+    pub(super) shallow_snap_fields: (
+        AdtDestructor<'vir, vir::CSnap, vir::Ref>,
+        AdtDestructor<'vir, vir::CSnap, vir::PSnap>,
+    ),
+    /// The type of the shallow snapshot.
+    pub(super) shallow_ty: vir::TypeCSnap<'vir>,
 }
 
 /// The hardcoded extras of a `Box`: its pointer metadata, read out of the raw
@@ -195,6 +204,9 @@ pub struct TyPureStructData<'vir> {
     /// Construct domain from snapshots of fields or for primitive types
     /// from the single Viper primitive value.
     pub(super) field_snaps_to_snap: FunctionIdn<'vir, vir::ManySnap, vir::CSnap>,
+    /// Construct the shallow snapshot from the shallow snapshots of the
+    /// fields, if the type constructs a deep snapshot.
+    pub(super) field_snaps_to_shallow_snap: Option<FunctionIdn<'vir, vir::ManySnap, vir::CSnap>>,
     /// The hardcoded extras when this struct is a `Box`.
     pub(super) box_data: Option<TyPureBoxData<'vir>>,
 }
@@ -202,6 +214,17 @@ pub struct TyPureStructData<'vir> {
 #[derive(Debug, Clone, Copy)]
 pub struct TyPureFieldData<'vir> {
     pub(super) read: AdtDestructor<'vir, vir::CSnap, vir::Snap>,
+    /// Reads the field out of the shallow snapshot, and the type of that
+    /// snapshot, if the type constructs a deep snapshot.
+    pub(super) read_shallow: Option<(
+        AdtDestructor<'vir, vir::CSnap, vir::Snap>,
+        vir::TypeCSnap<'vir>,
+    )>,
+    /// The field type's shallow snapshot and conversion into it (see
+    /// `TyPureRef::to_shallow`). Only the deep snapshot of the type holds the
+    /// field's deep snapshot.
+    pub(super) shallow_ty: vir::TypeSnap<'vir>,
+    pub(super) to_shallow: Option<FunctionIdn<'vir, vir::CSnap, vir::CSnap>>,
     pub(super) ref_to_field_ref: TyPureFieldRef<'vir>,
 }
 
@@ -223,6 +246,12 @@ pub struct TyPureEnumData<'vir> {
     #[allow(dead_code)]
     pub(super) discr_prim: TyPurePrimitive<'vir>,
     pub(super) snap_to_discr_snap: FunctionIdn<'vir, vir::CSnap, vir::CSnap>,
+    /// The discriminant of the shallow snapshot, and its type, if the type
+    /// constructs a deep snapshot.
+    pub(super) shallow_snap_to_discr_snap: Option<(
+        FunctionIdn<'vir, vir::CSnap, vir::CSnap>,
+        vir::TypeCSnap<'vir>,
+    )>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -237,7 +266,13 @@ pub(super) type TyPureEnc = super::TyEnc<Pure>;
 
 #[derive(Debug, Clone, Copy)]
 pub struct TyPureRef<'vir> {
-    pub snapshot: vir::TypeSnap<'vir>,
+    /// The snapshot including the values behind mutable references.
+    pub deep_snapshot: vir::TypeSnap<'vir>,
+    /// The snapshot without the values behind mutable references. The same as
+    /// `deep_snapshot` if the type does not construct a deep snapshot.
+    pub shallow_snapshot: vir::TypeSnap<'vir>,
+    /// Converts the deep snapshot into the shallow one, if they differ.
+    pub to_shallow: Option<FunctionIdn<'vir, vir::CSnap, vir::CSnap>>,
     pub unreachable_to_snap: FunctionIdn<'vir, (vir::ManyTyVal, vir::ManyCSnap), vir::Snap>,
 }
 
@@ -260,6 +295,8 @@ pub enum TyPureEncLocalKind<'vir> {
     Adt {
         adt: vir::Adt<'vir>,
         discr_fn: Option<vir::Function<'vir>>,
+        /// The ADT of the shallow snapshot, if the type constructs a deep one.
+        shallow: Option<(vir::Adt<'vir>, Option<vir::Function<'vir>>)>,
     },
     None,
 }
@@ -369,10 +406,16 @@ impl TaskEncoder for TyPureEnc {
                         program.add_literal_inverse(literal_inverse);
                     }
                 }
-                TyPureEncLocalKind::Adt { adt, discr_fn } => {
-                    program.add_adt(adt);
-                    if let Some(discr_fn) = discr_fn {
-                        program.add_function(discr_fn);
+                TyPureEncLocalKind::Adt {
+                    adt,
+                    discr_fn,
+                    shallow,
+                } => {
+                    for (adt, discr_fn) in std::iter::once((adt, discr_fn)).chain(shallow) {
+                        program.add_adt(adt);
+                        if let Some(discr_fn) = discr_fn {
+                            program.add_function(discr_fn);
+                        }
                     }
                 }
                 TyPureEncLocalKind::None => {}
@@ -423,6 +466,10 @@ pub(crate) struct TyPureBuilder<'vir> {
     pub(crate) vcx: &'vir vir::VirCtxt<'vir>,
     name: vir::ViperIdent<'vir>,
     self_type: vir::TypeSnap<'vir>,
+    /// The name and type of the shallow snapshot's ADT, if the type constructs
+    /// a deep snapshot (see `RustTyData::construct_deep_snapshot`).
+    shallow: Option<(vir::ViperIdent<'vir>, vir::TypeSnap<'vir>)>,
+    to_shallow: Option<FunctionIdn<'vir, vir::CSnap, vir::CSnap>>,
     unreachable_to_snap: FunctionIdn<'vir, (vir::ManyTyVal, vir::ManyCSnap), vir::Snap>,
     pub(super) params: GenericParams<'vir>,
     data: BuilderData<'vir>,
@@ -438,6 +485,10 @@ pub enum BuilderData<'vir> {
 pub(crate) struct AdtBuilderData<'vir> {
     constructors: Vec<vir::AdtConstructor<'vir>>,
     discr_fn: Option<DiscrFnBuilder<'vir>>,
+    /// The constructors and discriminant function of the shallow snapshot's
+    /// ADT.
+    shallow_constructors: Vec<vir::AdtConstructor<'vir>>,
+    shallow_discr_fn: Option<DiscrFnBuilder<'vir>>,
     /// Other related functions (for example Ref field accessors).
     functions: Vec<vir::Function<'vir>>,
 }
@@ -496,6 +547,17 @@ impl<'vir> TyPureBuilder<'vir> {
             TySpecifics::Primitive(prim) if prim.is_bool() => vir::TYPE_BOOL.upcast_ty(),
             _ => DomainIdnSnap::new(name, 0)(),
         };
+        let shallow = ty.construct_deep_snapshot.then(|| {
+            let name = vir::ViperIdent::new(vir::vir_format!(vcx, "{name}_shallow"));
+            (name, DomainIdnSnap::new(name, 0)())
+        });
+        let to_shallow = shallow.map(|(_, shallow_type)| {
+            FunctionIdn::new(
+                vir::ViperIdent::new(vir::vir_format!(vcx, "{name}_to_shallow")),
+                self_type.downcast_ty(),
+                shallow_type.downcast_ty(),
+            )
+        });
         let unreachable_to_snap = FunctionIdn::new(
             vir::ViperIdent::new(vir::vir_format!(vcx, "{name}_unreachable")),
             (params.ty_args(), params.const_args()),
@@ -505,6 +567,8 @@ impl<'vir> TyPureBuilder<'vir> {
             vcx,
             name,
             self_type,
+            shallow,
+            to_shallow,
             unreachable_to_snap,
             params,
             data: BuilderData::None,
@@ -515,9 +579,28 @@ impl<'vir> TyPureBuilder<'vir> {
         self.self_type.downcast_ty()
     }
 
+    /// The type of the shallow snapshot (the same as `self_type` if the type
+    /// does not construct a deep snapshot).
+    pub(crate) fn shallow_type(&self) -> vir::TypeCSnap<'vir> {
+        self.shallow_snapshot().downcast_ty()
+    }
+
+    /// Like `shallow_type`, also for a type that has no concrete snapshot
+    /// (e.g. a type parameter).
+    fn shallow_snapshot(&self) -> vir::TypeSnap<'vir> {
+        self.shallow.map_or(self.self_type, |(_, ty)| ty)
+    }
+
+    /// Whether the type has a separate ADT for its shallow snapshot.
+    pub(crate) fn has_shallow(&self) -> bool {
+        self.shallow.is_some()
+    }
+
     pub(crate) fn output_ref(&self) -> TyPureRef<'vir> {
         TyPureRef {
-            snapshot: self.self_type,
+            deep_snapshot: self.self_type,
+            shallow_snapshot: self.shallow_snapshot(),
+            to_shallow: self.to_shallow,
             unreachable_to_snap: self.unreachable_to_snap,
         }
     }
@@ -593,13 +676,28 @@ impl<'vir> TyPureBuilder<'vir> {
                     &[],
                     self.vcx.alloc_slice(data.constructors.as_slice()),
                 );
-                let discr_fn = data.discr_fn.map(|df| {
-                    let DiscrFnBuilder::Built(df) = df else {
-                        panic!("discriminant function not built");
-                    };
-                    df
+                let built = |df: Option<DiscrFnBuilder<'vir>>| {
+                    df.map(|df| {
+                        let DiscrFnBuilder::Built(df) = df else {
+                            panic!("discriminant function not built");
+                        };
+                        df
+                    })
+                };
+                let discr_fn = built(data.discr_fn);
+                let shallow = self.shallow.map(|(name, _)| {
+                    let adt = self.vcx.mk_adt(
+                        name,
+                        &[],
+                        self.vcx.alloc_slice(data.shallow_constructors.as_slice()),
+                    );
+                    (adt, built(data.shallow_discr_fn))
                 });
-                TyPureEncLocalKind::Adt { adt, discr_fn }
+                TyPureEncLocalKind::Adt {
+                    adt,
+                    discr_fn,
+                    shallow,
+                }
             }
             // Natively-represented types (`Int`/`Real`/`bool`) emit nothing.
             BuilderData::None => TyPureEncLocalKind::None,
@@ -608,6 +706,7 @@ impl<'vir> TyPureBuilder<'vir> {
 }
 
 impl<'vir> AdtBuilder<'vir> {
+    /// A constructor of the (deep) snapshot.
     pub(crate) fn constructor<A: vir::Arity>(
         &mut self,
         prefix: &str,
@@ -617,13 +716,54 @@ impl<'vir> AdtBuilder<'vir> {
         FunctionIdn<'vir, A, vir::CSnap>,
         Vec<vir::AdtDestructor<'vir, vir::CSnap, vir::Dyn>>,
     ) {
+        self.constructor_of::<A>(false, prefix, fields, discr)
+    }
+
+    /// A constructor of the shallow snapshot's ADT (see `has_shallow`).
+    pub(crate) fn shallow_constructor<A: vir::Arity>(
+        &mut self,
+        prefix: &str,
+        fields: A::Tys<'vir>,
+        discr: Option<vir::ExprCSnap<'vir>>,
+    ) -> (
+        FunctionIdn<'vir, A, vir::CSnap>,
+        Vec<vir::AdtDestructor<'vir, vir::CSnap, vir::Dyn>>,
+    ) {
+        assert!(self.has_shallow());
+        self.constructor_of::<A>(true, prefix, fields, discr)
+    }
+
+    fn constructor_of<A: vir::Arity>(
+        &mut self,
+        shallow: bool,
+        prefix: &str,
+        fields: A::Tys<'vir>,
+        discr: Option<vir::ExprCSnap<'vir>>,
+    ) -> (
+        FunctionIdn<'vir, A, vir::CSnap>,
+        Vec<vir::AdtDestructor<'vir, vir::CSnap, vir::Dyn>>,
+    ) {
         let name = format!("{prefix}cons");
-        let self_ty = self.self_type();
+        let (self_name, self_ty) = if shallow {
+            let (name, ty) = self.shallow.unwrap();
+            (name, ty.downcast_ty())
+        } else {
+            (self.name, self.self_type())
+        };
+        fn discr_fn<'a, 'vir>(
+            data: &'a mut AdtBuilderData<'vir>,
+            shallow: bool,
+        ) -> &'a mut Option<DiscrFnBuilder<'vir>> {
+            if shallow {
+                &mut data.shallow_discr_fn
+            } else {
+                &mut data.discr_fn
+            }
+        }
         assert!(
-            self.data().discr_fn.is_none() || discr.is_some(),
+            discr_fn(self.data(), shallow).is_none() || discr.is_some(),
             "discr was passed previously, but now it wasn't"
         );
-        let self_name = self.name;
         let name = vir::vir_format!(self.vcx, "{self_name}_{name}",);
         let locals = self.vcx.alloc_slice(
             &A::params(fields)
@@ -636,10 +776,14 @@ impl<'vir> AdtBuilder<'vir> {
                 .collect::<Vec<_>>(),
         );
         let constructor = self.vcx.mk_adt_constructor(name, locals);
-        self.data().constructors.push(constructor);
+        if shallow {
+            self.data().shallow_constructors.push(constructor);
+        } else {
+            self.data().constructors.push(constructor);
+        }
         let ident = FunctionIdn::new(vir::ViperIdent::new(name), fields, self_ty);
         if let Some(discr) = discr {
-            let df = self.data().discr_fn.take().map(|df| {
+            let df = discr_fn(self.data(), shallow).take().map(|df| {
                 let DiscrFnBuilder::Building { param, recv, acc } = df else {
                     panic!("discriminant function was already built");
                 };
@@ -658,7 +802,7 @@ impl<'vir> AdtBuilder<'vir> {
                     acc: discr,
                 }
             });
-            self.data().discr_fn = Some(df)
+            *discr_fn(self.data(), shallow) = Some(df)
         }
         (
             ident,
@@ -673,14 +817,41 @@ impl<'vir> AdtBuilder<'vir> {
         &mut self,
         ty: vir::TypeCSnap<'vir>,
     ) -> vir::FunctionIdn<'vir, vir::CSnap, vir::CSnap> {
-        let self_ty = self.self_type();
+        self.build_discr_fn_of(false, ty)
+    }
+
+    /// The discriminant function of the shallow snapshot (see `has_shallow`).
+    pub(crate) fn build_shallow_discr_fn(
+        &mut self,
+        ty: vir::TypeCSnap<'vir>,
+    ) -> vir::FunctionIdn<'vir, vir::CSnap, vir::CSnap> {
+        assert!(self.has_shallow());
+        self.build_discr_fn_of(true, ty)
+    }
+
+    fn build_discr_fn_of(
+        &mut self,
+        shallow: bool,
+        ty: vir::TypeCSnap<'vir>,
+    ) -> vir::FunctionIdn<'vir, vir::CSnap, vir::CSnap> {
+        let (self_name, self_ty) = if shallow {
+            let (name, ty) = self.shallow.unwrap();
+            (name, ty.downcast_ty())
+        } else {
+            (self.name, self.self_type())
+        };
         let param = self.vcx.mk_local_decl("self", self_ty);
         let ident = FunctionIdn::new(
-            vir::ViperIdent::new(vir::vir_format!(self.vcx, "{}_discr", self.name)),
+            vir::ViperIdent::new(vir::vir_format!(self.vcx, "{}_discr", self_name)),
             param.ty,
             ty,
         );
-        let (expr, posts) = if let Some(df) = self.data().discr_fn {
+        let df = if shallow {
+            self.data().shallow_discr_fn
+        } else {
+            self.data().discr_fn
+        };
+        let (expr, posts) = if let Some(df) = df {
             let DiscrFnBuilder::Building { acc, .. } = df else {
                 panic!("discriminant function already built");
             };
@@ -693,17 +864,37 @@ impl<'vir> AdtBuilder<'vir> {
             // we encode the uninhabitability by adding an `ensures false` to
             // the discriminant function.
             // TODO: https://github.com/Aurel300/prusti-dev/pull/89#discussion_r2263306839
-            let self_name = self.name;
             let name = vir::vir_format!(self.vcx, "{self_name}_DummyConstructor",);
             let constructor = self.vcx.mk_adt_constructor::<(), !, vir::Dyn>(name, &[]);
-            self.data().constructors.push(constructor);
+            if shallow {
+                self.data().shallow_constructors.push(constructor);
+            } else {
+                self.data().constructors.push(constructor);
+            }
             (None, self.vcx.alloc_slice(&[self.vcx.mk_bool::<false>()]))
         };
         let built_fn = self
             .vcx
             .mk_function(ident, (param,), &[], posts, None, expr);
-        self.data().discr_fn = Some(DiscrFnBuilder::Built(built_fn));
+        if shallow {
+            self.data().shallow_discr_fn = Some(DiscrFnBuilder::Built(built_fn));
+        } else {
+            self.data().discr_fn = Some(DiscrFnBuilder::Built(built_fn));
+        }
         ident
+    }
+
+    /// Defines the `to_shallow` function (see `TyPureRef::to_shallow`) with
+    /// the body `expr`, given the deep snapshot `snap`.
+    pub(crate) fn define_to_shallow(
+        &mut self,
+        expr: impl FnOnce(&mut Self, vir::ExprCSnap<'vir>) -> Option<vir::ExprCSnap<'vir>>,
+    ) {
+        let ident = self.to_shallow.unwrap();
+        let decl = self.vcx.mk_local_decl("snap", self.self_type());
+        let body = expr(self, self.vcx.mk_local_ex(decl));
+        let function = self.vcx.mk_function(ident, (decl,), &[], &[], None, body);
+        self.data().functions.push(function);
     }
 
     #[allow(clippy::too_many_arguments)]

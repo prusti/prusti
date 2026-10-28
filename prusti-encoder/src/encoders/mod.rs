@@ -23,7 +23,7 @@ pub use builtin::{
     ValueCastEnc,
 };
 pub use r#const::ConstEnc;
-pub use impure::fn_wand::{WandEnc, WandEncOutput, WandEncTask};
+pub use impure::fn_wand::{WandEnc, WandEncOutput, WandEncTask, WandPledges};
 pub use local_def::*;
 pub use mir_fn::{FunctionCallEnc, MethodCallEnc, encode_all_in_crate};
 pub use mir_impure::ImpureEncVisitor;
@@ -33,7 +33,7 @@ pub use pure::spec::MirSpecEnc;
 pub(super) use spec::with_proc_spec;
 pub use spec::{
     SpecEnc, SpecEncTask, is_function_pure, is_function_trusted, is_type_trusted, kind_is_pure,
-    report_kind_refinement_error, spec_is_trusted, spec_items,
+    report_kind_refinement_error, report_pledge_refinement_error, spec_is_trusted, spec_items,
 };
 pub use ty::{
     TyInhabitedEnc,

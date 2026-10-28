@@ -75,6 +75,13 @@ impl<'vir> MirLocalDefEncOutput<'vir> {
     pub fn local_decl_ret(&self) -> vir::LocalDeclSnap<'vir> {
         self.ret().local_snap
     }
+
+    /// The variables of the arguments' snapshots in a later state (after the
+    /// call, or once a borrow of the result expires), for specifications
+    /// over two states (see `PledgeArgs::two_state`).
+    pub fn local_decl_args_later(&self) -> impl Iterator<Item = vir::LocalDeclSnap<'vir>> + '_ {
+        self.args().map(|arg| arg.local_snap_later)
+    }
 }
 
 pub type MirLocalDefEncError = ();
@@ -83,8 +90,15 @@ pub type MirLocalDefEncError = ();
 pub struct LocalDef<'vir> {
     pub local: vir::LocalDeclRef<'vir>,
     pub local_snap: vir::LocalDeclSnap<'vir>,
+    /// The variable of the snapshot in a later state (see
+    /// `MirLocalDefEncOutput::local_decl_args_later`).
+    pub local_snap_later: vir::LocalDeclSnap<'vir>,
     pub local_ex: vir::ExprRef<'vir>,
     pub impure_snap: vir::ExprSnap<'vir>,
+    /// The shallow snapshot, which (unlike `impure_snap`) needs no permission
+    /// to what the local's mutable references point to. Use it to locate
+    /// these referents.
+    pub impure_shallow_snap: vir::ExprSnap<'vir>,
     pub impure_pred: vir::ExprBool<'vir>,
 }
 
@@ -183,15 +197,20 @@ impl TaskEncoder for MirLocalDefEnc {
             let ref_local = vir::vir_format!(vcx, "_{}p", local.index());
             let snap_local = vir::vir_format!(vcx, "_{}s", local.index());
             let local = vcx.mk_local_decl(ref_local, vir::TYPE_REF);
-            let local_snap = vcx.mk_local_decl(snap_local, ty.snapshot());
+            let local_snap = vcx.mk_local_decl(snap_local, ty.deep_snapshot());
+            let snap_later_local = vir::vir_format!(vcx, "{snap_local}_later");
+            let local_snap_later = vcx.mk_local_decl(snap_later_local, ty.deep_snapshot());
             let local_ex = vcx.mk_local_ex(local);
-            let impure_snap = ty.ref_to_snap(local_ex);
+            let impure_snap = ty.ref_to_deep_snap(local_ex);
+            let impure_shallow_snap = ty.ref_to_shallow_snap(local_ex);
             let impure_pred = ty.ref_to_pred(vcx, local_ex, None);
             LocalDef {
                 local,
                 local_snap,
+                local_snap_later,
                 local_ex,
                 impure_snap,
+                impure_shallow_snap,
                 impure_pred,
             }
         }

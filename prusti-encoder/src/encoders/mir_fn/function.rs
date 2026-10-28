@@ -9,8 +9,8 @@ use crate::encoders::{
     mir_fn::{CallTaskDescription, RustSignature},
     pure::spec::MirSpecEncMode,
     ty::{
-        generics::{GArgCaster, GArgsCastEnc, GArgsTy, GArgsTyEnc, GParams, GenericParamsEnc},
-        use_pure::TyUsePureImmRef,
+        generics::{GArgCaster, GArgsTy, GArgsTyEnc, GParams, GenericParamsEnc},
+        use_pure::{TyUsePure, TyUsePureImmRef},
     },
 };
 
@@ -22,6 +22,8 @@ pub struct FunctionCallEnc;
 pub struct FunctionCallEncOutput<'vir> {
     function: FunctionEncOutputRef<'vir>,
     ty_args: GArgsTy<'vir>,
+    /// The (instantiated) types of the arguments (see `shallow_arg`).
+    arg_tys: Vec<TyUsePure<'vir>>,
     /// The (instantiated) types of the arguments the callee declares as
     /// shared references, whose addresses are dummied.
     shared_ref_args: Vec<Option<TyUsePureImmRef<'vir>>>,
@@ -30,6 +32,19 @@ pub struct FunctionCallEncOutput<'vir> {
 }
 
 impl<'vir> FunctionCallEncOutput<'vir> {
+    /// The index of an argument in `args` whose deep snapshot the callee
+    /// takes, but which only has a shallow one (see `TyPureRef`). A generic
+    /// parameter takes the shallow snapshot.
+    pub fn shallow_arg<Curr, Next>(
+        &self,
+        args: &[vir::ExprGenSnap<'vir, Curr, Next>],
+    ) -> Option<usize> {
+        args.iter()
+            .zip(&self.inputs)
+            .zip(&self.arg_tys)
+            .position(|((arg, caster), ty)| caster.is_no_cast() && ty.is_shallow(*arg))
+    }
+
     /// Calls the definitional function `f_`. In impure code a pure function
     /// is called as a method (its `MethodEnc`), whose postcondition ties the
     /// result to this application.
@@ -79,18 +94,12 @@ impl TaskEncoder for FunctionCallEnc {
         };
         let signature = RustSignature::new(callee_def_id);
         let ty_args = deps.require_dep::<GArgsTyEnc>(task_key.gargs)?;
-        let inputs = signature
+        let (inputs, output) = signature.casters(task_key.gargs, deps)?;
+        let arg_tys = signature
             .inputs
             .iter()
-            .map(|ty| {
-                let normalized = ty.decompose_compare_normalize(signature.gparams, task_key.gargs);
-                deps.require_dep::<GArgsCastEnc<Pure>>(normalized)
-            })
+            .map(|ty| deps.require_dep::<TyUsePureEnc>(ty.decompose_normalize(task_key.gargs)))
             .collect::<Result<Vec<_>, _>>()?;
-        let normalized = signature
-            .output
-            .decompose_compare_normalize(signature.gparams, task_key.gargs);
-        let output = deps.require_dep::<GArgsCastEnc<Pure>>(normalized)?;
         // Only arguments declared as shared references are dummied, not ones
         // of a type parameter instantiated with a reference: the dummying
         // must agree with the callee's (generic) contract, which ties its
@@ -98,15 +107,9 @@ impl TaskEncoder for FunctionCallEnc {
         let shared_ref_args = signature
             .inputs
             .iter()
-            .map(|ty| {
-                if !ty.is_immref() {
-                    return Ok(None);
-                }
-                let ty_task = ty.decompose_normalize(task_key.gargs);
-                let ty = deps.require_dep::<TyUsePureEnc>(ty_task)?;
-                Ok(Some(*ty.expect_immref()))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+            .zip(&arg_tys)
+            .map(|(ty, arg_ty)| ty.is_immref().then(|| *arg_ty.expect_immref()))
+            .collect();
         Ok((
             (),
             FunctionCallEncOutput {
@@ -114,6 +117,7 @@ impl TaskEncoder for FunctionCallEnc {
                 ty_args,
                 inputs,
                 output,
+                arg_tys,
                 shared_ref_args,
             },
         ))

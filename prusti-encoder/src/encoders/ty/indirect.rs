@@ -159,7 +159,10 @@ impl TaskEncoder for IndirectPredicatesEnc {
                                         "ref_inner_indirect",
                                         vir::TYPE_BOOL,
                                         Box::new(move |vcx, self_expr: vir::ExprGenSnap<_, _>| {
-                                            let inner_snap = inner_impure.ref_to_snap(
+                                            // Only addresses are read, which the
+                                            // shallow snapshot has without the
+                                            // permission behind the reference.
+                                            let inner_snap = inner_impure.ref_to_shallow_snap(
                                                 ref_domain.deref_access(self_expr.downcast_ty()),
                                             );
                                             inner_expr
@@ -193,6 +196,7 @@ impl TaskEncoder for IndirectPredicatesEnc {
                 }
                 TySpecifics::EnumLike(data) => {
                     let snap_to_discr_snap = data.data.1.snap_to_discr_snap;
+                    let shallow_snap_to_discr_snap = data.data.1.shallow_snap_to_discr_snap;
 
                     let variant_preds = data
                         .variants
@@ -212,7 +216,14 @@ impl TaskEncoder for IndirectPredicatesEnc {
                         vir::TYPE_BOOL,
                         Box::new(move |vcx, self_expr: vir::ExprGenSnap<_, _>| {
                             let self_csnap = self_expr.downcast_ty();
-                            let self_discr = snap_to_discr_snap.call()(self_csnap);
+                            let self_discr = match shallow_snap_to_discr_snap {
+                                Some((discr, shallow_ty))
+                                    if vir::HasType::ty(self_csnap) == shallow_ty =>
+                                {
+                                    discr.call()(self_csnap)
+                                }
+                                _ => snap_to_discr_snap.call()(self_csnap),
+                            };
                             let variant_conjs: Vec<_> = variant_preds
                                 .iter()
                                 .map(|(discr, fields)| {

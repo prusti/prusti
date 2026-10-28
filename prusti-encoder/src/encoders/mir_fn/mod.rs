@@ -79,12 +79,9 @@ impl<'tcx> CallTaskDescription<'tcx> {
         deps: &mut TaskEncoderDependencies<'vir, E>,
     ) -> Result<(DefId, Option<TraitFnEncOutputRef<'vir>>), EncodeFullError<'vir, E>> {
         let tcx = vir::with_vcx(|vcx| vcx.tcx());
-        if self.resolve_trait_calls
-            && let Some(assoc_item) = tcx.opt_associated_item(self.callee)
-            && assoc_item.trait_container(tcx).is_some()
-        {
-            let assoc_enc = deps.require_ref::<TraitFnEnc>(assoc_item.def_id)?;
-            Ok((assoc_item.def_id, Some(assoc_enc)))
+        if self.resolve_trait_calls && crate::trait_support::is_trait_fn(tcx, self.callee) {
+            let assoc_enc = deps.require_ref::<TraitFnEnc>(self.callee)?;
+            Ok((self.callee, Some(assoc_enc)))
         } else {
             Ok((self.callee, None))
         }
@@ -122,9 +119,11 @@ pub fn encode_all_in_crate<'tcx>(tcx: ty::TyCtxt<'tcx>) {
                 let (is_pure, is_trusted) = crate::encoders::with_proc_spec(
                     SpecQuery::GetProcKind(def_id, ty::List::identity_for_item(tcx, def_id)),
                     |proc_spec| {
-                        // Report an invalid trait-to-impl kind refinement once,
-                        // here, rather than on every purity query.
+                        // Report an invalid trait-to-impl kind refinement and
+                        // unsupported pledge refinements once, here, rather
+                        // than on every query.
                         crate::encoders::report_kind_refinement_error(def_id, &proc_spec.kind);
+                        crate::encoders::report_pledge_refinement_error(def_id, &proc_spec.pledges);
                         let is_pure = crate::encoders::kind_is_pure(&proc_spec.kind);
                         let is_trusted = crate::encoders::spec_is_trusted(proc_spec, def_id);
                         (is_pure, is_trusted)

@@ -69,6 +69,23 @@ impl<'vir> PledgeExpr<'vir> {
         vir::with_vcx(|vcx| PledgeArgs(vcx.alloc(all_args), result_local))
     }
 
+    /// Arguments for a specification over two states: outside of `old`, the
+    /// arguments are `later`, their values after the call (or once a borrow
+    /// of the result expires); inside of it, `pre`, their values before the
+    /// call.
+    pub fn two_state_args(
+        result: vir::ExprSnap<'vir>,
+        pre: &[vir::ExprSnap<'vir>],
+        later: &[vir::ExprSnap<'vir>],
+    ) -> PledgeArgs<'vir> {
+        let PledgeArgs(args, result_local) = Self::pledge_args(result, later);
+        let mut args = args.clone();
+        for (idx, pre) in pre.iter().enumerate() {
+            args.insert(pre_state_key(mir::Local::from_usize(idx + 1)), *pre);
+        }
+        vir::with_vcx(|vcx| PledgeArgs(vcx.alloc(args), result_local))
+    }
+
     pub fn expr(&self, args: PledgeArgs<'vir>) -> vir::ExprBool<'vir> {
         vir::with_vcx(|vcx| {
             self.expr
@@ -86,6 +103,15 @@ impl<'vir> PledgeExpr<'vir> {
     pub fn span(&self) -> Span {
         vir::with_vcx(|vcx| vcx.tcx().def_span(self.did))
     }
+}
+
+/// The key under which the pre-state snapshot of argument `local` is passed
+/// to a specification over two states, read inside `old` (see
+/// `PledgeExpr::two_state_args`). Without it, `old` reads the argument's
+/// regular snapshot.
+pub fn pre_state_key(local: mir::Local) -> mir::Local {
+    // Far above any real local.
+    mir::Local::from_usize((1 << 24) + local.as_usize())
 }
 
 /// VIR expressions for a pledge, including a user-written `assert_on_expiry`
@@ -121,6 +147,36 @@ impl<'vir> MirSpecEncOutput<'vir> {
     pub fn post_exprs(&self) -> impl Iterator<Item = vir::ExprBool<'vir>> + '_ {
         self.posts.iter().map(|(post, _)| *post)
     }
+
+    /// The conjunction of the pledges that a call through the trait gets (see
+    /// `trait_fn::trait_pledge`), over the result `ret`, the arguments before
+    /// the call `args` and after the expiry `args_later`; `None` if there are
+    /// none. One with an expiry obligation is left out: a call through the
+    /// trait does not establish the obligation.
+    pub fn trait_pledges(
+        &self,
+        ret: vir::LocalDeclSnap<'vir>,
+        args: &[vir::LocalDeclSnap<'vir>],
+        args_later: &[vir::LocalDeclSnap<'vir>],
+    ) -> Option<vir::ExprBool<'vir>> {
+        vir::with_vcx(|vcx| {
+            let ex = |decls: &[vir::LocalDeclSnap<'vir>]| {
+                decls
+                    .iter()
+                    .map(|&decl| vcx.mk_local_ex(decl))
+                    .collect::<Vec<_>>()
+            };
+            let pledge_args =
+                PledgeExpr::two_state_args(vcx.mk_local_ex(ret), &ex(args), &ex(args_later));
+            let pledges = self
+                .pledges
+                .iter()
+                .filter(|pledge| pledge.expiry_obligation.is_none())
+                .map(|pledge| pledge.expiry_postcondition.expr(pledge_args))
+                .collect::<Vec<_>>();
+            (!pledges.is_empty()).then(|| vcx.mk_conj(&pledges))
+        })
+    }
 }
 
 /// State shared by every spec encoded within one `MirSpecEnc` task.
@@ -145,7 +201,11 @@ pub enum MirSpecEncMode {
     PureWithResult,
 
     /// Assumes the arguments and the result are available in local variables
-    /// `_1s`, ... `_ns`, and `_0s`, respectively, all of snapshot types.
+    /// `_1s`, ... `_ns`, and `_0s`, respectively, all of snapshot types. In
+    /// the postconditions, the arguments outside of `old` are instead their
+    /// values after the call, `_1s_later`, ... `_ns_later`. The pledges are
+    /// left to be reified, also over two states (see
+    /// `PledgeExpr::two_state_args`).
     PureWithoutResult,
 }
 
@@ -288,7 +348,17 @@ impl TaskEncoder for MirSpecEnc {
                         .collect();
                     vcx.alloc(post_args)
                 }
-                MirSpecEncMode::PureWithResult | MirSpecEncMode::PureWithoutResult => all_args,
+                MirSpecEncMode::PureWithResult => all_args,
+                MirSpecEncMode::PureWithoutResult => {
+                    let snap = |decl| vcx.mk_local_ex(decl);
+                    let pre = local_defs.local_decl_args().map(snap).collect::<Vec<_>>();
+                    let later = local_defs
+                        .local_decl_args_later()
+                        .map(snap)
+                        .collect::<Vec<_>>();
+                    let result = snap(local_defs.local_decl_ret());
+                    PledgeExpr::two_state_args(result, &pre, &later).0
+                }
             };
             let posts: Vec<(vir::ExprBool<'_>, Span)> = posts
                 .iter()

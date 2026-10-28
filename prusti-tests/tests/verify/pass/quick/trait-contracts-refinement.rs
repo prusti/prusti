@@ -1,4 +1,3 @@
-//@ known-failure
 use prusti_contracts::*;
 
 trait Foo {
@@ -42,5 +41,3 @@ impl Foo for () {
         (abs(a), abs(b))
     }
 }
-
-fn main() {}

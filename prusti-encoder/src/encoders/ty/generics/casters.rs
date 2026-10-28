@@ -14,6 +14,14 @@ use super::{GenericParamsEnc, ParamTypEnc};
 pub(super) struct GArgCasters<'vir, P: PurityCasters> {
     pub(super) make_generic: P::MakeGeneric<'vir>,
     pub(super) make_concrete: P::MakeConcrete<'vir>,
+    /// A generic snapshot holds the shallow snapshot of the concrete type
+    /// (as `p_Param` does), so a deep snapshot is converted (see
+    /// `TyPureRef::to_shallow`) before `make_generic`; with the type of the
+    /// shallow snapshot. Only in the pure case.
+    pub(super) to_shallow: Option<(
+        FunctionIdn<'vir, vir::CSnap, vir::CSnap>,
+        vir::TypeSnap<'vir>,
+    )>,
 }
 
 /// Takes as input the most generic version (c.f. [`MostGenericTy`]) of a Rust
@@ -77,7 +85,7 @@ impl TaskEncoder for CastersEnc<Pure> {
             use vir::CastType;
             let domain_ref = deps.require_ref::<TyPureEnc>(concrete)?;
             let generic_snap = vir::TYPE_PSNAP;
-            let self_ty = domain_ref.snapshot.downcast_ty();
+            let self_ty = domain_ref.shallow_snapshot.downcast_ty();
             let base_name = concrete.name();
             let ty_constructor = deps.require_ref::<TyConstructorEnc>(concrete)?;
             let generics = deps.require_dep::<GenericParamsEnc>(concrete.params)?;
@@ -99,6 +107,9 @@ impl TaskEncoder for CastersEnc<Pure> {
                 GArgCasters {
                     make_generic: make_generic_ident,
                     make_concrete: make_concrete_destr,
+                    to_shallow: domain_ref
+                        .to_shallow
+                        .map(|to_shallow| (to_shallow, domain_ref.shallow_snapshot)),
                 },
             )?;
 
@@ -135,10 +146,10 @@ impl TaskEncoder for CastersEnc<Pure> {
                 .get_structlike()
                 .is_some_and(|data| data.fields.is_empty())
             {
-                let cons = deps
-                    .require_dep::<TyPureEnc>(concrete)?
-                    .expect_structlike()
-                    .field_snaps_to_snap;
+                let structlike = deps.require_dep::<TyPureEnc>(concrete)?.expect_structlike();
+                let cons = structlike
+                    .field_snaps_to_shallow_snap
+                    .unwrap_or(structlike.field_snaps_to_snap);
                 Some(cons.call()(&[]))
             } else {
                 None
@@ -343,6 +354,7 @@ impl TaskEncoder for CastersEnc<Impure> {
                 GArgCasters {
                     make_generic: make_generic_ident,
                     make_concrete: make_concrete_ident,
+                    to_shallow: None,
                 },
             )?;
             let make_generic_pure = deps
@@ -361,9 +373,12 @@ impl TaskEncoder for CastersEnc<Impure> {
                 generics.const_exprs(),
             )(None);
 
-            let concrete_snap =
-                (predicate_ref.ref_to_snap)(self_expr, generics.ty_exprs(), generics.const_exprs())
-                    .downcast_ty();
+            let concrete_snap = (predicate_ref.ref_to_shallow_snap)(
+                self_expr,
+                generics.ty_exprs(),
+                generics.const_exprs(),
+            )
+            .downcast_ty();
 
             let concrete_predicate = vcx.mk_predicate_app_expr(concrete_predicate);
 
@@ -373,7 +388,7 @@ impl TaskEncoder for CastersEnc<Impure> {
             let generic_predicate =
                 (generic_ref.ref_to_pred)(self_expr, &[lifted_ty_expr], &[])(None);
 
-            let generic_snap = (generic_ref.ref_to_snap)(self_expr, &[lifted_ty_expr], &[])
+            let generic_snap = (generic_ref.ref_to_deep_snap)(self_expr, &[lifted_ty_expr], &[])
                 .downcast_ty::<vir::PSnap>();
 
             let generic_predicate = vcx.mk_predicate_app_expr(generic_predicate);

@@ -56,7 +56,7 @@ use crate::encoders::{
     },
 };
 
-use super::WandEncOutput;
+use super::{WandEncOutput, WandPledges};
 
 #[derive(Clone, Copy)]
 struct FromToVar<'vir> {
@@ -166,7 +166,8 @@ where
 
     pub tmp_ctr: usize,
     pub label_ctr: usize,
-    pub call_labels: FxHashMap<mir::BasicBlock, (&'vir str, &'vir str)>,
+    /// The calls encoded as impure method calls, by block.
+    pub calls: FxHashMap<mir::BasicBlock, EncodedCall<'vir>>,
     /// Blocks whose call terminator was not encoded as an impure method call
     /// (intrinsics, `prusti_contracts` builtins) and thus
     /// created no wand to apply on expiry.
@@ -219,6 +220,30 @@ macro_rules! comment {
 /// [PureRvalueEnc::EncodePlaceCtxt]) only to the encoding of the statement's
 /// effect; all other operand reads (terminators, repack guides) pass `None`.
 type OperandSnaps<'vir> = Option<FxHashMap<mir::Place<'vir>, vir::ExprSnap<'vir>>>;
+
+/// A call encoded as an impure method call.
+#[derive(Clone, Copy)]
+pub struct EncodedCall<'vir> {
+    /// The labels of the states just before and just after the call.
+    pub label_pre: &'vir str,
+    pub label_post: &'vir str,
+    /// The pledges that the wands of the call carry (see
+    /// `MethodCallEncOutput::wand_pledges`).
+    pub wand_pledges: WandPledges<'vir>,
+}
+
+/// Which snapshot of a place to read.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SnapDepth {
+    /// Includes the values behind the mutable references in the place. Used
+    /// where the value is observed, e.g. by a pure function or a spec.
+    Deep,
+    /// Only the addresses (and metadata) of the mutable references in the
+    /// place, like what the compiler copies. Used for a value that is
+    /// assigned, as `method_assign` sets the *shallow* snapshot of the
+    /// destination
+    Shallow,
+}
 
 struct EncodedRvalue<'vir> {
     /// A snapshot of the rvalue. This snapshot is guaranteed to be well-formed
@@ -379,7 +404,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                             self.vcx.mk_unfolding_expr(
                                 ty.ref_to_pred_app(place_expr, Some(self.vcx.mk_wildcard())),
                                 el.discr_ty()
-                                    .ref_to_snap(el.discr(place_expr))
+                                    .ref_to_deep_snap(el.discr(place_expr))
                                     .downcast_ty(),
                             )
                         }
@@ -409,16 +434,19 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                         .into()
                 }
                 TyKind::Ref(.., ty::Mutability::Mut) => {
-                    let p_rvalue_ty = self.ty_use_impure(rvalue_ty);
                     let place_expr = self.encode_place(Place::from(*place))?;
 
                     let metadata = place_expr.expr.metadata;
                     let metadata =
                         metadata.unwrap_or_else(|| self.expect_thin_ptr_metadata(rvalue_ty));
-                    let inner = p_rvalue_ty.expect_mutref();
-                    let place_ref = place_expr.expr.expect_predicate();
+                    // Assign stores the shallow snapshot, so the reference
+                    // is built with the shallow constructor.
+                    let inner = self.ty_use_pure(rvalue_ty).expect_mutref();
+                    let p_rvalue_ty = self.ty_use_impure(rvalue_ty);
                     EncodedRvalue {
-                        expr: inner.prim_to_snap_assign(place_ref, metadata).upcast_ty(),
+                        expr: inner
+                            .prim_to_shallow_snap(place_expr.expr.address, metadata)
+                            .upcast_ty(),
                         post_assign_folds: Some(Box::new(move |lhs_place| {
                             p_rvalue_ty.fold(None, lhs_place, None, None, None)
                         })),
@@ -834,10 +862,16 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                                     self.encode_operand_snap_immediate(&operand.node)
                                 }))
                                 .collect::<EncodeResult<'vir, Vec<_>, E>>()?;
-                        let (label_pre, label_post) = self.call_labels[&call.location().block];
+                        let encoded_call = self.calls[&call.location().block];
                         let call_ctx = self.gargs(caller_substs);
-                        let wands =
-                            wands.call_wands(&wand_args, label_pre, label_post, call_ctx, self);
+                        let wands = wands.call_wands(
+                            &wand_args,
+                            encoded_call.label_pre,
+                            encoded_call.label_post,
+                            call_ctx,
+                            encoded_call.wand_pledges,
+                            self,
+                        );
                         for wand in wands {
                             if let Some(footprint) = &mut footprint {
                                 footprint.parts.push(self.vcx.mk_wand_expr(wand));
@@ -1279,12 +1313,16 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
     fn capture_operand_snap(
         &mut self,
         operand: &mir::Operand<'vir>,
+        depth: SnapDepth,
     ) -> EncodeResult<'vir, vir::ExprSnap<'vir>, E> {
         match operand {
             &mir::Operand::Copy(place) | &mir::Operand::Move(place) => {
                 let (result, snap_val, _, ty_out) =
-                    self.encode_place_with_snap(Place::from(place))?;
-                let tmp = self.new_tmp(ty_out.snapshot());
+                    self.encode_place_with_snap_at_depth(Place::from(place), depth)?;
+                let tmp = self.new_tmp(match depth {
+                    SnapDepth::Deep => ty_out.deep_snapshot(),
+                    SnapDepth::Shallow => ty_out.shallow_snapshot(),
+                });
                 self.stmt(self.vcx.mk_pure_assign_stmt(tmp, snap_val));
                 if matches!(operand, mir::Operand::Move(_)) {
                     self.stmt(self.vcx.mk_exhale_stmt(ty_out.ref_to_pred(
@@ -1320,13 +1358,25 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         }
         let mut collector = OperandCollector(Vec::new());
         collector.visit_statement(statement, location);
+        // Unsizing a mutable reference casts the value behind it, so it reads
+        // the deep snapshot; the assignment makes its result shallow.
+        let depth = match &statement.kind {
+            mir::StatementKind::Assign(box (_, mir::Rvalue::Cast(_, _, ty)))
+                if matches!(ty.kind(), ty::TyKind::Ref(_, _, ty::Mutability::Mut)) =>
+            {
+                SnapDepth::Deep
+            }
+            // The statement's effect assigns the operands (or values built
+            // from them), see [SnapDepth::Shallow].
+            _ => SnapDepth::Shallow,
+        };
         let mut snaps = FxHashMap::default();
         for operand in &collector.0 {
             let place = operand.place().unwrap();
             if snaps.contains_key(&place) {
                 continue;
             }
-            let snap = self.capture_operand_snap(operand)?;
+            let snap = self.capture_operand_snap(operand, depth)?;
             snaps.insert(place, snap);
         }
         Ok(Some(snaps))
@@ -1353,9 +1403,27 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         })
     }
 
+    /// The place and its deep snapshot, see [SnapDepth::Deep].
     pub(crate) fn encode_place_with_snap(
         &mut self,
         place: Place<'vir>,
+    ) -> EncodeResult<
+        'vir,
+        (
+            EncodePlaceResult<'vir>,
+            vir::ExprSnap<'vir>,
+            mir::PlaceTy<'vir>,
+            TyUseImpure<'vir>,
+        ),
+        E,
+    > {
+        self.encode_place_with_snap_at_depth(place, SnapDepth::Deep)
+    }
+
+    fn encode_place_with_snap_at_depth(
+        &mut self,
+        place: Place<'vir>,
+        depth: SnapDepth,
     ) -> EncodeResult<
         'vir,
         (
@@ -1371,10 +1439,10 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
 
         let ty_out = self.ty_use_impure(ty.ty);
         let result = self.encode_place(place)?;
-        let snap = result
-            .expr
-            .snap
-            .unwrap_or_else(|| ty_out.ref_to_snap(result.expr.address));
+        let snap = result.expr.snap.unwrap_or_else(|| match depth {
+            SnapDepth::Deep => ty_out.ref_to_deep_snap(result.expr.address),
+            SnapDepth::Shallow => ty_out.ref_to_shallow_snap(result.expr.address),
+        });
         Ok((result, snap, ty, ty_out))
     }
 
@@ -1479,7 +1547,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                     ty::TyKind::Ref(_, _, ty::Mutability::Not) => {
                         let snap = expr
                             .snap
-                            .unwrap_or_else(|| e_ty.ref_to_snap(expr.address))
+                            .unwrap_or_else(|| e_ty.ref_to_deep_snap(expr.address))
                             .downcast_ty();
                         let p_ty = self.ty_use_pure(place_ty.ty).expect_immref();
                         PlaceExpr {
@@ -1489,7 +1557,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                         }
                     }
                     ty::TyKind::Ref(_, _, ty::Mutability::Mut) => {
-                        let ref_snap = e_ty.ref_to_snap(expr.address).downcast_ty();
+                        let ref_snap = e_ty.ref_to_shallow_snap(expr.address).downcast_ty();
                         let p_ty = self.ty_use_pure(place_ty.ty).expect_mutref();
                         PlaceExpr {
                             address: p_ty.deref_access(ref_snap),
@@ -1619,7 +1687,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         /// index (ties broken by insertion order): every non-back-edge
         /// predecessor of a block is then encoded before the block itself,
         /// in particular both branches before their join. The borrow-expiry
-        /// handling relies on this: a call's `call_labels`/`wandless_calls`
+        /// handling relies on this: a call's `calls`/`wandless_calls`
         /// entry must exist by the time an expiring borrow references the
         /// call's block. `heads_hit` is payload, not part of the order.
         struct WorkItem {
@@ -2436,8 +2504,14 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                         );
                         self.stmts(call);
                         let label_post = self.new_label("post");
-                        self.call_labels
-                            .insert(location.block, (label_pre, label_post));
+                        self.calls.insert(
+                            location.block,
+                            EncodedCall {
+                                label_pre,
+                                label_post,
+                                wand_pledges: func_out.wand_pledges,
+                            },
+                        );
                     }
                     Ok(())
                 })?;
@@ -2695,7 +2769,7 @@ impl<'vir, 'enc, E: TaskEncoder> PureRvalueEnc<'vir> for ImpureEncVisitor<'vir, 
             return Ok(*snap);
         }
         match operand {
-            mir::Operand::Move(_) => self.capture_operand_snap(operand),
+            mir::Operand::Move(_) => self.capture_operand_snap(operand, SnapDepth::Deep),
             _ => self.encode_operand_snap_immediate(operand),
         }
     }

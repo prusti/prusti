@@ -934,6 +934,12 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                             .iter()
                             .map(|arg| self.encode_operand_snap(&arg.node, &new_curr_ver))
                             .collect::<Result<Vec<_>, _>>()?;
+                        if let Some(idx) = pure_func.shallow_arg(&snap_args) {
+                            return Err(self.unsupported_rvalue(
+                                shallow_arg_message(&args[idx].node, self.body),
+                                args[idx].span,
+                            ));
+                        }
                         Ok(pure_func.call_pure(snap_args))
                     } else {
                         panic!("call to unknown non-pure function in pure code ({def_id:?})");
@@ -1141,23 +1147,12 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                         let snap = encoded_place.snap.downcast_ty();
                         let metadata = e_ty.metadata_access(snap);
                         let ref_expr = e_ty.deref_access(snap);
-                        if !self.impure_context {
-                            // The value field of a mutable reference's snapshot
-                            // is never constrained to the referent (see
-                            // `p_Ref_mutable_arbitrary_value`).
-                            return Err(self.unsupported_rvalue(
-                                format!(
-                                    "dereference of the mutable reference `{}` in pure code",
-                                    place_ty.ty
-                                ),
-                                self.current_span(),
-                            ));
-                        }
-                        let val_expr = {
-                            // The snapshot is shallow and doesn't contain the
-                            // value behind the mutable reference, so we need to
-                            // take an extra snapshot here.
-                            // TODO: avoid all of this by using shallow and deep snapshots
+                        let val_expr = if self.impure_context {
+                            // In the specification of an impure function, the
+                            // value is the referent's *current* one (e.g. in a
+                            // postcondition, `*x` is the final value even
+                            // though `x` is bound to the old snapshot), so it
+                            // is read from the heap.
                             let ty_task = RustTyDecomposition::from_ty(place_ty.ty, self.context);
                             let inner = ty_task.ty.expect_mutref();
                             let normalized = inner
@@ -1174,7 +1169,27 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                                 .deps
                                 .require_dep::<crate::encoders::TyUseImpureEnc>(inner_ty_task)
                                 .unwrap();
-                            caster.cast_to_caller_ctx(inner_ty.ref_to_snap(ref_expr))
+                            caster.cast_to_caller_ctx(inner_ty.ref_to_deep_snap(ref_expr))
+                        } else if e_ty.is_shallow(snap) {
+                            // E.g. a mutable reference read out of a type
+                            // parameter's snapshot (such as a tuple's field),
+                            // which is shallow.
+                            // TODO: Enable deep snapshots of generic types
+                            return Err(self.unsupported_rvalue(
+                                format!(
+                                    "dereference of the mutable reference `{}` in pure code, \
+                                     whose snapshot does not hold the value behind it (e.g. as \
+                                     it is stored in a tuple, a field of generic type or \
+                                     another reference)",
+                                    place_ty.ty
+                                ),
+                                self.current_span(),
+                            ));
+                        } else {
+                            // Elsewhere the value behind the mutable reference
+                            // is part of its deep snapshot. (Reading the heap
+                            // would not work in axioms.)
+                            e_ty.value_access(snap)
                         };
                         EncodedPlace::new(val_expr, Some(ref_expr)).with_metadata(metadata)
                     }
@@ -1266,10 +1281,20 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
         };
 
         let expr = if should_wrap {
+            // In `old`, a specification over two states reads the argument's
+            // pre-state snapshot.
+            let pre_state_key = self
+                .old_mode
+                .then(|| crate::encoders::pure::spec::pre_state_key(place.local));
             self.vcx.mk_lazy_expr(
                 vir::vir_format!(self.vcx, "wrapped in {:?}", place.local),
                 self.get_ty_for_local(place.local),
-                Box::new(move |_vcx, lctx: ExprInput<'vir>| lctx.1[&place.local].kind),
+                Box::new(move |_vcx, lctx: ExprInput<'vir>| {
+                    pre_state_key
+                        .and_then(|key| lctx.1.get(&key))
+                        .unwrap_or(&lctx.1[&place.local])
+                        .kind
+                }),
             )
         } else {
             self.mk_local_ex(place.local, curr_ver[&place.local])
@@ -1623,4 +1648,17 @@ impl<'vir> fmt::Display for Version<'vir> {
             write!(f, "{}", self.index)
         }
     }
+}
+
+/// The error for passing `arg` to a pure function that takes its deep
+/// snapshot, which it does not have (see `FunctionCallEncOutput::shallow_arg`).
+pub(crate) fn shallow_arg_message<'vir>(
+    arg: &mir::Operand<'vir>,
+    body: &mir::Body<'vir>,
+) -> String {
+    let ty = vir::with_vcx(|vcx| arg.ty(body, vcx.tcx()));
+    format!(
+        "passing `{ty}` to a pure function from a place that does not hold the values behind its \
+         mutable references (e.g. a tuple, a field of generic type or another reference)"
+    )
 }
