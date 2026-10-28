@@ -12,11 +12,12 @@ use vir::{CastType, FunctionIdn, HasType, MethodIdn, ViperIdent, vir_format_iden
 
 use crate::{
     encoders::{
-        FunctionCallEnc, MirLocalDefEnc, MirLocalDefEncTask, MirSpecEnc, Pure, TyUseImpureEnc,
-        TyUsePureEnc, WandEnc, WandEncTask, WandPledges,
+        FunctionCallEnc, MirLocalDefEnc, MirLocalDefEncTask, MirSpecEnc, Pure, SpecEnc,
+        SpecEncTask, TyUseImpureEnc, TyUsePureEnc, WandEnc, WandEncTask, WandPledges,
         mir_fn::CallTaskDescription,
         mir_pure::ExprInput,
         pure::spec::{EncodedPledge, MirSpecEncMode, PledgeExpr},
+        spec_items,
         ty::{
             RustTyDecomposition,
             generics::{
@@ -215,6 +216,10 @@ impl TaskEncoder for TraitFnEnc {
             // trait refs. Only final definitions are assumed (see
             // `final_leaf_def`).
             let has_body = is_function_with_body(vcx.tcx(), def_id);
+            // Whether an impl's axioms constrain `pledge_func` (see
+            // `TraitImplItemEnc`): an impl may declare pledges of its own if
+            // the trait has none (see `report_pledge_refinement_error`).
+            let mut impl_has_pledge = false;
             for impl_did in trait_impls::implementing_impls(tcx, trait_def_id) {
                 let Some(leaf) = trait_impls::final_leaf_def(tcx, impl_did, def_id) else {
                     continue;
@@ -223,6 +228,12 @@ impl TaskEncoder for TraitFnEnc {
                 let impl_span = tcx.def_span(impl_did);
                 if !leaf.defining_node.is_from_trait() {
                     let item_did = leaf.item.def_id;
+                    let impl_specs =
+                        deps.require_dep::<SpecEnc>(SpecEncTask { def_id: item_did })?;
+                    impl_has_pledge |= spec_items(&impl_specs.pledges)
+                        .0
+                        .iter()
+                        .any(|pledge| pledge.lhs.is_none());
                     TyConstructorEnc::on_all_requested(keys, move || {
                         let _ = trait_impls::TraitImplItemEnc::encode(
                             (impl_did, item_did),
@@ -391,23 +402,20 @@ impl TaskEncoder for TraitFnEnc {
                 // place of the function's own, which only its default body, if
                 // any, establishes: the impl a call resolves to is unknown. It
                 // refers to a single expiry, so it needs a single wand, and only
-                // the trait's pledges without an expiry obligation constrain it
-                // (see `MirSpecEncOutput::trait_pledges`).
+                // pledges without an expiry obligation constrain it, the trait's
+                // or an impl's (see `MirSpecEncOutput::trait_pledges`).
+                let trait_has_pledge = spec
+                    .pledges
+                    .iter()
+                    .any(|pledge| pledge.expiry_obligation.is_none());
                 let trait_pledge = match wands.viper_wands().as_slice() {
-                    [wand]
-                        if spec
-                            .pledges
-                            .iter()
-                            .any(|pledge| pledge.expiry_obligation.is_none()) =>
-                    {
-                        Some(trait_pledge(
-                            vcx,
-                            deps,
-                            def_id,
-                            pledge_func,
-                            &wand.given_back(),
-                        )?)
-                    }
+                    [wand] if trait_has_pledge || impl_has_pledge => Some(trait_pledge(
+                        vcx,
+                        deps,
+                        def_id,
+                        pledge_func,
+                        &wand.given_back(),
+                    )?),
                     _ => None,
                 };
                 wand_pledges = WandPledges::Replaced(trait_pledge);
