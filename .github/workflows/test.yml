@@ -16,7 +16,7 @@ concurrency:
 
 env:
   RUST_BACKTRACE: 1
-  PRUSTI_ASSERT_TIMEOUT: 60000
+  PRUSTI_ASSERT_TIMEOUT: 30000
 
 jobs:
   # Try to compile
