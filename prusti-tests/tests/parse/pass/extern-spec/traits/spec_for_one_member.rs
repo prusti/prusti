@@ -1,13 +1,8 @@
+//@ aux-build: extern_traits.rs
+use extern_traits::ExternTrait;
 use prusti_contracts::*;
 
-/// External traits
-trait ExternTrait {
-    fn foo(&self) -> i32;
-    fn bar(&self) -> i32;
-}
-/// External traits
-
-#[extern_spec]
+#[extern_spec(extern_traits)]
 trait ExternTrait {
     #[trusted]
     #[ensures(result == 42)]

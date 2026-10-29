@@ -1,11 +1,8 @@
+//@ aux-build: my_trait_generic.rs
+use my_trait_generic::MyTrait;
 use prusti_contracts::*;
 
-/// External traits
-trait MyTrait<T> {
-    fn get_value(&self) -> T;
-}
-/// External traits
-#[extern_spec]
+#[extern_spec(my_trait_generic)]
 trait MyTrait<T> {
     #[trusted]
     #[ensures(true)]

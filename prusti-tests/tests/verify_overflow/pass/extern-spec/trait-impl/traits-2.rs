@@ -1,20 +1,6 @@
+//@ aux-build: max_point.rs
+use max_point::{Max, Point};
 use prusti_contracts::*;
-
-pub trait Max {
-    fn max(&self) -> i32;
-}
-
-pub struct Point(pub i32, pub i32);
-
-impl Max for Point {
-    fn max(&self) -> i32 {
-        if self.0 > self.1 {
-            self.0
-        } else {
-            self.1
-        }
-    }
-}
 
 #[extern_spec]
 impl Max for Point {

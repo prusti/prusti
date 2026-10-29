@@ -1,9 +1,6 @@
+//@ aux-build: peer_list.rs
+use peer_list::PeerList;
 use prusti_contracts::*;
-
-#[derive(Clone, PartialEq)]
-struct PeerList<T> {
-    thing: T
-}
 
 #[extern_spec]
 impl <T: Clone + Eq> Clone for PeerList<T> {

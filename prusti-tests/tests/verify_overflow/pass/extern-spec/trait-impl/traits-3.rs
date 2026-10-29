@@ -1,14 +1,6 @@
+//@ aux-build: traits_3_aux.rs
+use traits_3_aux::{Test, Trait};
 use prusti_contracts::*;
-
-pub trait Trait {
-    fn foo(&mut self) -> i32 { 3 }
-}
-
-pub struct Test {}
-
-impl Trait for Test {
-    fn foo(&mut self) -> i32 { 5 }
-}
 
 #[extern_spec]
 impl Trait for Test {

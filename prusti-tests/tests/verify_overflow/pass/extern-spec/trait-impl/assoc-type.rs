@@ -1,19 +1,7 @@
+//@ known-failure
+//@ aux-build: assoc_type_aux.rs
+use assoc_type_aux::{Incrementable, Number};
 use prusti_contracts::*;
-
-trait Incrementable {
-    type Result;
-    fn increment(&mut self) -> Self::Result;
-}
-
-struct Number(i32);
-
-impl Incrementable for Number {
-    type Result = i32;
-    fn increment(&mut self) -> i32 {
-        self.0 += 1;
-        self.0
-    }
-}
 
 #[extern_spec]
 impl Incrementable for Number {
