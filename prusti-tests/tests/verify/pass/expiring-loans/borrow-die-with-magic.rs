@@ -29,5 +29,3 @@ fn test3b(y: &mut F) {
     // This generates a magic wand
     let m = either(f, g);
 }
-
-fn main() {}

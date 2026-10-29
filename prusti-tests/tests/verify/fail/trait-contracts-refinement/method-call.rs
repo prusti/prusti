@@ -66,5 +66,3 @@ fn test_bar_2_post() {
     let res = d.bar(5);
     assert!(res > 100); //~ ERROR
 }
-
-fn main(){}

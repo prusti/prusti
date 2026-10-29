@@ -1,7 +1,6 @@
 //@ compile-flags: -Punsafe_core_proof=true
 
 use prusti_contracts::*;
-fn main() {}
 
 fn f1(x: &mut i32){}
 fn function_call_one_arg() {

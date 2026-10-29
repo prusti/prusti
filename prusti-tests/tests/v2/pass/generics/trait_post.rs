@@ -15,7 +15,3 @@ impl Foo for u32 {
 fn go<T: Foo>(t: T) -> u32 {
     t.baz()
 }
-
-fn main(){
-
-}

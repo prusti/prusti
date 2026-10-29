@@ -1,7 +1,5 @@
 use prusti_contracts::*;
 
-fn main() {}
-
 #[pure]
 fn foo<T>(x: &T) -> bool { true }
 

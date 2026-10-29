@@ -9,5 +9,3 @@ struct F {
 }
 
 fn use_mut_ref(x: &mut F) {}
-
-fn main() {}

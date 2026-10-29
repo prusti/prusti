@@ -36,5 +36,3 @@ impl VecWrapperI32 {
         self.v[index] = value;
     }
 }
-
-fn main() {}

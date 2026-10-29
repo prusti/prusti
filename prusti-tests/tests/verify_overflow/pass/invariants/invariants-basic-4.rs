@@ -15,5 +15,3 @@ impl Percentage {
         }
     } // trivial test case
 }
-
-fn main() {}

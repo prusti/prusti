@@ -17,5 +17,3 @@ fn inc(opt: MyOption) -> MyOption {
 fn test() {
     inc(MyOption::Some(5));
 }
-
-fn main() {}

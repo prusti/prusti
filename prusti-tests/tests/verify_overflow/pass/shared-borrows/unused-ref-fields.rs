@@ -14,5 +14,3 @@ struct T<'a> {
 fn test(x: &T) -> u32 {
     x.f
 }
-
-fn main() {}

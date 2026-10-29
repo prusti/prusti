@@ -7,6 +7,3 @@ fn test_loop(b: bool) {
         g = false;
     }
 }
-
-#[trusted]
-fn main() {}

@@ -1,7 +1,5 @@
 use prusti_contracts::*;
 
-fn main() {}
-
 // FIXME: predicate here
 #[pure]
 fn sorted_ish(a: &[i32; 4]) -> bool {

@@ -11,5 +11,3 @@ fn test<T: Percentage>(t: &T) {
     let p = t.get();
     assert!(p <= 99); //~ERROR: the asserted expression might not hold
 }
-
-fn main() {}

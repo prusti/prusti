@@ -46,5 +46,3 @@ pub enum MaybeUninit2 {
 fn test3() {
     let maybe = MaybeUninit2::Uninit(());
 }
-
-fn main() {}

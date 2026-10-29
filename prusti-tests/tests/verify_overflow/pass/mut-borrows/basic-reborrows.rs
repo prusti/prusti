@@ -74,5 +74,3 @@ pub fn test4(list: &mut ListNode) {
     };
     use_list(last);
 }
-
-fn main() {}

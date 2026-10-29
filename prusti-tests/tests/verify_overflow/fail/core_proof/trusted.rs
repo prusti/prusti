@@ -50,5 +50,3 @@ struct Refi32<'a, 'b: 'a> {
     f: &'a i32,
     g: &'b i32,
 }
-
-fn main() {}

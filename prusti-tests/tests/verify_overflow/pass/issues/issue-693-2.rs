@@ -19,5 +19,3 @@ impl A {
 pub fn test(a: A) -> usize {
     a.get().len()
 }
-
-fn main() {}

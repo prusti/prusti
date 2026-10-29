@@ -29,5 +29,3 @@ pub fn test5() {
     let x = 4;
     let y = x;
 }
-
-fn main() {}

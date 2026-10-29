@@ -16,7 +16,3 @@ fn foo(x: IntOption) -> i32 {
     assert!(false);  //~ERROR: the asserted expression might not hold
     ret
 }
-
-fn main() {
-
-}

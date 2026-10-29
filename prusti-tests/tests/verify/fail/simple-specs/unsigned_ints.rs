@@ -41,5 +41,3 @@ fn test4(x: usize) {
 fn test5(x: usize) {
     test4(4 - x);  //~ERROR: type invariant expected by the function call might not hold.
 }
-
-fn main() {}

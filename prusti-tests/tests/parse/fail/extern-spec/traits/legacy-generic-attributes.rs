@@ -19,5 +19,3 @@ trait MyTrait<#[generic] T> {
     #[ensures(true)]
     fn get_value(&self) -> T;
 }
-
-fn main() {}

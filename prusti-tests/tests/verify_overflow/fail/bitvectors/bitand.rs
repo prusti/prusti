@@ -13,5 +13,3 @@ fn bitand_2() {
     let b = a & 2;
     assert!(b == 3);    //~ ERROR: the asserted expression might not hold
 }
-
-fn main() {}

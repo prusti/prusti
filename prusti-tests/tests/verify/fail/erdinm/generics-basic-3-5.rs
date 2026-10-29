@@ -26,5 +26,3 @@ fn test3(arg: &mut Number<i32>) {
     // using specs with a typaram in a non-generic function
     test2(arg); //~ERROR: precondition might not hold
 }
-
-fn main() {}

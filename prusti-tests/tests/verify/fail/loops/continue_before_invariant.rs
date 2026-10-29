@@ -50,5 +50,3 @@ fn continue_outer_loop_before_invariant() {
         }
     }
 }
-
-fn main() {}

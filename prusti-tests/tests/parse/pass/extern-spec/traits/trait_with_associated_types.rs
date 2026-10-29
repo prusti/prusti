@@ -16,5 +16,3 @@ trait ExternTrait {
 trait ExternTrait {
     fn foo(&self, x: Self::Arg1Ty, y: Self::Arg2Ty) -> Self::Ret1Ty;
 }
-
-fn main() {}

@@ -13,6 +13,3 @@ fn foo<'a>(mut x: MyStruct, switch: bool) -> MyStruct {
     // Join branches
     x
 }
-
-fn main() {
-}

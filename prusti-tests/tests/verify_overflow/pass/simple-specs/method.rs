@@ -12,5 +12,3 @@ impl S {
         assert!(self.f == x);
     }
 }
-
-fn main() {}

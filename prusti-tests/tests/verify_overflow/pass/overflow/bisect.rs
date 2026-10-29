@@ -50,5 +50,3 @@ pub fn bisect<T: Function>(f: &T, target: i32) -> Option<usize> {
     }
     None
 }
-
-fn main() {}

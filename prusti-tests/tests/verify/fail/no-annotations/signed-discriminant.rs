@@ -37,5 +37,3 @@ fn test_err() {
         // Nothing
     }
 }
-
-fn main() { }

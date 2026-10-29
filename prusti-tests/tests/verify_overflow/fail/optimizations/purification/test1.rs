@@ -99,5 +99,3 @@ fn test9(v: &mut [i32], start: usize, mid: usize, end: usize) {
     }
     assert!(u == mid);  //~ ERROR: the asserted expression might not hold
 }
-
-fn main() {}

@@ -30,5 +30,3 @@ fn check(expr: Expr) -> bool {
 
     result
 }
-
-fn main() {}

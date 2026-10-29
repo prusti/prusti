@@ -24,6 +24,3 @@ fn replace(dest: &mut Link, src: ()) -> Link {
 fn pop(s: &mut Link) {
     replace(s, ());
 }
-
-#[trusted]
-fn main() {}

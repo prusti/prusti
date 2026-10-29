@@ -1,4 +1,3 @@
-fn main() {}
 
 fn array_mut(mut a: [i32; 3]) {
     let a0 = a[0];

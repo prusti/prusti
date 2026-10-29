@@ -15,5 +15,3 @@ const fn get(a: &[i32; 10], i: usize) -> i32 {
 fn set(a: &mut [i32; 10], i: usize, v: i32)  {
     a[i] = v;
 }
-
-fn main() {}

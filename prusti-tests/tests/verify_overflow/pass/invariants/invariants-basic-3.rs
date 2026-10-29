@@ -22,5 +22,3 @@ fn test(x: u8) {
     perc.incr();
     assert!(perc.value <= 100);
 }
-
-fn main() {}

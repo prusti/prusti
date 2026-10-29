@@ -19,5 +19,3 @@ fn test<'a, 'b>(l: &'b mut List<'a>) -> &'b mut List<'a> {
     }
     curr
 }
-
-fn main() {}

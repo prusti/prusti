@@ -4,5 +4,3 @@ fn foo(a: u8, b: i8, c: usize, d: isize) {
     assert!(c as usize == c);
     assert!(d as isize == d);
 }
-
-fn main() {}

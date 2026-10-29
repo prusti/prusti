@@ -21,5 +21,3 @@ fn test(x: u8) {
     let perc = Percentage::new(x);
     assert!(perc.value <= 100); //~ERROR: the asserted expression might not hold
 }
-
-fn main() {}

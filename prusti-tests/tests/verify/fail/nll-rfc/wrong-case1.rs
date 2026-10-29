@@ -78,6 +78,3 @@ fn bar() {
     data.push(5);
     data.push(6);
 }
-
-fn main() {
-}

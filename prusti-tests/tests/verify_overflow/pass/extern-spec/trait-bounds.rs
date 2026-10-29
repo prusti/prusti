@@ -14,5 +14,3 @@ impl<'a, T: PartialEq, const L: usize> Foo<'a, T, L> {
     #[ensures(result == self.0)]
     pub fn bar(self) -> &'a [T; L];
 }
-
-fn main() {}

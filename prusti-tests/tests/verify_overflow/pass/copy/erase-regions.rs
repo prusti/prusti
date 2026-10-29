@@ -21,7 +21,3 @@ impl<T: Copy+PartialEq> SliceTy<T> {
 fn verify_slice_iter(slice: &[i32]) {
     let iter = slice.iter();
 }
-
-fn main() {
-
-}

@@ -18,5 +18,3 @@ fn test_xor() {
     assert!(false ^ true  == true );
     assert!(false ^ false == false);
 }
-
-fn main() {}

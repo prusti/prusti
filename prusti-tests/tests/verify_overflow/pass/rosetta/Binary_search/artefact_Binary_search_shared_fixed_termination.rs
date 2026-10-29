@@ -103,5 +103,3 @@ fn binary_search<T: Ord>(arr: &VecWrapper<T>, elem: &T) -> UsizeOption {
 
     result
 }
-
-fn main() {}

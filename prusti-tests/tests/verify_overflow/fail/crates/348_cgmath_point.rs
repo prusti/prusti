@@ -57,5 +57,3 @@ impl Div<Vector1<u64>> for u64 {
         )
     }
 }
-
-fn main() {}

@@ -53,6 +53,3 @@ fn get_err_value<T: Copy>(x: &Result<T, UnexpectedValue>) -> u32 {
         unreachable!()
     }
 }
-
-
-fn main() {}

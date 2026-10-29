@@ -96,5 +96,3 @@ fn test8(mut a: T3, b: T3) {
     //f: &'b mut T4<'a>,
     //g: &'b T4<'a>,
 //}
-
-fn main() {}

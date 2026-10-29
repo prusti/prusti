@@ -41,6 +41,3 @@ pub fn test3(cond: bool) {
     b = 8;
     assert!(a == 7 && b == 8);
 }
-
-fn main() {
-}

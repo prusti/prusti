@@ -28,5 +28,3 @@ fn client2() {
     let y = (1, 2);
     assert!(x == y); // Should fail
 }
-
-fn main() {}

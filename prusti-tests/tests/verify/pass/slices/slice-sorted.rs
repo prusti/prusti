@@ -1,9 +1,6 @@
 //@ known-failure
 use prusti_contracts::*;
 
-fn main() {}
-
-
 predicate! {
     fn sorted(s: &[i32]) -> bool {
         forall(|i: usize, j: usize| (0 <= i && i < j && j < s.len()) ==> s[i] <= s[j])

@@ -224,5 +224,3 @@ pub mod test {
         assert!(list.pop().is_none());
     }
 }
-
-fn main() {}

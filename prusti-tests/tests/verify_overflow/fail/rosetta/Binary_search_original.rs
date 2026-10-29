@@ -132,5 +132,3 @@ pub fn binary_search(data: &[i32], target: i32) -> Option<usize> {
     }
     None
 }
-
-fn main() {}

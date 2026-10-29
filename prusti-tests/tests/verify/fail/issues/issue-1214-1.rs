@@ -31,5 +31,3 @@ fn test() {
     assert!(g(3) == 0);
     assert!(false); //~ ERROR the asserted expression might not hold
 }
-
-fn main() {}

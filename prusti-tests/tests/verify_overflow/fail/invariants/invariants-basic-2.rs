@@ -21,5 +21,3 @@ fn test(x: u8) {
     let mut perc = Percentage { value: x };
     perc.incr(); //~ERROR: precondition might not hold
 }
-
-fn main() {}

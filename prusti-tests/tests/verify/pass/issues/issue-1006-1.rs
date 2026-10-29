@@ -3,8 +3,6 @@
 //@ compile-flags: -Puse_new_encoder=false
 use prusti_contracts::*;
 
-fn main() {}
-
 #[derive(Copy, Clone)]
 pub struct A {
     inner: usize,

@@ -17,5 +17,3 @@ fn test1<A, B>(arg: &mut Number<A, B>) {
 fn test2<A, B>(arg: &mut Number<B, A>) {
     test1(arg);
 }
-
-fn main() {}

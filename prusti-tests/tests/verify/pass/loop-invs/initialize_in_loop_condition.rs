@@ -21,5 +21,3 @@ fn test() {
 
     assert!(*x == 0 || *x >= 55);
 }
-
-fn main() {}

@@ -14,5 +14,3 @@ fn bad(n: i32) -> bool {
 fn magic(n: i32) -> i32 {
     n
 }
-
-fn main() {}

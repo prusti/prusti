@@ -268,5 +268,3 @@ pub fn knapsack01_dyn(items: &Items, max_weight: usize) -> ItemIndices {
  
     result
 }
-
-fn main() {}

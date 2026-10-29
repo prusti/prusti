@@ -19,5 +19,3 @@ fn test() {
         assert!(false); //~ERROR: might not hold
     }
 }
-
-fn main() {}

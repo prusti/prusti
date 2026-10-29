@@ -5,5 +5,3 @@ use std::cmp::Ordering;
 fn cmp(x: i32, y: i32) -> Ordering {
     Ordering::Less
 }
-
-fn main() {}

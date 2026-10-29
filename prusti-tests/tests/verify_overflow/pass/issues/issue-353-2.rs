@@ -80,6 +80,3 @@ impl<T: Hash + Eq> RemoveWinsSet<T>{
         self.remove_wins_removes.insert(elem);
     }
 }
-
-#[trusted]
-fn main() {}

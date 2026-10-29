@@ -9,5 +9,3 @@ impl S {
     #[ensures(false)] //~ERROR: postcondition
     pub fn test(self) {}
 }
-
-fn main() {}

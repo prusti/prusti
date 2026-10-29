@@ -35,5 +35,3 @@ fn test_floats64_zero() -> f64 {
 fn test_float_with_params(a: f32) -> f32{
     return -a;
 }
-
-fn main () {}

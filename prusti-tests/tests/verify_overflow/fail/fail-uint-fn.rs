@@ -14,5 +14,3 @@ fn test_minus_i64(x: i64) -> i64 {
 fn test_minus_isize(x: isize) -> isize {
     -x //~ERROR: negate with overflow
 }
-
-fn main() {}

@@ -1,7 +1,6 @@
 //@ compile-flags: -Punsafe_core_proof=true
 
 use prusti_contracts::*;
-fn main() {}
 
 fn branch_borrow(c: bool){
     let mut a: i32 = 4;

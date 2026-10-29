@@ -6,5 +6,3 @@ pub fn test1<T: PartialEq>(container: &mut Option<T>, value: T) {
         *container = new_value;
     }
 }
-
-fn main() {}

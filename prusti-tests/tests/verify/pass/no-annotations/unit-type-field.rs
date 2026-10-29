@@ -15,5 +15,3 @@ fn copy(x: MyBox) -> MyBox {
     let z = x;
     y
 }
-
-fn main() {}

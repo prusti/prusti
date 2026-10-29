@@ -195,5 +195,3 @@ fn test_f64_abs() {
     let a = 1.2f64;
     let _b = a.abs();
 }
-
-fn main () {}

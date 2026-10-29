@@ -15,5 +15,3 @@ fn test2(x: S2) -> S2 {
     let y = x;
     y
 }
-
-fn main() {}

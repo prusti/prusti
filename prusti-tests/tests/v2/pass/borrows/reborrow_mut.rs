@@ -59,5 +59,3 @@ fn reborrow_user() {
     assert!(pt.x == pt.y);
 }
     */
-
-fn main() {}

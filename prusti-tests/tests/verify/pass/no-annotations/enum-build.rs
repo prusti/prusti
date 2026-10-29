@@ -16,5 +16,3 @@ fn test() -> Enum {
     }
     // At the join point we don't have `Enum::Three(i32)`
 }
-
-fn main() {}

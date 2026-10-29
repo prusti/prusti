@@ -21,6 +21,3 @@ fn len(head: &List) -> usize {
 
 #[ensures(len(&result) > 0)]
 fn identity(list: List) -> List { list }
-
-
-fn main() {}

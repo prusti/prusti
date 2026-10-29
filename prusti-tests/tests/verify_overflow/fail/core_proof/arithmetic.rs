@@ -41,5 +41,3 @@ fn test7() {
     let x = 1 * 3;
     assert!(x == 1);    //~ ERROR: the asserted expression might not hold
 }
-
-fn main() {}

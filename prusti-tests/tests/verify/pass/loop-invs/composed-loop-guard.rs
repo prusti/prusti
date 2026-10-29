@@ -6,5 +6,3 @@ fn test() {
         i += 1;
     }
 }
-
-fn main() {}

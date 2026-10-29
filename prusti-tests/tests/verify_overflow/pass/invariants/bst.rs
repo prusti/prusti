@@ -3,7 +3,6 @@
 //   `contains_golden` have the same result.
 
 use prusti_contracts::*;
-fn main() {}
 
 #[invariant(
     if let BST::Node { value, left, right } = &self {

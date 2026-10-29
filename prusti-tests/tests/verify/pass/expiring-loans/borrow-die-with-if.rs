@@ -27,6 +27,3 @@ fn test7(y: F, z: F, b: bool) {
 
 fn use_both(_f: &mut G, _g: &mut G) {
 }
-
-fn main() {
-}

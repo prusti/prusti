@@ -14,6 +14,3 @@ trait PartialOrd<Rhs> {
 
 #[requires(_x < _y)]
 fn test(_x: A, _y: A) {}
-
-#[trusted]
-fn main() {}

@@ -27,6 +27,3 @@ fn test_eq_in_code(_a: &A<i32>, _b: &A<i32>) -> i32 {
         }
     }
 }
-
-fn main() {
-}

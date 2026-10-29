@@ -20,5 +20,3 @@ fn test1(x: F) {
     let k = &mut y.f;
     //use_mut_ref(k);
 }
-
-fn main() {}

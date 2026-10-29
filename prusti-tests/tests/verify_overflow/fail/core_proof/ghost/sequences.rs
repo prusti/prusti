@@ -52,5 +52,3 @@ fn indexing() {
 fn seq_macro() {
     prusti_assert!(seq![1, 2] == Seq::append(Seq::single(1), Seq::single(2)));
 }
-
-fn main() {}

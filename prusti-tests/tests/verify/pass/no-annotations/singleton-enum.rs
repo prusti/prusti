@@ -7,5 +7,3 @@ fn eval(expr: Expr) -> i32 {
         Expr::Sum(left, right) => left + right
     }
 }
-
-fn main() {}

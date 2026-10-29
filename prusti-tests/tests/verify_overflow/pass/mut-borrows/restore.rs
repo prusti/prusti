@@ -30,5 +30,3 @@ fn compute(flag: bool) -> (T, T) {
 
     (x, y)
 }
-
-fn main() {}

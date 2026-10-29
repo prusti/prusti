@@ -5,5 +5,3 @@ impl Foo {
     return None
   }
 }
-
-fn main(){ }

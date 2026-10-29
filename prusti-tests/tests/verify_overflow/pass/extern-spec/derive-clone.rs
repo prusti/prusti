@@ -23,5 +23,3 @@ fn go(t: &PeerList<u32>) {
     let t2 = t.clone();
     assert!(some_property(&t2));
 }
-
-fn main(){}

@@ -20,5 +20,3 @@ fn none_or_left(x: OptionEither) -> bool {
     // 3. At join point, the `OptionEither::None` branch tries to unfold `Either(x.enum_1_0)`
     //    to reach the predicate `int(x.enum_1_0.discriminant)` on which the branches seem to agree.
 }
-
-fn main() {}

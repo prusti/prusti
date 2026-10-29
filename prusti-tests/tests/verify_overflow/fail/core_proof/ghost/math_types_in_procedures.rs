@@ -47,5 +47,3 @@ fn vars_used_in_fns() {
     let s3 = s1.append(s2);
     prusti_assert!(s3 == seq![1, 2, 3]);
 }
-
-fn main() {}

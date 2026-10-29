@@ -18,5 +18,3 @@ fn lookup(head: &List, index: usize) -> u32 {
         }
     }
 }
-
-fn main() {}

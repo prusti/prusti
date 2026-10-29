@@ -29,5 +29,3 @@ fn foo2(x: i64, y: bool) -> i64 {
     assert!(return_value >= 0);  //~ERROR: the asserted expression might not hold
     return_value
 }
-
-fn main() {}

@@ -5,5 +5,3 @@ impl Default for T {
         panic!("Error message") //~ ERROR
     }
 }
-
-fn main() {}

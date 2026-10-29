@@ -16,5 +16,3 @@ fn pos(_x: A, _j: i32) -> bool {
 fn first(_x: A, _y: A) -> A {
     _x
 }
-
-fn main() {}

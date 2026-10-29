@@ -40,5 +40,3 @@ fn test5(map: Map) {
 fn test6(map: Map) {
     let x = map[2]; //~ ERROR: the map may not contain this key
 }
-
-fn main() {}

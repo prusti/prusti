@@ -57,5 +57,3 @@ impl Point {
         self
     }
 }
-
-fn main() {}

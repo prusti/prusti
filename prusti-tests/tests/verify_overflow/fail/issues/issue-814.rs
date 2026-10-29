@@ -34,5 +34,3 @@ fn test3() {
     let s2 = S { f: 3u64 };
     assert!(s1.size_of2() == s2.size_of2());    //~ ERROR: the asserted expression might not hold
 }
-
-fn main() {}

@@ -22,5 +22,3 @@ pub fn test4<T: Copy>(a: S1<T>) -> S1<T> {
     let b = a;
     b
 }
-
-fn main() {}

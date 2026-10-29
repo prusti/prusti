@@ -78,5 +78,3 @@ fn revert(list: List) -> List {
         List::Const { val, box next } => append(val, revert(next))
     }
 }
-
-fn main() {}

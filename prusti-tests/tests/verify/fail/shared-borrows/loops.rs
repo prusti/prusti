@@ -105,6 +105,3 @@ pub fn test4_2(n: &i32) {
     }
     assert!(false); //~ERROR: the asserted expression might not hold
 }
-
-fn main() {
-}

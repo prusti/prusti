@@ -12,5 +12,3 @@ fn ptr_eq<T>(l: &T, r: &T) -> bool { std::ptr::eq(l, r) }
 fn identity<T>(t: &mut T) -> &mut T {
     t
 }
-
-fn main() {}

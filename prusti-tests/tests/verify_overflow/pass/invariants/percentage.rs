@@ -1,6 +1,5 @@
 //@ compile-flags: -Penable_type_invariants=true
 use prusti_contracts::*;
-fn main() {}
 
 #[invariant(self.value <= 100)]
 struct Percentage {

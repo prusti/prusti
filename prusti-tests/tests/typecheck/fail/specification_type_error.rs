@@ -13,6 +13,4 @@ pub fn test_error_reporting(x: i32) -> bool {
     x     //~ERROR: mismatched types
 }
 
-fn main() {}
-
 // TODO: Test parser errors.

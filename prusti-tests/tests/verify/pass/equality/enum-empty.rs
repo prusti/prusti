@@ -9,6 +9,3 @@ enum A {
 fn test(_x: &A, _y: &A) -> i32 {
     17
 }
-
-fn main() {
-}

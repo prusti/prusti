@@ -19,5 +19,3 @@ fn recursive(head: &mut List, b: bool) {
     };
     consume(x);
 }
-
-fn main() {}

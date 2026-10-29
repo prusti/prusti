@@ -14,7 +14,3 @@ fn test_if_expr(x: u32) -> u32 {
         0
     }
 }
-
-fn main() {
-
-}

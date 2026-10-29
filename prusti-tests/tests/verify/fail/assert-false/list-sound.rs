@@ -96,5 +96,3 @@ fn revert(list: List) -> List {
     assert!(false);  //~ERROR: the asserted expression might not hold
     ret
 }
-
-fn main() {}

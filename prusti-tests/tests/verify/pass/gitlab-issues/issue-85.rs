@@ -12,5 +12,3 @@ fn sleep_forever() -> ! {
         thread::sleep(Duration::from_secs(x));
     }
 }
-
-fn main(){}

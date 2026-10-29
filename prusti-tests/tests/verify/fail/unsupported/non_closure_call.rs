@@ -5,5 +5,3 @@ pub fn max_by_key<A, B: Ord>(a: A, b: A, key: impl Fn(&A) -> B) -> A {
         b
     }
 }
-
-fn main() {}

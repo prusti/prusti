@@ -19,5 +19,3 @@ fn find_path() -> Option<VecWrapperPath> {
     }
     result
 }
-
-fn main() {}

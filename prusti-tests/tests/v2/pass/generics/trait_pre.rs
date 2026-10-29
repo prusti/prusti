@@ -20,7 +20,3 @@ fn check(x: u32) {
 fn go<T: Foo>(t: T) -> u32 {
     t.baz(7)
 }
-
-fn main(){
-
-}

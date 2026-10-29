@@ -18,5 +18,3 @@ impl<T> Clone for Option<T> {
     fn clone(&self) -> Option::<T>
         where T: std::clone::Clone;
 }
-
-fn main() {}

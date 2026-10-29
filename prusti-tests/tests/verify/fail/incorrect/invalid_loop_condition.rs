@@ -26,5 +26,3 @@ fn test_continue() {
     }
     assert!(i == 10);
 }
-
-fn main() {}

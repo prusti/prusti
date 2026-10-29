@@ -5,5 +5,3 @@ use prusti_contracts::*;
 fn double(x: i64) -> i64 { //~ ERROR only trusted functions can call themselves in their contracts
     2 * x
 }
-
-fn main() {}

@@ -33,5 +33,3 @@ pub fn test1_ref_method_call(res: &TestStructReference) {}
 // This tests the branch where has_ref_upvars is false (owned case)
 #[requires(forall(|i: usize| i < res.len ==> res.get(i) >= 0))]
 pub fn test2_method_call(res: TestStruct) {}
-
-fn main() {}

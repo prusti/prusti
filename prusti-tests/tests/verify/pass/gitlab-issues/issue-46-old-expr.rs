@@ -16,5 +16,3 @@ struct S {
 fn test(x: &mut S) {
     x.f = 456;
 }
-
-fn main() {}

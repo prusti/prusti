@@ -26,5 +26,3 @@ fn u32_foo_call_2() {
 #[ensures(0 <= u32_foo() && u32_foo() <= 4294967295)]
 fn u32_foo_call_3() {
 }
-
-fn main() {}

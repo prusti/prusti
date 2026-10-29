@@ -53,5 +53,3 @@ fn check_modulo() {
     // Smoke test
     assert!(false); //~ ERROR the asserted expression might not hold
 }
-
-fn main(){}

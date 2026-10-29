@@ -4,8 +4,6 @@
 
 use prusti_contracts::*;
 
-fn main() {}
-
 trait Trait {
     #[terminates(Int::from(x))]
     fn fun(&self, x: i64) {}

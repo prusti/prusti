@@ -42,5 +42,3 @@ fn test_wrong_precondition(x: &U) -> u32 {
 fn test_wrong_postcondition(x: &U) -> u32 {
     get_field(x)
 }
-
-fn main() {}

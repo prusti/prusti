@@ -74,5 +74,3 @@ fn test_unreachable_return() {
         i += 1;
     }
 }
-
-fn main() {}

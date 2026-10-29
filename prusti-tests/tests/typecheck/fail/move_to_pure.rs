@@ -29,5 +29,3 @@ fn get_ok_bool(x: Result<bool, UnexpectedValue>) -> bool {
 fn test(i: u32) -> Result<bool, UnexpectedValue> {
     Ok(true)
 }
-
-fn main() {}

@@ -9,7 +9,3 @@ fn foo(x: ((i32, MyOption), bool)) -> ((i32, MyOption), bool) {
     let z = x;
     y
 }
-
-fn main() {
-
-}

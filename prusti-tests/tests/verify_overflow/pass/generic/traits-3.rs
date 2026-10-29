@@ -9,5 +9,3 @@ trait Validity {
 fn test<T: Validity>(a: T) -> T {
     a
 }
-
-fn main() {}

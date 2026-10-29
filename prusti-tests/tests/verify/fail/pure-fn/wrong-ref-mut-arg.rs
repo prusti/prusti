@@ -47,6 +47,3 @@ fn prepend_list(x: u32, tail: List, check: bool) -> List {
     }
     result
 }
-
-
-fn main() {}

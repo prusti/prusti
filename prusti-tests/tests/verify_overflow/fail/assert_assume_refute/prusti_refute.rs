@@ -26,5 +26,3 @@ fn no_valid_input(val: i32) -> i32 {
     prusti_refute!(false); //~ ERROR
     42
 }
-
-fn main() {}

@@ -226,6 +226,3 @@ fn test_fn6<T: T2<AT1 = (i32, usize), AT2 = (usize, i32)>>(t: T, x: X4) {
     assert!(!x.fn6::<i32, (i32, i32), bool>(7, (8, 9), (42, 43), (33, 44)));
     assert!(!x.pure_fn6::<i32, (i32, i32), bool>(7, (8, 9), (42, 43), (33, 44)));
 }
-
-#[trusted]
-fn main() {}

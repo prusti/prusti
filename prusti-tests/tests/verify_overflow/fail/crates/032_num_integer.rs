@@ -40,5 +40,3 @@ impl Integer for i8 {
         m << shift
     }
 }
-
-fn main(){}

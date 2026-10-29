@@ -7,6 +7,3 @@ use prusti_contracts::*;
 fn foo<T>(_x: T) -> i32 {
     42
 }
-
-fn main() {
-}

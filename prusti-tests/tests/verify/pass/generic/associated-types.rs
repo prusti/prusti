@@ -29,6 +29,3 @@ fn test2(gd: &Guard<MyModel>) -> bool {
 // In this case, normalization fails, so it should
 // continue with the non-normalized type.
 fn test3<M: Model>(gd: Guard<M>) {}
-
-#[trusted]
-fn main() {}

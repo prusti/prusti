@@ -73,5 +73,3 @@ fn test3() {
 
     assert!(x == 123);
 }
-
-fn main() {}

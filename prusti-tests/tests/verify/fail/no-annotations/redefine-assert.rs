@@ -7,5 +7,3 @@ macro_rules! assert {
 fn foo(x: bool) {
     assert!(x);
 }
-
-fn main() {}

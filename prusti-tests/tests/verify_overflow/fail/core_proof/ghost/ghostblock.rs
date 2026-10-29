@@ -81,5 +81,3 @@ fn closure_and_item_exits_allowed() {
         }
     };
 }
-
-fn main() {}

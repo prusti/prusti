@@ -13,5 +13,3 @@ impl B {
         self.0[index] = a;
     }
 }
-
-fn main() {}

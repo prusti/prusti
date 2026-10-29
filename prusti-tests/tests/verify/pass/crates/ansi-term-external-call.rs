@@ -113,5 +113,3 @@ impl Default for Style {
         }
     }
 }
-
-fn main() {}

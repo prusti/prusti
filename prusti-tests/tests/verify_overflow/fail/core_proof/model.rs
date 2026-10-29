@@ -22,5 +22,3 @@ fn push_i32(v: &mut VecWrapper<i32>, val: i32) {
 fn len(v: VecWrapper<i32>){
     ()
 }
-
-fn main() {}

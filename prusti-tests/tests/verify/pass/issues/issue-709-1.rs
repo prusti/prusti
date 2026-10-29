@@ -13,5 +13,3 @@ impl B {
         Self([A(0); 16])
     }
 }
-
-fn main() {}

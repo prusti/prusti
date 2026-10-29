@@ -15,5 +15,3 @@ fn bitdiv_2() {
     let c = b / 3;
     assert!(c == 2);    //~ ERROR: the asserted expression might not hold
 }
-
-fn main() {}

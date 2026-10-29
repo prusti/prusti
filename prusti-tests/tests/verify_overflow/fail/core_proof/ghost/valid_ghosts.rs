@@ -16,5 +16,3 @@ fn test2() {
     let x = ghost! { 10u32 };
     prusti_assert!(x == Ghost::new(5));     //~ ERROR: the asserted expression might not hold
 }
-
-fn main() {}

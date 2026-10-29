@@ -34,5 +34,3 @@ impl B {
         self.get(2);
     }
 }
-
-fn main() {}

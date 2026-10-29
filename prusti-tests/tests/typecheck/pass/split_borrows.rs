@@ -45,5 +45,3 @@ fn test(mut a: T, mut b: T, mut c: bool) {
     use_t(x);
 }
 */
-
-fn main() {}

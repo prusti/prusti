@@ -1,8 +1,6 @@
 //@ compile-flags: -Popt_in_verification=true
 use prusti_contracts::*;
 
-fn main() {}
-
 predicate! {
     fn baz(foo: &Foo) -> bool {
         foo.bar > 0

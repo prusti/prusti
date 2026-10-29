@@ -20,5 +20,3 @@ impl B {
         self.0[index]
     }
 }
-
-fn main() {}

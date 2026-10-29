@@ -27,5 +27,3 @@ impl B {
         &self.inner
     }
 }
-
-fn main() {}

@@ -83,5 +83,3 @@ fn test9() {
     let y = std::ptr::addr_of!(c.f.g);
     assert!(x == y);    //~ ERROR
 }
-
-fn main() {}

@@ -1,7 +1,5 @@
 use prusti_contracts::*;
 
-fn main() {}
-
 #[derive(Clone, Copy)]
 pub enum Foo {
     Bar,

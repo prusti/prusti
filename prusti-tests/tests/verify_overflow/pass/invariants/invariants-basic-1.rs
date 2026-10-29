@@ -16,5 +16,3 @@ impl Percentage {
         }
     }
 }
-
-fn main() {}

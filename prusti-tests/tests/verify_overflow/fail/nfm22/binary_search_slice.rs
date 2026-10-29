@@ -22,5 +22,3 @@ fn search(a: &[i32], key: i32) -> Option<usize> {
   }
   None
 }
-
-fn main() {}

@@ -13,6 +13,3 @@ trait MyTrait {
     #[ensures(result == 42)]
     fn foo(&self) -> Option<Self::Item>;
 }
-
-fn main() {
-}

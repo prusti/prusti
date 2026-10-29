@@ -39,5 +39,3 @@ impl Handle {
         self.0.as_file_mut()
     }
 }
-
-fn main() {}

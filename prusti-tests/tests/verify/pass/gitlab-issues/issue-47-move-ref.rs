@@ -14,5 +14,3 @@ fn test(x: &mut S) {
     };
     *x = y;
 }
-
-fn main() {}

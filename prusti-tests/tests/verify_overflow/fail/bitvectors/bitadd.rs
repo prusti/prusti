@@ -15,5 +15,3 @@ fn bitadd_2() {
     let c = b + 4;
     assert!(c == 8);    //~ ERROR: the asserted expression might not hold
 }
-
-fn main() {}

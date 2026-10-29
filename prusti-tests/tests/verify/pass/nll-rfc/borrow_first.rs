@@ -91,5 +91,3 @@ fn foo(vec: &mut VecWrapperI32) -> &mut i32 {
         vec.borrow(last)
     }
 }
-
-fn main() {}

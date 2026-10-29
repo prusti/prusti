@@ -23,5 +23,3 @@ impl MyOption {
 fn test() {
     MyOption::None.map();
 }
-
-fn main() {}

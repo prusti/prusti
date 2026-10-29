@@ -30,5 +30,3 @@ fn func() -> u32{
     let mut rw = RandWrapper { rng: thread_rng() };
     rw.gen_range(0, 10)
 }
-
-fn main() {}

@@ -17,7 +17,3 @@ fn go(bar: Bar) -> u32 {
        Bar::Foo2(_) => 2
    }
 }
-
-fn main(){
-
-}

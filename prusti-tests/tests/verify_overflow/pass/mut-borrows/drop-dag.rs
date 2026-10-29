@@ -32,5 +32,3 @@ pub fn test2(b: U) {
 
 fn use_both(_f: &mut T, _g: &mut T) {
 }
-
-fn main() {}

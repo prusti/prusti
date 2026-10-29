@@ -22,5 +22,3 @@ fn shift_x(p: Point, s: u32) -> Point {
                       // result moved into p.x
     pp
 }
-
-fn main(){}

@@ -11,6 +11,3 @@ struct A {
 fn get_value(_x: A, _y: A) -> A { //~ERROR: return type of pure function does not implement Copy
     _x
 }
-
-fn main() {
-}

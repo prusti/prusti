@@ -5,9 +5,6 @@
 
 use prusti_contracts::*;
 
-fn main() {}
-
-
 #[ensures(forall(|k1: usize, k2: usize|(0 <= k1 && k1 < k2 && k2 < 10)
     ==> (a[k1] <= a[k2]),
     triggers=[(a[k1],a[k2],)]))]

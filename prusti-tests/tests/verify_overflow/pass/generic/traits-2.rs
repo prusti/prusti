@@ -11,5 +11,3 @@ impl<A, B, C> Trait<A> for Struct<B, C> {
     // inherit spec
     fn fn1<X, Y, Z>() {}
 }
-
-fn main() {}

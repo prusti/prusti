@@ -12,5 +12,3 @@ trait Ord {
 fn compare<T: Ord>(a: &T, other: &T) -> Ordering {
     a.cmp(other)
 }
-
-fn main() {}

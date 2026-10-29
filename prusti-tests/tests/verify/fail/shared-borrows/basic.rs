@@ -58,6 +58,3 @@ pub fn test5() {
     let _b = a;
     assert!(false); //~ERROR: the asserted expression might not hold
 }
-
-fn main() {
-}

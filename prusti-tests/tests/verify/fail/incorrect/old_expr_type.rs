@@ -15,5 +15,3 @@ impl<T> Foo<T> {
         42
     }
 }
-
-fn main() {}

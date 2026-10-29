@@ -174,5 +174,3 @@ fn test22(x: &mut T2, a: i32) -> bool { //~ ERROR: postcondition might not hold.
 fn test23(x: &mut [i32]) {
     x[0] = 4;  //~ ERROR: the array or slice index may be out of bounds
 }
-
-fn main() {}

@@ -11,5 +11,3 @@ fn bools() {
     assert!(*y == true);
     assert!(x == true);
 }
-
-fn main() {}

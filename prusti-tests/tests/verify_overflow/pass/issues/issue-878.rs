@@ -1,6 +1,5 @@
 use prusti_contracts::*;
 use std::cmp::{Ord, Ordering};
-fn main() {}
 
 #[extern_spec]
 trait Ord {

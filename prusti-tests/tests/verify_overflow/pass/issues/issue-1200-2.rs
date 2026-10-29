@@ -10,5 +10,3 @@ fn exit_loop_with_a_non_boolean_switch(
         }
     }
 }
-
-fn main(){}

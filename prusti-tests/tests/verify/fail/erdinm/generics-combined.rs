@@ -60,5 +60,3 @@ fn test3<X, Y, Z>(arg: &mut Number<Number<X, i32, Z>, Number<i16, i32, Z>, Numbe
     assert!(arg.b.b == 4000);
     assert!(arg.c.b == 6000); //~ERROR: the asserted expression might not hold
 }
-
-fn main() {}

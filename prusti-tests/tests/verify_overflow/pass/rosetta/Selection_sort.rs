@@ -159,5 +159,3 @@ pub fn test() {
 
     print_sorted_array(&array);
 }
-
-fn main() { }

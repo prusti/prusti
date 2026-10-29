@@ -22,7 +22,3 @@ fn test_bool(x: bool) -> bool {
     assert!(x);
     x
 }
-
-fn main() {
-
-}

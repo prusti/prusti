@@ -27,5 +27,3 @@ fn test2() -> Point {
     };
     p
 }
-
-fn main() {}

@@ -36,7 +36,3 @@ fn test(n: i32) -> i32 {
 
     res
 }
-
-fn main() {
-
-}

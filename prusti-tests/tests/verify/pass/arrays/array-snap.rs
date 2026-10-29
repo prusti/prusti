@@ -1,7 +1,5 @@
 use prusti_contracts::*;
 
-fn main() {}
-
 #[pure]
 #[ensures(result == 1)]
 fn foo() -> u32 {

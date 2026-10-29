@@ -72,5 +72,3 @@ pub mod m {
         assert!(false);     //~ ERROR: the asserted expression might not hold
     }
 }
-
-fn main() {}

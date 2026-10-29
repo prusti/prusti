@@ -48,5 +48,3 @@ fn compute(expr: Expr) -> i32 {
 
     value
 }
-
-fn main() {}

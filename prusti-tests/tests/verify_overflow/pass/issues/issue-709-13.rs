@@ -24,5 +24,3 @@ impl B {
         &self.inner[0..index]
     }
 }
-
-fn main() {}

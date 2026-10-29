@@ -37,5 +37,3 @@ fn u32_foo_call_5() {
 #[ensures(u32_foo() <= 4294967295)] //~ERROR: postcondition
 fn u32_foo_call_6() {
 }
-
-fn main() {}

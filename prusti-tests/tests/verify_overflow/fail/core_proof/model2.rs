@@ -178,5 +178,3 @@ struct LinkedList2 {
 struct Test{
     v: Seq<u32>,
 }
-
-fn main() {}

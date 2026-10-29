@@ -85,6 +85,3 @@ pub fn convert2(s: &mut u32) -> &u32 {
     let x = &*s;
     x
 }
-
-fn main() {
-}

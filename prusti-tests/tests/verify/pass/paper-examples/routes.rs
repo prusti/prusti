@@ -74,5 +74,3 @@ fn shift_nth_x(r: &mut Route, n: i32, s:i32) {
   let p = borrow_nth(r, n);
   shift_x(p,s);
 }
-
-fn main() {}

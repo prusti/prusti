@@ -22,5 +22,3 @@ fn test<U>(u: &mut U) {
     write(u);
     assert!(valid(u)); //~ERROR: the asserted expression might not hold
 }
-
-fn main() {}

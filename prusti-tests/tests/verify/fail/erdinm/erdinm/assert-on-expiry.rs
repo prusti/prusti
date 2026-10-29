@@ -50,5 +50,3 @@ fn test_fail(arg: &mut Example) {
     let m3 = arg.m3_mut(); //~ERROR: obligation might not hold on borrow expiry
     *m3 += 5; // mistake
 }
-
-fn main() {}

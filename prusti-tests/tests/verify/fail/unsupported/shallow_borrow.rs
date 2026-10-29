@@ -9,5 +9,3 @@ fn iterator_len_hint<I>(iter: &I) -> Option<usize>
         _ => None,
     }
 }
-
-fn main() {}

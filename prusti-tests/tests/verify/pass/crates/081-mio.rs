@@ -21,5 +21,3 @@ impl UnixReady {
         &mut self.0
     }
 }
-
-fn main() {}

@@ -8,5 +8,3 @@ fn use_box(v: i32) -> Box<i32> {
     assert!(v == *z);
     Box::new(*z)
 }
-
-fn main() {}

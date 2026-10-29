@@ -9,5 +9,3 @@ fn assert1() {
 fn assert2() {
     assert!(true);
 }
-
-fn main() {}

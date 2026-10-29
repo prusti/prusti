@@ -40,5 +40,3 @@ fn push_all<T: Clone>(vec: &mut Vec<T>, slice: &[T]) {
         push(vec, index_slice(slice, i).clone())
     }
 }
-
-fn main(){}

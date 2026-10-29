@@ -19,5 +19,3 @@ impl B {
         self.inner[index] = a;
     }
 }
-
-fn main() {}

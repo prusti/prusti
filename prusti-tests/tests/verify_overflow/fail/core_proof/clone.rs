@@ -2,8 +2,6 @@
 
 use prusti_contracts::*;
 
-fn main() {}
-
 #[derive(Clone)]
 struct I32Container<i32>(i32);
 

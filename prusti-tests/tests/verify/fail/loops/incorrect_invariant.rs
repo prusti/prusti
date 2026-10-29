@@ -7,5 +7,3 @@ pub fn simple_loop() {
         x += 1;
     }
 }
-
-fn main() {}

@@ -14,5 +14,3 @@ impl S {
         *self = new_self;
     }
 }
-
-fn main() {}

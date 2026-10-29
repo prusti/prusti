@@ -91,6 +91,3 @@ fn test9() {
         drop(b);
     }
 }    //~ERROR: the drop handler was called.
-
-fn main() {}
-

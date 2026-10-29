@@ -755,5 +755,3 @@ pub fn checked_pow<T: Clone + One + CheckedMul>(mut base: T, mut exp: usize) -> 
     }
     Some(acc)
 }
-
-fn main(){}

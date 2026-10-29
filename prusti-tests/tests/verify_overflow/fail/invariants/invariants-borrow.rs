@@ -16,5 +16,3 @@ fn make_percentage() -> Percentage { //~ERROR: type invariants
 fn double(x: &mut u8) {
   *x = *x * 2;
 }
-
-fn main() {}

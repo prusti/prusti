@@ -34,8 +34,6 @@ impl<T, I: std::slice::SliceIndex<[T]>> std::ops::Index<I> for [T] {
     fn index(&self, index: I) -> &I::Output;
 }
 
-fn main() {}
-
 #[requires(a.len() > 6)]
 fn slice(a: &[i32]) {
     let s = &a[1..4];

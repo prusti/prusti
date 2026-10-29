@@ -13,5 +13,3 @@ impl<T> MyStruct<T> {
         self.x = x;
     }
 }
-fn main() {
-}

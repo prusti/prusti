@@ -12,5 +12,3 @@ pub fn test4() -> S2 {
     assert!(y.f == 9);  //~ERROR: the asserted expression might not hold
     y
 }
-
-fn main() {}

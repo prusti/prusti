@@ -15,5 +15,3 @@ impl <T> Percentage<T> {
         }
     }
 }
-
-fn main() {}

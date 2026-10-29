@@ -5,5 +5,3 @@ fn compare() -> bool {
         false
     }
 }
-
-fn main(){}

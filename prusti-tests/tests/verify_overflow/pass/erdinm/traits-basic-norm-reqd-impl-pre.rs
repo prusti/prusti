@@ -12,5 +12,3 @@ impl Percentage for Effective {
         assert!(arg <= 100);
     }
 }
-
-fn main() {}

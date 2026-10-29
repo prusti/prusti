@@ -7,5 +7,3 @@ struct X(u8, u8);
 fn f() -> X {
     X(0, 0)
 }
-
-fn main() {}

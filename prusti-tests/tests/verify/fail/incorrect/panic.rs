@@ -9,6 +9,3 @@ fn prepare_client(client_state: &AnyClientState) -> Result<u32, u64> {
     };
     panic!() //~ERROR: panic!(..) statement might be reachable
 }
-
-fn main() {
-}

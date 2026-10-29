@@ -9,5 +9,3 @@ impl QueryClient
         unimplemented!()
     }
 }
-
-fn main() {}

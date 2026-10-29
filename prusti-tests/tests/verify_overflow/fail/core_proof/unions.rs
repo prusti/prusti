@@ -37,5 +37,3 @@ fn test5() {
     assert!(unsafe { a.f1 == 2});
     assert!(unsafe { a.f1 == 3}); //~ ERROR: the asserted expression might not hold
 }
-
-fn main() {}

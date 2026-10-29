@@ -19,5 +19,3 @@ impl B {
 pub fn test(b: &mut B) -> usize {
     b.len()
 }
-
-fn main() {}

@@ -8,5 +8,3 @@ use std::collections::BTreeSet;
 fn union(lhs: &BTreeSet<u32>) {
     lhs.union(lhs).cloned();
 }
-
-fn main() {}

@@ -14,5 +14,3 @@ fn recursive_get_last(head: &mut List) -> &mut u32 {
         Some(box ref mut next_ref) => recursive_get_last(next_ref)
     }
 }
-
-fn main() {}

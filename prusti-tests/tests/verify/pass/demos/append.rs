@@ -38,5 +38,3 @@ fn client(a: &mut List, b: &mut List) {
     assert!(a.len() == old_len_a + 1);
     assert!(b.len() == old_len_b);
 }
-
-fn main() {}

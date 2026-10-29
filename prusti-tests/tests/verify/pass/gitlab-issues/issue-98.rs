@@ -48,5 +48,3 @@ fn replace(dest: &mut Link, src: Link) -> Link {
 pub fn pop(s: &mut List) {
     replace(&mut s.head, Link::Empty);
 }
-
-fn main() {}

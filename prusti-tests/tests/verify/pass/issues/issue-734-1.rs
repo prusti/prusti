@@ -11,5 +11,3 @@ pub fn bar(inner: &[usize; 4]) -> bool {
     foo(inner);
     true
 }
-
-fn main() {}

@@ -12,5 +12,3 @@ impl SomeTrait for SomeStruct {
         }
     }
 }
-
-fn main() {}

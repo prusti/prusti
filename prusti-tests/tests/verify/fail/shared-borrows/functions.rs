@@ -59,6 +59,3 @@ pub fn test8() {
     assert!(*x == 5);
     assert!(false); //~ERROR: the asserted expression might not hold
 }
-
-fn main() {
-}

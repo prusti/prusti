@@ -1,8 +1,6 @@
 //@ known-failure
 use prusti_contracts::*;
 
-fn main() {}
-
 #[requires(a.len() > 5)]
 fn slice(a: &[i32]) {
     let s = &a[1..4];

@@ -140,5 +140,3 @@ fn binary_search(arr: &VecWrapperI32, elem: &i32) -> UsizeOption {
 
     result
 }
-
-fn main() {}

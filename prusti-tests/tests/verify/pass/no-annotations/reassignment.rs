@@ -17,5 +17,3 @@ fn reassignment(a: InfiniteList) {
 
     consume(x);
 }
-
-fn main(){}

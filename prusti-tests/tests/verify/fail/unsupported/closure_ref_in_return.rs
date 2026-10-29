@@ -23,5 +23,3 @@ fn go(key_name: String) -> () {
         key_name
     };
 }
-
-fn main() {}

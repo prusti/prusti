@@ -10,6 +10,3 @@ trait Trait {
 #[requires(x.output_copy() === y)]
 #[requires(x.input_copy(z))]
 fn test<U: Copy, T: Trait<Assoc = U>>(x: &mut T, y: U, z: U) {}
-
-#[trusted]
-fn main() {}

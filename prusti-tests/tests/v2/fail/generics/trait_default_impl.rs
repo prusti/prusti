@@ -5,5 +5,3 @@ trait Foo {
 
     }
 }
-
-fn main(){}

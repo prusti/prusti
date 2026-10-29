@@ -13,5 +13,3 @@ fn test_u64_ge_zero(x: u64) {
 fn test_usize_ge_zero(x: usize) {
     assert!(x >= 0);
 }
-
-fn main() {}

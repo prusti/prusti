@@ -20,5 +20,3 @@ fn iso_week_days(yday: i32, wday: i32) -> i32 {
     yday - (yday - wday + iso_week1_wday + big_enough_multiple_of_7) % 7
         + iso_week1_wday - iso_week_start_wday
 }
-
-fn main() {}

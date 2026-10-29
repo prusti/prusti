@@ -13,5 +13,3 @@ fn check_join(mut x: (T, T)) -> T {
     // After the join we would like to use `x.1`
     x.1
 }
-
-fn main() {}

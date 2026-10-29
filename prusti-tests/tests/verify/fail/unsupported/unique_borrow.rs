@@ -27,5 +27,3 @@ impl Lazy<u32> {
         }
     }
 }
-
-fn main() {}

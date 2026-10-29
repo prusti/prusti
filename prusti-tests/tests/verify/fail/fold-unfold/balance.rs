@@ -28,5 +28,3 @@ impl Account {
         other.deposit(amount);
     }
 }
-
-fn main() {}

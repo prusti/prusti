@@ -16,5 +16,3 @@ fn client() -> i32 {
     let incremented_container = increment_container(num_container);
     incremented_container.content
 }
-
-fn main(){}

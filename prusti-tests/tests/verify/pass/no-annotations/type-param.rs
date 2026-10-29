@@ -11,5 +11,3 @@ fn set_if_consistent<T: PartialEq>(old: &mut Option<T>, new: T) -> Option<()> {
         Some(())
     }
 }
-
-fn main() {}

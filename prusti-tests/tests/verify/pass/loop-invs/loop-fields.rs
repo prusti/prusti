@@ -21,5 +21,3 @@ fn test1(a: H) -> T {
     }
     a.g
 }
-
-fn main() {}

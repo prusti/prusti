@@ -65,5 +65,3 @@ fn verify_no_match_2() {
     let f = FooNoMatch2;
     assert!(f.foo() > 0); //~ ERROR: [Prusti: verification error] the asserted expression might not hold
 }
-
-fn main() {}

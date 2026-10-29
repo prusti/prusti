@@ -125,5 +125,3 @@ pub fn test() {
 
     print_sorted_array(&mut array);
 }
-
-fn main() { }

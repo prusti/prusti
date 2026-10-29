@@ -84,5 +84,3 @@ pub fn test4(cond: bool) {
         assert!(b.f == 3);
     }
 }
-
-fn main() {}

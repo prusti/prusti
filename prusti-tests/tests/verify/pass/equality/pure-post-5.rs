@@ -11,6 +11,3 @@ struct A {
 fn first(_x: A, _y: A) -> A {
     _x
 }
-
-fn main() {
-}

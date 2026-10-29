@@ -15,6 +15,3 @@ fn client() -> bool {
     let y = bool::bar(x);
     y > x
 }
-
-fn main(){
-}

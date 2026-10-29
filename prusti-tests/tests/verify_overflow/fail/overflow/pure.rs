@@ -28,6 +28,3 @@ fn u32_foo_call_2() {
 #[ensures(u32_foo() == 5)] //~ ERROR
 fn u32_foo_call_3() {
 }
-
-fn main() {}
-

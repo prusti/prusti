@@ -49,6 +49,3 @@ pub fn test8() {
     assert!(a == 5);
     assert!(*x == 5);
 }
-
-fn main() {
-}

@@ -1,8 +1,6 @@
 //@ known-failure
 use prusti_contracts::*;
 
-fn main() {}
-
 #[ensures(result <= 3)]
 fn foo() -> usize {
     let mut a = [1, 2, 3];

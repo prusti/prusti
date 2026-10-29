@@ -14,5 +14,3 @@ impl MyWrapper {
 fn test(x: MyWrapper) -> u32 {
     x.unwrap()
 }
-
-fn main() { }

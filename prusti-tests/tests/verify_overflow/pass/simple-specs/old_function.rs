@@ -11,5 +11,3 @@ fn get_x(t: &T) -> u32 {
 
 #[ensures(old(get_x(t)) == get_x(t))]
 fn test(t: &mut T) {}
-
-fn main() {}

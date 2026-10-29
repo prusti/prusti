@@ -77,5 +77,3 @@ fn lookup5(head: &List, index: isize) -> u32 {
         }
     }
 }
-
-fn main() {}

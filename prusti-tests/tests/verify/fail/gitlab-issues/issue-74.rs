@@ -69,5 +69,3 @@ pub fn binary_search_iter(arr: VecWrapperusize, target: usize) -> Option<usize> 
 
     return result;
 }
-
-fn main() {}

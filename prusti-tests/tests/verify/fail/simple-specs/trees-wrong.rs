@@ -69,5 +69,3 @@ fn do_solve1(i: isize, fruits: &mut VecWrapperU32) -> u32 {
         )
     }
 }
-
-fn main() {}

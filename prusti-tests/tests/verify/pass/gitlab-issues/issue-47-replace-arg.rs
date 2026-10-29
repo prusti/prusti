@@ -13,5 +13,3 @@ fn test(x: &mut S) {
         f: 456
     };
 }
-
-fn main() {}

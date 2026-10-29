@@ -218,6 +218,3 @@ fn test22() -> u32 {
 fn test23() {
     loop {}
 }
-
-fn main() {}
-

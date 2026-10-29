@@ -57,5 +57,3 @@ pub fn test3<T>(s: &Pair<T>, i: Pair<T>) -> Pair<T> {
 pub fn test4<T>(s: &Pair<T>, i: Pair<T>) -> Pair<T> {
     bar(i, s)
 }
-
-fn main() {}

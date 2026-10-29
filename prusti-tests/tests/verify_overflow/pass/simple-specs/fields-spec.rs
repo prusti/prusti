@@ -21,7 +21,3 @@ fn test_struct_field(x: S) -> S {
         b: x.a
     }
 }
-
-fn main() {
-
-}

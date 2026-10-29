@@ -24,5 +24,3 @@ fn test() {
     assert!(sum(1) != 0);
     assert!(sum(1) == 1);
 }
-
-fn main() {}

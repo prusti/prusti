@@ -13,7 +13,3 @@ fn extract(x: &mut T) -> i32 {
     let x = &mut z;
     y.f
 }
-
-fn main() {
-
-}

@@ -118,5 +118,3 @@ fn router(
 }
 
 fn process(_data: &mut StringWrapper) {}
-
-fn main() { }

@@ -11,5 +11,3 @@ fn to_right(x: Either, y: Either) -> Either {
         }
     }
 }
-
-fn main() {}

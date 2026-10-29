@@ -22,6 +22,3 @@ fn identity_use() {
     z.val = 6;
     assert!(t.val == 6);
 }
-
-
-fn main() {}

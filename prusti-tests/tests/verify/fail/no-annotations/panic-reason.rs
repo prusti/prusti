@@ -123,5 +123,3 @@ macro_rules! inner_unimplemented {
 fn test_inner_unimplemented(x: bool) {
     inner_unimplemented!();
 }
-
-fn main() {}

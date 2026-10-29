@@ -26,5 +26,3 @@ fn shift_end(mut line: (Point, Point), d: u32) -> (Point, Point) {
     line.1 = new_end;
     line
 }
-
-fn main(){}

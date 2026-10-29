@@ -118,5 +118,3 @@ fn test() {
     knuth_shuffle(&mut v);
     print_vector_after(&mut v);
 }
-
-fn main(){}

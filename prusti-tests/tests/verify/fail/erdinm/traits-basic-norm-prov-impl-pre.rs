@@ -14,5 +14,3 @@ impl Percentage for Effective {
         assert!(arg <= 99); //~ERROR: the asserted expression might not hold
     }
 }
-
-fn main() {}

@@ -1,8 +1,6 @@
 #![allow(unused_comparisons)]
 use prusti_contracts::*;
 
-fn main() {}
-
 fn _test_u8(x: u8) {
     prusti_assert!(x >= 0);
 }

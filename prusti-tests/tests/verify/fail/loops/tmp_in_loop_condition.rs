@@ -54,5 +54,3 @@ fn test2() {
     let tmp_ref = &tmp;
     let tmp_ref_mut = &mut tmp;
 }
-
-fn main() {}

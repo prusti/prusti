@@ -8,7 +8,3 @@ fn test_match_expr(x: i32) -> Option<i32> {
     assert!(x == -42);
     Some(x)
 }
-
-fn main() {
-
-}

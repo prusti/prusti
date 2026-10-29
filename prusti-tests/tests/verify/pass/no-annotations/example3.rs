@@ -10,7 +10,3 @@ fn foo(x: IntOption) -> i32 {
         IntOption::None => 456
     }
 }
-
-fn main() {
-
-}

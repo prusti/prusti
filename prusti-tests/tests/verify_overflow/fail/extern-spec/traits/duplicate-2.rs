@@ -13,5 +13,3 @@ trait Iterator {
     #[requires(true)]
     fn next(&mut self) -> Option<Self::Item>; //~ ERROR: duplicate specification for std::iter::Iterator::next
 }
-
-fn main() {}

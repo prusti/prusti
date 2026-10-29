@@ -98,5 +98,3 @@ impl<T> KeyStore<T>
         }
     }
 }
-
-fn main() {}

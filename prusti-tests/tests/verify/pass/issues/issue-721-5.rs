@@ -24,5 +24,3 @@ impl A {
         self.start()
     }
 }
-
-fn main() {}

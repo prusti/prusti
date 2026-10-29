@@ -40,5 +40,3 @@ fn test() {
 
     assert!(i == 60);
 }
-
-fn main() {}

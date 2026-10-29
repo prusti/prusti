@@ -176,5 +176,3 @@ fn borrow_test4(arr: &mut VecWrapperI32, elem: &mut i32) {
         continue_loop = size > 2;
     }
 }
-
-fn main() {}

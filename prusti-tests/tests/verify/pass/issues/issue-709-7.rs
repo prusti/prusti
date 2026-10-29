@@ -15,5 +15,3 @@ impl B {
         self.inner.len()
     }
 }
-
-fn main() {}

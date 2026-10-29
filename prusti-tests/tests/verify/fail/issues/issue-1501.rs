@@ -42,5 +42,3 @@ fn bad_5() {
 fn bad_6() {
     prusti_assert!(!matches!(Ordering::Greater, Ordering::Greater)); //~ ERROR: asserted expression might not hold
 }
-
-fn main() {}

@@ -71,5 +71,3 @@ where
     #[ensures(self.len() == old(self.len()) + 1)]
     pub fn insert(&mut self, value: T) -> bool;
 }
-
-fn main() {}

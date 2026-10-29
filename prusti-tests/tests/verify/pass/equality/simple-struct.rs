@@ -45,6 +45,3 @@ fn test_construct_eq() {
 fn test_eq_propagation(_x: &A, _y: &A) -> i32 {
     get_value(_x) + get_value(_y)
 }
-
-fn main() {
-}

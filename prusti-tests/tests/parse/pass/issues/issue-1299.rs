@@ -14,5 +14,3 @@ fn b(x: u64) -> u64 {
 fn c(x: u64) -> u64 {
     if x == 0 { 1 } else { 0 }
 }
-
-fn main() {}

@@ -19,5 +19,3 @@ pub fn unwrap_outside<T>(this: declaring::Either<T>) -> T {
         declaring::Either::Empty(_) => unreachable!(),
     }
 }
-
-fn main() {}

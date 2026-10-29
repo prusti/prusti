@@ -43,5 +43,3 @@ fn prepend_list(x: u32, tail: List) -> List {
         next: Some(Box::new(tail)),
     }
 }
-
-fn main() {}

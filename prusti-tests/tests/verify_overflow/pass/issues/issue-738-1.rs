@@ -23,5 +23,3 @@ impl A {
 pub fn test(slice: &[A]) -> bool {
     true
 }
-
-fn main() {}

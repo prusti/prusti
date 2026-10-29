@@ -12,5 +12,3 @@ fn test3() {
     assert!(x == 5);
     assert!(z == 3);
 }
-
-fn main() {}

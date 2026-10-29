@@ -27,5 +27,3 @@ impl Hasher for H {
     }
     fn write(&mut self, _b: &[u8]) {}
 }
-
-fn main() {}

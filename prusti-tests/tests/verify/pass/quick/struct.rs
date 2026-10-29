@@ -26,6 +26,3 @@ fn constructor_as_value(_a: [u8; 1]) -> Array {
     let make = Array;
     make(0)
 }
-
-fn main(){
-}

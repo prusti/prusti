@@ -19,5 +19,3 @@ fn sum_call(a: u32, b: u32) -> Option<u32> {
         None
     }
 }
-
-fn main() {}

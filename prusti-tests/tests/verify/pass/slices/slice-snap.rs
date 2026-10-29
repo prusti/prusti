@@ -1,8 +1,6 @@
 //@ known-failure
 use prusti_contracts::*;
 
-fn main() {}
-
 #[pure]
 fn foo(x: &[i32]) -> i32 {
     if x.len() > 0 {

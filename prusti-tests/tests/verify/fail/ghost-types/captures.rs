@@ -41,5 +41,3 @@ fn move_outer() {
         //~| ERROR: use of moved value: `v`
     };
 }
-
-fn main() {}

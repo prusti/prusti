@@ -74,5 +74,3 @@ fn more_wrong_assumptions() {
 fn prusti_syntax_in_assumptions(x: i32) {
     prusti_assume!(x > 0 ==> x > -1);
 }
-
-fn main() {}

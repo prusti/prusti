@@ -14,6 +14,3 @@ trait MyTrait {
         43
     }
 }
-
-fn main() {
-}

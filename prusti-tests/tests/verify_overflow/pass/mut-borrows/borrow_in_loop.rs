@@ -7,5 +7,3 @@ fn test() {
         take(y);
     }
 }
-
-fn main() {}

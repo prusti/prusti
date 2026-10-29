@@ -22,5 +22,3 @@ impl Percentage {
         return self.value * 2
     }
 }
-
-fn main() {}

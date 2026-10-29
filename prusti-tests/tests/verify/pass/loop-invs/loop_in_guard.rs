@@ -17,5 +17,3 @@ fn test_loop_in_guard() {
 
     assert!(i == 60);
 }
-
-fn main() {}

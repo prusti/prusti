@@ -15,6 +15,3 @@ fn union(orig_this: UnificationTable) {
     let mut this = orig_this;
     this.unify_var_var();
 }
-
-#[trusted]
-fn main() {}

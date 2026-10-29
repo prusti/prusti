@@ -28,5 +28,3 @@ fn test6() {
     test4(1, 2);
     assert!(false);
 }
-
-fn main() {}

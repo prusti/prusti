@@ -24,5 +24,3 @@ fn test() {
 
     assert!(i == 10);
 }
-
-fn main() {}

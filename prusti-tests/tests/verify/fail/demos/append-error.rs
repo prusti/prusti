@@ -32,5 +32,3 @@ fn client(a: &mut List, b: &mut List) {
     append(a, 100);
     assert!(b.len() != old_len); //~ ERROR
 }
-
-fn main() {}

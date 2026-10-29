@@ -17,5 +17,3 @@ impl A for Foo {
 fn verify(foo: Foo) {
     assert!(foo.res() == 42);
 }
-
-fn main() {}

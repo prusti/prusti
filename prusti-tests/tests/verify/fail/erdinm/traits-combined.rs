@@ -47,5 +47,3 @@ fn test_set_fail<T: Percentage>(t: &mut T) {
 fn test_set_pass<T: Percentage>(t: &mut T) {
     t.set(100);
 }
-
-fn main() {}

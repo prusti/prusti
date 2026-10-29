@@ -24,6 +24,3 @@ impl Stack {
         }
     }
 }
-
-#[trusted]
-fn main() {}

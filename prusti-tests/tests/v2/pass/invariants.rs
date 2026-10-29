@@ -1,8 +1,5 @@
 use prusti_contracts::*;
 
-#[trusted]
-fn main() {}
-
 /// Arbitrary value to drive a loop condition.
 #[trusted]
 fn choose() -> bool { true }

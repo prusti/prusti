@@ -19,6 +19,3 @@ fn foo<'a>(switch: bool) -> MyStruct {
     let z = x;
     z
 }
-
-fn main() {
-}

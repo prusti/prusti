@@ -24,5 +24,3 @@ pub fn test(b: &mut B) {
         *b.get_mut(1) = A { inner: 1 };
     }
 }
-
-fn main() {}

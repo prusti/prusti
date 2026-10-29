@@ -14,5 +14,3 @@ impl A {
 pub fn test(a: A) -> A {
     a.get().get()
 }
-
-fn main() {}

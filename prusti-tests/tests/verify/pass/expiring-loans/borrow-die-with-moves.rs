@@ -24,5 +24,3 @@ fn test1(x: &mut F) {
     let _z = &mut *_z;
     let _z = &mut *_z;
 }
-
-fn main() {}

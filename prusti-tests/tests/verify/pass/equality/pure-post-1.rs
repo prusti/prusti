@@ -11,6 +11,3 @@ struct A {
 fn get_value(_x: A, _y: A) -> A {
     _x
 }
-
-fn main() {
-}

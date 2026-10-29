@@ -37,5 +37,3 @@ fn reassignment2b(a: InfiniteList2) {
     x = *(*(*(*(*x.next).next).next).next).next;
     consume2(x);
 }
-
-fn main(){}

@@ -34,5 +34,3 @@ fn lookup(head: &List, index: usize) -> u32 {
 
 #[ensures(len(&result) > 0)]
 fn identity(list: List) -> List { list }
-
-fn main() {}

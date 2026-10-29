@@ -12,5 +12,3 @@ fn good(x: u32) {}
     true
 })]
 fn bad(x: u32) {}
-
-fn main() {}

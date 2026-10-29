@@ -58,6 +58,3 @@ fn linear_search<T: Eq>(arr: &VecWrapper<T>, elem: &T) -> UsizeOption {
         UsizeOption::None
     }
 }
-
-#[trusted]
-fn main() {}

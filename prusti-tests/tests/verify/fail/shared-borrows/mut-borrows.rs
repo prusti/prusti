@@ -29,6 +29,3 @@ pub fn test4(x: &mut u32) {
     *x = 5;
     assert!(false); //~ERROR: the asserted expression might not hold
 }
-
-fn main() {
-}

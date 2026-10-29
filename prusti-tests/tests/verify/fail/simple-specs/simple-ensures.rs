@@ -5,7 +5,3 @@ use prusti_contracts::*;
 fn func() -> u32{
     5
 }
-
-fn main() {
-
-}

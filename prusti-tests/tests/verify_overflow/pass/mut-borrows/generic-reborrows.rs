@@ -9,5 +9,3 @@ pub fn test1() {
     let x = reborrow(&mut a);
     *x = 4;
 }
-
-fn main() {}

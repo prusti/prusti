@@ -13,5 +13,3 @@ fn test_borrow_in_guard() {
         drop(x);
     }
 }
-
-fn main() {}

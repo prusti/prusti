@@ -58,5 +58,3 @@ fn write_through_mut_ref_after_branch(b: bool) {
         i += 1;
     }
 }
-
-fn main() {}

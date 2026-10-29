@@ -64,5 +64,3 @@ fn binary_search_help(arr: VecWrapperusize, left: usize, right: usize, target: u
     }
     return None;
 }
-
-fn main() {}

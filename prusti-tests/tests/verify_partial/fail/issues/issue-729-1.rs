@@ -30,5 +30,3 @@ impl A {
         }
     }
 }
-
-fn main() {}

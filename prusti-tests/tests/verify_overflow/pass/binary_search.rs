@@ -23,8 +23,6 @@ impl<T: std::cmp::PartialEq> std::option::Option<T> {
 })]
 fn option_peek(opt: &Option<usize>) -> usize { unimplemented!() }
 
-fn main() {}
-
 predicate! {
     fn sorted(s: &[i32]) -> bool {
         forall(|i: usize, j: usize| (i < j && j < s.len()) ==> s[i] <= s[j])

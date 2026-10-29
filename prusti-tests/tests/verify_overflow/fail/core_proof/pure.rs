@@ -47,5 +47,3 @@ fn count(n: usize) -> usize {
 #[ensures(count(2) == 2)]
 #[ensures(count(3) == 3)]
 fn test5() {}
-
-fn main() {}

@@ -9,7 +9,3 @@ trait Foo {
         unimplemented!()
     }
 }
-
-fn main() {
-
-}

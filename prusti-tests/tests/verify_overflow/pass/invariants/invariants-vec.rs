@@ -16,5 +16,3 @@ fn get_first<T: Copy>(p: Vec<T>) -> T {
 fn get_first_percentage(p: Vec<Percentage>) -> Percentage {
     get_first(p)
 }
-
-fn main() {}

@@ -16,5 +16,3 @@ fn id(x: A) -> A {
 fn foo(x: A) -> A {
     x
 }
-
-fn main() {}

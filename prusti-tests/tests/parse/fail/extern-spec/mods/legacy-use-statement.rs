@@ -1,7 +1,5 @@
 use prusti_contracts::*;
 
-fn main() {}
-
 #[extern_spec]
 mod example {
     // parsing continues even after the first error

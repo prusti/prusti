@@ -22,5 +22,3 @@ fn align_x_endpoint(
   assert!((*segm.0).x == (*segm.1).x);
   segm
 }
-
-fn main() {}

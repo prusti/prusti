@@ -35,5 +35,3 @@ fn test3(arg: &mut Number<i8, i16>) {
     test2a(arg);
     test2b(arg);
 }
-
-fn main() {}

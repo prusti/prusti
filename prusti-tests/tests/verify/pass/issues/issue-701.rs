@@ -19,5 +19,3 @@ fn misbehavior_invariant(m: &Wrapper) -> bool {
     };
     true
 }
-
-fn main(){}

@@ -11,5 +11,3 @@ fn test(x: i32) {
         i -= 1;
     }
 }
-
-fn main() {}

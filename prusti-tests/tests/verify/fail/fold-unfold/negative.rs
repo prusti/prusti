@@ -21,6 +21,3 @@ fn test4(a: u32) {
     let b = a - 5;
     test3(b); //~ERROR: implicit type invariant expected by the function call might not hold.
 }
-
-
-fn main() {}

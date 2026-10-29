@@ -1,8 +1,6 @@
 //@ compile-flags: -Popt_in_verification=false
 use prusti_contracts::*;
 
-fn main() {}
-
 fn i_am_not_verified() {
     unreachable!(); //~ ERROR
 }

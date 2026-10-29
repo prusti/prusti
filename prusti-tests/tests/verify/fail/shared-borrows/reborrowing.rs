@@ -24,7 +24,3 @@ pub fn test1() {
     assert!(a == 6);
     assert!(false); //~ERROR: the asserted expression might not hold
 }
-
-fn main() {
-}
-

@@ -102,5 +102,3 @@ fn test13() {
 fn test14(mut a: i32) {
     a = 5;
 }
-
-fn main() {}

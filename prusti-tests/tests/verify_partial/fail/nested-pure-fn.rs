@@ -21,5 +21,3 @@ fn pred(m: &Struct) -> bool {
     //~| NOTE: We would appreciate a bug report
     //~| NOTE: there is no procedure contract for loan
 }
-
-fn main() {}

@@ -10,5 +10,3 @@ fn void_unwrap<T>(this: Result<T, Box<Void>>) -> T {
         Err(e) => unreachable(e)
     }
 }
-
-fn main() {}

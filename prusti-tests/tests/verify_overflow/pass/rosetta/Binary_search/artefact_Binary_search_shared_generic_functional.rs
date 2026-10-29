@@ -163,6 +163,3 @@ fn binary_search<T: Ord>(arr: &VecWrapper<T>, elem: &T) -> MyOption<usize> {
 
     result
 }
-
-fn main() {}
-

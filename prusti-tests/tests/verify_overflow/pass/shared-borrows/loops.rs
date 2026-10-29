@@ -54,6 +54,3 @@ pub fn test4(n: &i32) {
         cond = i < *n;
     }
 }
-
-fn main() {
-}

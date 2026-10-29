@@ -67,5 +67,3 @@ fn test9<T, U: Default>(a: T) -> T {
     assert!(false);  //~ ERROR: the asserted expression might not hold
     b
 }
-
-fn main() {}

@@ -4,8 +4,6 @@
 
 use prusti_contracts::*;
 
-fn main() {}
-
 #[requires(x < 100_000)]
 #[requires(x >= 0)]
 #[terminates(Int::from(x))]

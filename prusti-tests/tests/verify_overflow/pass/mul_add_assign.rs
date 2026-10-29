@@ -9,5 +9,3 @@ use prusti_contracts::*;
 fn mul_add_assign(s: &mut i32, a: i32, b: i32) {
     *s = (*s * a) + b
 }
-
-fn main() {}

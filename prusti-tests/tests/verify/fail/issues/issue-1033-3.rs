@@ -1,7 +1,5 @@
 use prusti_contracts::*;
 
-fn main() {}
-
 pub struct Foo<T>(T);
 
 impl<T: PartialEq> Foo<T> {

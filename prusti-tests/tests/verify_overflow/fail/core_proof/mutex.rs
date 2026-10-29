@@ -41,5 +41,3 @@ fn test5<T>(m: &Mutex<T>) {
         }
     }
 }
-
-fn main() {}

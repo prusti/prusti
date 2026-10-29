@@ -16,5 +16,3 @@ pub fn add(&self, delta: u64) -> Height {
 }
 
 }
-
-fn main(){}

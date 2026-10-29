@@ -11,5 +11,3 @@ fn test2<U: Clone>(pair: &mut Pair<i8, U>) {
     let x = pair.b.clone();
     consume(x);
 }
-
-fn main() {}

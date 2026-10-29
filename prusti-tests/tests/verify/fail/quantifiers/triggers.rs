@@ -34,5 +34,3 @@ pub fn test3() {
     dummy(4, 5);
     assert!(fib(4) == 5);
 }
-
-fn main() {}

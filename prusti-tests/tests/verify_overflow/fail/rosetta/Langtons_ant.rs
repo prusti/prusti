@@ -156,5 +156,3 @@ impl Direction {
         }
     }
 }
-
-fn main(){}

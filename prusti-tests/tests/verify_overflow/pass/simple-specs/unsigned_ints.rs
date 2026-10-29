@@ -27,5 +27,3 @@ fn test3(x: usize, y: u32, z: i32) {
     assert!(x >= 0);
     assert!(y >= 0);
 }
-
-fn main() {}

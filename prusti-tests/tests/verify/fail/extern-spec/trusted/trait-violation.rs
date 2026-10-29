@@ -22,5 +22,3 @@ impl Hasher for H {
     }
     fn write(&mut self, _bytes: &[u8]) {}
 }
-
-fn main() {}

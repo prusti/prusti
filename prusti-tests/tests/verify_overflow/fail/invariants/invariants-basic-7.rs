@@ -25,5 +25,3 @@ fn adjust_percentage(percentage: &mut Percentage, flag: bool) { //~ERROR: type i
        percentage.value -= 20; // broken restore invariant
    }
 }
-
-fn main() {}

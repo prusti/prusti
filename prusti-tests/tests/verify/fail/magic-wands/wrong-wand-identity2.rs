@@ -55,5 +55,3 @@ fn identity_use3() {
     assert!(*v == 8);
     assert!(t.val == 9); //~ ERROR: the asserted expression might not hold
 }
-
-fn main() {}

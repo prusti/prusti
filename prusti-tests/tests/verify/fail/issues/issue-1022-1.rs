@@ -11,5 +11,3 @@ impl SomeTrait for SomeStruct {
         panic!()
     }
 }
-
-fn main() {}

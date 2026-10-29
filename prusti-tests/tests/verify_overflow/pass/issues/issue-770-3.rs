@@ -23,5 +23,3 @@ impl A {
     #[requires(self.invariant())]
     pub const fn test(&self) {}
 }
-
-fn main() {}

@@ -11,5 +11,3 @@ impl S {
         S { f }
     }
 }
-
-fn main() {}

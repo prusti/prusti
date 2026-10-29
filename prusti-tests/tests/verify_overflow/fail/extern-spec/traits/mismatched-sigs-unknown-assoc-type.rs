@@ -10,5 +10,3 @@ trait Iterator {
 
     fn next(&mut self) -> Option<Self::Item>;
 }
-
-fn main() {}

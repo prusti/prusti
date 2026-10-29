@@ -6,5 +6,3 @@ use prusti_contracts::*;
     None => true,
 })]
 fn foo(x: &mut Option<i32>) {}
-
-fn main() { }

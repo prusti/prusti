@@ -33,5 +33,3 @@ fn call_inside_loop(percentage: &mut Percentage) {
         i += 1;
     }
 }
-
-fn main() {}

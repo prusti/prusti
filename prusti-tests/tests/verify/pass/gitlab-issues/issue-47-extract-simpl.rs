@@ -22,5 +22,3 @@ fn extract(x: &mut T) -> i32 {
     }
     // In Viper, `x` may be an alias of `z` or `y` (which has been unfolded)
 }
-
-fn main() {}

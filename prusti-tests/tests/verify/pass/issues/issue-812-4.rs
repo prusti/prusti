@@ -4,8 +4,6 @@
 
 use prusti_contracts::*;
 
-fn main() {}
-
 #[pure]
 #[requires(forall(|i: usize| (0 <= i && i < slice.len()) ==> (slice[i] > 10), triggers=[(slice[i],slice.len(),baz(slice))]))]
 fn foo(slice: &[i32]) {}

@@ -10,6 +10,3 @@ fn foo<'a>(arg: MyStruct) -> (i32, i32) {
     let z = MyStruct { a: 555, b: (666, 777) };
     y.b
 }
-
-fn main() {
-}

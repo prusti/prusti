@@ -12,5 +12,3 @@ predicate! {
         true
     }
 }
-
-fn main() {}

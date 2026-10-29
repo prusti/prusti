@@ -17,5 +17,3 @@ impl<T> SafeVec<T> {
         self.0.get_unchecked(idx)
     }
 }
-
-fn main() {}

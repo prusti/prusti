@@ -12,6 +12,3 @@ fn bar<'a, T: Copy>(val: T) -> &'a Option<&'a T> { unimplemented!() }
 #[pure]
 #[trusted]
 fn baz<'a, T>(val: &'a T) -> Option<&'a T> { unimplemented!() }
-
-fn main() {
-}

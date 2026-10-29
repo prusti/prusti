@@ -9,5 +9,3 @@ fn mc91(n: isize) -> isize {
         mc91(mc91(n + 11))
     }
 }
-
-fn main() {}

@@ -59,5 +59,3 @@ fn identity_use3() {
     // Failing tests must go to the `tests/verify/fail/` folder
     //assert!(t.val == 9);
 }
-
-fn main() {}

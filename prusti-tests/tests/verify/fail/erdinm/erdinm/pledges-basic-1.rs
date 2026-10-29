@@ -10,5 +10,3 @@ fn test() {
     let y = must_answer(&mut x); //~ERROR: obligation might not hold on borrow expiry
     //*y = 42;
 }
-
-fn main() {}

@@ -10,5 +10,3 @@ fn test() {
     // The following assertion should not raise verification errors
     assert!(1 == 2);
 }
-
-fn main() {}

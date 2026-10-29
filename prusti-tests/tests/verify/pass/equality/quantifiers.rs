@@ -8,5 +8,3 @@ fn test(_foo: A) {}
 
 #[requires(forall(|other: u32| _foo == other))]
 fn test2(_foo: u32) {}
-
-fn main() {}

@@ -77,6 +77,3 @@ fn test3(y: &mut F) {
 
 fn use_both(_f: &mut G, _g: &mut G) {
 }
-
-fn main() {
-}

@@ -15,7 +15,3 @@ fn extract(x: &mut T) -> i32 {
     //k.f
     y.f
 }
-
-fn main() {
-
-}

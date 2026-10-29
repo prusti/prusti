@@ -27,7 +27,3 @@ impl<T: Copy> Foo for Baz<T> {
         unimplemented!()
     }
 }
-
-fn main() {
-
-}

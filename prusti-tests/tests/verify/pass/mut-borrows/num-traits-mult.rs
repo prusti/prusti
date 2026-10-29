@@ -11,5 +11,3 @@ impl MyMulAddAssign for isize {
         *self = (*self * a) + b
     }
 }
-
-fn main(){}

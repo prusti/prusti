@@ -67,5 +67,3 @@ fn shift_signed_right_4() {
     let b = a >> 2u32;
     assert!(b == 1);
 }
-
-fn main() {}

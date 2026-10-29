@@ -19,5 +19,3 @@ pub fn a() -> A {
 pub fn test() -> usize {
     a().len()
 }
-
-fn main() {}

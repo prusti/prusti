@@ -19,5 +19,3 @@ impl A {
         let _ = Self::new(2);
     }
 }
-
-fn main() {}

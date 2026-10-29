@@ -24,5 +24,3 @@ impl B {
     #[requires(_i < self.get_non_negative())]
     pub const fn test(&self, _i: isize) {}
 }
-
-fn main() {}

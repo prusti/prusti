@@ -25,5 +25,3 @@ fn client(mut p: Point, mut q: Point) {
     shift_x(&mut p, s);
     assert!(p.x == q.x && p.y == q.y);
 }
-
-fn main() {}

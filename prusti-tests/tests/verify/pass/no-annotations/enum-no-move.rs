@@ -22,5 +22,3 @@ fn test(x: OptionEither) {
     };
     assert!(y == z);
 }
-
-fn main() {}

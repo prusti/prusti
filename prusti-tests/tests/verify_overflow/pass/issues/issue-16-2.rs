@@ -153,6 +153,3 @@ fn binary_search_alt<T: Val>(arr: &VecWrapper<T>, elem: &T) -> UsizeOption {
 
     UsizeOption::None
 }
-
-#[trusted]
-fn main() {}

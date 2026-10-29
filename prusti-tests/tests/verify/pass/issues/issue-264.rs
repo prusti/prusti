@@ -15,5 +15,3 @@ impl T {
         }
     }
 }
-
-fn main() {}

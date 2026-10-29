@@ -13,6 +13,3 @@ fn bitxor_2() {
     let b = a ^ 2;
     assert!(b == 253);  //~ ERROR: the asserted expression might not hold
 }
-
-fn main() {}
-

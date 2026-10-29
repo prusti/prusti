@@ -14,5 +14,3 @@ fn take_left(tree: Tree) -> Option<Tree> {
         None => None,
     }
 }
-
-fn main() {}

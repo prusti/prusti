@@ -15,7 +15,3 @@ impl MyTrait for MyStruct {
 
     fn bar(&self); //~ ERROR: the trait bound `MyStruct: MyTrait` is not satisfied [E0277]
 }
-
-fn main() {
-
-}

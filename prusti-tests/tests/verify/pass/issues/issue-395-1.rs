@@ -4,5 +4,3 @@ use prusti_contracts::*;
 fn f() -> (u8, u8) {
     (0, 0)
 }
-
-fn main() {}

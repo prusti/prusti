@@ -12,5 +12,3 @@ fn test() {
     x = &mut y;
     use_ref(x);
 }
-
-fn main() {}

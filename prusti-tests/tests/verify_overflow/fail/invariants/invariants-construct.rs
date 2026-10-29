@@ -9,5 +9,3 @@ struct Percentage {
 fn make_percentage() -> Percentage { //~ERROR: type invariants
     Percentage { value: 101 }
 }
-
-fn main() {}
