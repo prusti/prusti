@@ -127,6 +127,10 @@ impl<'vir, D: TyDatas<'vir>> TySpecifics<'vir, D> {
     pub fn is_param(&self) -> bool {
         matches!(self, Self::Param(_))
     }
+
+    pub fn is_opaque(&self) -> bool {
+        matches!(self, Self::Opaque(_))
+    }
 }
 
 impl<'vir, D: TyDatas<'vir>> TyData<'vir, D> {
