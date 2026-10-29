@@ -141,9 +141,18 @@ jobs:
   # Run all the tests.
   all-tests:
     needs: [compile-check, smir-check] # , quick-tests]
+    name: all-tests (${{ matrix.os }}, ${{ matrix.tests.name }})
     strategy:
       matrix:
         os: [ubuntu-latest] # , windows-latest, macos-latest]
+        # Test groups run in parallel jobs, selected by path filters.
+        tests:
+          - name: parse, typecheck, verify/fail
+            filters: tests/parse/ tests/typecheck/ tests/verify/fail/
+          - name: verify/pass
+            filters: tests/verify/pass/
+          - name: verify_overflow
+            filters: tests/verify_overflow/
       fail-fast: false
     runs-on: ${{ matrix.os }}
     env:
@@ -173,7 +182,7 @@ jobs:
       - name: Prepare verification cache keys
         shell: bash
         run: |
-          VER_CACHE_KEY_SHARED=prusti-cache-$(cat viper-toolchain)-$(date +%Y-%m)
+          VER_CACHE_KEY_SHARED=prusti-cache-$(cat viper-toolchain)-$(date +%Y-%m)-${{ strategy.job-index }}
           echo "VER_CACHE_KEY_SHARED=$VER_CACHE_KEY_SHARED" >> $GITHUB_ENV
           echo "VER_CACHE_KEY_UNIQUE=$VER_CACHE_KEY_SHARED-${RANDOM}${RANDOM}" >> $GITHUB_ENV
       - name: Load verification cache
@@ -187,9 +196,10 @@ jobs:
       - name: Build with cargo
         run: python x.py build --all
       - name: Run cargo tests
-        run: python x.py test -p prusti-tests
+        run: python x.py test -p prusti-tests -- ${{ matrix.tests.filters }}
         #run: python x.py test --all
       - name: Check prusti-contracts
+        if: strategy.job-index == 0
         run: |
           cd prusti-contracts/prusti-contracts-test/
           cargo +stable build
