@@ -345,7 +345,27 @@ impl<'a> Verifier<'a> {
             );
             let is_empty = self.jni.unwrap_result(scala::Option::with(self.env).call_isEmpty(viper_result_option));
             if is_empty {
-                panic!("Error during typechecking/consistency checking!");
+                // The frontend rejected the program before verifying it, e.g. in a consistency
+                // check of a plugin, and recorded why in its errors.
+                let abstract_error_wrapper = silver::verifier::AbstractError::with(self.env);
+                let errors = self
+                    .jni
+                    .unwrap_result(self.frontend_wrapper.call_errors(self.frontend_instance));
+                return VerificationResultKind::ConsistencyErrors(
+                    self.jni
+                        .seq_to_vec(errors)
+                        .into_iter()
+                        .map(|e| {
+                            let pos = self.jni.unwrap_result(abstract_error_wrapper.call_pos(e));
+                            let pos_id = extract_pos_id(&self.jni, self.env, pos);
+                            let message = self.jni.to_string(
+                                self.jni
+                                    .unwrap_result(abstract_error_wrapper.call_readableMessage(e)),
+                            );
+                            ConsistencyError { pos_id, message }
+                        })
+                        .collect(),
+                );
             }
             let viper_result = self.jni.unwrap_result(scala::Some::with(self.env).call_get(viper_result_option));
             debug!(

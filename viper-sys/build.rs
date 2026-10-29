@@ -153,6 +153,7 @@ fn main() {
                 method!("setVerifier"),
                 method!("verification"),
                 method!("getVerificationResult"),
+                method!("errors"),
                 method!("setState"),
                 method!("verifier"),
                 method!("config"),
@@ -817,6 +818,8 @@ fn main() {
                 method!("errors"),
             ]),
             java_class!("viper.silver.verifier.AbstractError", vec![
+                method!("pos"),
+                method!("readableMessage"),
             ]),
             java_class!("viper.silver.verifier.TimeoutOccurred", vec![
                 method!("n"),
