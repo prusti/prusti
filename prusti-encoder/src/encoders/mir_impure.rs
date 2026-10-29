@@ -363,6 +363,9 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 let e_rvalue_ty = self.ty_use_pure(rvalue_ty);
                 let place_ty = place.ty(self.local_decls, self.vcx.tcx());
                 let ty = self.ty_use_impure(place_ty.ty);
+                if ty.specifics.is_opaque() {
+                    return Err(self.unsupported_opaque(place_ty.ty, "discriminant").into());
+                }
                 let place_expr = self.encode_place(Place::from(*place))?.expr;
 
                 Ok(match ty
@@ -577,6 +580,9 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             .vcx
             .maybe_apply_label(ref_p.expr.expect_predicate(), label);
         let data = self.ty_use_impure(place_ty.ty);
+        if data.specifics.is_opaque() {
+            return Err(self.unsupported_opaque(place_ty.ty, "fields"));
+        }
 
         let index = expansion
             .and_then(|expansion| expansion.guide())
@@ -1108,6 +1114,9 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 let place_ty = place_enc.ty;
                 let place_enc = place_enc.expr.expect_predicate();
                 let data = self.ty_use_impure(place_ty.ty);
+                if data.specifics.is_opaque() {
+                    return Err(self.unsupported_opaque(place_ty.ty, "fields"));
+                }
                 // TODO: guide should be implemented on `RepackOp`
                 let guide = match repack_op {
                     pcg::free_pcs::RepackOp::Expand(expand) => expand.guide(),
@@ -1387,6 +1396,9 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         Ok(match elem {
             mir::ProjectionElem::Field(field_idx, _) => {
                 let e_ty = self.ty_use_impure(place_ty.ty);
+                if e_ty.specifics.is_opaque() {
+                    return Err(self.unsupported_opaque(place_ty.ty, "fields"));
+                }
                 let field_access = e_ty.expect_variant_opt(place_ty.variant_index);
                 // Only the last field of a struct/tuple can be unsized (a DST's
                 // tail); it then shares the containing value's pointer metadata.
