@@ -4,23 +4,53 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-#![allow(dead_code)]
-
-// use log::{error, info};
 use prusti_server::spawn_server_thread;
 use std::{
-    env,
+    env, fs,
     io::Write,
+    num::NonZeroUsize,
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicUsize, Ordering},
         Mutex,
     },
 };
-use ui_test::{run_tests, spanned::Spanned, AbortCheck, Config};
+use ui_test::{
+    default_file_filter, default_per_file_config, run_tests_generic,
+    spanned::Spanned,
+    status_emitter::{Gha, StatusEmitter},
+    AbortCheck, Args, Config,
+};
 
 /// Silicon's time limit (in seconds) per test file, so that a slow test cannot hold up the suite.
 const EXTRA_VERIFIER_ARGS: &str = "--timeout=90";
+
+/// The test groups, each with `fail` and `pass` tests in `prusti-tests/tests/<group>/`, and the
+/// environment that Prusti runs them in. The `ui` tests of each group are not run yet.
+const GROUPS: [(&str, &[(&str, &str)]); 4] = [
+    // Test the parsing of specifications. This doesn't run the verifier.
+    ("parse", &[("PRUSTI_VERIFY_MODE", "compile-only")]),
+    // Test the type-checking of specifications. This doesn't run the verifier.
+    ("typecheck", &[("PRUSTI_VERIFY_MODE", "compile-only")]),
+    // Test the verifier.
+    (
+        "verify",
+        &[
+            ("PRUSTI_CHECK_OVERFLOWS", "false"),
+            ("PRUSTI_EXTRA_VERIFIER_ARGS", EXTRA_VERIFIER_ARGS),
+        ],
+    ),
+    // Test the verifier with overflow checks enabled.
+    (
+        "verify_overflow",
+        &[("PRUSTI_EXTRA_VERIFIER_ARGS", EXTRA_VERIFIER_ARGS)],
+    ),
+];
+
+type TestsResult = ui_test::color_eyre::Result<()>;
+
+/// The number of tests marked `//@ known-failure` that were run.
+static KNOWN_FAILURES: AtomicUsize = AtomicUsize::new(0);
 
 fn find_prusti_rustc_path() -> PathBuf {
     let target_directory = if cfg!(debug_assertions) {
@@ -45,223 +75,158 @@ fn find_prusti_rustc_path() -> PathBuf {
     );
 }
 
-fn run_prusti_tests(
-    group_name: &str,
-    rustc_flags: &[&str],
-    rustc_env: &[(&str, &str)],
-) -> ui_test::color_eyre::Result<()> {
-    static ABORT_CHECK: Mutex<Option<AbortCheck>> = Mutex::new(None);
-    _ = ctrlc::try_set_handler(move || {
-        if let Some(abort_check) = &*ABORT_CHECK.lock().unwrap() {
-            abort_check.abort();
-        }
-    });
-    static KNOWN_FAILURES: AtomicUsize = AtomicUsize::new(0);
-
-    let prusti_config = |path| {
-        let mut config = Config::rustc(&path);
-        config.out_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/ui");
-        *ABORT_CHECK.lock().unwrap() = Some(config.abort_check.clone());
-        config.program.program = find_prusti_rustc_path();
-        config
-            .program
-            .args
-            .extend(rustc_flags.iter().map(|s| s.into()));
-        config
-            .program
-            .envs
-            .push(("RUSTC_ICE".into(), Some("0".into()))); // suppress rustc-ice*.txt files
-        config
-            .program
-            .envs
-            .extend(rustc_env.iter().map(|(k, v)| (k.into(), Some(v.into()))));
-        // `//@ known-failure` marks a test that should pass but currently fails
-        // verification. Such a test succeeds as long as verification fails, and
-        // fails once it verifies, so that the annotation gets removed.
-        config
-            .custom_comments
-            .insert("known-failure", |parser, _args, span| {
-                KNOWN_FAILURES.fetch_add(1, Ordering::Relaxed);
-                parser.exit_status = Spanned::new(1, span.clone()).into();
-                parser.normalize_stderr.push((
-                    ui_test::Match::Regex(regex::bytes::Regex::new("(?s).*").unwrap()),
-                    b"".into(),
-                ));
-                parser.set_custom_once("no-rustfix", (), span);
-            });
-        config
-    };
-
-    /*
-    // UI
-    {
-        let config = prusti_config(format!("prusti-tests/tests/{group_name}/ui"));
-        // "--color=never {}"
-        run_tests(config)?;
-    }
-
-    // fail
-    {
-        let mut config = prusti_config(format!("prusti-tests/tests/{group_name}/fail"));
-        config.comment_defaults.base().normalize_stderr.push((
-            ui_test::Match::Regex(regex::bytes::Regex::new(".*\n").unwrap()),
-            b"".into(),
-        ));
-        run_tests(config)?;
-    }
-    */
-
-    // pass
-    {
-        let mut config = prusti_config(format!("prusti-tests/tests/{group_name}/pass"));
-        config.comment_defaults.base().exit_status = Spanned::dummy(0).into();
-        config.comment_defaults.base().require_annotations = Spanned::dummy(false).into();
-        let result = run_tests(config);
-        let known_failures = format!(
-            "Test files still marked `//@ known-failure`: {}",
-            KNOWN_FAILURES.swap(0, Ordering::Relaxed)
-        );
-        println!("{known_failures}");
-        if let Some(mut summary) = ui_test::github_actions::summary() {
-            writeln!(summary, "\n{known_failures}")?;
-        }
-        result?;
-    }
-
-    Ok(())
-}
-
-fn run_no_verification(group_name: &str) {
-    run_prusti_tests(
-        group_name,
-        &[],
-        &[
-            ("PRUSTI_FULL_COMPILATION", "true"),
-            ("PRUSTI_VERIFY_MODE", "compile-only"),
-            ("PRUSTI_QUIET", "true"),
-        ],
-    )
-    .unwrap();
-}
-
-fn run_verification_no_overflow(group_name: &str) {
-    run_prusti_tests(
-        group_name,
-        &["-Awarnings"],
-        &[
+fn prusti_config(path: String, env: &[(&str, &str)], abort_check: &AbortCheck) -> Config {
+    let mut config = Config::rustc(path);
+    config.out_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/ui");
+    config.abort_check = abort_check.clone();
+    config.program.program = find_prusti_rustc_path();
+    config.program.args.push("-Awarnings".into());
+    config
+        .program
+        .envs
+        .push(("RUSTC_ICE".into(), Some("0".into()))); // suppress rustc-ice*.txt files
+    config.program.envs.extend(
+        [
             ("PRUSTI_FULL_COMPILATION", "true"),
             ("PRUSTI_QUIET", "true"),
-            ("PRUSTI_CHECK_OVERFLOWS", "false"),
-            ("PRUSTI_EXTRA_VERIFIER_ARGS", EXTRA_VERIFIER_ARGS),
-        ],
-    )
-    .unwrap();
+        ]
+        .iter()
+        .chain(env)
+        .map(|(k, v)| (k.into(), Some(v.into()))),
+    );
+    // `//@ known-failure` marks a test that should pass but currently fails
+    // verification. Such a test succeeds as long as verification fails, and
+    // fails once it verifies, so that the annotation gets removed. For
+    // `fail` tests, see `run`.
+    config
+        .custom_comments
+        .insert("known-failure", |parser, _args, span| {
+            KNOWN_FAILURES.fetch_add(1, Ordering::Relaxed);
+            parser.exit_status = Spanned::new(1, span.clone()).into();
+            parser.normalize_stderr.push((
+                ui_test::Match::Regex(regex::bytes::Regex::new("(?s).*").unwrap()),
+                b"".into(),
+            ));
+            parser.set_custom_once("no-rustfix", (), span);
+        });
+    config
 }
 
-fn run_verification_overflow(group_name: &str) {
-    run_prusti_tests(
-        group_name,
-        &["-Awarnings"],
-        &[
-            ("PRUSTI_FULL_COMPILATION", "true"),
-            ("PRUSTI_QUIET", "true"),
-            ("PRUSTI_EXTRA_VERIFIER_ARGS", EXTRA_VERIFIER_ARGS),
-        ],
-    )
-    .unwrap();
-}
-
-fn run_verification_core_proof(group_name: &str) {
-    run_prusti_tests(
-        group_name,
-        &["-Awarnings"],
-        &[
-            ("PRUSTI_FULL_COMPILATION", "true"),
-            ("PRUSTI_QUIET", "true"),
-            ("PRUSTI_CHECK_PANICS", "false"),
-            ("PRUSTI_CHECK_OVERFLOWS", "false"),
-            ("PRUSTI_EXTRA_VERIFIER_ARGS", EXTRA_VERIFIER_ARGS),
-        ],
-    )
-    .unwrap();
-}
-
-fn run_lifetimes_dump(group_name: &str) {
-    run_prusti_tests(
-        group_name,
-        &[],
-        &[
-            ("PRUSTI_VERIFY_MODE", "compile-only"),
-            ("PRUSTI_DUMP_BORROWCK_INFO", "true"),
-            ("PRUSTI_QUIET", "true"),
-        ],
-    )
-    .unwrap();
-}
-
-pub(crate) fn run() {
+pub(crate) fn run() -> TestsResult {
     // Run from the repository root, so that reported test paths are relative to it.
-    env::set_current_dir(Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap()).unwrap();
+    env::set_current_dir(Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap())?;
 
     // Spawn server process as child (so it stays around until main function terminates)
     let server_address = spawn_server_thread();
     env::set_var("PRUSTI_SERVER_ADDRESS", server_address.to_string());
 
-    /*
-    // Run (temporary) tests specific to Prusti v2.
-    println!("[v2]");
-    run_verification_no_overflow("v2");
+    let abort_check = AbortCheck::default();
+    let ctrlc_abort_check = abort_check.clone();
+    _ = ctrlc::try_set_handler(move || ctrlc_abort_check.abort());
 
-        let save_verification_cache =
-            || match ureq::post(&format!("http://{server_address}/save")).call() {
-                Ok(response) => {
-                    info!("Saving verification cache: {}", response.status_text());
-                }
-                Err(ureq::Error::Status(_code, response)) => {
-                    error!("Error while saving verification cache: {response:?}");
-                }
-                Err(err) => error!("Error while saving verification cache: {err}"),
-            };
+    let args = Args::test()?;
+    let mut configs = vec![];
+    for (group_name, env) in GROUPS {
+        let mut fail = prusti_config(
+            format!("prusti-tests/tests/{group_name}/fail"),
+            env,
+            &abort_check,
+        );
+        fail.comment_defaults.base().normalize_stderr.push((
+            ui_test::Match::Regex(regex::bytes::Regex::new(".*\n").unwrap()),
+            b"".into(),
+        ));
+        let mut pass = prusti_config(
+            format!("prusti-tests/tests/{group_name}/pass"),
+            env,
+            &abort_check,
+        );
+        pass.comment_defaults.base().exit_status = Spanned::dummy(0).into();
+        pass.comment_defaults.base().require_annotations = Spanned::dummy(false).into();
+        configs.extend([fail, pass]);
+    }
+    for config in &mut configs {
+        config.with_args(&args);
+    }
 
-        // Test the parsing of specifications. This doesn't run the verifier.
-        println!("[parse]");
-        run_no_verification("parse");
+    // A `fail` test marked `//@ known-failure` does not report the errors it is annotated with
+    // yet. Such a test is run on its own afterwards and succeeds as long as it fails, and fails
+    // once it passes, so that the annotation gets removed.
+    let is_known_failure = |path: &Path| {
+        fs::read_to_string(path).is_ok_and(|contents| contents.contains("//@ known-failure"))
+    };
+    let known_failing_fail_tests = Mutex::new(vec![]);
+    let result = run_tests_generic(
+        configs,
+        |path, config| {
+            let matched = default_file_filter(path, config)?;
+            if matched && config.root_dir.ends_with("fail") && is_known_failure(path) {
+                let test = (path.to_path_buf(), config.clone());
+                known_failing_fail_tests.lock().unwrap().push(test);
+                return Some(false);
+            }
+            Some(matched)
+        },
+        default_per_file_config,
+        (
+            Box::<dyn StatusEmitter>::from(args.format),
+            Gha {
+                name: "prusti-tests".to_string(),
+                group: true,
+            },
+        ),
+    );
+    let mut fixed = vec![];
+    for (path, config) in known_failing_fail_tests.into_inner().unwrap() {
+        let passed = run_tests_generic(
+            vec![config],
+            |candidate, _| Some(candidate == path),
+            default_per_file_config,
+            (),
+        )
+        .is_ok();
+        println!(
+            "{} ... {}",
+            path.display(),
+            if passed { "FIXED" } else { "known failure" }
+        );
+        if passed {
+            // Reported like a failing `pass` test: annotated at the marker in the PR diff.
+            let marker_line = fs::read_to_string(&path)?
+                .lines()
+                .position(|line| line.contains("//@ known-failure"))
+                .and_then(|index| NonZeroUsize::new(index + 1));
+            let error = ui_test::github_actions::error(
+                path.display(),
+                "test marked `//@ known-failure` now passes, remove the annotation",
+            );
+            drop(match marker_line {
+                Some(line) => error.line(line),
+                None => error,
+            });
+            fixed.push(path);
+        }
+    }
 
-        // Test the type-checking of specifications. This doesn't run the verifier.
-        println!("[typecheck]");
-        run_no_verification("typecheck");
-    */
-
-    // Test the verifier.
-    println!("[verify]");
-    run_verification_no_overflow("verify");
-
-    /*
-        save_verification_cache();
-
-        // Test the verifier with overflow checks enabled.
-        println!("[verify_overflow]");
-        run_verification_overflow("verify_overflow");
-        save_verification_cache();
-
-        // Test the verifier with test cases that only partially verify due to known open issues.
-        // The purpose of these tests is two-fold: 1. these tests help prevent potential further
-        // regressions, because the tests also test code paths not covered by other tests; and
-        // 2. a failing test without any errors notifies the developer when a proper fix is in
-        // place. In this case, these test can be moved to the `verify/pass/` or
-        // `verify_overflow/pass` folders.
-        println!("[verify_partial]");
-        run_verification_overflow("verify_partial");
-        save_verification_cache();
-
-        // Test the verifier with panic checks disabled (i.e. verify only the core proof).
-        println!("[core_proof]");
-        run_verification_core_proof("core_proof");
-        save_verification_cache();
-
-        // Test the verifier with panic checks disabled (i.e. verify only the core proof).
-        println!("[lifetimes_dump]");
-        run_lifetimes_dump("lifetimes_dump");
-        save_verification_cache();
-    */
+    let known_failures = format!(
+        "Test files still marked `//@ known-failure`: {}",
+        KNOWN_FAILURES.load(Ordering::Relaxed)
+    );
+    println!("{known_failures}");
+    if let Some(mut summary) = ui_test::github_actions::summary() {
+        writeln!(summary, "\n{known_failures}")?;
+        if !fixed.is_empty() {
+            writeln!(summary, "### `//@ known-failure` tests that now pass")?;
+            for path in &fixed {
+                writeln!(summary, "* {}", path.display())?;
+            }
+        }
+    }
+    result?;
+    if !fixed.is_empty() {
+        ui_test::color_eyre::eyre::bail!(
+            "tests marked `//@ known-failure` now pass, remove the annotation: {fixed:?}"
+        );
+    }
+    Ok(())
 }
