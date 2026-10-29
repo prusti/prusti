@@ -8,14 +8,14 @@ use prusti_contracts::*;
 fn failing_assert_in_ghost() {
     ghost! {
         let x = Int::from(2) + Int::from(2);
-        prusti_assert!(x == Int::from(5)); //~ERROR: assertion might not hold
+        prusti_assert!(x == Int::from(5)); //~ERROR: the asserted expression might not hold
     };
 }
 
 // The block's value is the body's value: a wrong claim about it must fail.
 fn ghost_value_is_constrained() {
     let x = ghost! { Int::from(1) };
-    prusti_assert!(*x === Int::from(2)); //~ERROR: assertion might not hold
+    prusti_assert!(*x === Int::from(2)); //~ERROR: the asserted expression might not hold
 }
 
 #[requires(x < 100)]

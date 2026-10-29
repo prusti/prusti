@@ -11,5 +11,5 @@ fn bitor_1() {
 fn bitor_2() {
     let a = 1u8;
     let b = a | 2;
-    assert!(b == 1);    //~ ERROR: the asserted expression might not hold
+    assert!(b == 1);    //~ ERROR: might not hold
 }

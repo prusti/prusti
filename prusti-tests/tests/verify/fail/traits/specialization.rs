@@ -47,7 +47,7 @@ mod fn_spec {
     }
 
     pub fn wrong_u8(x: &u8) {
-        prusti_assert!(get_it(x) == 1); //~ ERROR: assertion might not hold
+        prusti_assert!(get_it(x) == 1); //~ ERROR: the asserted expression might not hold
     }
 }
 

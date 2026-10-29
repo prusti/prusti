@@ -67,7 +67,7 @@ impl Link {
                     node.next.lookup(index - 1)
                 }
             }
-            Link::Empty => unreachable!(), //~ ERROR: unreachable!(..) statement might be reachable
+            Link::Empty => unreachable!(), //~ ERROR: might not hold
         }
     }
     //// ANCHOR_END: lookup

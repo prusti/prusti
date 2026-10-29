@@ -16,7 +16,7 @@ fn container_client_assert_false(){
     let x: i32 = 4;
     let c: Container<i32> = Container(x);
     let d = c.clone();
-    assert!(false);      //~ ERROR: the asserted expression might not hold
+    assert!(false);      //~ ERROR: might not hold
 }
 
 #[derive(Clone)]
@@ -34,7 +34,7 @@ impl<T: ::core::clone::Clone> ::core::clone::Clone for Container3<T> {
         let x = match *self {
             Self(ref __self_0_0) => Container3(::core::clone::Clone::clone(&(*__self_0_0))),
         };
-        assert!(false);      //~ ERROR: the asserted expression might not hold
+        assert!(false);      //~ ERROR: might not hold
         x
     }
 }

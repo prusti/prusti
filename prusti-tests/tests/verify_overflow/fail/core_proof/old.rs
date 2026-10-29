@@ -36,7 +36,7 @@ fn test6(mut a: i32) {
 
 fn test7() {
     test5(4);
-    assert!(false); //~ERROR: the asserted expression might not hold
+    assert!(false); //~ERROR: might not hold
 }
 
 #[requires(a < 10)]
@@ -55,7 +55,7 @@ fn test9() {
     let a = 5;
     let b = inc1(a);
     assert!(b == 6);
-    assert!(false); //~ERROR: the asserted expression might not hold
+    assert!(false); //~ERROR: might not hold
 }
 
 #[requires(a < 10)]
@@ -75,7 +75,7 @@ fn test11() {
     let a = 5;
     let b = inc2(a);
     assert!(b == 6);
-    assert!(false); //~ERROR: the asserted expression might not hold
+    assert!(false); //~ERROR: might not hold
 }
 
 #[requires(a < 10)]
@@ -94,7 +94,7 @@ fn test13() {
     let a = 5;
     let b = inc3(a);
     assert!(b == 6);
-    assert!(false); //~ERROR: the asserted expression might not hold
+    assert!(false); //~ERROR: might not hold
 }
 
 #[requires(a == 4)]

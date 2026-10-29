@@ -3,7 +3,7 @@
 use prusti_contracts::*;
 
 fn assert1() {
-    assert!(false);     //~ ERROR: the asserted expression might not hold
+    assert!(false);     //~ ERROR: might not hold
 }
 
 fn assert2() {

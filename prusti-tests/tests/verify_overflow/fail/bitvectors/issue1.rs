@@ -28,7 +28,7 @@ pub mod m {
             a[i] = t2;
             i += 1;
         }
-        assert!(false);     //~ ERROR: the asserted expression might not hold
+        assert!(false);     //~ ERROR: might not hold
     }
 
     pub type A15 = [u8; 15];
@@ -55,20 +55,20 @@ pub mod m {
             a[i] = t2;
             i += 1;
         }
-        assert!(false);     //~ ERROR: the asserted expression might not hold
+        assert!(false);     //~ ERROR: might not hold
     }
 
     pub fn f_fail2(y: u8) {
         let z = y;
         let x: u32 = 6;
         let t1 = (x & 26);
-        assert!(false);     //~ ERROR: the asserted expression might not hold
+        assert!(false);     //~ ERROR: might not hold
     }
 
     pub fn f_fail3(y: i8) {
         let z = y;
         let x: i8 = 6;
         let t1 = (x & 26);
-        assert!(false);     //~ ERROR: the asserted expression might not hold
+        assert!(false);     //~ ERROR: might not hold
     }
 }

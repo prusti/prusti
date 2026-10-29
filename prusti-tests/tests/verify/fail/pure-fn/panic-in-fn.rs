@@ -34,7 +34,7 @@ fn lookup2(head: &List, index: isize) -> u32 {
     } else {
         match head.next {
             Some(box ref tail) => lookup(tail, index - 1),
-            None => panic!() //~ERROR: panic!(..) statement might be reachable
+            None => panic!() //~ERROR: might not hold
         }
     }
 }
@@ -46,7 +46,7 @@ fn lookup3(head: &List, index: isize) -> u32 {
     } else {
         match head.next {
             Some(box ref tail) => lookup(tail, index - 1),
-            None => unreachable!() //~ERROR: unreachable!(..) statement might be reachable
+            None => unreachable!() //~ERROR: might not hold
         }
     }
 }
@@ -58,7 +58,7 @@ fn lookup4(head: &List, index: isize) -> u32 {
     } else {
         match head.next {
             Some(box ref tail) => lookup(tail, index - 1),
-            None => unimplemented!() //~ERROR: unimplemented!(..) statement might be reachable
+            None => unimplemented!() //~ERROR: might not hold
         }
     }
 }
@@ -71,7 +71,7 @@ fn lookup5(head: &List, index: isize) -> u32 {
         match head.next {
             Some(box ref tail) => lookup(tail, index - 1),
             None => {
-                assert!(false); //~ERROR: the asserted expression might not hold
+                assert!(false); //~ERROR: might not hold
                 0
             }
         }

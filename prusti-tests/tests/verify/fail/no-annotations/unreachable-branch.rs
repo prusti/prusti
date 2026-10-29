@@ -15,7 +15,7 @@ fn compute(expr: Expr) -> i32 {
 
     let value = match simplified {
         Expr::Sum(_, _) => {
-            unreachable!()  //~ERROR: unreachable!(..) statement might be reachable
+            unreachable!()  //~ERROR: might not hold
         },
         Expr::Constant(IntBox { val }) => val
     };

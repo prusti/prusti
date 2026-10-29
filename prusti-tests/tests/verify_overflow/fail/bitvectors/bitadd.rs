@@ -13,5 +13,5 @@ fn bitadd_2() {
     let a = 1u8;
     let b = a | 2;
     let c = b + 4;
-    assert!(c == 8);    //~ ERROR: the asserted expression might not hold
+    assert!(c == 8);    //~ ERROR: might not hold
 }

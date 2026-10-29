@@ -1,3 +1,3 @@
 fn foo(x: i32) -> i32 {
-    unreachable!(); //~ERROR: unreachable!(..) statement might be reachable
+    unreachable!(); //~ERROR: might not hold
 }

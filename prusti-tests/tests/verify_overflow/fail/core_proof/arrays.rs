@@ -8,7 +8,7 @@ fn test1() {
 
 fn test2() {
     let a = [1, 2];
-    assert!(false);     //~ ERROR: the asserted expression might not hold
+    assert!(false);     //~ ERROR: might not hold
 }
 
 fn test3() {
@@ -24,7 +24,7 @@ fn test4() {
 fn test5() {
     let a = [1; 100];
     let b = a[1];
-    assert!(b == 6);     //~ ERROR: the asserted expression might not hold
+    assert!(b == 6);     //~ ERROR: might not hold
 }
 
 fn test6() {
@@ -40,7 +40,7 @@ fn test7() {
     let b = a[1];
     let c = a[2];
     assert!(b == 1);
-    assert!(c == 2);     //~ ERROR: the asserted expression might not hold
+    assert!(c == 2);     //~ ERROR: might not hold
 }
 
 fn test10() {

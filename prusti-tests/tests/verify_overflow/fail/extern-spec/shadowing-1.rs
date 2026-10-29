@@ -41,5 +41,5 @@ impl Max for TestStruct {
 
 fn main() {
     let x = TestStruct::max(1, 2);
-    assert!(x == 2) //~ ERROR: the asserted expression might not hold
+    assert!(x == 2) //~ ERROR: might not hold
 }

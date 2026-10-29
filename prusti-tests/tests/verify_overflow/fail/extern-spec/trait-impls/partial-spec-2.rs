@@ -31,5 +31,5 @@ fn main() {
     assert!(s1.foo() == 42);
 
     let s2 = Struct2 {};
-    assert!(s2.foo() == 43); //~ ERROR: the asserted expression might not hold
+    assert!(s2.foo() == 43); //~ ERROR: might not hold
 }

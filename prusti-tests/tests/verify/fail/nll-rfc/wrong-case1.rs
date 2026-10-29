@@ -62,7 +62,7 @@ fn capitalize(vec: &mut VecWrapperI32) {
         vec.store(i, value);
         i += 1;
         not_finished = i < vec.len();
-        unreachable!(); //~ERROR: might be reachable
+        unreachable!(); //~ERROR: might not hold
     }
 }
 

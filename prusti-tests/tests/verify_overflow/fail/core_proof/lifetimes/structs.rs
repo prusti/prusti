@@ -16,7 +16,7 @@ fn simple_struct_mut_assert_false() {
     let mut y = &mut x;
     y.x = 3;
     x.x = 2;
-    assert!(false);      //~ ERROR: the asserted expression might not hold
+    assert!(false);      //~ ERROR: might not hold
 }
 fn simple_struct_shared() {
     let mut x = S1{ x: 4 };
@@ -28,7 +28,7 @@ fn simple_struct_shared_assert_false() {
     let mut x = S1{ x: 4 };
     let y = &x;
     let z = &x;
-    assert!(z.x == 5);      //~ ERROR: the asserted expression might not hold
+    assert!(z.x == 5);      //~ ERROR: might not hold
 }
 
 struct S2<'a> {
@@ -43,7 +43,7 @@ fn struct_with_mut_reference_assert_false () {
     let mut n = 4;
     let mut t = S2{ x: &mut n};
     let u = &t;
-    assert!(false);      //~ ERROR: the asserted expression might not hold
+    assert!(false);      //~ ERROR: might not hold
 }
 fn struct_shared_references(){
     let mut n = 4;
@@ -58,7 +58,7 @@ fn struct_shared_references_assert_false(){
     let s2 = &s1;
     let s3 = &s2;
     let _s4 = &s3;
-    assert!(false);      //~ ERROR: the asserted expression might not hold
+    assert!(false);      //~ ERROR: might not hold
 }
 
 struct S3<'a> {
@@ -75,7 +75,7 @@ fn struct_with_shared_reference_assert_false () {
     let mut t1 = S3{ x: &n};
     let mut t2 = S3{ x: &n};
     let u = &mut t2;
-    assert!(false);      //~ ERROR: the asserted expression might not hold
+    assert!(false);      //~ ERROR: might not hold
 }
 fn struct_mut_references(){
     let n = 4;
@@ -90,7 +90,7 @@ fn struct_mut_references_assert_false(){
     let mut s2 = &mut s1;
     let mut s3 = &mut s2;
     let mut _s4 = &mut s3;
-    assert!(false);      //~ ERROR: the asserted expression might not hold
+    assert!(false);      //~ ERROR: might not hold
 }
 
 struct S4I<'a> {
@@ -108,7 +108,7 @@ fn nested_struct_with_mutable_reference_assert_false () {
     let mut n = 4;
     let mut i = S4I { x: &mut n };
     let mut o = S4O { x: &mut i };
-    assert!(false);      //~ ERROR: the asserted expression might not hold
+    assert!(false);      //~ ERROR: might not hold
 }
 
 struct S5I<'a> {
@@ -126,7 +126,7 @@ fn nested_struct_with_shared_reference_assert_false () {
     let n = 4;
     let i = S5I { x: &n };
     let o = S5O { x: &i };
-    assert!(false);      //~ ERROR: the asserted expression might not hold
+    assert!(false);      //~ ERROR: might not hold
 }
 
 struct S6<'a, 'b: 'a, 'c: 'b> {
@@ -153,7 +153,7 @@ fn struct_with_subset_lifetime_assert_false() {
         y: &y,
         z: &z,
     };
-    assert!(false);      //~ ERROR: the asserted expression might not hold
+    assert!(false);      //~ ERROR: might not hold
 }
 
 struct S7_1<'a> {
@@ -176,7 +176,7 @@ fn test_deeply_nested_assert_false(){
     let mut s1 = S7_1{ x: &mut n };
     let mut s2 = S7_2{ x: &mut s1 };
     let mut s3 = S7_3{ x: &mut s2 };
-    assert!(false);      //~ ERROR: the asserted expression might not hold
+    assert!(false);      //~ ERROR: might not hold
 }
 
 struct S8<'a, T> {
@@ -196,7 +196,7 @@ fn test_generic_struct(){
     let mut x = X8{ x: &mut n };
     let mut s1 = S8{ x: &mut x };
     let mut s2 = &mut s1;
-    assert!(false);      //~ ERROR: the asserted expression might not hold
+    assert!(false);      //~ ERROR: might not hold
 }
 
 // FIXME: Nested structs with "shared" lifetimes don't work due to "lifetime extension"

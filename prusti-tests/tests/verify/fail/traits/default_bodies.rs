@@ -31,7 +31,7 @@ pub fn generic<T: Tr>(t: &T) -> u32 {
 }
 
 pub fn overriding(o: &Over) {
-    prusti_assert!(f_of(o) == 1); //~ ERROR: assertion might not hold
+    prusti_assert!(f_of(o) == 1); //~ ERROR: the asserted expression might not hold
 }
 
 #[ensures(false)] //~ ERROR: postcondition might not hold

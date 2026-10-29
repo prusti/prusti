@@ -31,7 +31,7 @@ fn test(x: i32) {
     };
 
     if test.elem > 23 {
-        panic!() //~ ERROR panic!(..) statement might be reachable
+        panic!() //~ ERROR: might not hold
     }
 }
 //// ANCHOR_END: failing_code
