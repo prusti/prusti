@@ -27,3 +27,11 @@ fn test_eq_in_code(_a: &A<i32>, _b: &A<i32>) -> i32 {
         }
     }
 }
+
+// The derived `eq` calls `S::eq` once per field.
+#[derive(PartialEq)]
+struct Point3<S> {
+    x: S,
+    y: S,
+    z: S,
+}
