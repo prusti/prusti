@@ -941,7 +941,12 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                 };
 
                 let mut term_update = Update::new();
-                let expr = self.encode_place_update(&new_curr_ver, *destination, expr?)?;
+                let expr = self.encode_place_update(
+                    &new_curr_ver,
+                    *destination,
+                    expr?,
+                    term.source_info.span,
+                )?;
                 self.bump_version(&mut term_update, destination.local, expr, location);
                 term_update.add_to_map(&mut new_curr_ver);
 
@@ -983,7 +988,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                 mir::StatementKind::Assign(box (dest, rvalue)) => {
                     let span = stmt.source_info.span;
                     let expr = self.encode_rvalue(curr_ver, rvalue, span)?;
-                    let expr = self.encode_place_update(curr_ver, *dest, expr)?;
+                    let expr = self.encode_place_update(curr_ver, *dest, expr, span)?;
                     self.bump_version(&mut update, dest.local, expr, location);
                 }
                 k => todo!("statement kind {k:?}"),
@@ -1329,6 +1334,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
         curr_ver: &FxHashMap<mir::Local, Version<'vir>>,
         place: mir::Place<'vir>,
         mut value: ExprRet<'vir>,
+        span: Span,
     ) -> EncodeResult<'vir, ExprRet<'vir>, MirPureEnc> {
         for (base, elem) in place.iter_projections().rev() {
             let base_ty = base.ty(self.body, self.vcx.tcx());
@@ -1345,7 +1351,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                              and boxed values can be assigned to",
                             base_ty.ty
                         ),
-                        self.current_span(),
+                        span,
                     ));
                 }
             };
