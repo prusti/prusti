@@ -1,5 +1,21 @@
 use prusti_contracts::*;
 
+pub fn simple_loop() {
+    let mut x = 0;
+    while x < 100 {
+        body_invariant!(x < 100);
+        x += 1;
+    }
+}
+
+fn test_loop(b: bool) {
+    let mut g = b;
+    while g {
+        body_invariant!(g); // Ok, as the loop invariant is not reached after `g = false`
+        g = false;
+    }
+}
+
 fn test1() {
     let mut i = 0;
     while i < 10 {

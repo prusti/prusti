@@ -12,3 +12,15 @@ impl S {
         assert!(self.f == x);
     }
 }
+
+struct S2 {
+    pub f: i32
+}
+
+impl S2 {
+    #[requires(f == 123)]
+    #[ensures(result.f == 123)]
+    fn from(f: i32) -> S2 {
+        S2 { f }
+    }
+}

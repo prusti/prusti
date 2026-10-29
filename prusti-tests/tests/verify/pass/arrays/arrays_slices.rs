@@ -9,6 +9,13 @@ fn test2(x: [i32; 3]) {
     assert!(x.len() == 3);
 }
 
+fn array_len() {
+    let a = [0; 5];
+    // this will internally do <a as &[i32]>::len(), i.e. auto-deref-coerce because `len` is a
+    // method on slices, not arrays
+    assert!(a.len() == 5);
+}
+
 #[requires(N > 10)]
 fn test3<const N: usize>(x: [i32; N]) -> i32 {
     let y: &[i32] = &x;

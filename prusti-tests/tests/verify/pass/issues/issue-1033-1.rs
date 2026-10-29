@@ -9,3 +9,13 @@ impl<T: Copy + PartialEq + Eq> Foo<T> {
         left == right
     }
 }
+
+pub struct Bar<T>(T);
+
+impl<T: PartialEq> Bar<T> {
+    #[pure]
+    #[ensures(result == (left == right))]
+    fn eq(left: T, right: T) -> bool {
+        left == right
+    }
+}

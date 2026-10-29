@@ -28,3 +28,27 @@ fn u32_foo_call_2() {
 #[ensures(u32_foo() == 5)] //~ ERROR: postcondition might not hold
 fn u32_foo_call_3() {
 }
+
+#[pure]
+fn test_minus_i32(x: i32) -> i32 {
+    -x //~ERROR: negate with overflow
+}
+
+#[pure]
+fn test_minus_i64(x: i64) -> i64 {
+    -x //~ERROR: negate with overflow
+}
+
+#[pure]
+fn test_minus_isize(x: isize) -> isize {
+    -x //~ERROR: negate with overflow
+}
+
+#[pure]
+fn test_usize(x: usize) -> usize {
+    x - 1 //~ERROR: overflow
+}
+
+pub fn test() {
+    assert!(test_usize(123) >= 0);
+}

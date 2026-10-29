@@ -31,3 +31,36 @@ fn compound_assign_field(t: (i32, i32)) -> (i32, i32) {
     }
     t
 }
+
+fn test_and() {
+    assert!(true  & true  == true );
+    assert!(true  & false == false);
+    assert!(false & true  == false);
+    assert!(false & false == false);
+}
+
+fn test_or() {
+    assert!(true  | true  == true );
+    assert!(true  | false == true );
+    assert!(false | true  == true );
+    assert!(false | false == false);
+}
+
+fn test_xor() {
+    assert!(true  ^ true  == false);
+    assert!(true  ^ false == true );
+    assert!(false ^ true  == true );
+    assert!(false ^ false == false);
+}
+
+fn foo(a: u8, b: i8, c: usize, d: isize) {
+    assert!(a as char as u8 as u16 as u32 as u64 as u128 == a as u128);
+    assert!(b as i8 as i16 as i32 as i64 as i128 == b as i128);
+    assert!(c as usize == c);
+    assert!(d as isize == d);
+}
+
+fn test(x: i32) {
+    let is_pos = x.is_positive();
+    let is_neg = x.is_negative();
+}

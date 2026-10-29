@@ -4,3 +4,11 @@ fn main(){
         _ => {}
     }
 }
+
+fn compare() -> bool {
+    if "foo" == "" {
+        true
+    } else {
+        false
+    }
+}
