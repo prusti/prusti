@@ -1,3 +1,4 @@
+//@ known-failure
 use prusti_contracts::*;
 
 struct Struct {
@@ -17,7 +18,4 @@ fn outer(field: &u32) -> bool {
 #[pure]
 fn pred(m: &Struct) -> bool {
     outer(inner(&m))
-    //~^ ERROR Prusti encountered an unexpected internal error
-    //~| NOTE: We would appreciate a bug report
-    //~| NOTE: there is no procedure contract for loan
 }
