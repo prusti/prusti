@@ -941,8 +941,8 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                 };
 
                 let mut term_update = Update::new();
-                assert!(destination.projection.is_empty());
-                self.bump_version(&mut term_update, destination.local, expr?, location);
+                let expr = self.encode_place_update(&new_curr_ver, *destination, expr?)?;
+                self.bump_version(&mut term_update, destination.local, expr, location);
                 term_update.add_to_map(&mut new_curr_ver);
 
                 // walk rest of CFG
@@ -981,9 +981,9 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                 | mir::StatementKind::Nop
                 | mir::StatementKind::BackwardIncompatibleDropHint { .. } => {} // nop
                 mir::StatementKind::Assign(box (dest, rvalue)) => {
-                    //assert!(dest.projection.is_empty());
                     let span = stmt.source_info.span;
                     let expr = self.encode_rvalue(curr_ver, rvalue, span)?;
+                    let expr = self.encode_place_update(curr_ver, *dest, expr)?;
                     self.bump_version(&mut update, dest.local, expr, location);
                 }
                 k => todo!("statement kind {k:?}"),
@@ -1319,6 +1319,65 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
         }
 
         Ok(encoded_place)
+    }
+
+    /// The snapshot of `place.local` after `value` is written to `place`: the
+    /// local's snapshot with the projected part replaced, rebuilt from the
+    /// innermost projection outwards.
+    fn encode_place_update(
+        &mut self,
+        curr_ver: &FxHashMap<mir::Local, Version<'vir>>,
+        place: mir::Place<'vir>,
+        mut value: ExprRet<'vir>,
+    ) -> EncodeResult<'vir, ExprRet<'vir>, MirPureEnc> {
+        for (base, elem) in place.iter_projections().rev() {
+            let base_ty = base.ty(self.body, self.vcx.tcx());
+            let field_idx = match elem {
+                // A downcast does not change the snapshot.
+                mir::ProjectionElem::Downcast(..) => continue,
+                mir::ProjectionElem::Field(field_idx, _) => Some(field_idx.as_usize()),
+                // The boxed value is the box's last field.
+                mir::ProjectionElem::Deref if base_ty.ty.is_box() => None,
+                _ => {
+                    return Err(self.unsupported_rvalue(
+                        format!(
+                            "assignment into a value of type `{}` in pure code: only fields \
+                             and boxed values can be assigned to",
+                            base_ty.ty
+                        ),
+                        self.current_span(),
+                    ));
+                }
+            };
+            let e_ty = self.ty_use(base_ty.ty);
+            let variant = e_ty.expect_variant_opt(base_ty.variant_index);
+            let field_idx = field_idx.unwrap_or(variant.fields.len() - 1);
+            let base_proj = match base.projection {
+                [rest @ .., mir::ProjectionElem::Downcast(..)] => rest,
+                proj => proj,
+            };
+            let base_place = mir::Place {
+                local: base.local,
+                projection: self.vcx.tcx().mk_place_elems(base_proj),
+            };
+            let base_snap = self
+                .encode_place_snap(base_place.into(), curr_ver)?
+                .downcast_ty();
+            let fields = variant
+                .fields
+                .iter()
+                .enumerate()
+                .map(|(idx, field)| {
+                    if idx == field_idx {
+                        value
+                    } else {
+                        field.read(base_snap)
+                    }
+                })
+                .collect();
+            value = variant.field_snaps_to_snap(fields).upcast_ty();
+        }
+        Ok(value)
     }
 
     /// Encodes the closure argument of a quantifier/spec-block builtin: the
