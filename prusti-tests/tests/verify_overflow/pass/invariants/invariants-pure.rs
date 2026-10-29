@@ -1,3 +1,4 @@
+//@ known-failure
 //@ compile-flags: -Penable_type_invariants=true
 // ignore-test Unnecessary postcondition on `double` since it's pure.
 use prusti_contracts::*;

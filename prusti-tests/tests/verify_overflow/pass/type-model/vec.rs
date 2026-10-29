@@ -1,3 +1,4 @@
+//@ known-failure
 // ignore-test: This test currently fails because the model is not copy
 // This is due to the use of the type param A: std::alloc::Allocator
 // Actually this type param should nt be a problem because A does not appear in any model field

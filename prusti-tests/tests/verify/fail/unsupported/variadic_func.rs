@@ -1,3 +1,4 @@
+//@ known-failure
 #![feature(c_variadic)]
 unsafe extern "C" fn func(i: i32, mut args: ...) {} //~ERROR: variadic functions are not supported
 

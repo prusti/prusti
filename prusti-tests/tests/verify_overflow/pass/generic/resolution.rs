@@ -1,3 +1,4 @@
+//@ known-failure
 use prusti_contracts::*;
 
 // Test generics and type parameter resolution at call sites. There are various

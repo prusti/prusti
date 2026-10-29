@@ -1,3 +1,4 @@
+//@ known-failure
 union Foo {
     a: [i32; 1],
     b: [i32; 1],

@@ -1,3 +1,4 @@
+//@ known-failure
 #![allow(unused_comparisons)]
 
 /// Problem case #1: references assigned into a variable

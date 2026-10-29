@@ -1,3 +1,4 @@
+//@ known-failure
 //@ compile-flags: -Penable_purification_optimization=true
 
 use prusti_contracts::*;

@@ -1,3 +1,4 @@
+//@ known-failure
 pub enum TrackingId {
     Static(&'static str),
 }

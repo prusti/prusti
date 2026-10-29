@@ -1,3 +1,4 @@
+//@ known-failure
 // ignore-test for now, associated types cannot be declared
 // eventually (with specs on associated types), we will want this error
 

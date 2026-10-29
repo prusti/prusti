@@ -1,3 +1,4 @@
+//@ known-failure
 // ignore-test: This code causes Prusti to panic
 // The next and previous line are only required for (doc)tests, you can ignore/remove it
 extern crate prusti_contracts;

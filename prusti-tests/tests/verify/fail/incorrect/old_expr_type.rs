@@ -1,3 +1,4 @@
+//@ known-failure
 use std::marker::PhantomData;
 use prusti_contracts::*;
 

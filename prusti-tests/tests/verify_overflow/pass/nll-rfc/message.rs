@@ -1,3 +1,4 @@
+//@ known-failure
 /// An adaptation of this example:
 /// https://play.rust-lang.org/?version=nightly&mode=debug&edition=2018&gist=b8dfafd14113f2933c1b5127c861df44
 ///

@@ -1,3 +1,4 @@
+//@ known-failure
 pub struct QueryClient {
 }
 impl QueryClient

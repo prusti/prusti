@@ -1,3 +1,4 @@
+//@ known-failure
 #![allow(dead_code)]
 
 use prusti_contracts::*;

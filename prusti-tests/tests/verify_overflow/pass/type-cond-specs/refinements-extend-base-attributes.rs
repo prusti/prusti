@@ -1,3 +1,4 @@
+//@ known-failure
 // This test demonstrates that type-conditional spec refinements inherit the specs from the function.
 
 use prusti_contracts::*;

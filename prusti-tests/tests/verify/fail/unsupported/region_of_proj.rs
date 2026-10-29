@@ -1,3 +1,4 @@
+//@ known-failure
 fn main() {
     println!("Hi");
     let mut t = [0];

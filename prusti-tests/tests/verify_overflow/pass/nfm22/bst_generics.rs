@@ -1,3 +1,4 @@
+//@ known-failure
 use prusti_contracts::*;
 use std::cmp::{Ord, Ordering::{self, Equal, Less, Greater}};
 

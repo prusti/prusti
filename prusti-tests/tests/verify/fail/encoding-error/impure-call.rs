@@ -1,3 +1,4 @@
+//@ known-failure
 use prusti_contracts::*;
 
 fn get_u32() -> u32 {

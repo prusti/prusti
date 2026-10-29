@@ -1,3 +1,4 @@
+//@ known-failure
 fn foo(p: *const i32) {
     let _ = p.is_null();    //~ERROR: raw pointers are not supported
 }

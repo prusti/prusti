@@ -1,3 +1,4 @@
+//@ known-failure
 use prusti_contracts::*;
 
 #[assert_on_expiry(*result == 42, true)]

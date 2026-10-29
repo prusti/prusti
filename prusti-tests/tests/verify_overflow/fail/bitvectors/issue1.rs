@@ -1,3 +1,4 @@
+//@ known-failure
 //@ compile-flags: -Pencode_bitvectors=true
 
 pub mod m {

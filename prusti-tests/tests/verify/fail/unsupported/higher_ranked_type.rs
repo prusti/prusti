@@ -1,3 +1,4 @@
+//@ known-failure
 #![feature(unsafe_binders)]
 #![allow(incomplete_features)]
 

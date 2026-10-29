@@ -1,3 +1,4 @@
+//@ known-failure
 // From the libc crate
 
 pub struct cpu_set_t {

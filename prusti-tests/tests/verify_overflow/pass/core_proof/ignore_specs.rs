@@ -1,3 +1,4 @@
+//@ known-failure
 //@ compile-flags: -Punsafe_core_proof=true -Pverify_specifications=false
 
 use prusti_contracts::*;

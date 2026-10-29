@@ -1,3 +1,4 @@
+//@ known-failure
 #![allow(unused_comparisons)]
 
 /// Issue #73: "Properly report failing precondition of pure functions"

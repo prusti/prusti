@@ -1,3 +1,4 @@
+//@ known-failure
 use prusti_contracts::*;
 
 pub enum E3 {

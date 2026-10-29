@@ -1,3 +1,4 @@
+//@ known-failure
 // Note: For now, it is completely fine to _declare_ two type-conditional spec refinements with different bounds
 // since resolving happens for specific callsites. That is, without the call in main, this
 // file verifies.

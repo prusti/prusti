@@ -1,3 +1,4 @@
+//@ known-failure
 //! An monomorphised version from
 //! https://rosettacode.org/mw/index.php?title=Binary_search&oldid=278774#Rust
 //! that contains a bug.

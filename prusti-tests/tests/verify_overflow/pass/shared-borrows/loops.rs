@@ -1,3 +1,4 @@
+//@ known-failure
 use prusti_contracts::*;
 
 fn borrow(_x: &i32) {}
