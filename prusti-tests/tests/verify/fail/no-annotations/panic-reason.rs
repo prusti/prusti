@@ -7,8 +7,7 @@ fn test_assert(x: bool) {
 }
 
 fn test_assert_msg(x: bool) {
-    // FIXME: see mir_encoder encode_panic_cause
-    assert!(false, "msg");  //~ERROR: panic!(..) statement might be reachable
+    assert!(false, "msg");  //~ERROR: precondition of `std::rt::panic_fmt` (called by this macro expansion) might not hold
 }
 
 fn test_debug_assert(x: bool) {
@@ -27,99 +26,106 @@ fn test_unimplemented(x: bool) {
     unimplemented!();  //~ERROR: precondition of `core::panicking::panic` (called by this macro expansion) might not hold
 }
 
+fn test_assert_matches(x: bool) {
+    std::assert_matches!(None::<i32>, Some(_));  //~ERROR: precondition of `core::panicking::assert_matches_failed` (called by this macro expansion) might not hold
+}
+
+fn test_panic_any(x: bool) {
+    std::panic::panic_any(5);  //~ERROR: precondition might not hold
+}
+
 macro_rules! inner_panic {
     () => {
         {
-            panic!();  //~ERROR: panic!(..) statement might be reachable
+            panic!();
         }
     };
 }
 
 fn test_inner_panic(x: bool) {
-    inner_panic!();
+    inner_panic!();  //~ERROR: precondition of `core::panicking::panic` (called by this macro expansion) might not hold
 }
 
 macro_rules! inner_panic_msg {
     () => {
         {
-            panic!("msg");  //~ERROR: panic!(..) statement might be reachable
+            panic!("msg");
         }
     };
 }
 
 fn test_inner_panic_msg(x: bool) {
-    inner_panic_msg!();
+    inner_panic_msg!();  //~ERROR: precondition of `std::rt::panic_fmt` (called by this macro expansion) might not hold
 }
 
 macro_rules! inner_assert {
     () => {
         {
-            assert!(false);  //~ERROR: the asserted expression might not hold
+            assert!(false);
         }
     };
 }
 
 fn test_inner_assert(x: bool) {
-    inner_assert!();
+    inner_assert!();  //~ERROR: precondition of `core::panicking::panic` (called by this macro expansion) might not hold
 }
 
 macro_rules! inner_assert_msg {
     () => {
         {
-            // FIXME: see mir_encoder encode_panic_cause
-            assert!(false, "msg");  //~ERROR: panic!(..) statement might be reachable
+            assert!(false, "msg");
         }
     };
 }
 
 fn test_inner_assert_msg(x: bool) {
-    inner_assert_msg!();
+    inner_assert_msg!();  //~ERROR: precondition of `std::rt::panic_fmt` (called by this macro expansion) might not hold
 }
 
 macro_rules! inner_debug_assert {
     () => {
         {
-            debug_assert!(false);  //~ERROR: the asserted expression might not hold
+            debug_assert!(false);
         }
     };
 }
 
 fn test_inner_debug_assert(x: bool) {
-    inner_debug_assert!();
+    inner_debug_assert!();  //~ERROR: precondition of `core::panicking::panic` (called by this macro expansion) might not hold
 }
 
 macro_rules! inner_debug_assert_msg {
     () => {
         {
-            debug_assert!(false, "msg");  //~ERROR: the asserted expression might not hold
+            debug_assert!(false, "msg");
         }
     };
 }
 
 fn test_inner_debug_assert_msg(x: bool) {
-    inner_debug_assert_msg!();
+    inner_debug_assert_msg!();  //~ERROR: precondition of `std::rt::panic_fmt` (called by this macro expansion) might not hold
 }
 
 macro_rules! inner_unreachable {
     () => {
         {
-            unreachable!();  //~ERROR: unreachable!(..) statement might be reachable
+            unreachable!();
         }
     };
 }
 
 fn test_inner_unreachable(x: bool) {
-    inner_unreachable!();
+    inner_unreachable!();  //~ERROR: precondition of `core::panicking::panic` (called by this macro expansion) might not hold
 }
 
 macro_rules! inner_unimplemented {
     () => {
         {
-            unimplemented!();  //~ERROR: unimplemented!(..) statement might be reachable
+            unimplemented!();
         }
     };
 }
 
 fn test_inner_unimplemented(x: bool) {
-    inner_unimplemented!();
+    inner_unimplemented!();  //~ERROR: precondition of `core::panicking::panic` (called by this macro expansion) might not hold
 }
