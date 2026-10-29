@@ -33,7 +33,8 @@ impl List {
     }
 
     #[ensures(self.len() == old(self.len()) + 1)]
-    #[ensures(self.lookup(0) == elem)] // 2. Property //~ ERROR postcondition might not hold
+    #[ensures(self.lookup(0) == elem)] // 2. Property
+    //~^ ERROR: postcondition might not hold
     pub fn push(&mut self, elem: i32) {
         // ...
         //// ANCHOR_END: lookup

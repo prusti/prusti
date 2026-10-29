@@ -98,7 +98,7 @@ fn test13() {
 }
 
 #[requires(a == 4)]
-#[ensures(old(a) != 4)] //~ ERROR
+#[ensures(old(a) != 4)] //~ ERROR: postcondition might not hold
 fn test14(mut a: i32) {
     a = 5;
 }

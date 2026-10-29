@@ -33,7 +33,7 @@ fn precondition_in_ghost() {
 // Ghost code must not panic.
 fn panic_in_ghost(x: i64) {
     ghost! {
-        assert!(x == 0); //~ERROR: precondition might not hold
+        assert!(x == 0); //~ERROR: might not hold
     };
 }
 

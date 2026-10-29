@@ -13,5 +13,5 @@ impl MyWrapper {
 
 fn test(x: &MyWrapper) -> u32 {
     // Following error is due to stub encoding of invalid spec for function `unwrap()`
-    x.unwrap() //~ ERROR: precondition of pure function call might not hold
+    x.unwrap() //~ ERROR: precondition might not hold
 }

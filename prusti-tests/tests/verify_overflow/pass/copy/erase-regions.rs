@@ -10,10 +10,6 @@ type SliceTy<T> = [T];
 #[extern_spec]
 impl<T: Copy+PartialEq> SliceTy<T> {
     #[trusted]
-    #[pure]
-    fn len(&self) -> usize;
-
-    #[trusted]
     #[ensures( result.model().position == 0 )]
     fn iter(&self) -> std::slice::Iter<'_, T>;
 }

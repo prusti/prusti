@@ -1,3 +1,3 @@
 fn test(x: u32, y: u32) -> u32 {
-    x + y //~ ERROR
+    x + y //~ ERROR: assertion might fail with "attempt to add with overflow"
 }

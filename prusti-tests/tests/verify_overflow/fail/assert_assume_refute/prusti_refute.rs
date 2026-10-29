@@ -7,7 +7,7 @@ fn refute1() {
 }
 
 fn failing_refute() {
-    prusti_refute!(true); //~ ERROR
+    prusti_refute!(true); //~ ERROR: the refuted expression holds in all cases or could not be reached
 }
 
 fn unreachable_branch_sign(val: i32) -> i32 {
@@ -16,13 +16,13 @@ fn unreachable_branch_sign(val: i32) -> i32 {
     } else if val >= 0 {
         1
     } else {
-        prusti_refute!(false); //~ ERROR
+        prusti_refute!(false); //~ ERROR: the refuted expression holds in all cases or could not be reached
         0
     }
 }
 
 #[requires(val < 0 && val > 0)]
 fn no_valid_input(val: i32) -> i32 {
-    prusti_refute!(false); //~ ERROR
+    prusti_refute!(false); //~ ERROR: the refuted expression holds in all cases or could not be reached
     42
 }

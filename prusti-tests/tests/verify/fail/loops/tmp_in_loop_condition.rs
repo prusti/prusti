@@ -27,7 +27,7 @@ fn test1() {
     let mut tmp = Box::new(Box::new(random()));
     let tmp_ref = &tmp;
     let tmp_ref_mut = &mut tmp;
-    assert!(false); //~ ERROR
+    assert!(false); //~ ERROR: might not hold
 }
 
 fn test2() {
@@ -47,7 +47,7 @@ fn test2() {
         let mut tmp = Box::new(Box::new(random()));
         let tmp_ref = &tmp;
         let tmp_ref_mut = &mut tmp;
-        assert!(false); //~ ERROR
+        assert!(false); //~ ERROR: might not hold
     }
 
     let mut tmp = Box::new(Box::new(random()));

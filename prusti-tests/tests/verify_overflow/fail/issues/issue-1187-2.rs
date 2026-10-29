@@ -7,7 +7,7 @@ fn i_am_not_verified() {
 
 #[verified]
 fn i_am_verified() {
-    assert!(1 == 2); //~ ERROR
+    assert!(1 == 2); //~ ERROR: might not hold
 }
 
 #[verified]

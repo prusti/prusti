@@ -8,6 +8,7 @@ trait Foo {
 }
 
 struct Bar;
+#[refine_trait_spec]
 impl Foo for Bar {
     type Type = i32;
 
@@ -18,6 +19,7 @@ impl Foo for Bar {
 }
 
 struct Baz<T: Copy>(std::marker::PhantomData<T>);
+#[refine_trait_spec]
 impl<T: Copy> Foo for Baz<T> {
     type Type = T;
 

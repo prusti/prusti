@@ -170,6 +170,7 @@ trait T1 {
 }
 
 struct X3 {}
+#[refine_trait_spec]
 impl T1 for X3 {
     #[trusted]
     fn fn5<A, B, C>(&self, a: A, b: B) -> C { unimplemented!() }
@@ -209,6 +210,7 @@ trait T2 {
 }
 
 struct X4 {}
+#[refine_trait_spec]
 impl T2 for X4 {
     type AT1 = (i32, usize);
     type AT2 = (usize, i32);

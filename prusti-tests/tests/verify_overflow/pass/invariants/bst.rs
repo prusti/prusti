@@ -27,7 +27,7 @@ enum BST {
 }
 
 impl BST {
-    // [Issue 1]
+    // Issue 1:
     // Requires trusted, otherwise recursive call to itself in precondition (Prusti crash):
     // Not a solution since this hides the body (the main reason for making a fn pure)
     #[trusted]
@@ -57,9 +57,9 @@ impl BST {
         if let BST::Node { value, left, right } = self {
             if val == *value { true }
             else if val < *value {
-                // [Issue 2]
+                // Issue 2:
                 // Invariant should hold recursively (it doesn't with the old inv encoding):
-                // [Prusti: verification error] precondition might not hold.
+                // Prusti: verification error: precondition might not hold.
                 left.contains(val)
             } else {
                 right.contains(val)

@@ -1,9 +1,9 @@
 macro_rules! my_assert {
     ( $( $args:expr ),* ) => {
-        assert!( $( $args ),* )  //~ERROR: the asserted expression might not hold
+        assert!( $( $args ),* )
     };
 }
 
 fn foo(x: bool) {
-    my_assert!(x);
+    my_assert!(x);  //~ERROR: might not hold
 }

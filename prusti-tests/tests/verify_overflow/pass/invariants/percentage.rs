@@ -15,7 +15,7 @@ fn foo(move_arg: Percentage, pure_arg: &Percentage, borrow_arg: &mut Percentage)
     assert!(pure_arg.value <= 100);
     assert!(borrow_arg.value <= 100);
 
-    // [Discussion 1]
+    // Discussion 1:
     // Should invs be enforced across loops?
     // How to even do this with `body_invariant`?
     while borrow_arg.value < 42 {

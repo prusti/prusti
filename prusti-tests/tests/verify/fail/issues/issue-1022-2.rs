@@ -8,7 +8,7 @@ struct SomeStruct;
 #[refine_trait_spec]
 impl SomeTrait for SomeStruct {
     predicate! {
-        fn foo(x: i32) -> bool { //~ ERROR
+        fn foo(x: i32) -> bool { //~ ERROR: is incompatible with the trait declaration
             true
         }
     }

@@ -18,7 +18,7 @@ fn pure_get_field(x: &U) -> u32 {
 }
 
 fn test_wrong_precondition_pure(x: &U) -> u32 {
-    pure_get_field(x) //~ERROR: precondition of pure function call might not hold
+    pure_get_field(x) //~ERROR: precondition might not hold
 }
 
 #[requires(x.v == 123)]

@@ -64,5 +64,5 @@ fn test_bar_1_post() {
 fn test_bar_2_post() {
     let d = Dummy;
     let res = d.bar(5);
-    assert!(res > 100); //~ ERROR
+    assert!(res > 100); //~ ERROR: might not hold
 }

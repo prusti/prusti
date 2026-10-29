@@ -72,13 +72,13 @@ fn nonterminating_fn() {
 
 #[terminates]
 fn terminating_fns_can_only_call_terminating_fns_2() {
-    nonterminating_fn(); //~ ERROR
+    nonterminating_fn(); //~ ERROR: this function call might not terminate
     let x = 5;
 }
 
 #[terminates]
 fn recursion_disallowed() {
-    recursion_disallowed(); //~ ERROR
+    recursion_disallowed(); //~ ERROR: this function call might not terminate
 }
 
 #[terminates]

@@ -15,6 +15,7 @@ impl<'a, T> WrapperIterator<'a, T> {
         }
     }
 }
+#[refine_trait_spec]
 impl<'a, T> Iterator for WrapperIterator<'a, T> {
     type Item = &'a mut T;
     #[trusted]

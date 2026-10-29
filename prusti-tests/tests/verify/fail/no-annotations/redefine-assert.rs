@@ -1,9 +1,10 @@
+//@ edition: 2018
 macro_rules! assert {
     ( $( $args:expr ),* ) => {
-        panic!( $( $args ),* )  //~ERROR: panic!(..) statement might be reachable
+        panic!( $( $args ),* )
     };
 }
 
 fn foo(x: bool) {
-    assert!(x);
+    assert!(x);  //~ERROR: might not hold
 }

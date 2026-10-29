@@ -102,8 +102,7 @@ fn test13(mut a: U) {
     let b = a.g.value;
     let x = &mut a;
     x.f.value = 4;
-    // FIXME: This should work.
-    assert!(a.f.value == 4);    //~ ERROR: the asserted expression might not hold
+    assert!(a.f.value == 4);
     //assert!(b == a.g.value);  FIXME
 }
 
@@ -115,8 +114,7 @@ fn test14(mut a: U) {
 fn test15(mut a: U) {
     let x = &mut a.f;
     x.value = 4;
-    // FIXME: This should work.
-    assert!(a.f.value == 4);    //~ ERROR: the asserted expression might not hold
+    assert!(a.f.value == 4);
 }
 
 fn test16(mut a: U) {
@@ -133,8 +131,7 @@ fn test17(a: U) {
 fn test18(mut a: U) {
     let x = &mut a.f;
     let b = x.value;
-    // FIXME: This should work.
-    assert!(b == a.f.value);    //~ ERROR: the asserted expression might not hold
+    assert!(b == a.f.value);
 }
 
 fn test19(a: U) {
@@ -162,8 +159,8 @@ fn test21(x: &mut T2, a: i32) -> bool{
     x.f > 0
 }
 
-#[ensures(result)]
-fn test22(x: &mut T2, a: i32) -> bool { //~ ERROR: postcondition might not hold.
+#[ensures(result)] //~ ERROR: postcondition might not hold.
+fn test22(x: &mut T2, a: i32) -> bool {
     x.f = 1;
     x.g = 1;
     x.f = 2;

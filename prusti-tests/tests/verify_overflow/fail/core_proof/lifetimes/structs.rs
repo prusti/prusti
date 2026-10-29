@@ -215,7 +215,7 @@ fn test_generic_struct(){
 //     let n = 4;
 //     let i = S6I { x: &n };
 //     let o = S6O { x: &i };
-//     assert!(false);            the asserted expression might not hold
+//     assert!(false);            precondition of `core::panicking::panic` (called by this macro expansion) might not hold
 // }
 
 // FIXME: accessing references of structs panics
@@ -232,5 +232,5 @@ fn test_generic_struct(){
 //     let mut n = 4;
 //     let mut t = S7{ x: &mut n};
 //     *t.x = 5;
-//     assert!(false);           the asserted expression might not hold
+//     assert!(false);           precondition of `core::panicking::panic` (called by this macro expansion) might not hold
 // }

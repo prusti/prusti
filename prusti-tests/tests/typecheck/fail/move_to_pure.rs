@@ -1,7 +1,3 @@
-//@ compile-flags: -Pprint_desugared_specs=true -Pprint_typeckd_specs=true -Pverify_mode=compile-only -Phide_uuids=true
-// normalize-stdout-test: "[a-z0-9]{32}" -> "$(NUM_UUID)"
-// normalize-stdout-test: "[a-z0-9]{8}-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{12}" -> "$(UUID)"
-
 use prusti_contracts::*;
 
 struct UnexpectedValue(u32);

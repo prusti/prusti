@@ -9,11 +9,13 @@ trait B {
     #[pure]
     fn b(&self) -> i32 { -1 }
 }
+#[refine_trait_spec]
 impl A for i32 {
     #[pure]
     fn a(&self) -> i32 { 42 }
 }
 
+#[refine_trait_spec]
 impl B for i32 {
     #[pure]
     fn b(&self) -> i32 { 42 }

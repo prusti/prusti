@@ -4,5 +4,5 @@ use prusti_contracts::*;
 impl<T> std::vec::Vec<T> {
     /// Wrong method name
     #[ensures(self.len() == 0)]
-    fn clears(&mut self); //~ERROR: no function or associated item
+    fn clears(&mut self); //~ERROR: no associated function or constant named `clears`
 }

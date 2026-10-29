@@ -93,5 +93,5 @@ fn test11() {
     //assert!(a[3] == 1);
     //assert!(a[4] == 1);
     //assert!(a[5] == 1);
-    //assert!(a[0] == 2);     the asserted expression might not hold
+    //assert!(a[0] == 2);     precondition of `core::panicking::panic` (called by this macro expansion) might not hold
 //}

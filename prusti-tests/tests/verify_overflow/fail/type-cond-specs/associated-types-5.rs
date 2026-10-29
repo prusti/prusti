@@ -20,5 +20,5 @@ fn foo<T>(x: T) -> i32 {
 fn main() {
     let f = Foo;
     let res = foo(f);
-    assert!(res > 0); //~ ERROR: [Prusti: verification error] the asserted expression might not hold
+    assert!(res > 0); //~ ERROR: might not hold
 }

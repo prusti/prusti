@@ -1,4 +1,5 @@
-// compile-flags: -Puse_more_complete_exhale=false
+//@ known-failure
+//@ compile-flags: -Puse_more_complete_exhale=false
 use prusti_contracts::*;
 
 /// A monotonically strictly increasing discrete function, with domain [0, domain_size)

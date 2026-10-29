@@ -11,7 +11,7 @@ struct MyStruct;
 impl MyTrait for MyStruct {
     #[requires(x > 10)]
     #[ensures(result == x + 10)]
-    fn foo(&self, x: i32) -> i32; //~ ERROR: the trait bound `MyStruct: MyTrait` is not satisfied [E0277]
+    fn foo(&self, x: i32) -> i32; //~ ERROR: the trait bound `MyStruct: MyTrait` is not satisfied
 
-    fn bar(&self); //~ ERROR: the trait bound `MyStruct: MyTrait` is not satisfied [E0277]
+    fn bar(&self); //~ ERROR: the trait bound `MyStruct: MyTrait` is not satisfied
 }

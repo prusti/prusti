@@ -5,10 +5,6 @@ use prusti_contracts::*;
 #[extern_spec]
 impl<T, A: std::alloc::Allocator> Vec<T, A> {
     #[trusted]
-    #[pure]
-    fn len(&self) -> usize;
-
-    #[trusted]
     #[ensures(self.len() == 0)]
     fn clear(&mut self);
 }

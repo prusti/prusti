@@ -30,7 +30,7 @@ fn test4() {
     let b = 4u32;
     let x = std::ptr::addr_of!(a);
     let y = std::ptr::addr_of!(b);
-    assert!(x == y);    //~ ERROR
+    assert!(x == y);    //~ ERROR: might not hold
 }
 
 fn test5() {
@@ -38,7 +38,7 @@ fn test5() {
     let b = 4u32;
     let x = std::ptr::addr_of!(a);
     let y = std::ptr::addr_of!(b);
-    assert!(x != y);    //~ ERROR
+    assert!(x != y);    //~ ERROR: might not hold
 }
 
 fn test6() {
@@ -46,7 +46,7 @@ fn test6() {
     let b = 4u32;
     let x = std::ptr::addr_of!(a);
     let y = std::ptr::addr_of!(b);
-    assert!(!(x == y));    //~ ERROR
+    assert!(!(x == y));    //~ ERROR: might not hold
 }
 
 struct T {
@@ -63,7 +63,7 @@ fn test7() {
     let c = G { f: b };
     let x = std::ptr::addr_of!(a);
     let y = std::ptr::addr_of!(c.f.g);
-    assert!(x != y);    //~ ERROR
+    assert!(x != y);    //~ ERROR: might not hold
 }
 
 fn test8() {
@@ -72,7 +72,7 @@ fn test8() {
     let c = G { f: b };
     let x = std::ptr::addr_of!(a);
     let y = std::ptr::addr_of!(c.f.g);
-    assert!(!(x == y));    //~ ERROR
+    assert!(!(x == y));    //~ ERROR: might not hold
 }
 
 fn test9() {
@@ -81,5 +81,5 @@ fn test9() {
     let c = G { f: b };
     let x = std::ptr::addr_of!(a);
     let y = std::ptr::addr_of!(c.f.g);
-    assert!(x == y);    //~ ERROR
+    assert!(x == y);    //~ ERROR: might not hold
 }

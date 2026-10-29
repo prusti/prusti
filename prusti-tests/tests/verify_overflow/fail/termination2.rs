@@ -33,8 +33,8 @@ fn z(x: i64) {
 
 #[terminates]
 fn nonterminating() {
-    nonterminating() //~ ERROR
+    nonterminating() //~ ERROR: this function call might not terminate
 }
 
 #[pure]
-fn pure_implies_termination() {} //~ ERROR
+fn pure_implies_termination() {} //~ ERROR: Pure functions need to terminate

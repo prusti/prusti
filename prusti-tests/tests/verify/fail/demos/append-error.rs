@@ -30,5 +30,5 @@ fn append(a: &mut List, v: i32) {
 fn client(a: &mut List, b: &mut List) {
     let old_len = b.len();
     append(a, 100);
-    assert!(b.len() != old_len); //~ ERROR
+    assert!(b.len() != old_len); //~ ERROR: might not hold
 }

@@ -19,6 +19,7 @@ trait B {
 }
 
 struct S;
+#[refine_trait_spec]
 impl A for S {
     type AType = i32;
     #[pure]
@@ -27,6 +28,7 @@ impl A for S {
     }
 }
 
+#[refine_trait_spec]
 impl B for S {
     type BType = i32;
 

@@ -27,7 +27,7 @@ impl List {
     }
 //// ANCHOR_END: pure_annotation
 
-    #[ensures(result.len() == 0)] //~ ERROR: precondition of pure function call might not hold.
+    #[ensures(result.len() == 0)] //~ ERROR: precondition might not hold.
     pub fn new() -> Self {
         List { head: Link::Empty }
     }

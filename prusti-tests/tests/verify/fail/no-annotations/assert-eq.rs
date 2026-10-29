@@ -1,9 +1,9 @@
 fn fail() {
-    assert_eq!(1, 8);
+    assert_eq!(1, 8); //~ ERROR: might not hold
 }
 
 fn fail2() {
     let x = 5;
     let y = 4 - 1;
-    assert_eq!(x, y);
+    assert_eq!(x, y); //~ ERROR: might not hold
 }

@@ -22,7 +22,7 @@ fn fib(n: i32) -> i32 {
 #[ensures(result == match n {
     0 => 0,
     1 => 1,
-    _ => fib2(n - 1) + fib2(n - 2), //~ ERROR: precondition of pure function call might not hold
+    _ => fib2(n - 1) + fib2(n - 2), //~ ERROR: precondition might not hold
 })]
 fn fib2(n: i32) -> i32 {
     //~^ ERROR: only trusted functions can call themselves in their contracts

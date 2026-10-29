@@ -12,7 +12,7 @@ struct Foo<#[generic] A: Copy, #[concrete] i32, #[concrete] u32> {
 }
 
 #[trusted]
-#[ensures(result.model().fld_a == model_val)] //~ ERROR: no method named `model` found for struct `Foo`
+#[ensures(result.model().fld_a == model_val)] //~ ERROR: no method named `model` found for struct `Foo<A, B, C>`
 fn create_foo<A: Copy+PartialEq>(model_val: A) -> Foo<A, i32, i32> {
     Foo::<A, i32, i32> (std::marker::PhantomData, std::marker::PhantomData, std::marker::PhantomData)
 }

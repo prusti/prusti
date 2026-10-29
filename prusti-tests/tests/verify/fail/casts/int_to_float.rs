@@ -1,6 +1,8 @@
 // The result of these casts can currently not be verified using Z3: the cost
 // of `int2bv` grows with the magnitude of the converted value.
 // Once Z3 can prove these, move the assertions to pass/casts/int_to_float.rs.
+// Each assertion fails by hitting the timeout, several times, so keep it short.
+//@ rustc-env: PRUSTI_ASSERT_TIMEOUT=1000
 
 use prusti_contracts::*;
 
