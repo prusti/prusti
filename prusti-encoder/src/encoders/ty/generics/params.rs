@@ -168,17 +168,23 @@ impl<'tcx> GParams<'tcx> {
         }
         vir::with_vcx(|vcx| {
             let tcx = vcx.tcx();
-            // The ReVars of the original type-checking context are unknown
-            // to a fresh InferCtxt, so they are bound by a binder for the
-            // duration of the normalization.
+            // The ReVars of the original type-checking context, and regions
+            // escaping `ty` (e.g. late-bound regions of a signature taken with
+            // `skip_binder`), are unknown to a fresh InferCtxt, so they are
+            // bound by a binder for the duration of the normalization. An
+            // escaping region is recorded relative to the outside of `ty`;
+            // instantiating the binder only supports it escaping by one binder.
             let mut originals = FxIndexSet::default();
             let ty = ty::fold_regions(tcx, ty, |r, debruijn| {
-                if r.is_var() {
-                    let (var, _) = originals.insert_full(r);
-                    ty::Region::new_anon_bound(tcx, debruijn, ty::BoundVar::from_usize(var))
-                } else {
-                    r
-                }
+                let original = match r.kind() {
+                    ty::ReVar(_) => r,
+                    ty::ReBound(ty::BoundVarIndexKind::Bound(index), br) => {
+                        ty::Region::new_bound(tcx, index.shifted_out_to_binder(debruijn), br)
+                    }
+                    _ => return r,
+                };
+                let (var, _) = originals.insert_full(original);
+                ty::Region::new_anon_bound(tcx, debruijn, ty::BoundVar::from_usize(var))
             });
             let kinds = tcx.mk_bound_variable_kinds_from_iter(
                 originals
