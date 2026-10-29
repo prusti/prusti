@@ -2021,12 +2021,14 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                     let expr =
                         self.encode_spec_block(spec_block, pcg_state, Some(&place_capabilities))?;
                     self.vcx.with_span(span, |vcx| {
-                        let error_msg = "loop invariant might not be preserved";
+                        let error_msg = "loop invariant might not hold after a loop iteration that \
+                                         preserves the loop condition.";
                         vcx.handle_error("invariant.not.preserved:assertion.false", move |_| {
                             Some(vec![PrustiError::verification(error_msg, span.into())])
                         });
                         self.vcx.with_span(span, |vcx| {
-                            let error_msg = "loop invariant might not hold on entry";
+                            let error_msg =
+                                "loop invariant might not hold in the first loop iteration.";
                             vcx.handle_error(
                                 "invariant.not.established:assertion.false",
                                 move |_| {
@@ -2107,7 +2109,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 match spec.kind {
                     SpecBlockKind::Assert => {
                         self.vcx.with_span(span, |vcx| {
-                            let error_msg = "assertion might not hold";
+                            let error_msg = "the asserted expression might not hold";
                             vcx.handle_error("exhale.failed:assertion.false", move |_| {
                                 Some(vec![PrustiError::verification(error_msg, span.into())])
                             });
@@ -2394,7 +2396,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                     );
                     PrustiError::verification(message, span.source_callsite().into())
                 } else {
-                    PrustiError::verification("precondition might not hold", span.into())
+                    PrustiError::verification("precondition might not hold.", span.into())
                 };
 
                 let dest = self

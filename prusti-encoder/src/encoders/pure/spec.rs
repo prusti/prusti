@@ -299,7 +299,7 @@ impl TaskEncoder for MirSpecEnc {
                             Self::encode_pure(vcx, deps, post_ctx, *spec_def_id, "postcondition")?;
                         vcx.handle_error("postcondition.violated:assertion.false", move |_| {
                             Some(vec![PrustiError::verification(
-                                "postcondition might not hold",
+                                "postcondition might not hold.",
                                 span.into(),
                             )])
                         });
@@ -341,7 +341,7 @@ impl TaskEncoder for MirSpecEnc {
                         let rhs_expr = vcx.with_span(rhs_span, move |vcx| {
                             vcx.handle_error("exhale.failed:assertion.false", move |_| {
                                 Some(vec![PrustiError::verification(
-                                    "pledge postcondition might not hold",
+                                    "pledge in the postcondition might not hold.",
                                     rhs_span.into(),
                                 )])
                             });
