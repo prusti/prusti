@@ -10,7 +10,7 @@ pub struct Foo {
 impl Foo {
     #[verified]
     pub const fn new(bar: usize) -> Self {
-        //~^ ERROR type invariants might not hold
+        //~^ ERROR: type invariants might not hold
         Self { bar }
     }
 }

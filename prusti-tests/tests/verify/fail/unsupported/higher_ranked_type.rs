@@ -8,11 +8,11 @@ fn main() {
 fn generic<T>() {}
 
 fn unsafe_binder_arg() {
-    generic::<unsafe<'a> &'a u32>(); //~ ERROR cannot encode method body `unsafe_binder_arg`
+    generic::<unsafe<'a> &'a u32>(); //~ ERROR: cannot encode method body `unsafe_binder_arg`
 }
 
 fn conditional_unsafe_binder_arg(x: u32) {
     if x == 0 {
-        generic::<unsafe<'a> &'a u32>(); //~ ERROR cannot encode method body `conditional_unsafe_binder_arg`
+        generic::<unsafe<'a> &'a u32>(); //~ ERROR: cannot encode method body `conditional_unsafe_binder_arg`
     }
 }

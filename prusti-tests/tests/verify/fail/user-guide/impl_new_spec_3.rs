@@ -22,11 +22,11 @@ struct Node {
 impl List {
     #[pure]
     pub fn len(&self) -> usize {
-        self.head.len() //~ ERROR use of impure function "Link::len" in pure code is not allowed
+        self.head.len() //~ ERROR: use of impure function "Link::len" in pure code is not allowed
     }
 //// ANCHOR_END: pure_annotation
 
-    #[ensures(result.len() == 0)] //~ ERROR precondition of pure function call might not hold.
+    #[ensures(result.len() == 0)] //~ ERROR: precondition of pure function call might not hold.
     pub fn new() -> Self {
         List { head: Link::Empty }
     }

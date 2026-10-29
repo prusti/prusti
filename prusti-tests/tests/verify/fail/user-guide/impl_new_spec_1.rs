@@ -28,7 +28,7 @@ impl List {
 //// ANCHOR_END: first_spec_1
 
 //// ANCHOR: first_spec_2
-    #[ensures(result.len() == 0)] //~ ERROR use of impure function "List::len" in pure code is not allowed
+    #[ensures(result.len() == 0)] //~ ERROR: use of impure function "List::len" in pure code is not allowed
     pub fn new() -> Self {
         List { head: Link::Empty }
     }

@@ -50,7 +50,7 @@ impl List {
         self.head.lookup(index)
     }
 
-    #[ensures(self.len() == old(self.len()) + 1)] //~ ERROR postcondition might not hold
+    #[ensures(self.len() == old(self.len()) + 1)] //~ ERROR: postcondition might not hold
     #[ensures(self.lookup(0) == elem)]
     #[ensures(forall(|i: usize| (i < old(self.len())) ==>
                  old(self.lookup(i)) == self.lookup(i + 1)))]

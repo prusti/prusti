@@ -14,6 +14,6 @@ pub fn abs(x: i32) -> i32 {
 
 fn test_abs() {
     prusti_assert!(abs(8) == 8); // Works
-    prusti_assert!(abs(-10) == 10); //~ ERROR the asserted expression might not hold
+    prusti_assert!(abs(-10) == 10); //~ ERROR: the asserted expression might not hold
 }
 //// ANCHOR_END: code
