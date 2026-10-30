@@ -432,6 +432,10 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 // it is fine to create the new raw pointer with a snapshot (and not as potential null-ptr). However,
                 // we are therefore also incomplete: creating a rawpointer from another nullpointer does not lead to
                 // UB as long as we do not dereference it.
+                // TODO: Change! When we need to initialize the snap value we need to check if we have permission (to sizeof(T) bits from the Viper Ref)
+                // If yes: load Some into value field
+                // If no: load None into value field
+                // Question: How do we check if we have access? This probably goes back to saving the provenance for each Viper Ref.
                 let (address, snap, _, _) = self.encode_place_with_snap(Place::from(*place))?;
                 let metadata = address.expr.metadata;
                 let metadata = metadata.unwrap_or_else(|| self.expect_thin_ptr_metadata(rvalue_ty));
