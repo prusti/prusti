@@ -15,7 +15,7 @@ impl Percentage for Fail {
         101
     }
     fn set(&mut self, arg: u8) {
-        assert!(arg <= 99); //~ERROR: the asserted expression might not hold
+        assert!(arg <= 99); //~ERROR: might not hold
     }
 }
 
@@ -32,7 +32,7 @@ impl Percentage for Pass {
 
 fn test_get_fail<T: Percentage>(t: &T) {
     let p = t.get();
-    assert!(p <= 99); //~ERROR: the asserted expression might not hold
+    assert!(p <= 99); //~ERROR: might not hold
 }
 
 fn test_get_pass<T: Percentage>(t: &T) {
@@ -47,5 +47,3 @@ fn test_set_fail<T: Percentage>(t: &mut T) {
 fn test_set_pass<T: Percentage>(t: &mut T) {
     t.set(100);
 }
-
-fn main() {}

@@ -20,6 +20,3 @@ fn test3() {
 fn test4() {
     foo(X { a: 2 }, X { a: 1 }); //~ERROR: precondition might not hold
 }
-
-#[trusted]
-fn main() {}

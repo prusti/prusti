@@ -8,5 +8,3 @@ trait Percentage {
 fn test<T: Percentage>(t: &mut T) {
     t.set(100);
 }
-
-fn main() {}

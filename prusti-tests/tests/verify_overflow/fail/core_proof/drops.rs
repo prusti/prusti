@@ -27,7 +27,7 @@ fn test1() {
 
 fn test2() {
     let b = T2 { f: 4 };
-    assert!(b.f == 5);  //~ERROR: the asserted expression might not hold
+    assert!(b.f == 5);  //~ERROR: might not hold
 }
 
 fn random() -> bool {
@@ -46,7 +46,7 @@ fn test4() {
     if random() {
         let _b = a;
     }
-    assert!(false);     //~ERROR: the asserted expression might not hold
+    assert!(false);     //~ERROR: might not hold
 }
 
 fn test5() {
@@ -64,6 +64,3 @@ fn test5() {
         //*x = 5;
     //}
 //}
-
-fn main() {}
-

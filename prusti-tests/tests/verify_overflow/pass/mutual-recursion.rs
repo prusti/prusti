@@ -31,5 +31,3 @@ fn test() {
     assert!(b(5));
     assert!(a(5));
 }
-
-fn main() {}

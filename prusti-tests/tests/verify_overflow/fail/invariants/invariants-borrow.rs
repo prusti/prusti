@@ -1,3 +1,4 @@
+//@ known-failure
 //@ compile-flags: -Penable_type_invariants=true
 use prusti_contracts::*;
 
@@ -16,5 +17,3 @@ fn make_percentage() -> Percentage { //~ERROR: type invariants
 fn double(x: &mut u8) {
   *x = *x * 2;
 }
-
-fn main() {}

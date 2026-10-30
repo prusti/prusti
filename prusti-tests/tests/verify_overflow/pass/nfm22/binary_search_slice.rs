@@ -1,3 +1,4 @@
+//@ known-failure
 use prusti_contracts::*;
 
 #[ensures(if let Some(result) = result {

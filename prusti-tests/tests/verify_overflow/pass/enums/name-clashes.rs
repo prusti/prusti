@@ -37,6 +37,3 @@ pub fn test2(x: Int) -> u32 {
         Int::null => 3,
     }
 }
-
-fn main() {}
-

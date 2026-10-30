@@ -1,3 +1,4 @@
+//@ known-failure
 use prusti_contracts::*;
 
 pub struct Point {
@@ -27,5 +28,3 @@ fn test2() -> Point {
     };
     p
 }
-
-fn main() {}

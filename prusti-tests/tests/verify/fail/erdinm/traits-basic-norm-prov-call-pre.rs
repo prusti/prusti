@@ -10,5 +10,3 @@ trait Percentage {
 fn test<T: Percentage>(t: &mut T) {
     t.set(123); //~ERROR: precondition might not hold
 }
-
-fn main() {}

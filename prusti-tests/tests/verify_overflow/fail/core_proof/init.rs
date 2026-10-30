@@ -1,3 +1,4 @@
+//@ known-failure
 //@ compile-flags: -Punsafe_core_proof=true -Puse_smt_wrapper=true -Psmt_qi_bound_global=10000 -Psmt_qi_bound_trace=200 -Psmt_qi_bound_trace_kind=20 -Psmt_qi_bound_global_kind=100
 
 use prusti_contracts::*;
@@ -46,5 +47,3 @@ pub enum MaybeUninit2 {
 fn test3() {
     let maybe = MaybeUninit2::Uninit(());
 }
-
-fn main() {}

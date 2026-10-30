@@ -1,7 +1,6 @@
 //@ compile-flags: -Punsafe_core_proof=true
 
 use prusti_contracts::*;
-fn main() {}
 
 fn branch_borrow(c: bool){
     let mut a: i32 = 4;
@@ -22,7 +21,7 @@ fn branch_borrow_assert_false(c: bool){
     } else {
         x = &mut b;
     }
-    assert!(false);      //~ ERROR: the asserted expression might not hold
+    assert!(false);      //~ ERROR: might not hold
 }
 
 fn branch_borrow_assign(c: bool) {
@@ -50,7 +49,7 @@ fn branch_borrow_assign_assert_false(c: bool) {
         *x = 3;
     }
     *x = 4;
-    assert!(false);      //~ ERROR: the asserted expression might not hold
+    assert!(false);      //~ ERROR: might not hold
 }
 
 fn branch_borrow_with_fixed_type(c: bool){
@@ -74,5 +73,5 @@ fn branch_borrow_with_fixed_type_assert_false(c: bool){
         x = &mut b;
     }
     *x = 6;
-    assert!(false);      //~ ERROR: the asserted expression might not hold
+    assert!(false);      //~ ERROR: might not hold
 }

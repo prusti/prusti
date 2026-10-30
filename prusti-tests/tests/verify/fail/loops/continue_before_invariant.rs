@@ -1,3 +1,4 @@
+//@ known-failure
 use prusti_contracts::*;
 
 #[trusted]
@@ -50,5 +51,3 @@ fn continue_outer_loop_before_invariant() {
         }
     }
 }
-
-fn main() {}

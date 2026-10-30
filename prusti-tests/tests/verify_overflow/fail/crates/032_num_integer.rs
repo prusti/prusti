@@ -6,10 +6,11 @@ trait Integer {
     fn gcd(&self, other: &Self) -> Self;
 }
 
+#[refine_trait_spec]
 impl Integer for i8 {
     fn lcm(&self, other: &Self) -> Self {
         // should not have to recalculate abs
-        (*self * (*other / self.gcd(other))).abs() //~ ERROR
+        (*self * (*other / self.gcd(other))).abs() //~ ERROR: assertion might fail with "attempt to divide by zero"
     }
 
     #[trusted]
@@ -40,5 +41,3 @@ impl Integer for i8 {
         m << shift
     }
 }
-
-fn main(){}

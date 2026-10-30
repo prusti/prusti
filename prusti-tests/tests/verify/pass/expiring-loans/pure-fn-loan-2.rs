@@ -42,5 +42,3 @@ fn generic_get_v(x: T, y: T, guard: i32) -> i32 {
         _ => unreachable!(),
     }
 }
-
-fn main() {}

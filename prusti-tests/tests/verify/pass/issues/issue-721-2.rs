@@ -18,5 +18,3 @@ pub fn foo(a: [i32; 16]) {
     let a2: [i32; 16] = slice_to_array16(s);
     assert!(a2[0] > 100);
 }
-
-fn main() {}

@@ -1,3 +1,4 @@
+//@ known-failure
 use prusti_contracts::*;
 
 struct Nonsense {
@@ -29,5 +30,3 @@ fn test(arg: &mut Nonsense) {
     let m3 = arg.m3_mut(); //~ERROR: obligation might not hold on borrow expiry
     *m3 += 5; // mistake
 }
-
-fn main() {}

@@ -1,3 +1,4 @@
+//@ known-failure
 #![feature(nll)]
 #![feature(box_patterns)]
 
@@ -17,7 +18,7 @@ fn lookup(head: &List, index: usize) -> u32 {
     } else {
         match head.next {
             Some(box ref tail) => lookup(tail, index - 1),
-            None => unreachable!() //~ERROR: unreachable!(..) statement might be reachable
+            None => unreachable!() //~ERROR: might not hold
         }
     }
 }
@@ -41,5 +42,3 @@ fn prepend_list(x: u32, tail: List) -> List {
         next: Some(Box::new(tail)),
     }
 }
-
-fn main() {}

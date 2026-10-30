@@ -196,6 +196,7 @@ fn create_model_impl(
 
     Ok(parse_quote_spanned! {item_struct.span()=>
         #[prusti::type_models_to_model_impl]
+        #[prusti::refine_trait_spec]
         #[prusti::specs_version = #SPECS_VERSION]
         impl<#(#generic_params),*> #to_model_trait_path for #impl_path {
             #[trusted]
@@ -383,6 +384,7 @@ mod tests {
 
         let expected: syn::ItemImpl = parse_quote!(
             #[prusti::type_models_to_model_impl]
+            #[prusti::refine_trait_spec]
             #[prusti::specs_version = #SPECS_VERSION]
             impl #trait_ident<> for Foo <> {
                 #[trusted]
@@ -415,6 +417,7 @@ mod tests {
         );
         let expected_impl: syn::ItemImpl = parse_quote!(
             #[prusti::type_models_to_model_impl]
+            #[prusti::refine_trait_spec]
             #[prusti::specs_version = #SPECS_VERSION]
             impl #trait_ident<> for Foo<'_, '_> {
                 #[trusted]
@@ -459,6 +462,7 @@ mod tests {
 
         let expected_impl: syn::ItemImpl = parse_quote!(
             #[prusti::type_models_to_model_impl]
+            #[prusti::refine_trait_spec]
             #[prusti::specs_version = #SPECS_VERSION]
             impl<T, U> #trait_ident<T, U> for Foo<i32, T, usize, U> {
                 #[trusted]

@@ -24,7 +24,5 @@ fn test1(a: u32, b: T) -> G {
 
 fn test2(a: u32, b: T) {
     let x = callee(a, b);
-    assert!(x.g1 == 0);     //~ ERROR: the asserted expression might not hold
+    assert!(x.g1 == 0);     //~ ERROR: might not hold
 }
-
-fn main() {}

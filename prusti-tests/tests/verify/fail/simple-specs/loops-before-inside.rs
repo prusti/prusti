@@ -17,5 +17,3 @@ fn test_invariant_after_loop_iteration() -> i32 {
     }
     x
 }
-
-fn main() {}

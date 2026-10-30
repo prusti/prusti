@@ -34,5 +34,3 @@ impl PageIndex {
         !self.is_empty()
     }
 }
-
-fn main() {}

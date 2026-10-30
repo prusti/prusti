@@ -4,5 +4,3 @@ use prusti_contracts::*;
 fn proof(p: u32, np: u32) {
   prusti_assume!(false);
 }
-
-fn main(){}

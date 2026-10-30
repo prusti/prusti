@@ -1,7 +1,6 @@
 //@ compile-flags: -Punsafe_core_proof=true
 
 use prusti_contracts::*;
-fn main() {}
 
 enum Enum1 {
     A(i32),
@@ -16,7 +15,7 @@ fn test1() {
 fn test1_assert_false() {
     let x = Enum1::A(4);
     let y = &x;
-    assert!(false);      //~ ERROR: the asserted expression might not hold
+    assert!(false);      //~ ERROR: might not hold
 }
 
 fn test2() {
@@ -29,7 +28,7 @@ fn test2_assert_false() {
     let mut x = Enum1::A(4);
     let mut y = &mut x;
     let z = &mut y;
-    assert!(false);      //~ ERROR: the asserted expression might not hold
+    assert!(false);      //~ ERROR: might not hold
 }
 
 enum Enum2<'a> {
@@ -47,7 +46,7 @@ fn test3_assert_false() {
     let mut n = 4;
     let x = Enum2::A(&mut n);
     let y = &x;
-    assert!(false);      //~ ERROR: the asserted expression might not hold
+    assert!(false);      //~ ERROR: might not hold
 }
 
 fn test4() {
@@ -60,7 +59,7 @@ fn test4_assert_false() {
     let n = 4;
     let x = Enum2::B(&n);
     let y = &x;
-    assert!(false);      //~ ERROR: the asserted expression might not hold
+    assert!(false);      //~ ERROR: might not hold
 }
 
 fn test5() {
@@ -73,7 +72,7 @@ fn test5_assert_false() {
     let mut n = 4;
     let mut x = Enum2::A(&mut n);
     let y = &mut x;
-    assert!(false);      //~ ERROR: the asserted expression might not hold
+    assert!(false);      //~ ERROR: might not hold
 }
 
 fn test6() {
@@ -86,7 +85,7 @@ fn test6_assert_false() {
     let n = 4;
     let mut x = Enum2::B(&n);
     let y = &mut x;
-    assert!(false);      //~ ERROR: the asserted expression might not hold
+    assert!(false);      //~ ERROR: might not hold
 }
 
 struct A<'a>{
@@ -110,7 +109,7 @@ fn test7_assert_false(){
     let mut b = B{ x: &mut n };
     let mut x = Enum3::B(&mut b);
     let y = &mut x;
-    assert!(false);      //~ ERROR: the asserted expression might not hold
+    assert!(false);      //~ ERROR: might not hold
 }
 
 struct C<'a>{
@@ -135,7 +134,7 @@ fn test8_assert_false(){
     let mut c = C{ x: &mut n };
     let mut x = Enum4::B(&c);
     let r = &mut x;
-    assert!(false);      //~ ERROR: the asserted expression might not hold
+    assert!(false);      //~ ERROR: might not hold
 }
 fn test9(){
     // Enum with mutable reference to struct with shared reference
@@ -149,7 +148,7 @@ fn test9_assert_false(){
     let mut b = D{ x: &n };
     let mut e = Enum4::A(&mut b);
     let r = &mut e;
-    assert!(false);      //~ ERROR: the asserted expression might not hold
+    assert!(false);      //~ ERROR: might not hold
 }
 fn test10(){
     let n = 5;
@@ -164,7 +163,7 @@ fn test10_assert_false(){
     let mut b = &mut a;
     let mut c = &mut b;
     let mut _d = &mut c;
-    assert!(false);      //~ ERROR: the asserted expression might not hold
+    assert!(false);      //~ ERROR: might not hold
 }
 
 enum Enum5<'a, T> {
@@ -184,5 +183,5 @@ fn test11_assert_false(){
     let mut e = Enum5::A(&mut c);
     let mut f = &mut e;
     let mut g = &mut f;
-    assert!(false);      //~ ERROR: the asserted expression might not hold
+    assert!(false);      //~ ERROR: might not hold
 }

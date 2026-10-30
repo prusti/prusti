@@ -10,7 +10,7 @@ fn main() {}
 
 //// ANCHOR: code
 // #[requires(x >= 0)] // Forgot to add this condition
-#[ensures(result == x * (x + 1) / 2)] //~ ERROR postcondition might not hold
+#[ensures(result == x * (x + 1) / 2)] //~ ERROR: postcondition might not hold
 fn summation(x: i32) -> i32 {
     let mut i = 1;
     let mut sum = 0;

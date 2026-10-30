@@ -78,7 +78,7 @@ impl<'vir, E: TaskEncoder> ImpureEncVisitor<'vir, '_, E> {
                 self.vcx.with_span(span, |vcx| {
                     vcx.handle_error("exhale.failed:assertion.false", move |_| {
                         Some(vec![PrustiError::verification(
-                            "pledge postcondition might not hold",
+                            "pledge in the postcondition might not hold.",
                             span.into(),
                         )])
                     });

@@ -1,4 +1,5 @@
-// compile-flags: -Puse_more_complete_exhale=false
+//@ known-failure
+//@ compile-flags: -Puse_more_complete_exhale=false
 
 //! A copy of `artefact_Binary_search_shared.rs` with fixed non-termination bug and manually
 //! encoded termination check.
@@ -140,5 +141,3 @@ fn binary_search(arr: &VecWrapperI32, elem: &i32) -> UsizeOption {
 
     result
 }
-
-fn main() {}

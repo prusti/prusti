@@ -1,24 +1,10 @@
+//@ aux-build: max_trait_only.rs
 // The extern spec below introduces a specification for TestStruct::max
 // but not for Max::max (implemented on TestStruct)
 // We do not consider the extern spec TestStruct::max for calls to Max::max
 
+use max_trait_only::{Max, TestStruct};
 use prusti_contracts::*;
-
-pub trait Max {
-    fn max(a: i32, b: i32) -> i32;
-}
-
-struct TestStruct {}
-
-impl Max for TestStruct {
-    fn max(a: i32, b: i32) -> i32 {
-        if a < b {
-            b
-        } else {
-            a
-        }
-    }
-}
 
 #[extern_spec]
 impl TestStruct {

@@ -29,7 +29,7 @@ fn test3() {
         body_invariant!(i < 5);
         i += 1;
     }
-    assert!(false);    //~ ERROR: the asserted expression might not hold
+    assert!(false);    //~ ERROR: might not hold
 }
 
 fn test4() {
@@ -49,7 +49,7 @@ fn test5() {
         i += 1;
         assert!(i <= 5);
     }
-    assert!(i == 5);    //~ ERROR: the asserted expression might not hold
+    assert!(i == 5);    //~ ERROR: might not hold
 }
 
 fn test6() {
@@ -58,7 +58,7 @@ fn test6() {
         assert!(i < 5);
         i += 1;
         assert!(i <= 5);
-        assert!(false);     //~ ERROR: the asserted expression might not hold
+        assert!(false);     //~ ERROR: might not hold
     }
 }
 
@@ -72,7 +72,7 @@ fn test7() {
 
 fn test8() {
     while let Some(n) = next() { }
-    assert!(false);     //~ ERROR: the asserted expression might not hold
+    assert!(false);     //~ ERROR: might not hold
 }
 
 #[ensures(old(a) == old(a))]
@@ -90,7 +90,7 @@ fn test10() {
     while let Some(n) = next2(3) {
         body_invariant!(true);
     }
-    assert!(false);      //~ ERROR: the asserted expression might not hold
+    assert!(false);      //~ ERROR: might not hold
 }
 
 struct T;
@@ -121,21 +121,21 @@ fn test12() -> Result<T, E> {
 
 fn test13() -> Result<T, E> {
     while let Some(n) = next3()? {
-        assert!(false);     //~ ERROR: the asserted expression might not hold
+        assert!(false);     //~ ERROR: might not hold
     }
     Err(E)
 }
 
 fn test14() -> Result<T, E> {
     while let Some(n) = next3()? { }
-    assert!(false);     //~ ERROR: the asserted expression might not hold
+    assert!(false);     //~ ERROR: might not hold
     Err(E)
 }
 
 fn test15() -> Result<T, E> {
     while let Some(n) = next3()? {
         body_invariant!(true);
-        assert!(false);     //~ ERROR: the asserted expression might not hold
+        assert!(false);     //~ ERROR: might not hold
     }
     Err(E)
 }
@@ -144,7 +144,7 @@ fn test16() -> Result<T, E> {
     while let Some(n) = next3()? {
         body_invariant!(true);
     }
-    assert!(false);     //~ ERROR: the asserted expression might not hold
+    assert!(false);     //~ ERROR: might not hold
     Err(E)
 }
 
@@ -211,13 +211,10 @@ fn test22() -> u32 {
             break result;
         }
     };
-    assert!(false); //~ ERROR: the asserted expression might not hold
+    assert!(false); //~ ERROR: might not hold
     result
 }
 
 fn test23() {
     loop {}
 }
-
-fn main() {}
-

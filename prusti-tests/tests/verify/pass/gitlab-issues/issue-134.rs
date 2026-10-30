@@ -39,6 +39,3 @@ fn test2(x: &mut T) {
         continue_loop_1 = false;
     }
 }
-
-fn main() {
-}

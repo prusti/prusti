@@ -13,5 +13,3 @@ fn test() {
         }
     }
 }
-
-fn main() {}

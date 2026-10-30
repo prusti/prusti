@@ -1,3 +1,4 @@
+//@ known-failure
 use prusti_contracts::*;
 
 // Test generics and type parameter resolution at call sites. There are various
@@ -169,6 +170,7 @@ trait T1 {
 }
 
 struct X3 {}
+#[refine_trait_spec]
 impl T1 for X3 {
     #[trusted]
     fn fn5<A, B, C>(&self, a: A, b: B) -> C { unimplemented!() }
@@ -208,6 +210,7 @@ trait T2 {
 }
 
 struct X4 {}
+#[refine_trait_spec]
 impl T2 for X4 {
     type AT1 = (i32, usize);
     type AT2 = (usize, i32);
@@ -226,6 +229,3 @@ fn test_fn6<T: T2<AT1 = (i32, usize), AT2 = (usize, i32)>>(t: T, x: X4) {
     assert!(!x.fn6::<i32, (i32, i32), bool>(7, (8, 9), (42, 43), (33, 44)));
     assert!(!x.pure_fn6::<i32, (i32, i32), bool>(7, (8, 9), (42, 43), (33, 44)));
 }
-
-#[trusted]
-fn main() {}

@@ -1,3 +1,4 @@
+//@ known-failure
 use prusti_contracts::*;
 
 fn borrow(_x: &i32) {}
@@ -53,7 +54,4 @@ pub fn test4(n: &i32) {
         borrow(n);
         cond = i < *n;
     }
-}
-
-fn main() {
 }

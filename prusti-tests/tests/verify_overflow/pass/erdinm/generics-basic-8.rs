@@ -21,5 +21,3 @@ fn test1(arg: &mut Foo<isize, i8>) {
     set_a(arg);
     assert!(arg.ib.c == 42);
 }
-
-fn main() {}

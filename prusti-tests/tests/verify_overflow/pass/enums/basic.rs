@@ -57,5 +57,3 @@ pub fn test4() -> E4 {
         E4::V3
     }
 }
-
-fn main() {}

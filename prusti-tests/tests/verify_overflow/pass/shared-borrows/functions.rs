@@ -50,5 +50,21 @@ pub fn test8() {
     assert!(*x == 5);
 }
 
-fn main() {
+pub fn test_static<T>(x: &'static T) -> &'_ T {
+    &*x
+}
+
+struct T<'a> {
+    f: u32,
+    g: &'a u32,
+    h: *const u32,
+    i: Vec<u32>,
+    j: String,
+    k: &'a [T<'a>],
+}
+
+#[requires(x.f == 123)]
+#[ensures(result == 123)]
+fn test_unused_ref_fields(x: &T) -> u32 {
+    x.f
 }

@@ -142,5 +142,3 @@ fn router(me: &StringWrapper, rx: Receiver<Message>, tx: Sender<Message>) {
 }
 
 fn process(_data: &StringWrapper) {}
-
-fn main() { }

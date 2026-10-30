@@ -20,4 +20,14 @@ fn recursive(head: &mut List, b: bool) {
     consume(x);
 }
 
-fn main() {}
+struct ValueList {
+    value: u32,
+    next: Option<Box<ValueList>>,
+}
+
+fn recursive_get_last(head: &mut ValueList) -> &mut u32 {
+    match head.next {
+        None => &mut head.value,
+        Some(box ref mut next_ref) => recursive_get_last(next_ref)
+    }
+}

@@ -16,6 +16,3 @@ fn test() {
     match x {};
     assert!(false);
 }
-
-fn main() {
-}

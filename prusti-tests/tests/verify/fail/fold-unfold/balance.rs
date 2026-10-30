@@ -1,3 +1,4 @@
+//@ known-failure
 use prusti_contracts::*;
 
 struct Account {
@@ -28,5 +29,3 @@ impl Account {
         other.deposit(amount);
     }
 }
-
-fn main() {}

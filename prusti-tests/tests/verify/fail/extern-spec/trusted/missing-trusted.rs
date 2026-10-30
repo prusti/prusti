@@ -10,5 +10,3 @@ impl i32 {
     #[ensures(result >= 0)]
     fn abs(self) -> i32; //~ ERROR: must be marked `#[trusted]`
 }
-
-fn main() {}

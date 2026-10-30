@@ -1,7 +1,6 @@
 //@ compile-flags: -Punsafe_core_proof=true
 
 use prusti_contracts::*;
-fn main() {}
 
 pub fn mutable_borrow() {
     let mut a = 4;
@@ -13,7 +12,7 @@ pub fn mutable_borrow_assert_false() {
     let mut a = 4;
     let x = &mut a;
     *x = 2;
-    assert!(*x == 4);      //~ ERROR: the asserted expression might not hold
+    assert!(*x == 4);      //~ ERROR: might not hold
 }
 
 pub fn mutable_reborrow() {
@@ -28,7 +27,7 @@ pub fn mutable_reborrow_assert_false() {
     let mut x = &mut a;
     let y = &mut (*x);
     *y = 3;
-    assert!(*y == 4);      //~ ERROR: the asserted expression might not hold
+    assert!(*y == 4);      //~ ERROR: might not hold
 }
 
 pub fn shared_borrow() {
@@ -41,7 +40,7 @@ pub fn shared_borrow_assert_false() {
     let mut a = 4;
     let x = &a;
     let y = &a;
-    assert!(*y == 5);      //~ ERROR: the asserted expression might not hold
+    assert!(*y == 5);      //~ ERROR: might not hold
 }
 
 pub fn shared_reborrow() {
@@ -56,7 +55,7 @@ pub fn shared_reborrow_assert_false() {
     let x = &a;
     let y = &(*x);
     let z = &(*x);
-    assert!(*z == 5);      //~ ERROR: the asserted expression might not hold
+    assert!(*z == 5);      //~ ERROR: might not hold
 }
 
 pub fn simple_references() {
@@ -70,7 +69,7 @@ pub fn simple_references_assert_false() {
     let mut b = &mut a;
     let mut c = &mut b;
     let mut d = &mut c;
-    assert!(false);      //~ ERROR: the asserted expression might not hold
+    assert!(false);      //~ ERROR: might not hold
 }
 
 // FIXME: Fix overlapping shared references

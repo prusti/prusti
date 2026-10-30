@@ -96,5 +96,3 @@ fn test_result_in_guard(start: u32) -> Result<u32, UnexpectedValue> {
     assert!(i == 10);
     Ok(i)
 }
-
-fn main() {}

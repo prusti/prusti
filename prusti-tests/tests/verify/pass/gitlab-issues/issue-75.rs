@@ -52,7 +52,3 @@ fn test2(x: VecWrapperI32, y: VecWrapperI32) {
     //let w = x.lookup(1);
     assert!(0 <= x.len());
 }
-
-fn main() {
-
-}

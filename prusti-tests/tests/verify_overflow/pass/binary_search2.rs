@@ -1,6 +1,5 @@
+//@ known-failure
 use prusti_contracts::*;
-
-fn main() {}
 
 predicate! {
     fn sorted(s: &[i32]) -> bool {

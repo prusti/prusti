@@ -8,5 +8,3 @@ fn div_rem(x: usize, d: usize) -> (usize, usize)
         x % d
     )
 }
-
-fn main(){}

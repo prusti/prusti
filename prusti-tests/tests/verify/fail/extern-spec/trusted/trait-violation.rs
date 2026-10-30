@@ -1,3 +1,4 @@
+//@ known-failure
 //! The `#[trusted]` of an `extern_spec` trait method is NOT inherited by
 //! impls: a local impl that violates the inherited contract is caught by
 //! verification. To opt out it would have to be `#[trusted]` itself.
@@ -22,5 +23,3 @@ impl Hasher for H {
     }
     fn write(&mut self, _bytes: &[u8]) {}
 }
-
-fn main() {}

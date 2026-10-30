@@ -41,5 +41,3 @@ impl Builder {
         }
     }
 }
-
-fn main() {}

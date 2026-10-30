@@ -26,5 +26,3 @@ fn copy() {
     let a = true;
     let b = !a;
 }
-
-fn main() {}

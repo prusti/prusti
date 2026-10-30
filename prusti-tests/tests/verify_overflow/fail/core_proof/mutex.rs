@@ -6,7 +6,7 @@ use std::sync::Mutex;
 
 fn test1_fail<T>(m: &Mutex<T>) {
     if let Ok(g1) = m.lock() {
-        assert!(false); //~ ERROR: the asserted expression might not hold
+        assert!(false); //~ ERROR: might not hold
     }
 }
 
@@ -41,5 +41,3 @@ fn test5<T>(m: &Mutex<T>) {
         }
     }
 }
-
-fn main() {}

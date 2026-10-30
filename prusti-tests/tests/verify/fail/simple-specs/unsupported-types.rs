@@ -23,5 +23,3 @@ impl Request {
         Err(ErrorTypes::Err2)
     }
 }
-
-fn main(){}

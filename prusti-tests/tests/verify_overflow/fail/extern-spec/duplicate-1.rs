@@ -1,19 +1,6 @@
+//@ aux-build: duplicate_1_aux.rs
+use duplicate_1_aux::TestStruct;
 use prusti_contracts::*;
-
-struct TestStruct {}
-
-impl TestStruct {
-    #[pure]
-    #[ensures(result >= a && result >= b)]
-    #[ensures(result == a || result == b)]
-    fn max(a: i32, b: i32) -> i32 {
-        if a < b {
-            b
-        } else {
-            a
-        }
-    }
-}
 
 #[extern_spec]
 impl TestStruct {
@@ -21,7 +8,7 @@ impl TestStruct {
     #[pure]
     #[ensures(result >= a && result >= b)]
     #[ensures(result == a || result == b)]
-    fn max(a: i32, b: i32) -> i32; //~ERROR: already has a specification
+    fn max(a: i32, b: i32) -> i32; //~ERROR: duplicate specification for `duplicate_1_aux::TestStruct::max`
 }
 
 fn main() {

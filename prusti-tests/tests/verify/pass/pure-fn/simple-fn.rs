@@ -1,4 +1,5 @@
 use prusti_contracts::*;
+use std::cmp::Ordering;
 
 #[pure]
 fn max(x: i32, y: i32) -> i32 {
@@ -21,3 +22,23 @@ fn magic(n: i32) -> i32 {
 #[ensures(magic(1) == 1)]
 #[ensures(magic(2) == 42)]
 fn main() {}
+
+#[pure]
+fn cmp(x: i32, y: i32) -> Ordering {
+    Ordering::Less
+}
+
+#[derive(Clone, Copy)]
+struct MyWrapper(u32);
+
+impl MyWrapper {
+    #[pure]
+    #[ensures(self === MyWrapper(result))]
+    fn unwrap(self) -> u32 {
+        self.0
+    }
+}
+
+fn test(x: MyWrapper) -> u32 {
+    x.unwrap()
+}

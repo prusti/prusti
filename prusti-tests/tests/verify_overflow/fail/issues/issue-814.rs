@@ -7,7 +7,7 @@ fn size_of<T>() -> usize {
 }
 
 fn test1() {
-    assert!(size_of::<u32>() == size_of::<u8>());   //~ ERROR: the asserted expression might not hold
+    assert!(size_of::<u32>() == size_of::<u8>());   //~ ERROR: might not hold
 }
 
 #[requires(size_of::<u32>() == size_of::<u8>())]
@@ -32,7 +32,5 @@ impl<H> S<H> {
 fn test3() {
     let s1 = S { f: 3u32 };
     let s2 = S { f: 3u64 };
-    assert!(s1.size_of2() == s2.size_of2());    //~ ERROR: the asserted expression might not hold
+    assert!(s1.size_of2() == s2.size_of2());    //~ ERROR: might not hold
 }
-
-fn main() {}

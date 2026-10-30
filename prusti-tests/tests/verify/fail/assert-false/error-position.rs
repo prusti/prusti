@@ -45,5 +45,3 @@ fn foo12(x: bool) {}
 pub fn foo13(x: u32) -> u32 {
     x
 }
-
-fn main() {}

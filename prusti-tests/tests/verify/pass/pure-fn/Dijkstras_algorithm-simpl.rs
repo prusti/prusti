@@ -28,5 +28,3 @@ impl Grid {
         }
     }
 }
-
-fn main() {}

@@ -10,7 +10,3 @@ struct IntBox {
 fn unbox(my_box: IntBox) -> i32 {
     my_box.value
 }
-
-fn main() {
-
-}

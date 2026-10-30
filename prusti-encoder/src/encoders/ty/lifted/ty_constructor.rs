@@ -25,7 +25,9 @@ pub struct TyConstructorEncOutputRef<'vir> {
 
 impl<'vir> OutputRefAny for TyConstructorEncOutputRef<'vir> {}
 
-pub type TyConstructorEncOutput<'vir> = vir::AdtConstructor<'vir>;
+/// The constructor of the `Type` ADT, and its axiom for `Type_rank` (if it
+/// has type parameters).
+pub type TyConstructorEncOutput<'vir> = (vir::AdtConstructor<'vir>, Option<vir::DomainAxiom<'vir>>);
 
 /// Encodes the lifted representation of a Rust type constructor (e.g. Option,
 /// Vec, user-defined ADTs).
@@ -107,12 +109,35 @@ impl TaskEncoder for TyConstructorEnc {
                 .collect::<Vec<vir::LocalDecl<vir::Dyn>>>();
             let variant =
                 vcx.mk_adt_constructor(type_function_ident.name().to_str(), vcx.alloc_slice(&args));
-            Ok((variant, ()))
+
+            let ty = type_function_ident.call()(params.ty_exprs(), params.const_exprs());
+            let rank = Self::rank_fn();
+            let below = params
+                .ty_exprs()
+                .iter()
+                .map(|&arg| {
+                    vcx.mk_bin_op_expr(vir::BinOpKind::CmpGt, rank(ty), rank(arg))
+                        .downcast_ty()
+                })
+                .collect::<Vec<_>>();
+            let rank_axiom = (!below.is_empty()).then(|| {
+                let body = vcx.mk_conj(&below);
+                vcx.mk_domain_axiom(
+                    vir::vir_format_identifier!(vcx, "rank_{base_name}"),
+                    vir::expr! {
+                        forall ..[params.ty_decls()], ..[params.const_decls()] :: {[ty]} [body]
+                    },
+                )
+            });
+            Ok(((variant, rank_axiom), ()))
         })
     }
 
     fn emit_outputs<'vir>(program: &mut task_encoder::Program<'vir>) {
-        let mut constructors = Self::all_outputs_local_no_errors(program);
+        let (mut constructors, rank_axioms): (Vec<_>, Vec<_>) =
+            Self::all_outputs_local_no_errors(program)
+                .into_iter()
+                .unzip();
         vir::with_vcx(|vcx| {
             let args = vcx.alloc_array(&[vcx.mk_local_decl(Self::UNKNOWN_TYPE_ID, vir::TYPE_INT)]);
             let unknown = vcx.mk_adt_constructor(Self::UNKNOWN_TYPE_NAME, args);
@@ -123,6 +148,17 @@ impl TaskEncoder for TyConstructorEnc {
                 vcx.alloc_slice(&constructors),
             );
             program.add_adt(adt);
+
+            let rank_axioms = rank_axioms.into_iter().flatten().collect::<Vec<_>>();
+            let rank = vcx.mk_domain_function(Self::rank_fn(), false, None);
+            let domain = vcx.mk_domain(
+                vir::ViperIdent::new("TypeRank"),
+                &[],
+                vcx.alloc_slice(&rank_axioms),
+                vcx.alloc_slice(&[rank]),
+                None,
+            );
+            program.add_domain(domain);
         })
     }
 }
@@ -131,4 +167,17 @@ impl TyConstructorEnc {
     /// The name of the constructor for the unknown type variant in the `Type` ADT.
     pub const UNKNOWN_TYPE_NAME: &str = "Unknown_type";
     const UNKNOWN_TYPE_ID: &str = "id";
+
+    /// Ranks every type above its type arguments, so that the solver knows
+    /// a type never contains itself (e.g. `S != Point3<S>`); without this,
+    /// it can unfold functions of `Point3<S>` forever. SMT datatypes are
+    /// acyclic, but Viper encodes ADTs as axioms, which are not: remove this
+    /// if Viper switches to SMT datatypes.
+    fn rank_fn<'vir>() -> vir::FunctionIdn<'vir, vir::TyVal, vir::Int> {
+        vir::FunctionIdn::new(
+            vir::ViperIdent::new("Type_rank"),
+            vir::TYPE_TYVAL,
+            vir::TYPE_INT,
+        )
+    }
 }

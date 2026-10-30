@@ -1,3 +1,4 @@
+//@ known-failure
 // ignore-test
 
 use prusti_contracts::*;

@@ -9,5 +9,3 @@ pub trait MyMulAddAssign<A> {
 impl MyMulAddAssign<isize> for isize {
     fn op(&mut self, a: isize) {}
 }
-
-fn main(){}

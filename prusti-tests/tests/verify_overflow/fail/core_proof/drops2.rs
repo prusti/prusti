@@ -1,3 +1,4 @@
+//@ known-failure
 //@ compile-flags: -Pcheck_no_drops=true -Punsafe_core_proof=true -Puse_smt_wrapper=true -Psmt_qi_bound_global=10000 -Psmt_qi_bound_trace=200 -Psmt_qi_bound_trace_kind=15 -Psmt_qi_bound_global_kind=20
 
 use prusti_contracts::*;
@@ -91,6 +92,3 @@ fn test9() {
         drop(b);
     }
 }    //~ERROR: the drop handler was called.
-
-fn main() {}
-

@@ -17,6 +17,3 @@ impl<T: Val> Foo<T> {
 
 #[requires(x.value() > 0)]
 fn use_val_in_spec<T: Val>(x: &T) {}
-
-#[trusted]
-fn main() {}

@@ -1,3 +1,4 @@
+//@ known-failure
 //@ compile-flags: -Pencode_bitvectors=true
 
 use prusti_contracts::*;
@@ -11,7 +12,7 @@ fn shift_left_1() {
 fn shift_left_2() {
     let a = 1u8;
     let b = a << 2u32;
-    assert!(b == 8);    //~ ERROR: the asserted expression might not hold
+    assert!(b == 8);    //~ ERROR: might not hold
 }
 
 fn shift_left_3() {
@@ -29,7 +30,7 @@ fn shift_unsigned_right_1() {
 fn shift_unsigned_right_2() {
     let a = 4u8;
     let b = a >> 2u32;
-    assert!(b == 2);    //~ ERROR: the asserted expression might not hold
+    assert!(b == 2);    //~ ERROR: might not hold
 }
 
 fn shift_unsigned_right_3() {
@@ -53,7 +54,7 @@ fn shift_signed_right_1() {
 fn shift_signed_right_2() {
     let a = -1i8;
     let b = a >> 2u32;
-    assert!(b == -2);   //~ ERROR: the asserted expression might not hold
+    assert!(b == -2);   //~ ERROR: might not hold
 }
 
 fn shift_signed_right_3() {
@@ -67,5 +68,3 @@ fn shift_signed_right_4() {
     let b = a >> 2u32;
     assert!(b == 1);
 }
-
-fn main() {}

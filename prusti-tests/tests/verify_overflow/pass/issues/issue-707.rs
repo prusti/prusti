@@ -20,5 +20,3 @@ impl B {
 pub fn test(b: &B) -> A {
     b.get()
 }
-
-fn main() {}

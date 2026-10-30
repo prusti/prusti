@@ -19,11 +19,8 @@ impl Stack {
     #[requires(0 < self.len())]
     fn top_node(&mut self) -> &mut Node {
         match self.head {
-            None => { unreachable!() }, //~ERROR: unreachable!(..) statement might be reachable
+            None => { unreachable!() }, //~ERROR: might not hold
             Some(ref mut node) => node,
         }
     }
 }
-
-#[trusted]
-fn main() {}

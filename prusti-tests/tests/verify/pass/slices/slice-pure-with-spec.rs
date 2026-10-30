@@ -1,8 +1,5 @@
 use prusti_contracts::*;
 
-fn main() {}
-
-
 #[pure]
 #[ensures(s.len() > 0 ==> result == s[0])]
 #[ensures(s.len() == 0 ==> result == 42)]

@@ -1,10 +1,8 @@
+//@ aux-build: invalid_impl_aux.rs
+use invalid_impl_aux::MyTrait;
 use prusti_contracts::*;
 
-trait MyTrait {
-    fn get_value(&self) -> i32;
-}
-
-#[extern_spec]
+#[extern_spec(invalid_impl_aux)]
 trait MyTrait {
     #[trusted]
     #[ensures(result == 42)] //~ ERROR: postcondition might not hold.

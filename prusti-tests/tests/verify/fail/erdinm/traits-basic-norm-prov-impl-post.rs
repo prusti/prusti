@@ -14,5 +14,3 @@ impl Percentage for Effective {
         101
     }
 }
-
-fn main() {}

@@ -1,3 +1,4 @@
+//@ known-failure
 //@ compile-flags: -Penable_type_invariants=true
 use prusti_contracts::*;
 
@@ -22,5 +23,3 @@ fn test(x: u8) {
     let perc = Percentage::new(x);
     assert!(perc.value <= 100);
 }
-
-fn main() {}

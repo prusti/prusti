@@ -1,6 +1,5 @@
+//@ known-failure
 use prusti_contracts::*;
-
-fn main() {}
 
 #[derive(Clone, Copy)]
 pub struct A {

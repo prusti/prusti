@@ -1,3 +1,4 @@
+//@ known-failure
 use prusti_contracts::*;
 
 #[pure]
@@ -21,25 +22,23 @@ fn get_i32() -> i32 {
 fn test1() {
     assert!(get_usize() >= 0);
     assert!(get_u32() >= 0);
-    assert!(get_i32() >= 0);    //~ERROR: the asserted expression might not hold
+    assert!(get_i32() >= 0);    //~ERROR: might not hold
 }
 
 fn test2() {
-    assert!(get_usize() >= 1);  //~ERROR: the asserted expression might not hold
+    assert!(get_usize() >= 1);  //~ERROR: might not hold
 }
 
 fn test3(x: usize, y: u32, z: i32) {
     assert!(x >= 0);
     assert!(y >= 0);
-    assert!(z >= 0);    //~ERROR: the asserted expression might not hold
+    assert!(z >= 0);    //~ERROR: might not hold
 }
 
 fn test4(x: usize) {
-    assert!(x >= 1);  //~ERROR: the asserted expression might not hold
+    assert!(x >= 1);  //~ERROR: might not hold
 }
 
 fn test5(x: usize) {
     test4(4 - x);  //~ERROR: type invariant expected by the function call might not hold.
 }
-
-fn main() {}

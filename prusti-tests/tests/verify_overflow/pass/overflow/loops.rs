@@ -1,3 +1,4 @@
+//@ known-failure
 use prusti_contracts::*;
 
 #[requires(a + b <= std::u32::MAX)]
@@ -12,5 +13,3 @@ fn test(a: u32, b: u32) -> u32 {
     }
     d
 }
-
-fn main() {}

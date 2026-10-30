@@ -27,5 +27,3 @@ fn inc_max(mut a: i32, mut b: i32) -> bool {
     }
     a != b
 }
-
-fn main() {}

@@ -14,7 +14,5 @@ fn test2() {
     a[1] = 2;
     assert!(a[1] == 2);
     assert!(a[0] == 1);
-    assert!(a[0] == 2);     //~ ERROR: the asserted expression might not hold
+    assert!(a[0] == 2);     //~ ERROR: might not hold
 }
-
-fn main() {}

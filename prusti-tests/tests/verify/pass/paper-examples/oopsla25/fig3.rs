@@ -17,5 +17,3 @@ fn dec_max_alt<'a>(pos: &'a mut Pos2D<i32>) {
     let res = max(rx, ry);
     *res -= 1;
 }
-
-fn main() {}

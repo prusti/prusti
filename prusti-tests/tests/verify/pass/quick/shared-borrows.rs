@@ -51,6 +51,3 @@ pub fn test5() {
     a = 6;
     let _b = a;
 }
-
-fn main() {
-}

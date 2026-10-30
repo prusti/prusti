@@ -35,5 +35,3 @@ fn go(key: u32, m: &std::collections::HashMap<u32, bool>) {
     let result = m.get(&key);
     assert!(result.is_some())
 }
-
-fn main() {}

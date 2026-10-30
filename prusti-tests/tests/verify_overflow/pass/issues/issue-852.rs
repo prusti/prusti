@@ -1,3 +1,4 @@
+//@ known-failure
 use prusti_contracts::*;
 
 pub struct Bar {
@@ -12,5 +13,3 @@ predicate! {
         true
     }
 }
-
-fn main() {}

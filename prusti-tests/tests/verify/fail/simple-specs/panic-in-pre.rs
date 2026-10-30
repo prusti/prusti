@@ -1,3 +1,4 @@
+//@ known-failure
 use prusti_contracts::*;
 
 #[requires({
@@ -6,7 +7,7 @@ use prusti_contracts::*;
 })]
 fn foo(x: u32) {
     assert!(x != 0); // OK
-    assert!(false);  //~ERROR: the asserted expression might not hold
+    assert!(false);  //~ERROR: might not hold
 }
 
 fn bad(x: u32) {

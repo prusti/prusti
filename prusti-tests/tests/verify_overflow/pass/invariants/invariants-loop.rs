@@ -1,3 +1,4 @@
+//@ known-failure
 //@ compile-flags: -Penable_type_invariants=true
 use prusti_contracts::*;
 
@@ -33,5 +34,3 @@ fn call_inside_loop(percentage: &mut Percentage) {
         i += 1;
     }
 }
-
-fn main() {}

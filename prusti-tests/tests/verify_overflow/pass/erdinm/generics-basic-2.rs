@@ -17,5 +17,3 @@ fn test<U>(u: &mut U) {
     read(u);
     assert!(valid(u));
 }
-
-fn main() {}

@@ -10,5 +10,3 @@ fn test() {
     let y = must_answer(&mut x);
     *y = 42;
 }
-
-fn main() {}

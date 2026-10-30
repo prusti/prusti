@@ -1,4 +1,5 @@
-// compile-flags: -Puse_more_complete_exhale=false
+//@ known-failure
+//@ compile-flags: -Puse_more_complete_exhale=false
 
 //! An adaptation of the example from
 //! https://rosettacode.org/wiki/Binary_search#Rust

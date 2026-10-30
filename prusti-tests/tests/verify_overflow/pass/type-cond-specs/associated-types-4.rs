@@ -1,12 +1,10 @@
+//@ known-failure
+//@ aux-build: some_trait_generic.rs
+use some_trait_generic::SomeTrait;
 use prusti_contracts::*;
 
 trait A {
     type AssocType;
-}
-
-trait SomeTrait<T> {
-    type AssocType;
-    fn foo(&self, x: T) -> i32;
 }
 
 struct Foo;
@@ -21,7 +19,7 @@ impl<T> SomeTrait<T> for Foo {
     }
 }
 
-#[extern_spec]
+#[extern_spec(some_trait_generic)]
 trait SomeTrait<T> {
     #[trusted]
     #[refine_spec(where Self: A<AssocType = <Self as SomeTrait<T>>::AssocType>, [

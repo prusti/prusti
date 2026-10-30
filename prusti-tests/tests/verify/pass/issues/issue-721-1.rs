@@ -40,5 +40,3 @@ impl Path {
         assert!(self.entries[0] == 0);
     }
 }
-
-fn main() {}

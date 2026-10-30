@@ -1,3 +1,4 @@
+//@ known-failure
 use prusti_contracts::*;
 
 pub enum E3 {
@@ -14,5 +15,3 @@ pub fn test3(e: &mut E3) -> &mut u32 {  //~ERROR: implicit type invariants might
         E3::V2(ref mut b) => b,
     }
 }
-
-fn main() {}

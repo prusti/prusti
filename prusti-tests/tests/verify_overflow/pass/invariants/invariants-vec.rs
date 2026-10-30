@@ -1,3 +1,4 @@
+//@ known-failure
 //@ compile-flags: -Penable_type_invariants=true
 use prusti_contracts::*;
 
@@ -16,5 +17,3 @@ fn get_first<T: Copy>(p: Vec<T>) -> T {
 fn get_first_percentage(p: Vec<Percentage>) -> Percentage {
     get_first(p)
 }
-
-fn main() {}

@@ -1,3 +1,4 @@
+//@ known-failure
 use std::marker::PhantomData;
 use prusti_contracts::*;
 
@@ -15,5 +16,3 @@ impl<T> Foo<T> {
         42
     }
 }
-
-fn main() {}

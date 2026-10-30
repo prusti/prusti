@@ -1,20 +1,6 @@
+//@ aux-build: partial_spec_aux.rs
+use partial_spec_aux::{MyStruct, MyTrait};
 use prusti_contracts::*;
-
-trait MyTrait {
-    fn foo(&self, x: i32) -> i32;
-    fn bar(&self, x: i32) -> i32;
-}
-
-struct MyStruct;
-impl MyTrait for MyStruct {
-    fn foo(&self, x: i32) -> i32 {
-        x + 10
-    }
-
-    fn bar(&self, _x: i32) -> i32 {
-        42
-    }
-}
 
 #[extern_spec]
 impl MyTrait for MyStruct {

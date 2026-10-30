@@ -16,19 +16,19 @@ fn good() {
     prusti_assert!(matches!(Ordering::Greater, Ordering::Greater));
 
     // Smoke test
-    assert!(false); //~ ERROR: asserted expression might not hold
+    assert!(false); //~ ERROR: might not hold
 }
 
 fn bad_1() {
-    assert!(!matches!(Ordering::Less, Ordering::Less)); //~ ERROR: asserted expression might not hold
+    assert!(!matches!(Ordering::Less, Ordering::Less)); //~ ERROR: might not hold
 }
 
 fn bad_2() {
-    assert!(!matches!(Ordering::Equal, Ordering::Equal)); //~ ERROR: asserted expression might not hold
+    assert!(!matches!(Ordering::Equal, Ordering::Equal)); //~ ERROR: might not hold
 }
 
 fn bad_3() {
-    assert!(!matches!(Ordering::Greater, Ordering::Greater)); //~ ERROR: asserted expression might not hold
+    assert!(!matches!(Ordering::Greater, Ordering::Greater)); //~ ERROR: might not hold
 }
 
 fn bad_4() {
@@ -42,5 +42,3 @@ fn bad_5() {
 fn bad_6() {
     prusti_assert!(!matches!(Ordering::Greater, Ordering::Greater)); //~ ERROR: asserted expression might not hold
 }
-
-fn main() {}

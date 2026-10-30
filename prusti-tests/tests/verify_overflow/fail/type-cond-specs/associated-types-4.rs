@@ -1,12 +1,9 @@
+//@ aux-build: some_trait_generic.rs
+use some_trait_generic::SomeTrait;
 use prusti_contracts::*;
 
 trait A {
     type AssocType;
-}
-
-trait SomeTrait<T> {
-    type AssocType;
-    fn foo(&self, x: T) -> i32;
 }
 
 struct Foo;
@@ -21,7 +18,7 @@ impl<T> SomeTrait<T> for Foo {
     }
 }
 
-#[extern_spec]
+#[extern_spec(some_trait_generic)]
 trait SomeTrait<T> {
     #[trusted]
     #[refine_spec(where Self: A<AssocType = <Self as SomeTrait<T>>::AssocType>, [
@@ -33,5 +30,5 @@ trait SomeTrait<T> {
 fn main() {
     let f = Foo;
     let res = f.foo(42 as u32);
-    assert!(res > 0); //~ ERROR: [Prusti: verification error] the asserted expression might not hold
+    assert!(res > 0); //~ ERROR: might not hold
 }

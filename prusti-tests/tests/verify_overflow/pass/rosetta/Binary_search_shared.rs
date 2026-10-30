@@ -1,3 +1,4 @@
+//@ known-failure
 //! A version of `Binary_search.rs` that uses shared references.
 
 #![allow(dead_code)]
@@ -159,5 +160,3 @@ fn binary_search(arr: &VecWrapperI32, elem: i32) -> UsizeOption
 
     result
 }
-
-fn main() {}

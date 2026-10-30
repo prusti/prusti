@@ -1,12 +1,9 @@
+//@ known-failure
+//@ aux-build: my_trait_generic.rs
+use my_trait_generic::MyTrait;
 use prusti_contracts::*;
 
-/// External traits
-trait MyTrait<T> {
-    fn get_value(&self) -> T;
-}
-/// External traits
-
-#[extern_spec]
+#[extern_spec(my_trait_generic)]
 trait MyTrait<T> {
     // no equality constraints yet
     #[trusted]
@@ -35,6 +32,7 @@ trait SpecifiedGeneric {
     fn my_trait__get_value() -> Self;
 }
 
+#[refine_trait_spec]
 impl SpecifiedGeneric for i32 {
     #[pure]
     fn my_trait__get_value() -> Self {

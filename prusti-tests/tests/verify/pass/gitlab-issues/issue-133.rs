@@ -115,5 +115,3 @@ pub fn test5(cond1: bool, cond2: bool, mut a: U, mut b: U) {
     y.f = 5;
     consume_u(b);
 }
-
-fn main() {}

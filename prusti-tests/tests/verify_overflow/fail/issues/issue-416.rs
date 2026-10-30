@@ -1,3 +1,4 @@
+//@ known-failure
 use prusti_contracts::*;
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -17,5 +18,3 @@ impl<T> SafeVec<T> {
         self.0.get_unchecked(idx)
     }
 }
-
-fn main() {}

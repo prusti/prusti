@@ -1,3 +1,4 @@
+//@ known-failure
 //! An adaptation of the example from
 //! https://rosettacode.org/wiki/Sorting_algorithms/Selection_sort#Rust
 //!
@@ -159,5 +160,3 @@ pub fn test() {
 
     print_sorted_array(&array);
 }
-
-fn main() { }

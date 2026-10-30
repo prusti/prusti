@@ -16,5 +16,3 @@ fn test2(x: &mut T) {
     };
     *x = a;
 }
-
-fn main() {}

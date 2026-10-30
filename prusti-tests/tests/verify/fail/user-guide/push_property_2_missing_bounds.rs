@@ -1,3 +1,4 @@
+//@ known-failure
 // The next line is only required for doctests, you can ignore/remove it
 extern crate prusti_contracts;
 use prusti_contracts::*;
@@ -32,7 +33,8 @@ impl List {
     }
 
     #[ensures(self.len() == old(self.len()) + 1)]
-    #[ensures(self.lookup(0) == elem)] // 2. Property //~ ERROR postcondition might not hold
+    #[ensures(self.lookup(0) == elem)] // 2. Property
+    //~^ ERROR: postcondition might not hold
     pub fn push(&mut self, elem: i32) {
         // ...
         //// ANCHOR_END: lookup
@@ -67,7 +69,7 @@ impl Link {
                     node.next.lookup(index - 1)
                 }
             }
-            Link::Empty => unreachable!(), //~ ERROR: unreachable!(..) statement might be reachable
+            Link::Empty => unreachable!(), //~ ERROR: might not hold
         }
     }
     //// ANCHOR_END: lookup

@@ -13,5 +13,3 @@ fn use_both(_: &Tree, _: &Child) -> bool {true}
 fn test(tree: &Tree) -> bool {
     use_both(tree, &tree.child)
 }
-
-fn main() {}

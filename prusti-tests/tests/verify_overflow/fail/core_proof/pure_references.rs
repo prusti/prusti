@@ -47,5 +47,3 @@ fn test9() {
     let a = (3, 4);
     test7(a);    //~ ERROR: precondition might not hold
 }
-
-fn main() {}

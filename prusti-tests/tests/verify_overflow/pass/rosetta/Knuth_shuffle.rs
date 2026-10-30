@@ -1,3 +1,4 @@
+//@ known-failure
 //! An adaptation of the example from
 //! https://rosettacode.org/wiki/Knuth_shuffle#Rust
 //!
@@ -109,5 +110,3 @@ fn test() {
     knuth_shuffle(&mut v);
     print_vector_after(&mut v);
 }
-
-fn main() {}

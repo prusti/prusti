@@ -127,6 +127,3 @@ struct T20 {
     f: *mut u8,
     g: *mut [u8],
 }
-
-#[trusted]
-fn main() {}

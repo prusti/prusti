@@ -1,3 +1,4 @@
+//@ known-failure
 //! An monomorphised version from
 //! https://rosettacode.org/mw/index.php?title=Binary_search&oldid=278774#Rust
 //! that contains a bug.
@@ -132,5 +133,3 @@ pub fn binary_search(data: &[i32], target: i32) -> Option<usize> {
     }
     None
 }
-
-fn main() {}

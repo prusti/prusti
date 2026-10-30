@@ -6,6 +6,7 @@ trait Trait {
 }
 
 struct Foo<T>(std::marker::PhantomData<T>);
+#[refine_trait_spec]
 impl<T> Trait for Foo<T> {
     #[pure]
     fn foo(&self) -> i32 {

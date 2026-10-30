@@ -25,6 +25,3 @@ pub fn test4(x: &mut u32) {
     assert!(a == *y && a == *x);
     *x = 5;
 }
-
-fn main() {
-}

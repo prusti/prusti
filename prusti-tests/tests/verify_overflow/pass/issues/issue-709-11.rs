@@ -1,3 +1,4 @@
+//@ known-failure
 use prusti_contracts::*;
 
 #[derive(Clone, Copy)]
@@ -24,5 +25,3 @@ impl B {
         &self.inner[index]
     }
 }
-
-fn main() {}

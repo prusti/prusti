@@ -6,5 +6,3 @@ trait Percentage {
         assert!(arg <= 100);
     }
 }
-
-fn main() {}

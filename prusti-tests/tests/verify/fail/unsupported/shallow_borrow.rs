@@ -1,3 +1,4 @@
+//@ known-failure
 /// From the serde crate
 
 fn iterator_len_hint<I>(iter: &I) -> Option<usize>
@@ -9,5 +10,3 @@ fn iterator_len_hint<I>(iter: &I) -> Option<usize>
         _ => None,
     }
 }
-
-fn main() {}

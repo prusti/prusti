@@ -6,5 +6,3 @@ trait Percentage {
         100
     }
 }
-
-fn main() {}

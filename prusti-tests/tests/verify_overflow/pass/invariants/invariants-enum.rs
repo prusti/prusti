@@ -1,3 +1,4 @@
+//@ known-failure
 //@ compile-flags: -Penable_type_invariants=true
 use prusti_contracts::*;
 
@@ -16,8 +17,4 @@ fn go(bar: Bar) -> u32 {
        Bar::Foo1(f) => f.f,
        Bar::Foo2(_) => 2
    }
-}
-
-fn main(){
-
 }

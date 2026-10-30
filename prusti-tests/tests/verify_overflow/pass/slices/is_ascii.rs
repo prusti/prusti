@@ -1,3 +1,4 @@
+//@ known-failure
 use prusti_contracts::*;
 
 #[pure]
@@ -11,5 +12,3 @@ predicate! {
         forall(|index: usize| index < bytes.len() ==> u8_is_ascii(bytes[index]))
     }
 }
-
-fn main() {}

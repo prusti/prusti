@@ -41,7 +41,7 @@ fn test4<T>(a: GenericTrustedBox<T>) -> GenericTrustedBox<T> {
     let b = a;
     let c = GenericTrustedBox::new(4);
     let d = c;
-    assert!(d.get_value() == 4); //~ ERROR: the asserted expression might not hold
+    assert!(d.get_value() == 4); //~ ERROR: might not hold
     b
 }
 
@@ -50,5 +50,3 @@ struct Refi32<'a, 'b: 'a> {
     f: &'a i32,
     g: &'b i32,
 }
-
-fn main() {}

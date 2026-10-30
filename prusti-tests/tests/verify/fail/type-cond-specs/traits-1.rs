@@ -18,5 +18,5 @@ impl MyTrait for MyStruct {
 
 fn main() {
     let s = MyStruct;
-    assert!(s.foo() > 0); //~ ERROR: the asserted expression might not hold
+    assert!(s.foo() > 0); //~ ERROR: might not hold
 }

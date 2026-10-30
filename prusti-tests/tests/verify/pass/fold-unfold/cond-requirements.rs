@@ -40,5 +40,3 @@ impl TwoPSet {
         }
     }
 }
-
-fn main() {}

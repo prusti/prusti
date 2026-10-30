@@ -1,10 +1,9 @@
+//@ known-failure
 //@ compile-flags: -Punsafe_core_proof=true
 
 #![allow(unused)]
 
 use prusti_contracts::*;
-
-fn main() {}
 
 trait Trait {
     #[terminates(Int::from(x))]

@@ -9,5 +9,3 @@ struct Pair<T, U> {
 fn test2<U>(pair: &mut Pair<i8, U>) {
     assert!(pair.a == 42);
 }
-
-fn main() {}

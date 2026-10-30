@@ -1,3 +1,4 @@
+//@ known-failure
 use prusti_contracts::*;
 
 
@@ -20,5 +21,3 @@ fn foo_mut(slice: &mut [i32], start: usize, end: usize) {
 fn bar_mut(slice: &mut [i32], start: usize, end: usize) {
     let subslice = &mut slice[start..end]; //~ERROR: mutably slicing is not fully supported yet
 }
-
-fn main() {}

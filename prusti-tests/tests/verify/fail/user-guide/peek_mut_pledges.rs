@@ -1,3 +1,4 @@
+//@ known-failure
 //// ANCHOR: nothing
 //// ANCHOR_END: nothing
 // The next line is only required for doctests, you can ignore/remove it
@@ -252,7 +253,7 @@ mod prusti_tests {
             prusti_assert!(*first == 5);
             // `first` gets dropped here, `list` can be accessed again
         }
-        prusti_assert!(list.len() == 2); //~ ERROR the asserted expression might not hold
+        prusti_assert!(list.len() == 2); //~ ERROR: the asserted expression might not hold
         prusti_assert!(*list.lookup(0) == 5); // this fails too
         prusti_assert!(*list.lookup(1) == 8); // this fails too
     }

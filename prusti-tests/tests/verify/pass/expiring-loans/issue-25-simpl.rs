@@ -10,7 +10,3 @@ struct T {
 fn extract(x: &mut T) -> i32 {
     x.f
 }
-
-fn main() {
-
-}

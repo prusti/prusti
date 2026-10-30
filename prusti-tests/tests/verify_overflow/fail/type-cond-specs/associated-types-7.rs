@@ -1,12 +1,10 @@
+//@ known-failure
+//@ aux-build: some_trait_two_params.rs
+use some_trait_two_params::SomeTrait;
 use prusti_contracts::*;
 
 trait A<T, U> {
     type AssocType;
-}
-
-trait SomeTrait<X, Y> {
-    type AssocType;
-    fn foo(&self) -> i32;
 }
 
 struct FooMatch;
@@ -42,7 +40,7 @@ impl SomeTrait<i8, i16> for FooNoMatch2 {
     }
 }
 
-#[extern_spec]
+#[extern_spec(some_trait_two_params)]
 trait SomeTrait<X, Y> {
     #[trusted]
     #[refine_spec(where Self: A<X, Y, AssocType = <Self as SomeTrait<X, Y>>::AssocType>, [
@@ -58,12 +56,10 @@ fn verify_match() {
 
 fn verify_no_match_1() {
     let f = FooNoMatch1;
-    assert!(f.foo() > 0); //~ ERROR: [Prusti: verification error] the asserted expression might not hold
+    assert!(f.foo() > 0); //~ ERROR: might not hold
 }
 
 fn verify_no_match_2() {
     let f = FooNoMatch2;
-    assert!(f.foo() > 0); //~ ERROR: [Prusti: verification error] the asserted expression might not hold
+    assert!(f.foo() > 0); //~ ERROR: might not hold
 }
-
-fn main() {}

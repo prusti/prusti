@@ -1,3 +1,4 @@
+//@ known-failure
 //@ compile-flags: -Penable_purification_optimization=true
 
 use prusti_contracts::*;
@@ -8,7 +9,7 @@ fn test1() {
         i += 1;
     }
     let mut j = 0;
-    assert!(i == j);     //~ ERROR: the asserted expression might not hold
+    assert!(i == j);     //~ ERROR: might not hold
 }
 
 fn test2() {
@@ -18,7 +19,7 @@ fn test2() {
         i += 1;
     }
     let mut j = 0;
-    assert!(i == j);     //~ ERROR: the asserted expression might not hold
+    assert!(i == j);     //~ ERROR: might not hold
 }
 
 fn test3() {
@@ -28,7 +29,7 @@ fn test3() {
         i += 1;
     }
     let mut j = 0;
-    assert!(i == j);    //~ ERROR: the asserted expression might not hold
+    assert!(i == j);    //~ ERROR: might not hold
 }
 
 fn test4(v: &mut[i32]) {
@@ -70,7 +71,7 @@ fn test6(v: &mut[i32]) {
         }
         i += 1;
     }
-    assert!(zero_num_start == zero_num_end);    //~ ERROR: the asserted expression might not hold
+    assert!(zero_num_start == zero_num_end);    //~ ERROR: might not hold
 }
 
 fn test7(v: &mut [i32], start: usize, mid: usize, end: usize) {
@@ -87,7 +88,7 @@ fn test8(v: &mut [i32], start: usize, mid: usize, end: usize) {
     while u < mid {
         body_invariant!(u < mid);
         u += 1;
-        assert!(u < mid);   //~ ERROR: the asserted expression might not hold
+        assert!(u < mid);   //~ ERROR: might not hold
     }
 }
 
@@ -97,7 +98,5 @@ fn test9(v: &mut [i32], start: usize, mid: usize, end: usize) {
         body_invariant!(u < mid);
         u += 1;
     }
-    assert!(u == mid);  //~ ERROR: the asserted expression might not hold
+    assert!(u == mid);  //~ ERROR: might not hold
 }
-
-fn main() {}

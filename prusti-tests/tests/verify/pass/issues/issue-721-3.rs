@@ -9,5 +9,3 @@ use prusti_contracts::*;
 pub fn example(array: &[usize; 16]) -> &[usize] {
     &array[4..8]
 }
-
-fn main() {}

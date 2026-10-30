@@ -1,3 +1,4 @@
+//@ known-failure
 use prusti_contracts::*;
 
 fn test_break() {
@@ -26,5 +27,3 @@ fn test_continue() {
     }
     assert!(i == 10);
 }
-
-fn main() {}

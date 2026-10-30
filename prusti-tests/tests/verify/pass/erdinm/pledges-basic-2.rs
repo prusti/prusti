@@ -40,5 +40,3 @@ fn test(arg: &mut Nonsense) {
     let m3 = arg.m3_mut();
     *m3 += 3;
 }
-
-fn main() {}

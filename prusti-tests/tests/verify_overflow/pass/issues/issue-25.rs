@@ -7,5 +7,3 @@ fn f1<'a>(p: &'a mut Point) -> &'a mut u32 {
         &mut p.x
     }
 }
-
-fn main() {}

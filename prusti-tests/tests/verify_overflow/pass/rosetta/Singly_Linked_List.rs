@@ -66,5 +66,3 @@ pub fn test() {
     let mut list = List::new();
     list.push(5);
 }
-
-fn main() {}

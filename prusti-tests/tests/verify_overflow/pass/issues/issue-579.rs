@@ -13,6 +13,3 @@ fn all(a: &[bool; N]) -> bool {
     }
     result
 }
-
-#[trusted]
-fn main() {}

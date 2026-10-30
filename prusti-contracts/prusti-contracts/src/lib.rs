@@ -9,6 +9,10 @@
 #![cfg_attr(feature = "prusti", feature(f128))]
 #![cfg_attr(feature = "prusti", feature(f16))]
 #![cfg_attr(feature = "prusti", feature(panic_internals))]
+#![cfg_attr(
+    all(feature = "prusti", feature = "std"),
+    feature(rt, libstd_sys_internals)
+)]
 #![cfg_attr(feature = "prusti", feature(sized_hierarchy))]
 #![cfg_attr(feature = "prusti", feature(allocator_api))]
 #![cfg_attr(feature = "prusti", feature(slice_index_methods))]

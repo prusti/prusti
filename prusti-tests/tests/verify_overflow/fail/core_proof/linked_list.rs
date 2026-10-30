@@ -26,5 +26,3 @@ struct LinkedList2 {
 fn test_2(x: LinkedList) -> bool {
     x.val == 0
 }
-
-fn main() {}

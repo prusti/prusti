@@ -9,5 +9,3 @@ fn test() {
     let x = -1;
     foo(x); //~ ERROR: precondition
 }
-
-fn main() {}

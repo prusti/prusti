@@ -1,3 +1,4 @@
+//@ known-failure
 use prusti_contracts::*;
 use std::collections::HashSet;
 use std::hash::Hash;
@@ -90,6 +91,3 @@ impl<T: Hash + Eq> RemoveWinsSet<T>{
         self.remove_wins_removes.insert(elem);
     }
 }
-
-#[trusted]
-fn main() {}

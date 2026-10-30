@@ -25,5 +25,3 @@ fn test3() {
         sum += i;
     }
 }
-
-fn main() {}

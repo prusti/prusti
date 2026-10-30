@@ -22,6 +22,3 @@ fn deref_mut(v: &mut Outer) -> &mut Inner {
 fn test(g: &mut Outer) {
   deref_mut(g);
 }
-
-#[trusted]
-fn main () {}

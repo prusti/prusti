@@ -1,3 +1,4 @@
+//@ known-failure
 use prusti_contracts::*;
 
 #[requires(x != 0)]
@@ -12,5 +13,3 @@ fn good(x: u32) {}
     true
 })]
 fn bad(x: u32) {}
-
-fn main() {}

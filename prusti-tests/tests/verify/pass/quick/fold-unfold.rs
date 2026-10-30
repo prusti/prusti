@@ -12,5 +12,3 @@ pub fn local_pure() {
 pub fn argument_pure(x: u32) -> u32 {
     x + 1
 }
-
-fn main() {}

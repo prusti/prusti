@@ -8,5 +8,3 @@ use prusti_contracts::*;
 impl i32 {
     fn abs(self) -> i32; //~ ERROR: must be marked `#[trusted]`
 }
-
-fn main() {}

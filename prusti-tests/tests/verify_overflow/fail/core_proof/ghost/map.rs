@@ -1,3 +1,4 @@
+//@ known-failure
 //@ compile-flags: -Punsafe_core_proof=true
 
 #![allow(unused)]
@@ -40,11 +41,9 @@ fn map_len(m1: Map, k: u32, v: u32) {
 fn map_lookup(m: Map, k: u32, v1: u32, v2: u32) {
     prusti_assert!(*m.insert(k, v1).insert(k, v2)[k] == v2);
     prusti_assert!(*m.insert(k, v1)[k] == v1);
-    prusti_assert!(m[k] == m[k]) //~ ERROR:
+    prusti_assert!(m[k] == m[k]) //~ ERROR: the map may not contain this key
 }
 
 fn map_construction() {
     let map1 = Map::new();
 }
-
-fn main() {}

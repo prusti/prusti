@@ -1,19 +1,6 @@
+//@ aux-build: shadowing_3_aux.rs
+use shadowing_3_aux::{TestStruct, TestTrait};
 use prusti_contracts::*;
-
-trait TestTrait { fn foo() -> i32; }
-struct TestStruct {}
-
-impl TestStruct {
-    fn foo() -> i32 {
-        42
-    }
-}
-
-impl TestTrait for TestStruct {
-    fn foo() -> i32 {
-        24
-    }
-}
 
 #[extern_spec]
 impl TestStruct {

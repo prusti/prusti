@@ -19,5 +19,3 @@ fn count(n: usize) -> usize {
 // that we have a matching loop.
 #[ensures(count(3) == 3)] //~ERROR: postcondition might not hold.
 fn test6() {}
-
-fn main() {}

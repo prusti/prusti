@@ -27,5 +27,3 @@ pub fn u64_u8(x: u64) -> u8 {
 pub fn u16_u8(x: u16) -> u8 {
     x as u8
 }
-
-fn main() {}

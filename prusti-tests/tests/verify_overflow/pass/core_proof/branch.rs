@@ -20,6 +20,3 @@ fn branch2(b: bool) {
         let _c = a;
     }
 }
-
-fn main() {}
-

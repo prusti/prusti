@@ -17,24 +17,24 @@ enum Y {
 
 fn test1(x: X){
     match x {
-        X::V1(a) => assert!(false),      //~ ERROR: the asserted expression might not hold
+        X::V1(a) => assert!(false),      //~ ERROR: might not hold
         X::V2(a) => assert!(true),
     }
 }
 
 fn test2(c: char){
     match c {
-        'a' => assert!(false),      //~ ERROR: the asserted expression might not hold
+        'a' => assert!(false),      //~ ERROR: might not hold
         _ => (),
     }
 }
 
 fn test3(){
-    panic!()        //~ ERROR: panic!(..) statement might be reachable
+    panic!()        //~ ERROR: might not hold
 }
 
 fn test4(c: char){
-    panic!()        //~ ERROR: panic!(..) statement might be reachable
+    panic!()        //~ ERROR: might not hold
 }
 
 fn test5(y: Y) {
@@ -45,5 +45,3 @@ fn test5(y: Y) {
         Y::V2(_) => {}
     }
 }
-
-fn main() {}

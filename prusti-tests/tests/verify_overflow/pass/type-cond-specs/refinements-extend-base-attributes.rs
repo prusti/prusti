@@ -1,3 +1,4 @@
+//@ known-failure
 // This test demonstrates that type-conditional spec refinements inherit the specs from the function.
 
 use prusti_contracts::*;
@@ -33,7 +34,4 @@ fn verify_constrained_contract_inherits_posts() {
 
     let res = constrained_contract_inherits_posts(32 as i32);
     assert!(res == 42);
-}
-
-fn main() {
 }

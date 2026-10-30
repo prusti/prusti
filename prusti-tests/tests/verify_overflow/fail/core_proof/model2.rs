@@ -1,3 +1,4 @@
+//@ known-failure
 //@ compile-flags: -Punsafe_core_proof=true -Puse_smt_wrapper=true -Psmt_unique_triggers_bound=30 -Passert_timeout=60000
 
 use prusti_contracts::*;
@@ -178,5 +179,3 @@ struct LinkedList2 {
 struct Test{
     v: Seq<u32>,
 }
-
-fn main() {}

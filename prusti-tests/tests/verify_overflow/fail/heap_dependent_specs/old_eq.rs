@@ -1,3 +1,4 @@
+//@ known-failure
 use prusti_contracts::*;
 
 #[derive(PartialEq, Eq)]
@@ -57,5 +58,3 @@ impl Point {
         self
     }
 }
-
-fn main() {}

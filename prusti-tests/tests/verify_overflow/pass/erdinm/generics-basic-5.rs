@@ -33,5 +33,3 @@ fn test3<X>(arg: &mut Number<Number<i8, i32, u8>, Number<i16, i32, i64>, Number<
     assert!(arg.b.b == 4000);
     //assert!(arg.c.b == 6000);
 }
-
-fn main() {}

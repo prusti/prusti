@@ -31,5 +31,3 @@ fn from_nth(r: &mut List, n: usize) -> &mut List {
         }
     }
 }
-
-fn main() {}

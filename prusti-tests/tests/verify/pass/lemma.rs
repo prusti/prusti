@@ -48,5 +48,3 @@ fn foo(x: i64) {
     };
     assert!(z % 2 == 0);
 }
-
-fn main() {}

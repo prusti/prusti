@@ -7,6 +7,3 @@ impl Foo { //~ ERROR: Can refine trait specifications only on trait implementati
     fn foo(&self) {
     }
 }
-
-fn main() {
-}

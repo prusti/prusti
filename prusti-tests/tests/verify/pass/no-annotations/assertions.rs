@@ -15,6 +15,8 @@ fn with_assert(x: i32) -> i32 {
     x
 }
 
-fn main() {
-
+fn with_assert_matches(x: Option<i32>) {
+    if let Some(_) = x {
+        std::assert_matches!(x, Some(_));
+    }
 }

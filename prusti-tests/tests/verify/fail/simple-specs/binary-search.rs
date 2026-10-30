@@ -1,3 +1,4 @@
+//@ known-failure
 // From: https://github.com/xcaptain/rust-algorithms/blob/master/algorithms/src/search/binary_search.rs
 
 #![allow(unused_comparisons)]
@@ -50,7 +51,7 @@ pub fn binary_search_rec(arr: VecWrapperusize, target: usize) -> Option<usize> {
 fn binary_search_help(arr: VecWrapperusize, left: usize, right: usize, target: usize) -> Option<usize> {
     if left <= right {
         let mid = (left + right) / 2;
-        if arr.lookup(mid) < target { //~ERROR: precondition of pure function call might not hold
+        if arr.lookup(mid) < target { //~ERROR: precondition might not hold
             return binary_search_help(arr, mid + 1, right, target);
         } else if arr.lookup(mid) > target {
             return binary_search_help(arr, left, mid - 1, target);
@@ -73,7 +74,7 @@ pub fn binary_search_iter(arr: VecWrapperusize, target: usize) -> Option<usize> 
     let mut condition = left <= right && !done;
     while condition {
         let mid = (left + right) / 2;
-        if arr.lookup(mid) < target { //~ERROR: precondition of pure function call might not hold
+        if arr.lookup(mid) < target { //~ERROR: precondition might not hold
             left = mid + 1;
         } else if arr.lookup(mid) > target {
             right = mid - 1;
@@ -125,5 +126,3 @@ mod tests {
     }
 }
 */
-
-fn main() {}

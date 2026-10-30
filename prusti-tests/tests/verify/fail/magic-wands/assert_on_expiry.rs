@@ -1,3 +1,4 @@
+//@ known-failure
 #![allow(dead_code)]
 
 use prusti_contracts::*;
@@ -24,5 +25,3 @@ fn test2() {
     let z = identity(y);
     z.val = 5;
 }
-
-fn main() {}

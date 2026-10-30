@@ -4,8 +4,6 @@ use std::marker::PhantomData;
 
 use prusti_contracts::*;
 
-fn main() {}
-
 /// A [GhostBox] is a "pure" zero-sized owned pointer to some type
 /// that must implement the `Copy` trait, it can be used
 /// to build recursive (and/or zero sized) ghost ADTs.

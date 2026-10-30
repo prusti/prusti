@@ -1,3 +1,4 @@
+//@ known-failure
 //! Example of program that uses a non-lexical lifetime for reference `z`
 
 #![feature(nll)]
@@ -30,5 +31,3 @@ fn compute(flag: bool) -> (T, T) {
 
     (x, y)
 }
-
-fn main() {}

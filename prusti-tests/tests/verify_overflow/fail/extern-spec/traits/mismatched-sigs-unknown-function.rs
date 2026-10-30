@@ -4,5 +4,3 @@ use prusti_contracts::*;
 trait Iterator {
     fn foo(&mut self); //~ ERROR: cannot find method or associated constant `foo` in trait `Iterator`
 }
-
-fn main() {}

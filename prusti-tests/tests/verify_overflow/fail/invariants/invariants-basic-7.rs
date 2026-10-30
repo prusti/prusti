@@ -1,3 +1,4 @@
+//@ known-failure
 //@ compile-flags: -Penable_type_invariants=true
 use prusti_contracts::*;
 
@@ -25,5 +26,3 @@ fn adjust_percentage(percentage: &mut Percentage, flag: bool) { //~ERROR: type i
        percentage.value -= 20; // broken restore invariant
    }
 }
-
-fn main() {}

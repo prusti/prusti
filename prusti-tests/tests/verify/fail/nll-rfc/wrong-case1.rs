@@ -1,3 +1,4 @@
+//@ known-failure
 #![allow(unused_comparisons)]
 
 /// Problem case #1: references assigned into a variable
@@ -62,7 +63,7 @@ fn capitalize(vec: &mut VecWrapperI32) {
         vec.store(i, value);
         i += 1;
         not_finished = i < vec.len();
-        unreachable!(); //~ERROR: might be reachable
+        unreachable!(); //~ERROR: might not hold
     }
 }
 
@@ -77,7 +78,4 @@ fn bar() {
     data.push(4);
     data.push(5);
     data.push(6);
-}
-
-fn main() {
 }

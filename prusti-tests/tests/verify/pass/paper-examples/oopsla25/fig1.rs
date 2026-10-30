@@ -21,5 +21,3 @@ fn caller(mut original: Pos2D<i32>) {
     let pos = &mut original;
     replace_x(pos, 0);
 }
-
-fn main() {}

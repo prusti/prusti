@@ -18,5 +18,3 @@ fn test3() {
     let y = std::ptr::addr_of!(a);
     assert!(x == y);
 }
-
-fn main() {}

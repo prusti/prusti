@@ -32,10 +32,8 @@ fn test_err() {
     let x = SignedEnum::A;
 
     if let SignedEnum::A = x {
-        panic!() //~ERROR: panic!(..) statement might be reachable
+        panic!() //~ERROR: might not hold
     } else {
         // Nothing
     }
 }
-
-fn main() { }

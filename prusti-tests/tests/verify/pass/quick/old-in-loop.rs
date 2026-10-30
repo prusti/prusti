@@ -15,6 +15,3 @@ fn capitalize(vec: &mut Wrapper) {
         body_invariant!(vec.get() == old(vec.get()));
     }
 }
-
-fn main(){
-}

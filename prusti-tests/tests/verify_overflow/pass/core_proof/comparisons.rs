@@ -16,5 +16,3 @@ fn test1() {
     assert!(a < c);
     assert!(a <= c);
 }
-
-fn main() {}

@@ -5,11 +5,11 @@ use prusti_contracts::*;
 
 #[requires(match x {
     Some(v) => *v > 0,
-    //~^ ERROR mutable borrow of `i32` in a specification
+    //~^ ERROR: mutable borrow of `i32` in a specification
     None => true,
 })]
 fn match_binding(x: &mut Option<i32>) {}
 
 #[requires({ let v = &mut 10; *v == 10 })]
-//~^ ERROR mutable borrow of `i32` in a specification
+//~^ ERROR: mutable borrow of `i32` in a specification
 fn fresh_borrow() {}

@@ -1,7 +1,5 @@
 use prusti_contracts::*;
 
-fn main() {}
-
 fn looping() {
     let mut a = [0; 3];
     let mut i = 0;
@@ -17,5 +15,5 @@ fn looping() {
     // NOTE: this seems true, but we can't prove it without a proper invariant
     // also this testcase is to error if we accidentally can verify the state from before the loop
     // afterwards without a proper invariant
-    assert!(a[0] == 0);  //~ERROR: the asserted expression might not hold
+    assert!(a[0] == 0);  //~ERROR: might not hold
 }

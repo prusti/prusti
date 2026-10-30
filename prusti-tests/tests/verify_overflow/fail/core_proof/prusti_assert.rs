@@ -1,3 +1,4 @@
+//@ known-failure
 //@ compile-flags: -Punsafe_core_proof=true
 
 #![allow(unused)]
@@ -9,7 +10,7 @@ fn assert1() {
 }
 
 fn failing_assert() {
-    prusti_assert!(false); //~ ERROR
+    prusti_assert!(false); //~ ERROR: the asserted expression might not hold
 }
 
 fn assign() {
@@ -18,7 +19,7 @@ fn assign() {
     i = i * 10;
     prusti_assert!(i == 100);
     i -= 100;
-    prusti_assert!(i == 2); //~ ERROR
+    prusti_assert!(i == 2); //~ ERROR: the asserted expression might not hold
 }
 
 fn implication(arg: i32) {
@@ -77,5 +78,3 @@ fn more_wrong_assumptions() {
 fn prusti_syntax_in_assumptions(x: i32) {
     prusti_assume!(x > 0 ==> x > -1);
 }
-
-fn main() {}

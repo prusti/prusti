@@ -1,12 +1,8 @@
+//@ aux-build: restrictive_trait.rs
+use restrictive_trait::RestrictiveTrait;
 use prusti_contracts::*;
 
-/// External traits
-trait RestrictiveTrait {
-    fn foo(&self, x: i32) -> i32;
-}
-/// External traits
-
-#[extern_spec]
+#[extern_spec(restrictive_trait)]
 trait RestrictiveTrait {
     #[trusted]
     #[requires(x > 10)]

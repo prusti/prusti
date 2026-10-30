@@ -34,5 +34,3 @@ fn test2(arg: Foo<u128>) -> Foo<isize> {
     assert!(new.x.i == a);
     new
 }
-
-fn main() {}

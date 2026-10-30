@@ -13,7 +13,7 @@ fn test2() {
     let a = 1;
     let b = 2;
     let c = a + b;
-    assert!(c == 4);    //~ERROR: the asserted expression might not hold
+    assert!(c == 4);    //~ERROR: might not hold
 }
 
 fn test3(a: i32, b: i32) -> i32 {
@@ -29,7 +29,7 @@ fn test4() {
 
 fn test5() {
     let x = 1 / 3;
-    assert!(x == 1);    //~ ERROR: the asserted expression might not hold
+    assert!(x == 1);    //~ ERROR: might not hold
 }
 
 fn test6() {
@@ -39,7 +39,5 @@ fn test6() {
 
 fn test7() {
     let x = 1 * 3;
-    assert!(x == 1);    //~ ERROR: the asserted expression might not hold
+    assert!(x == 1);    //~ ERROR: might not hold
 }
-
-fn main() {}

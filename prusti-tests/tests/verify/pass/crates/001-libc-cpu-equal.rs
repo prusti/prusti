@@ -10,5 +10,3 @@ pub struct cpu_set_t {
 pub fn CPU_EQUAL(set1: &cpu_set_t, set2: &cpu_set_t) -> bool {
     set1.bits == set2.bits
 }
-
-fn main(){}

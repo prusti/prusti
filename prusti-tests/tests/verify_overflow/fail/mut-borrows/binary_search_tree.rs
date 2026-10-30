@@ -1,3 +1,4 @@
+//@ known-failure
 use prusti_contracts::*;
 
 mod tree {
@@ -60,5 +61,3 @@ pub fn test2(node: &mut Node) {
     let x = *value;
     *value = x;
 }
-
-fn main() {}

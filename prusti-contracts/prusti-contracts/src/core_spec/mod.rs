@@ -3,6 +3,7 @@ use crate::*;
 pub mod default;
 pub mod eq;
 pub mod float;
+pub mod panicking;
 pub mod result;
 pub mod slice;
 
@@ -19,22 +20,3 @@ pub(super) mod type_eq {
     trait SealedTypeEq<T> {}
     impl<T> SealedTypeEq<T> for T {}
 }
-
-#[extern_spec(core::panicking)]
-#[trusted]
-#[requires(false)]
-#[pure]
-fn panic(expr: &'static str) -> !;
-
-#[extern_spec(core::panicking)]
-#[trusted]
-#[requires(false)]
-pub fn assert_failed<T, U>(
-    kind: core::panicking::AssertKind,
-    left: &T,
-    right: &U,
-    args: Option<core::fmt::Arguments<'_>>,
-) -> !
-where
-    T: core::fmt::Debug + ?Sized,
-    U: core::fmt::Debug + ?Sized;

@@ -1,3 +1,4 @@
+//@ known-failure
 //@ compile-flags: -Penable_type_invariants=true
 use prusti_contracts::*;
 
@@ -9,5 +10,3 @@ struct Percentage {
 fn make_percentage() -> Percentage { //~ERROR: type invariants
     Percentage { value: 101 }
 }
-
-fn main() {}

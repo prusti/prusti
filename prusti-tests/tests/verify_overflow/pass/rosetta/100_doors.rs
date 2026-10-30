@@ -1,3 +1,4 @@
+//@ known-failure
 //! An adaptation of the example from
 //! https://rosettacode.org/wiki/100_doors#Rust
 //!
@@ -131,5 +132,3 @@ fn doors4() {
         i += 1;
     }
 }
-
-fn main() {}

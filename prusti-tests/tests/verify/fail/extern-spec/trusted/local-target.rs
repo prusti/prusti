@@ -13,5 +13,3 @@ trait LocalTrait {
     #[ensures(result == 0)]
     fn m(&self) -> i32; //~ ERROR: which is defined in this crate
 }
-
-fn main() {}

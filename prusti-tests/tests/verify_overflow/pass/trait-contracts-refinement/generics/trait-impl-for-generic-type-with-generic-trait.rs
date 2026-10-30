@@ -6,6 +6,7 @@ trait Trait<X> {
 }
 
 struct Foo<U, V>(std::marker::PhantomData<U>, std::marker::PhantomData<V>);
+#[refine_trait_spec]
 impl<U, V, W> Trait<W> for Foo<U, V> {
     #[pure]
     fn foo(&self) -> i32 {

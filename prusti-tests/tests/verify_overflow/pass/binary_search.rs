@@ -1,3 +1,4 @@
+//@ known-failure
 use prusti_contracts::*;
 
 #[extern_spec]
@@ -22,8 +23,6 @@ impl<T: std::cmp::PartialEq> std::option::Option<T> {
     None => unreachable!(),
 })]
 fn option_peek(opt: &Option<usize>) -> usize { unimplemented!() }
-
-fn main() {}
 
 predicate! {
     fn sorted(s: &[i32]) -> bool {

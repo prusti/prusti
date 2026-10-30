@@ -77,5 +77,3 @@ pub fn test6() {
     assert!(a.g == 4);
     check_u(a);
 }
-
-fn main() {}

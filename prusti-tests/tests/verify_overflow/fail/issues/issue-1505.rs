@@ -15,7 +15,7 @@ fn check_division(){
     prusti_assert!(id(-3i32) / -2 == 1);
 
     // Smoke test
-    assert!(false); //~ ERROR the asserted expression might not hold
+    assert!(false); //~ ERROR: might not hold
 }
 
 fn check_modulo() {
@@ -51,7 +51,5 @@ fn check_modulo() {
     prusti_assert!(id(-4) % 2 == 0);
 
     // Smoke test
-    assert!(false); //~ ERROR the asserted expression might not hold
+    assert!(false); //~ ERROR: might not hold
 }
-
-fn main(){}

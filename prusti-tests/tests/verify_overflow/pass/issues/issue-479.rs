@@ -34,6 +34,3 @@ fn test(mut x: HashMap<u64, u64>) {
         assert!(x.len() == orig_len + 1);
     }
 }
-
-#[trusted]
-fn main() {}

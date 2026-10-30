@@ -48,5 +48,3 @@ fn _test4(b: bool, mut x: S2, y: T1) {
     }
     x.f.f = y;
 }
-
-fn main() {}

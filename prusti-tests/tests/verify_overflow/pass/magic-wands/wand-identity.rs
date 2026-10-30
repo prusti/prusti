@@ -9,5 +9,3 @@ struct T {
 fn identity(x: &mut T) -> &mut T {
     x
 }
-
-fn main() {}

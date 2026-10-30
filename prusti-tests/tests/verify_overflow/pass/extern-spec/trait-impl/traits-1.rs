@@ -1,20 +1,6 @@
+//@ aux-build: max_static.rs
+use max_static::{Max, TestStruct};
 use prusti_contracts::*;
-
-pub trait Max {
-    fn max(a: i32, b: i32) -> i32;
-}
-
-struct TestStruct {}
-
-impl Max for TestStruct {
-    fn max(a: i32, b: i32) -> i32 {
-        if a < b {
-            b
-        } else {
-            a
-        }
-    }
-}
 
 #[extern_spec]
 impl Max for TestStruct {

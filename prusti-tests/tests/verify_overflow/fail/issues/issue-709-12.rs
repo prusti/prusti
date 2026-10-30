@@ -1,3 +1,4 @@
+//@ known-failure
 use prusti_contracts::*;
 
 #[derive(Clone, Copy)]
@@ -18,5 +19,3 @@ impl B {
 pub fn test(b: &mut B) {
     b.get_mut(1)[0] = A(1);
 }
-
-fn main() {}

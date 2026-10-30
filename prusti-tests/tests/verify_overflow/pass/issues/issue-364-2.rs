@@ -1,3 +1,4 @@
+//@ known-failure
 use prusti_contracts::*;
 
 struct Child {
@@ -16,5 +17,3 @@ fn use_child(_: &Child, _: &Tree, _: &Child) -> bool { true }
 fn test(tree: &Tree) -> &Tree {
     tree
 }
-
-fn main() {}

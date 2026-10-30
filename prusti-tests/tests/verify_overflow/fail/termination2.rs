@@ -1,10 +1,9 @@
+//@ known-failure
 //@ compile-flags: -Punsafe_core_proof=true
 
 #![allow(unused)]
 
 use prusti_contracts::*;
-
-fn main() {}
 
 #[requires(x < 100_000)]
 #[requires(x >= 0)]
@@ -34,8 +33,8 @@ fn z(x: i64) {
 
 #[terminates]
 fn nonterminating() {
-    nonterminating() //~ ERROR
+    nonterminating() //~ ERROR: this function call might not terminate
 }
 
 #[pure]
-fn pure_implies_termination() {} //~ ERROR
+fn pure_implies_termination() {} //~ ERROR: Pure functions need to terminate

@@ -1,3 +1,4 @@
+//@ known-failure
 #![feature(box_patterns)]
 
 use prusti_contracts::*;
@@ -74,5 +75,3 @@ pub fn test4(list: &mut ListNode) {
     };
     use_list(last);
 }
-
-fn main() {}

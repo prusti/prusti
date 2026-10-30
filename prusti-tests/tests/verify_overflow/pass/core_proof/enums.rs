@@ -49,6 +49,3 @@ fn test3() {
     let b = E::V2(a);
     let _c = G { e: b };
 }
-
-fn main() {}
-

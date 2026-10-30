@@ -15,5 +15,3 @@ pub struct fd_set {
 pub fn test(x: fd_set) -> fd_set {
     x
 }
-
-fn main(){}

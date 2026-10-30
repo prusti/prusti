@@ -7,5 +7,3 @@ use prusti_contracts::*;
 fn forall_in_assert() {
     prusti_assert!(forall(|i: i64| i == i));
 }
-
-fn main() {}

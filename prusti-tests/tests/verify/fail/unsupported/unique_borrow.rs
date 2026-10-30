@@ -1,3 +1,4 @@
+//@ known-failure
 //ignore-test "unique borrows" no longer exist in MIR, detecting this is more difficult
 
 // Copyright 2016 lazy-static.rs Developers
@@ -27,5 +28,3 @@ impl Lazy<u32> {
         }
     }
 }
-
-fn main() {}

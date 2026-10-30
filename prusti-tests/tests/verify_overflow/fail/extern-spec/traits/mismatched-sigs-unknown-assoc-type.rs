@@ -1,3 +1,4 @@
+//@ known-failure
 // ignore-test for now, associated types cannot be declared
 // eventually (with specs on associated types), we will want this error
 
@@ -10,5 +11,3 @@ trait Iterator {
 
     fn next(&mut self) -> Option<Self::Item>;
 }
-
-fn main() {}

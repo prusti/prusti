@@ -34,5 +34,3 @@ fn fast_fft_len(
         }
     }
 }
-
-fn main(){}

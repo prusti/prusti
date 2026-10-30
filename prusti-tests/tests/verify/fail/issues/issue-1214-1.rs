@@ -29,7 +29,5 @@ fn test() {
     assert!(g(2) == 0);
     assert!(f(3) == 0);
     assert!(g(3) == 0);
-    assert!(false); //~ ERROR the asserted expression might not hold
+    assert!(false); //~ ERROR: might not hold
 }
-
-fn main() {}

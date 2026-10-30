@@ -37,7 +37,6 @@ use prusti_rustc_interface::{
     },
     span::{Span, Spanned, def_id::DefId},
 };
-use prusti_utils::config;
 use rustc_hash::{FxHashMap, FxHashSet};
 use task_encoder::{EncodeFullError, TaskEncoder, TaskEncoderDependencies};
 use vir::{CastType, CompType, LocalDeclData};
@@ -45,7 +44,7 @@ use vir::{CastType, CompType, LocalDeclData};
 use crate::encoders::{
     self, MirBuiltinUseCastEnc, MirBuiltinUseCastTask, MirPureEnc, MirPureEncTask, PrustiBuiltin,
     PureKind, TyUseImpureEnc, WandEnc, WandEncTask,
-    impure::WandOldOuter,
+    impure::{WandOldOuter, assert_error_message},
     mir_fn::{CallTaskDescription, RustSignature, SpecBlockKind, SpecBlocks},
     mir_shared::{EncodeResult, PureRvalueEnc, RustcIntrinsic},
     ty::{
@@ -2022,12 +2021,14 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                     let expr =
                         self.encode_spec_block(spec_block, pcg_state, Some(&place_capabilities))?;
                     self.vcx.with_span(span, |vcx| {
-                        let error_msg = "loop invariant might not be preserved";
+                        let error_msg = "loop invariant might not hold after a loop iteration that \
+                                         preserves the loop condition.";
                         vcx.handle_error("invariant.not.preserved:assertion.false", move |_| {
                             Some(vec![PrustiError::verification(error_msg, span.into())])
                         });
                         self.vcx.with_span(span, |vcx| {
-                            let error_msg = "loop invariant might not hold on entry";
+                            let error_msg =
+                                "loop invariant might not hold in the first loop iteration.";
                             vcx.handle_error(
                                 "invariant.not.established:assertion.false",
                                 move |_| {
@@ -2108,7 +2109,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 match spec.kind {
                     SpecBlockKind::Assert => {
                         self.vcx.with_span(span, |vcx| {
-                            let error_msg = "assertion might not hold";
+                            let error_msg = "the asserted expression might not hold";
                             vcx.handle_error("exhale.failed:assertion.false", move |_| {
                                 Some(vec![PrustiError::verification(error_msg, span.into())])
                             });
@@ -2119,8 +2120,14 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                         self.stmt(self.vcx.mk_inhale_stmt(spec_expr));
                     }
                     SpecBlockKind::Refute => {
-                        // TODO: handle_error
-                        self.stmt(self.vcx.mk_refute_stmt(spec_expr));
+                        self.vcx.with_span(span, |vcx| {
+                            let error_msg =
+                                "the refuted expression holds in all cases or could not be reached";
+                            vcx.handle_error("refute.failed:refutation.true", move |_| {
+                                Some(vec![PrustiError::verification(error_msg, span.into())])
+                            });
+                            self.stmt(self.vcx.mk_refute_stmt(spec_expr));
+                        });
                     }
                     SpecBlockKind::LoopInvariant => {
                         // nothing to do: loop invariants are handled elsewhere
@@ -2389,7 +2396,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                     );
                     PrustiError::verification(message, span.source_callsite().into())
                 } else {
-                    PrustiError::verification("precondition might not hold", span.into())
+                    PrustiError::verification("precondition might not hold.", span.into())
                 };
 
                 let dest = self
@@ -2474,43 +2481,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                     .mk_const_expr(vir::ConstData::Bool(*expected))
                     .downcast_ty();
                 let assert = self.vcx.mk_eq_expr(enc, expected);
-                let error_msg = match **msg {
-                    mir::AssertMessage::BoundsCheck { .. } => Some("bounds check may fail"),
-                    mir::AssertMessage::Overflow(..) | mir::AssertMessage::OverflowNeg(..)
-                        if !config::check_overflows() =>
-                    {
-                        // If we are not checking for overflows, encode an overflow-checking
-                        // assertion as an assume instead.
-                        None
-                    }
-                    mir::AssertMessage::Overflow(..) | mir::AssertMessage::OverflowNeg(..) => {
-                        Some("operation may overflow")
-                    }
-                    mir::AssertMessage::DivisionByZero(..)
-                    | mir::AssertMessage::RemainderByZero(..) => Some("division by zero may occur"),
-                    mir::AssertMessage::ResumedAfterReturn(..) => {
-                        Some("execution may continue after return")
-                    }
-                    mir::AssertMessage::ResumedAfterPanic(..) => {
-                        Some("execution may continue after panic")
-                    }
-                    mir::AssertMessage::MisalignedPointerDereference { .. } => {
-                        Some("misaligned pointer may be dereferenced")
-                    }
-                    mir::AssertKind::ResumedAfterDrop(..) => {
-                        Some("execution may continue after drop")
-                    }
-                    mir::AssertKind::NullPointerDereference => {
-                        Some("null pointer may be dereferenced")
-                    }
-                    mir::AssertKind::InvalidEnumConstruction(..) => {
-                        Some("invalid enum construction may occur")
-                    }
-                    mir::AssertKind::NullReferenceConstructed => {
-                        Some("null reference may be constructed")
-                    }
-                };
-                if let Some(error_msg) = error_msg {
+                if let Some(error_msg) = assert_error_message(msg) {
                     self.vcx.with_span(span, |vcx| {
                         vcx.handle_error("exhale.failed:assertion.false", move |_| {
                             Some(vec![PrustiError::verification(error_msg, span.into())])

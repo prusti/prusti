@@ -11,5 +11,3 @@ use prusti_contracts::*;
 fn test(n: i32) -> i32 {
     n
 }
-
-fn main() {}

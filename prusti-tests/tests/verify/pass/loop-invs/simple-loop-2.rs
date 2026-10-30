@@ -24,5 +24,3 @@ fn test2(n: i32) -> i32 {
 
     res
 }
-
-fn main() {}

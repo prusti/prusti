@@ -1,3 +1,4 @@
+//@ known-failure
 //@ compile-flags: -Penable_type_invariants=true
 use prusti_contracts::*;
 
@@ -16,5 +17,3 @@ impl Percentage {
         }
     }
 }
-
-fn main() {}

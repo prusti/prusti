@@ -81,6 +81,3 @@ impl<T> MyOption<T> {
 pub fn test7() -> MyOption<bool> {
     MyOption::new()
 }
-
-fn main() {
-}

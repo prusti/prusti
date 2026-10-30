@@ -1,17 +1,10 @@
+//@ aux-build: duplicate_1_aux.rs
+use duplicate_1_aux::MyTrait;
 use prusti_contracts::*;
 
-trait MyTrait {
-    #[requires(true)]
-    fn foo(&mut self) -> i32;
-}
-
-#[extern_spec]
+#[extern_spec(duplicate_1_aux)]
 trait MyTrait {
     #[trusted]
     #[requires(true)]
-    fn foo(&mut self) -> i32; //~ ERROR: external specification provided for MyTrait::foo, which already has a specification
-}
-
-fn main() {
-
+    fn foo(&mut self) -> i32; //~ ERROR: duplicate specification for `duplicate_1_aux::MyTrait::foo`
 }
