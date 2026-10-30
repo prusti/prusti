@@ -1,5 +1,6 @@
 use prusti_interface::specs::typed::ExternSpecKind;
 use prusti_rustc_interface::{
+    data_structures::fx::FxIndexSet,
     middle::ty,
     span::{def_id::DefId, symbol},
 };
@@ -153,45 +154,61 @@ impl<'tcx> GParams<'tcx> {
     /// returns None.
     pub fn try_normalize(self, ty: ty::Ty<'tcx>) -> Option<ty::Ty<'tcx>> {
         use prusti_rustc_interface::{
-            middle::{ty, ty::Unnormalized},
+            middle::{
+                ty,
+                ty::{TypeVisitableExt, Unnormalized},
+            },
             trait_selection::{
                 infer::{InferCtxt, TyCtxtInferExt},
                 traits::{FulfillmentEngine, FulfillmentError, NormalizeExt, ObligationCause},
             },
         };
+        if !ty.has_aliases() {
+            return Some(ty);
+        }
         vir::with_vcx(|vcx| {
-            // Erase ReVars before normalizing with a fresh InferCtxt that
-            // doesn't know about ReVars from the original type-checking
-            // context.
-            let ty = ty::fold_regions(vcx.tcx(), ty, |r, _| {
+            let tcx = vcx.tcx();
+            // The ReVars of the original type-checking context, and regions
+            // escaping `ty` (e.g. late-bound regions of a signature taken with
+            // `skip_binder`), are unknown to a fresh InferCtxt, so they are
+            // bound by a binder for the duration of the normalization. An
+            // escaping region is recorded relative to the outside of `ty`;
+            // instantiating the binder only supports it escaping by one binder.
+            let mut originals = FxIndexSet::default();
+            let ty = ty::fold_regions(tcx, ty, |r, debruijn| {
+                let original = match r.kind() {
+                    ty::ReVar(_) => r,
+                    ty::ReBound(ty::BoundVarIndexKind::Bound(index), br) => {
+                        ty::Region::new_bound(tcx, index.shifted_out_to_binder(debruijn), br)
+                    }
+                    _ => return r,
+                };
+                let (var, _) = originals.insert_full(original);
+                ty::Region::new_anon_bound(tcx, debruijn, ty::BoundVar::from_usize(var))
+            });
+            let kinds = tcx.mk_bound_variable_kinds_from_iter(
+                originals
+                    .iter()
+                    .map(|_| ty::BoundVariableKind::Region(ty::BoundRegionKind::Anon)),
+            );
+            let ty = ty::Binder::bind_with_vars(ty, kinds);
+            let ifctxt: InferCtxt = tcx.infer_ctxt().build(ty::TypingMode::PostAnalysis);
+            let mut fulfill_cx: FulfillmentEngine<'tcx, FulfillmentError<'tcx>> =
+                FulfillmentEngine::new(&ifctxt);
+            let nty = ifctxt
+                .at(&ObligationCause::dummy(), self.env)
+                .deeply_normalize(Unnormalized::new(ty), &mut fulfill_cx)
+                .ok()?;
+            // Any ReVar left is one of `ifctxt`'s, which would alias an
+            // unrelated region of the original context.
+            let nty = ty::fold_regions(tcx, nty, |r, _| {
                 if r.is_var() {
-                    vcx.tcx().lifetimes.re_erased
+                    tcx.lifetimes.re_erased
                 } else {
                     r
                 }
             });
-            // Normalize associated types
-            let ifctxt: InferCtxt = vcx.tcx().infer_ctxt().build(ty::TypingMode::PostAnalysis);
-            let mut fulfill_cx: FulfillmentEngine<'tcx, FulfillmentError<'tcx>> =
-                FulfillmentEngine::new(&ifctxt);
-            // TODO: is this correct?
-            let kinds = self
-                .params
-                .iter()
-                .map(|param| match param.kind() {
-                    ty::GenericArgKind::Lifetime(_) => {
-                        ty::BoundVariableKind::Region(ty::BoundRegionKind::Anon)
-                    }
-                    ty::GenericArgKind::Type(_) => ty::BoundVariableKind::Ty(ty::BoundTyKind::Anon),
-                    ty::GenericArgKind::Const(_) => ty::BoundVariableKind::Const,
-                })
-                .collect::<Vec<_>>();
-            let kinds = vcx.tcx().mk_bound_variable_kinds(&kinds);
-            let ty = ty::Binder::bind_with_vars(ty, kinds);
-            let nty = ifctxt
-                .at(&ObligationCause::dummy(), self.env)
-                .deeply_normalize(Unnormalized::new(ty), &mut fulfill_cx);
-            nty.ok().map(|nty| nty.skip_binder())
+            Some(tcx.instantiate_bound_regions_uncached(nty, |br| originals[br.var.as_usize()]))
         })
     }
 

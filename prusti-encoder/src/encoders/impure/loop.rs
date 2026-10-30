@@ -20,7 +20,12 @@ use vir::Reify;
 
 use crate::encoders::{
     EncodeResult, ImpureEncVisitor, TyUseImpureEnc,
-    ty::{RustTyDecomposition, indirect::IndirectPredicatesEnc, use_impure::TyUseImpure},
+    mir_shared::PureRvalueEnc,
+    ty::{
+        RustTyDecomposition,
+        indirect::{IndirectPredicatesEnc, PrustiPcgCtxt},
+        use_impure::TyUseImpure,
+    },
 };
 
 pub(crate) enum WandOldOuter<'vir> {
@@ -64,9 +69,16 @@ impl<'vir: 'a, 'a, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             // an invariant for *x
             let projs = ctxt.extract_lifetime_projections(place.with_inherent_region(ctxt));
             for proj in projs {
+                let region = proj.region(ctxt);
+                let Some(proj) = LifetimeProjection::new(task, region, None, PrustiPcgCtxt) else {
+                    return Err(self.unsupported_rvalue(
+                        format!("a closure capturing a reference (`{}`)", ty.ty),
+                        self.current_span(),
+                    ));
+                };
                 let indirect = self
                     .deps
-                    .require_dep::<IndirectPredicatesEnc>(proj.with_base(task))
+                    .require_dep::<IndirectPredicatesEnc>(proj)
                     .unwrap();
                 inv.extend(indirect.predicate_applications.iter().map(|p| {
                     p.reify(
@@ -134,10 +146,17 @@ impl<'vir: 'a, 'a, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             }
             PcgLifetimeProjectionBase::Const(c) => todo!("{c:?}"),
         };
-        let ty = RustTyDecomposition::from_ty(ty.ty, self.def_id);
+        let decomp = RustTyDecomposition::from_ty(ty.ty, self.def_id);
+        let region = r.with_base(place).region(self.pcg_ctxt());
+        let Some(proj) = LifetimeProjection::new(decomp, region, None, PrustiPcgCtxt) else {
+            return Err(self.unsupported_rvalue(
+                format!("a closure capturing a reference (`{}`)", ty.ty),
+                self.current_span(),
+            ));
+        };
         let indirect = self
             .deps
-            .require_dep::<IndirectPredicatesEnc>(r.with_base(ty))
+            .require_dep::<IndirectPredicatesEnc>(proj)
             .unwrap();
         Ok(indirect
             .predicate_applications

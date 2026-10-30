@@ -1,12 +1,10 @@
-//@ known-failure
 use prusti_contracts::*;
 
-/*
 fn double_tuple<'a>(x: &'a mut (i32, (i32, i32))) -> &'a mut i32
 where
     'a: 'a,
 {
-    &mut x.1.0
+    &mut x.1 .0
 }
 
 fn tuple<'a>(x: &'a mut (i32, i32)) -> &'a mut i32
@@ -15,9 +13,7 @@ where
 {
     &mut x.0
 }
-*/
-/*
-// TODO: fails because wands expect the blocked argument to be a mutref
+
 struct Container<'a> {
     x: &'a mut i32,
 }
@@ -25,10 +21,10 @@ struct Container<'a> {
 fn use_container<'a, 'b: 'a>(c: Container<'b>) -> &'a mut i32 {
     c.x
 }
-*/
 
 fn basic<'l, 's>(num: &'l mut i32) -> &'s mut i32
-where 'l: 's
+where
+    'l: 's,
 {
     &mut *num
 }
@@ -42,7 +38,6 @@ fn basic_user() {
     drop(x);
 }
 
-/*
 struct Point {
     x: i32,
     y: i32,
@@ -59,4 +54,3 @@ fn reborrow_user() {
     *y = 72;
     assert!(pt.x == pt.y);
 }
-    */
