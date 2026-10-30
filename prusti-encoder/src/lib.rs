@@ -32,6 +32,7 @@ use crate::encoders::{
         },
         interpretation::{bitvec::BitVecEnc, float_conv::FloatBitVecConvEnc},
         lifted::TyConstructorEnc,
+        optional::OptionalEnc,
     },
 };
 
@@ -115,6 +116,7 @@ pub fn test_entrypoint<'tcx>(
 
     program.header("snapshots");
     crate::encoders::TyUsePureEnc::emit_outputs(&mut program);
+    OptionalEnc::emit_outputs(&mut program);
     BitVecEnc::emit_outputs(&mut program);
     FloatBitVecConvEnc::emit_outputs(&mut program);
 

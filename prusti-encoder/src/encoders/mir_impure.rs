@@ -427,12 +427,13 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             }),
 
             mir::Rvalue::RawPtr(_, place) => {
-                let place_expr = self.encode_place(Place::from(*place))?;
-                let metadata = place_expr.expr.metadata;
+                // We initialize a raw pointer from a place. Therefore, it is not null. We initialize the (deep) snapshot with the current value after dereferencing
+                let (address, snap, _, _) = self.encode_place_with_snap(Place::from(*place))?;
+                let metadata = address.expr.metadata;
                 let metadata = metadata.unwrap_or_else(|| self.expect_thin_ptr_metadata(rvalue_ty));
                 let raw = self.ty_use_pure(rvalue_ty).expect_raw();
                 Ok(raw
-                    .prim_to_snap(place_expr.expr.address, metadata)
+                    .prim_to_snap(address.expr.address, metadata, snap)
                     .upcast_ty()
                     .into())
             }
@@ -1497,10 +1498,23 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                         }
                     }
                     ty::TyKind::RawPtr(..) => {
-                        return Err(self.unsupported_rvalue(
-                            format!("dereference of the raw pointer `{}`", place_ty.ty),
-                            self.current_span(),
-                        ));
+                        let span = self.current_span();
+                        self.vcx.handle_error(
+                            "application.precondition:insufficient.permission",
+                            move |_| {
+                                Some(vec![PrustiError::verification(
+                                    "the dereference of this raw pointer might not be permitted",
+                                    span.into(),
+                                )])
+                            },
+                        );
+                        let ref_snap = e_ty.ref_to_snap(expr.address).downcast_ty();
+                        let p_ty = self.ty_use_pure(place_ty.ty).expect_raw();
+                        PlaceExpr {
+                            address: p_ty.address_access(ref_snap),
+                            metadata: Some(p_ty.metadata_access(ref_snap)),
+                            snap: None,
+                        }
                     }
                     _ => unreachable!(),
                 }

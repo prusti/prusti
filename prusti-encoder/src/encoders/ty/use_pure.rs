@@ -79,6 +79,9 @@ impl<'vir> TyUsePureBuiltinData<'vir> {
 
 #[derive(Debug, Clone, Copy)]
 pub struct TyUsePureRaw<'vir> {
+    /// Caster for the pointee type, converting between the concrete snapshot
+    /// and the generic value stored in the raw pointer's snapshot.
+    referent_caster: FieldCaster<'vir>,
     /// Caster for the pointer-metadata type, converting the generic
     /// `metadata_access` result into the concrete metadata snapshot.
     metadata_caster: FieldCaster<'vir>,
@@ -216,8 +219,10 @@ impl<'a, 'vir> TyUsePureWalker<'a, 'vir> {
             }
             TySpecifics::Opaque(data) => TySpecifics::mk_opaque(*data.1),
             TySpecifics::Raw((data, raw_domain)) => {
+                let referent_caster = self.encode_normalized(data.referent, ty.0.params)?;
                 let metadata_caster = self.encode_normalized(data.metadata, ty.0.params)?;
                 TySpecifics::mk_raw(TyUsePureRaw {
+                    referent_caster,
                     metadata_caster,
                     pure: **raw_domain,
                 })
@@ -434,15 +439,46 @@ impl<'vir> TyUsePureImmRef<'vir> {
 }
 
 impl<'vir> TyUsePureRaw<'vir> {
-    /// Construct the raw-pointer snapshot from an address and (fat) pointer
-    /// metadata. The pointee is opaque, so there is no value/referent argument.
+    /// Construct the raw-pointer snapshot from an address, (fat) pointer
+    /// metadata and a value.
     pub fn prim_to_snap<Curr, Next>(
+        &self,
+        ref_: vir::ExprGenRef<'vir, Curr, Next>,
+        metadata: vir::ExprGenSnap<'vir, Curr, Next>,
+        value: vir::ExprGenSnap<'vir, Curr, Next>,
+    ) -> vir::ExprGenCSnap<'vir, Curr, Next> {
+        let metadata = self.metadata_caster.cast_to_callee_ctx(metadata);
+        let value = self.referent_caster.cast_to_callee_ctx(value);
+        self.pure.prim_to_snap.call()(
+            ref_,
+            metadata.downcast_ty(),
+            self.pure.value_some.call()(value.downcast_ty()),
+        )
+    }
+
+    /// Construct the raw-pointer snapshot for a null pointer from an address and (fat) pointer
+    /// metadata.
+    pub fn prim_to_snap_nullptr<Curr, Next>(
         &self,
         ref_: vir::ExprGenRef<'vir, Curr, Next>,
         metadata: vir::ExprGenSnap<'vir, Curr, Next>,
     ) -> vir::ExprGenCSnap<'vir, Curr, Next> {
         let metadata = self.metadata_caster.cast_to_callee_ctx(metadata);
-        self.pure.prim_to_snap.call()(ref_, metadata.downcast_ty())
+        self.pure.prim_to_snap.call()(ref_, metadata.downcast_ty(), self.pure.value_none.call()())
+    }
+
+    /// Is the rawptr null?
+    pub fn is_null<Curr, Next>(
+        &self,
+        snap: vir::ExprGenCSnap<'vir, Curr, Next>,
+    ) -> vir::ExprGenBool<'vir, Curr, Next> {
+        vir::with_vcx(|vcx| {
+            vcx.mk_unary_op_expr(
+                vir::UnOpKind::Not,
+                self.pure.is_some.call()(snap).upcast_ty(),
+            )
+            .downcast_ty()
+        })
     }
 
     pub fn address_access<Curr, Next>(
@@ -459,6 +495,14 @@ impl<'vir> TyUsePureRaw<'vir> {
         let metadata = self.pure.metadata_access.call()(snap);
         self.metadata_caster
             .cast_to_caller_ctx(metadata.upcast_ty())
+    }
+
+    pub fn value_access<Curr, Next>(
+        &self,
+        snap: vir::ExprGenCSnap<'vir, Curr, Next>,
+    ) -> vir::ExprGenSnap<'vir, Curr, Next> {
+        let value = self.pure.value_access.call()(snap);
+        self.referent_caster.cast_to_caller_ctx(value.upcast_ty())
     }
 }
 

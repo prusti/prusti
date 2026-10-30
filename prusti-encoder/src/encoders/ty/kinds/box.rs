@@ -79,7 +79,8 @@ pub(super) fn mk_pure_box_data<'vir>(
     // The `Unique` with its raw pointer replaced (its other fields kept).
     let address_decl = builder.vcx.mk_local_decl("address", vir::TYPE_REF);
     let metadata_decl = builder.vcx.mk_local_decl("metadata", vir::TYPE_PSNAP);
-    let new_raw = raw.prim_to_snap(
+    // The snap access to a box works directly through nonnull. therefore, do not store the snap here a second time
+    let new_raw = raw.prim_to_snap_nullptr(
         builder.vcx.mk_local_ex(address_decl),
         builder.vcx.mk_local_ex(metadata_decl).upcast_ty(),
     );

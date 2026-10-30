@@ -191,9 +191,17 @@ impl TaskEncoder for MirBuiltinCastEnc {
                 ) => {
                     let e_op_ty = op_ty.expect_raw();
                     let e_res_ty = res_ty.expect_raw();
-                    let expr = e_res_ty.prim_to_snap(
-                        e_op_ty.address_access(arg_ex),
-                        e_op_ty.metadata_access(arg_ex),
+                    let expr = vcx.mk_ternary_expr(
+                        e_op_ty.is_null(arg_ex),
+                        e_res_ty.prim_to_snap_nullptr(
+                            e_op_ty.address_access(arg_ex),
+                            e_op_ty.metadata_access(arg_ex),
+                        ),
+                        e_res_ty.prim_to_snap(
+                            e_op_ty.address_access(arg_ex),
+                            e_op_ty.metadata_access(arg_ex),
+                            e_op_ty.value_access(arg_ex),
+                        ),
                     );
 
                     let fn_idn = FunctionIdn::new(name, op_ty_snap, res_ty_snap);

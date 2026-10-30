@@ -64,17 +64,28 @@ pub enum TyPureBuiltinData {
 pub struct TyPureOpaqueData {}
 
 /// Pure data for a raw pointer. Modelled like a reference (`TyPureImmRefData`)
-/// but with the pointee left opaque: the snapshot carries the address and the
-/// pointer metadata, and there is no `value_access` into the pointee.
+/// but the pointee may be absent: the snapshot carries the address, the pointer
+/// metadata and an optional value.
 #[derive(Debug, Clone, Copy)]
 pub struct TyPureRawData<'vir> {
-    /// Construct the snapshot from an address and pointer metadata.
-    pub(super) prim_to_snap: FunctionIdn<'vir, (vir::Ref, vir::PSnap), vir::CSnap>,
+    /// Construct the snapshot from an address, pointer metadata and optional
+    /// value.
+    pub(super) prim_to_snap: FunctionIdn<'vir, (vir::Ref, vir::PSnap, vir::CSnap), vir::CSnap>,
     /// Function to access the pointer address.
     #[allow(dead_code)]
     pub(super) address_access: AdtDestructor<'vir, vir::CSnap, vir::Ref>,
     /// Function to access the pointer metadata (fat pointer).
     pub(super) metadata_access: AdtDestructor<'vir, vir::CSnap, vir::PSnap>,
+    /// The function that creates a raw pointer that is pointing to a pointee
+    pub(super) value_some: FunctionIdn<'vir, vir::PSnap, vir::CSnap>,
+    /// The function that create a null pointer
+    pub(super) value_none: FunctionIdn<'vir, (), vir::CSnap>,
+    /// Function to access the pointee's value. Its precondition requires the
+    /// value to be present, so reading an absent value fails verification.
+    #[allow(dead_code)]
+    pub(super) value_access: FunctionIdn<'vir, vir::CSnap, vir::PSnap>,
+    /// Is the raw pointer pointing to a value?
+    pub(super) is_some: FunctionIdn<'vir, vir::CSnap, vir::Bool>,
 }
 
 #[derive(Debug, Clone, Copy)]

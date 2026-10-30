@@ -1085,21 +1085,13 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                     .1)
             }
             mir::Rvalue::RawPtr(_, place) => {
-                let encoded_place = self.encode_place_with_ref(curr_ver, (*place).into())?;
-                // As for `Rvalue::Ref`: a raw pointer built in pure code never
-                // escapes, so its address is `null` unless it re-borrows the
-                // place of an impure `&mut` argument.
-                let place_ref = encoded_place
-                    .place_ref
-                    .unwrap_or_else(|| self.vcx.mk_null().lazy());
-                let metadata = encoded_place
-                    .metadata
-                    .unwrap_or_else(|| self.expect_thin_ptr_metadata(rvalue_ty));
-                let raw_ty = self.ty_use(rvalue_ty);
-                Ok(raw_ty
-                    .expect_raw()
-                    .prim_to_snap(place_ref, metadata)
-                    .upcast_ty())
+                Err(self.unsupported_rvalue(
+                    format!(
+                        "raw of `{}` in a specification",
+                        place.ty(self.body, self.vcx.tcx()).ty
+                    ),
+                    self.current_span(),
+                ))
             }
             _ => Err(self
                 .unsupported_rvalue(format!("unsupported rvalue {rvalue:?} in pure code"), span)),
@@ -1179,10 +1171,21 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                         EncodedPlace::new(val_expr, Some(ref_expr)).with_metadata(metadata)
                     }
                     TyKind::RawPtr(..) => {
-                        return Err(self.unsupported_rvalue(
-                            format!("dereference of the raw pointer `{}`", place_ty.ty),
-                            self.current_span(),
-                        ));
+                        if !self.impure_context {
+                            return Err(self.unsupported_rvalue(
+                                format!(
+                                    "dereference of the raw pointer `{}` in pure code",
+                                    place_ty.ty
+                                ),
+                                self.current_span(),
+                            ));
+                        }
+                        let e_ty = e_ty.expect_raw();
+                        let snap = encoded_place.snap.downcast_ty();
+                        let metadata = e_ty.metadata_access(snap);
+                        let val_expr = e_ty.value_access(snap);
+                        let ref_expr = e_ty.address_access(snap);
+                        EncodedPlace::new(val_expr, Some(ref_expr)).with_metadata(metadata)
                     }
                     _ => unreachable!(),
                 }
