@@ -60,6 +60,7 @@ fn main() {
     let x: i8 = -3;
     let y: i8 = 1;
     prusti_assert!(x << y == -6);
+    prusti_assert!(x >> y == -2);
 
     let x = 0;
     let y = 1;
