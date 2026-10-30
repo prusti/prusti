@@ -41,7 +41,7 @@ flags; this file collects working norms and pitfalls.
   with `PRUSTI_VERIFY_MODE=encode-only PRUSTI_DUMP_VIPER_PROGRAM=true` on both builds and
   diff them. Every dump is written to the same file name, so give each test its own
   `PRUSTI_LOG_DIR`, and normalise non-deterministic parts such as spec-item UUIDs.
-- Hard proofs are marginal: they can flip after unrelated changes to the same program.
+- A few tests are fragile: they can flip after unrelated changes to the same program.
   Don't judge a change by one such test.
 
 ## Soundness
