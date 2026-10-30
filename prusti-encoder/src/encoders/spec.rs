@@ -7,7 +7,10 @@ use prusti_interface::specs::{
         SpecificationItem,
     },
 };
-use prusti_rustc_interface::{middle::ty, span::def_id::DefId};
+use prusti_rustc_interface::{
+    middle::ty,
+    span::{Symbol, def_id::DefId},
+};
 use task_encoder::{EncodeFullResult, TaskEncoder, TaskEncoderDependencies};
 
 use crate::encoders::ty::generics::GArgs;
@@ -19,6 +22,7 @@ pub type SpecEncError = ();
 #[derive(Clone, Debug)]
 pub struct SpecEncOutput<'vir> {
     pub extern_spec: Option<ExternSpecKind>,
+    pub extern_spec_params: Option<&'vir [(Symbol, u32)]>,
     pub pres: SpecificationItem<&'vir [DefId]>,
     pub posts: SpecificationItem<&'vir [DefId]>,
     pub pledges: SpecificationItem<&'vir [Pledge]>,
@@ -188,7 +192,7 @@ impl TaskEncoder for SpecEnc {
     ) -> EncodeFullResult<'vir, Self> {
         deps.emit_output_ref(*task_key, ())?;
         vir::with_vcx(|vcx| {
-            let (extern_spec, pres, posts, pledges) = with_proc_spec(
+            let (extern_spec, extern_spec_params, pres, posts, pledges) = with_proc_spec(
                 SpecQuery::GetProcKind(
                     task_key.0,
                     ty::List::identity_for_item(vcx.tcx(), task_key.0),
@@ -198,10 +202,15 @@ impl TaskEncoder for SpecEnc {
                     let pres = specs.pres.map(|items| vcx.alloc_slice(items));
                     let posts = specs.posts.map(|items| vcx.alloc_slice(items));
                     let pledges = specs.pledges.map(|items| vcx.alloc_slice(items));
-                    (specs.extern_spec, pres, posts, pledges)
+                    let extern_spec_params = specs
+                        .extern_spec_params
+                        .as_ref()
+                        .map(|params| vcx.alloc_slice(params));
+                    (specs.extern_spec, extern_spec_params, pres, posts, pledges)
                 },
             )
             .unwrap_or((
+                None,
                 None,
                 SpecificationItem::Empty,
                 SpecificationItem::Empty,
@@ -211,6 +220,7 @@ impl TaskEncoder for SpecEnc {
                 (),
                 SpecEncOutput {
                     extern_spec,
+                    extern_spec_params,
                     pres,
                     posts,
                     pledges,
