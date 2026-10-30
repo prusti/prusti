@@ -427,7 +427,11 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             }),
 
             mir::Rvalue::RawPtr(_, place) => {
-                // We initialize a raw pointer from a place. Therefore, it is not null. We initialize the (deep) snapshot with the current value after dereferencing
+                // We access the place's snapshot. If we do not have access to the place (e.g., if we try to access a nullpointer),
+                // we will therefore get a permission error, since Viper cannot access the snapshot. Therefore, soundness-wise 
+                // it is fine to create the new raw pointer with a snapshot (and not as potential null-ptr). However,
+                // we are therefore also incomplete: creating a rawpointer from another nullpointer does not lead to
+                // UB as long as we do not dereference it.
                 let (address, snap, _, _) = self.encode_place_with_snap(Place::from(*place))?;
                 let metadata = address.expr.metadata;
                 let metadata = metadata.unwrap_or_else(|| self.expect_thin_ptr_metadata(rvalue_ty));
