@@ -1189,11 +1189,29 @@ impl<'vir, 'v> ToViper<'vir, 'v> for vir::UnOp<'vir> {
     type Output = viper::Expr<'v>;
     // `pos` coming from the parent `Expr` is used
     fn to_viper(&self, ctx: &ToViperContext<'vir, 'v>, pos: Position) -> Self::Output {
+        if self.kind == vir::UnOpKind::Perm {
+            // `perm(..)` takes a resource access (e.g. `P(x)`), not an
+            // access predicate (`acc(P(x))`), so lower the predicate
+            // application without the surrounding `acc`.
+            let vir::ExprKindData::PredicateApp(app) = self.expr.kind else {
+                unimplemented!("perm(..) of non-predicate expression: {:?}", self.expr);
+            };
+            let access = ctx.ast.predicate_access_with_pos(
+                &app.args
+                    .iter()
+                    .map(|v| v.to_viper_no_pos(ctx))
+                    .collect::<Vec<_>>(),
+                app.target,
+                pos,
+            );
+            return ctx.ast.current_perm_with_pos(access, pos);
+        }
         let expr = self.expr.to_viper_no_pos(ctx);
         match self.kind {
             vir::UnOpKind::Neg => ctx.ast.minus_with_pos(expr, pos),
             vir::UnOpKind::PermNeg => ctx.ast.perm_minus_with_pos(expr, pos),
             vir::UnOpKind::Not => ctx.ast.not_with_pos(expr, pos),
+            vir::UnOpKind::Perm => unreachable!(),
         }
     }
 }

@@ -456,9 +456,9 @@ impl<'vir> TyUsePureRaw<'vir> {
         )
     }
 
-    /// Construct the raw-pointer snapshot for a null pointer from an address and (fat) pointer
+    /// Construct the raw-pointer snapshot for a pointer without provenance from an address and (fat) pointer
     /// metadata.
-    pub fn prim_to_snap_nullptr<Curr, Next>(
+    pub fn prim_to_snap_no_provenance<Curr, Next>(
         &self,
         ref_: vir::ExprGenRef<'vir, Curr, Next>,
         metadata: vir::ExprGenSnap<'vir, Curr, Next>,

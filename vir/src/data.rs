@@ -28,6 +28,7 @@ pub enum UnOpKind {
     /// Negation of a `Perm` (real) value.
     PermNeg,
     Not,
+    Perm,
 }
 impl From<mir::UnOp> for UnOpKind {
     fn from(value: mir::UnOp) -> Self {

@@ -872,6 +872,16 @@ impl<'a> AstFactory<'a> {
         build_ast_node!(self, Expr, ast::CurrentPerm, loc.to_jobject())
     }
 
+    pub fn current_perm_with_pos(&self, loc: Expr, pos: Position) -> Expr<'a> {
+        build_ast_node_with_pos!(
+            self,
+            Expr,
+            ast::CurrentPerm,
+            loc.to_jobject(),
+            pos.to_jobject()
+        )
+    }
+
     pub fn perm_minus_with_pos(&self, expr: Expr, pos: Position) -> Expr<'a> {
         build_ast_node_with_pos!(
             self,

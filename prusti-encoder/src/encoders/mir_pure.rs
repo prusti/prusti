@@ -11,6 +11,7 @@ use crate::encoders::{
 };
 use itertools::Itertools;
 use pcg::utils::Place;
+use prusti_interface::PrustiError;
 use prusti_rustc_interface::{
     data_structures::graph::{self, Successors},
     index::IndexVec,
@@ -1084,15 +1085,13 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                     .encode_cast_snap(rvalue_ty, *kind, operand, curr_ver)?
                     .1)
             }
-            mir::Rvalue::RawPtr(_, place) => {
-                Err(self.unsupported_rvalue(
-                    format!(
-                        "raw of `{}` in a specification",
-                        place.ty(self.body, self.vcx.tcx()).ty
-                    ),
-                    self.current_span(),
-                ))
-            }
+            mir::Rvalue::RawPtr(_, place) => Err(self.unsupported_rvalue(
+                format!(
+                    "raw of `{}` in a specification",
+                    place.ty(self.body, self.vcx.tcx()).ty
+                ),
+                self.current_span(),
+            )),
             _ => Err(self
                 .unsupported_rvalue(format!("unsupported rvalue {rvalue:?} in pure code"), span)),
         }
@@ -1171,15 +1170,19 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                         EncodedPlace::new(val_expr, Some(ref_expr)).with_metadata(metadata)
                     }
                     TyKind::RawPtr(..) => {
-                        if !self.impure_context {
-                            return Err(self.unsupported_rvalue(
-                                format!(
-                                    "dereference of the raw pointer `{}` in pure code",
-                                    place_ty.ty
-                                ),
-                                self.current_span(),
-                            ));
-                        }
+                        // Reading the pointee goes through the `value`
+                        // function, whose precondition requires the value
+                        // to be present (non-null and accessible).
+                        let span = self.current_span();
+                        self.vcx.handle_error(
+                            "application.precondition:assertion.false",
+                            move |_| {
+                                Some(vec![PrustiError::verification(
+                                    "the dereference of this raw pointer might not be permitted",
+                                    span.into(),
+                                )])
+                            },
+                        );
                         let e_ty = e_ty.expect_raw();
                         let snap = encoded_place.snap.downcast_ty();
                         let metadata = e_ty.metadata_access(snap);

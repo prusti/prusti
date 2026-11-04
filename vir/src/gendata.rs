@@ -412,6 +412,7 @@ impl<'vir, Curr, Next> ExprKindGenData<'vir, Curr, Next> {
             ExprKindGenData::Result(ty) => ty,
             ExprKindGenData::AccField(_) => crate::TYPE_BOOL.as_dyn(),
             ExprKindGenData::Unfolding(f) => f.expr.ty(),
+            ExprKindGenData::UnOp(u) if u.kind == UnOpKind::Perm => crate::TYPE_PERM.as_dyn(),
             ExprKindGenData::UnOp(u) => u.expr.ty().as_dyn(),
             ExprKindGenData::BinOp(b) => b.ty().as_dyn(),
             ExprKindGenData::CollectionBinOp(b) => b.ty(),

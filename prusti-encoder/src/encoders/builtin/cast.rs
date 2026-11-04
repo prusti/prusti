@@ -193,7 +193,7 @@ impl TaskEncoder for MirBuiltinCastEnc {
                     let e_res_ty = res_ty.expect_raw();
                     let expr = vcx.mk_ternary_expr(
                         e_op_ty.is_null(arg_ex),
-                        e_res_ty.prim_to_snap_nullptr(
+                        e_res_ty.prim_to_snap_no_provenance(
                             e_op_ty.address_access(arg_ex),
                             e_op_ty.metadata_access(arg_ex),
                         ),

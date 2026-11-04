@@ -609,6 +609,7 @@ impl<'vir, Curr, Next> Debug for UnOpGenData<'vir, Curr, Next> {
                 UnOpKind::Neg => "-",
                 UnOpKind::PermNeg => "-",
                 UnOpKind::Not => "!",
+                UnOpKind::Perm => "perm",
             },
             self.expr
         )

@@ -427,23 +427,34 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             }),
 
             mir::Rvalue::RawPtr(_, place) => {
-                // We access the place's snapshot. If we do not have access to the place (e.g., if we try to access a nullpointer),
-                // we will therefore get a permission error, since Viper cannot access the snapshot. Therefore, soundness-wise 
-                // it is fine to create the new raw pointer with a snapshot (and not as potential null-ptr). However,
-                // we are therefore also incomplete: creating a rawpointer from another nullpointer does not lead to
-                // UB as long as we do not dereference it.
-                // TODO: Change! When we need to initialize the snap value we need to check if we have permission (to sizeof(T) bits from the Viper Ref)
-                // If yes: load Some into value field
-                // If no: load None into value field
-                // Question: How do we check if we have access? This probably goes back to saving the provenance for each Viper Ref.
-                let (address, snap, _, _) = self.encode_place_with_snap(Place::from(*place))?;
+                // For the snapshot, we check if we have permission to dereference the Viper place. 
+                // If so, we dereference the pointer and load the pointee's snapshot.
+                // If not, we place None. Therefore, in pure code, we can check if we're allowed
+                // to dereference the pointer even if we don't have access to the heap.
+                let (address, snap, _, imp_ty) =
+                    self.encode_place_with_snap(Place::from(*place))?;
                 let metadata = address.expr.metadata;
                 let metadata = metadata.unwrap_or_else(|| self.expect_thin_ptr_metadata(rvalue_ty));
                 let raw = self.ty_use_pure(rvalue_ty).expect_raw();
-                Ok(raw
-                    .prim_to_snap(address.expr.address, metadata, snap)
-                    .upcast_ty()
-                    .into())
+                let perm = self.vcx.mk_unary_op_expr(
+                    vir::UnOpKind::Perm,
+                    self.vcx
+                        .mk_predicate_app_expr(imp_ty.ref_to_pred_app(address.expr.address, None))
+                        .upcast_ty(),
+                );
+                let res_snap = self.vcx.mk_ternary_expr(
+                    self.vcx
+                        .mk_bin_op_expr(
+                            vir::BinOpKind::CmpGt,
+                            perm,
+                            self.vcx.mk_no_perm().upcast_ty(),
+                        )
+                        .downcast_ty(),
+                    raw.prim_to_snap(address.expr.address, metadata, snap),
+                    raw.prim_to_snap_no_provenance(address.expr.address, metadata),
+                );
+
+                Ok(res_snap.upcast_ty().into())
             }
 
             _ => Err(EncodeRvalueError::UnsupportedRvalue),
@@ -526,7 +537,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         match guide {
             RepackGuide::Index(index_local, _) => {
                 let index = self
-                    .encode_operand_snap(&mir::Operand::Copy(index_local.into()), &None)
+                    .encode_operand_snap(&mir::Operand::Copy(index_local.local().into()), &None)
                     .unwrap();
                 let usize_ty_out = self.ty_use_pure(self.vcx.tcx().types.usize);
                 Some(
