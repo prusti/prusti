@@ -6,6 +6,7 @@ pub use common::{SpecIdRef, SpecType, SpecificationId};
 use prusti_rustc_interface::{
     hir::def_id::{DefId, LocalDefId},
     macros::{TyDecodable, TyEncodable},
+    span::Symbol,
 };
 use prusti_specs::specifications::common;
 use regex::Regex;
@@ -203,6 +204,11 @@ pub struct ProcedureSpecification {
     // For `extern_spec` it differs to the key in `proc_specs`
     pub source: DefId,
     pub extern_spec: Option<ExternSpecKind>,
+    /// For an `extern_spec`: the generic parameter of the specified function,
+    /// by index, that each type and const parameter of the extern spec's
+    /// items stands for, by name. The items' generics need not match the
+    /// function's: their lifetimes are those written in the extern spec.
+    pub extern_spec_params: Option<Vec<(Symbol, u32)>>,
     pub kind: SpecificationItem<ProcedureSpecificationKind>,
     pub pres: SpecificationItem<Vec<DefId>>,
     pub posts: SpecificationItem<Vec<DefId>>,
@@ -217,6 +223,7 @@ impl ProcedureSpecification {
         ProcedureSpecification {
             source,
             extern_spec: None,
+            extern_spec_params: None,
             // We never create an empty "kind". Having no concrete user-annotation
             // defaults to an impure function
             kind: SpecificationItem::Inherent(ProcedureSpecificationKind::Impure),
@@ -238,6 +245,7 @@ impl ProcedureSpecification {
         ProcedureSpecification {
             source,
             extern_spec: None,
+            extern_spec_params: None,
             kind: SpecificationItem::Empty,
             pres: SpecificationItem::Empty,
             posts: SpecificationItem::Empty,
@@ -508,12 +516,16 @@ impl SpecGraph<ProcedureSpecification> {
             .for_each(|s| s.kind.set(kind));
     }
 
-    /// Sets the [ExternSpecKind] for the base spec and all constrained specs.
-    pub fn set_extern_spec(&mut self, extern_spec: ExternSpecKind) {
+    /// Sets the [ExternSpecKind] and the parameter correspondence (see
+    /// [ProcedureSpecification::extern_spec_params]) for the base spec and all
+    /// constrained specs.
+    pub fn set_extern_spec(&mut self, extern_spec: ExternSpecKind, params: Vec<(Symbol, u32)>) {
         self.base_spec.extern_spec = Some(extern_spec);
-        self.specs_with_constraints
-            .values_mut()
-            .for_each(|s| s.extern_spec = Some(extern_spec));
+        self.base_spec.extern_spec_params = Some(params.clone());
+        self.specs_with_constraints.values_mut().for_each(|s| {
+            s.extern_spec = Some(extern_spec);
+            s.extern_spec_params = Some(params.clone());
+        });
     }
 
     /// Lazily gets/creates a constrained spec.
@@ -816,6 +828,9 @@ impl Refinable for ProcedureSpecification {
             // traits are trusted based on it (see `spec_is_trusted`). It does
             // NOT mean the function itself is an extern-spec target.
             extern_spec: self.extern_spec.or(other.extern_spec),
+            // Describes our own spec items only; inherited items are those of
+            // the trait method, whose spec has its own.
+            extern_spec_params: self.extern_spec_params.clone(),
             pres: self.pres.refine(replace_empty(&EMPTYL, &other.pres)),
             posts: self.posts.refine(replace_empty(&EMPTYL, &other.posts)),
             pledges: self.pledges.refine(replace_empty(&EMPTYP, &other.pledges)),

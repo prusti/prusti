@@ -356,7 +356,11 @@ impl<'a, 'tcx> SpecCollector<'a, 'tcx> {
             let Some(mut spec) = def_spec.proc_specs.remove(spec_id) else {
                 continue;
             };
-            spec.set_extern_spec(extern_spec_decl.into());
+            // Missing if the extern spec's generics were rejected.
+            let Some(params) = self.extern_resolver.extern_spec_params.get(spec_id) else {
+                continue;
+            };
+            spec.set_extern_spec(extern_spec_decl.into(), params.clone());
             def_spec.proc_specs.insert(target_def_id, spec);
         }
     }
