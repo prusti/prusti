@@ -76,6 +76,7 @@ pub struct BitVecDomain<'vir> {
     pub bv_or: FunctionIdn<'vir, (vir::CSnap, vir::CSnap), vir::CSnap>,
     pub bv_shl: FunctionIdn<'vir, (vir::CSnap, vir::CSnap), vir::CSnap>,
     pub bv_shr: FunctionIdn<'vir, (vir::CSnap, vir::CSnap), vir::CSnap>,
+    pub bv_ashr: FunctionIdn<'vir, (vir::CSnap, vir::CSnap), vir::CSnap>,
 }
 
 pub struct BitVecEnc;
@@ -169,6 +170,8 @@ impl TaskEncoder for BitVecEnc {
                 Self::mk_binop(vcx, domain_name, self_type, "bv_shl", "bvshl");
             let (bv_shr, bv_shr_data) =
                 Self::mk_binop(vcx, domain_name, self_type, "bv_shr", "bvlshr");
+            let (bv_ashr, bv_ashr_data) =
+                Self::mk_binop(vcx, domain_name, self_type, "bv_ashr", "bvashr");
 
             let functions = &[
                 from_int_data,
@@ -179,6 +182,7 @@ impl TaskEncoder for BitVecEnc {
                 bv_or_data,
                 bv_shl_data,
                 bv_shr_data,
+                bv_ashr_data,
             ];
 
             let (smtlib_interpretation, boogie_interpretation) = task_key.interpretation();
@@ -213,6 +217,7 @@ impl TaskEncoder for BitVecEnc {
                     bv_or,
                     bv_shl,
                     bv_shr,
+                    bv_ashr,
                 },
             ))
         })

@@ -192,6 +192,7 @@ impl MirBuiltinBinOpEnc {
                 BitAnd => (bv_domain.bv_and)(lhs_bv, rhs_bv),
                 BitOr => (bv_domain.bv_or)(lhs_bv, rhs_bv),
                 Shl => (bv_domain.bv_shl)(lhs_bv, rhs_bv),
+                Shr if is_signed => (bv_domain.bv_ashr)(lhs_bv, rhs_bv),
                 Shr => (bv_domain.bv_shr)(lhs_bv, rhs_bv),
                 _ => unreachable!(),
             };
