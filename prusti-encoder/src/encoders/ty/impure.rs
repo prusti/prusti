@@ -3,7 +3,7 @@ use std::ops::{Deref, DerefMut};
 use task_encoder::{EncodeFullResult, TaskEncoder, TaskEncoderDependencies};
 use vir::{CastType, FunctionIdn, HasType, MethodIdn, PredicateIdn};
 
-use crate::encoders::{Impure, ty::use_impure::TyUseImpure};
+use crate::encoders::{Impure, addr::RefDataEnc, ty::use_impure::TyUseImpure};
 
 use super::{
     RustTy, ViperTyDatas,
@@ -117,6 +117,10 @@ pub struct TyImpureRef<'vir> {
     /// `TyImpureEncLocalRef::apply_method_assign`.
     pub(super) method_assign:
         MethodIdn<'vir, (vir::Ref, vir::ManyTyVal, vir::ManyCSnap, vir::Snap)>,
+    pub(super) method_borrow:
+        MethodIdn<'vir, (vir::Ref, vir::ManyTyVal, vir::ManyCSnap, vir::Ref)>,
+    pub(super) method_expire:
+        MethodIdn<'vir, (vir::Ref, vir::ManyTyVal, vir::ManyCSnap, vir::Ref)>,
 }
 
 impl<'vir> task_encoder::OutputRefAny for TyImpureRef<'vir> {}
@@ -129,6 +133,8 @@ pub struct TyImpureEncLocal<'vir> {
     pub functions: Vec<vir::Function<'vir>>,
     pub method_assign: vir::Method<'vir>,
     pub methods: Vec<vir::Method<'vir>>,
+    pub method_borrow: vir::Method<'vir>,
+    pub method_expire: vir::Method<'vir>,
 }
 
 impl TaskEncoder for TyImpureEnc {
@@ -176,10 +182,48 @@ impl TaskEncoder for TyImpureEnc {
                 ],
             );
 
+            let parent = deps.require_dep::<RefDataEnc>(())?.parent;
+            let ref_borrow_decl = vcx.mk_local_decl("borrow", vir::TYPE_REF);
+            let ref_borrow = vcx.mk_local_ex(ref_borrow_decl);
+
+            // borrow method
+            let method_borrow = builder.inner.method(
+                "borrow",
+                (ref_self_decl.ty(), builder.params.ty_args(), builder.params.const_args(), ref_borrow_decl.ty()),
+                &[],
+                (ref_self_decl, builder.params.ty_decls(), builder.params.const_decls(), ref_borrow_decl),
+                &[
+                    vir::expr! { [builder.ref_to_pred](ref_self, [..[builder.params.ty_exprs()]], [..[builder.params.const_exprs()]]) }
+                ],
+                &[
+                    vir::expr! { [builder.ref_to_pred](ref_borrow, [..[builder.params.ty_exprs()]], [..[builder.params.const_exprs()]]) },
+                    vir::expr! { ([parent](ref_borrow)) == (ref_self) },
+                    vir::expr! { (old([builder.ref_to_snap](ref_self, [..[builder.params.ty_exprs()]], [..[builder.params.const_exprs()]]))) == ([builder.ref_to_snap](ref_borrow, [..[builder.params.ty_exprs()]], [..[builder.params.const_exprs()]])) }
+                ]
+            );
+
+            // expire method
+            let method_expire = builder.inner.method(
+                "expire",
+                (ref_self_decl.ty(), builder.params.ty_args(), builder.params.const_args(), ref_borrow_decl.ty()),
+                &[],
+                (ref_self_decl, builder.params.ty_decls(), builder.params.const_decls(), ref_borrow_decl),
+                &[
+                    vir::expr! { ([parent](ref_borrow)) == (ref_self) },
+                    vir::expr! { [builder.ref_to_pred](ref_borrow, [..[builder.params.ty_exprs()]], [..[builder.params.const_exprs()]]) }
+                ],
+                &[
+                    vir::expr! { [builder.ref_to_pred](ref_self, [..[builder.params.ty_exprs()]], [..[builder.params.const_exprs()]]) },
+                    vir::expr! { (old([builder.ref_to_snap](ref_borrow, [..[builder.params.ty_exprs()]], [..[builder.params.const_exprs()]]))) == ([builder.ref_to_snap](ref_self, [..[builder.params.ty_exprs()]], [..[builder.params.const_exprs()]])) }
+                ]
+            );
+
             let data = TyImpureRef {
                 ref_to_pred: builder.ref_to_pred,
                 ref_to_snap: builder.ref_to_snap,
                 method_assign,
+                method_borrow,
+                method_expire
             };
             deps.emit_output_ref(*task_key, data)?;
 
@@ -237,6 +281,8 @@ impl TaskEncoder for TyImpureEnc {
             for method in output.methods {
                 program.add_method(method);
             }
+            program.add_method(output.method_borrow);
+            program.add_method(output.method_expire);
         }
     }
 }
@@ -486,6 +532,8 @@ impl<'vir> PredicateBuilderInner<'vir> {
     pub(crate) fn build(mut self) -> TyImpureEncLocal<'vir> {
         // TODO: don't rely on assignment being index 0, use separate field...
         let method_assign = self.methods.remove(0);
+        let method_borrow = self.methods.remove(0);
+        let method_expire = self.methods.remove(0);
         TyImpureEncLocal {
             fields: self.fields,
             predicates: self.predicates,
@@ -493,6 +541,8 @@ impl<'vir> PredicateBuilderInner<'vir> {
             functions: self.functions,
             method_assign,
             methods: self.methods,
+            method_borrow,
+            method_expire,
         }
     }
 }
