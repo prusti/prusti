@@ -3,7 +3,7 @@ use rustc_hash::FxHashMap;
 use pcg::{
     borrow_pcg::region_projection::{
         ExtractRegionsCtxt, LifetimeProjection, PcgLifetimeProjectionBase,
-        PcgLifetimeProjectionBaseLike,
+        PcgLifetimeProjectionBaseLike, PcgRegion,
     },
     r#loop::PlaceUsages,
     pcg::{CapabilityKind, EvalStmtPhase, PcgNode},
@@ -20,7 +20,11 @@ use vir::Reify;
 
 use crate::encoders::{
     EncodeResult, ImpureEncVisitor, TyUseImpureEnc,
-    ty::{RustTyDecomposition, indirect::IndirectPredicatesEnc, use_impure::TyUseImpure},
+    ty::{
+        RustTyDecomposition,
+        indirect::{IndirectPredicatesEnc, projection_for_generalized_idx},
+        use_impure::TyUseImpure,
+    },
 };
 
 pub(crate) enum WandOldOuter<'vir> {
@@ -62,7 +66,11 @@ impl<'vir: 'a, 'a, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             // gets all the lifetime projections of the place
             // for example, if we add an invariant for x and x is a reference, then we also want to add
             // an invariant for *x
-            let projs = ctxt.extract_lifetime_projections(place.with_inherent_region(ctxt));
+            let projs =
+                <_ as ExtractRegionsCtxt<'_, _, PcgRegion<'_>>>::extract_lifetime_projections(
+                    ctxt,
+                    place.with_inherent_region(ctxt),
+                );
             for proj in projs {
                 let indirect = self
                     .deps
@@ -134,10 +142,15 @@ impl<'vir: 'a, 'a, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             }
             PcgLifetimeProjectionBase::Const(c) => todo!("{c:?}"),
         };
-        let ty = RustTyDecomposition::from_ty(ty.ty, self.def_id);
+        let decomp = RustTyDecomposition::from_ty(ty.ty, self.def_id);
+        let Some(proj) =
+            projection_for_generalized_idx(ty.ty, r.region_idx(), decomp, self.vcx.tcx())
+        else {
+            return Ok(Vec::new());
+        };
         let indirect = self
             .deps
-            .require_dep::<IndirectPredicatesEnc>(r.with_base(ty))
+            .require_dep::<IndirectPredicatesEnc>(proj)
             .unwrap();
         Ok(indirect
             .predicate_applications
