@@ -574,6 +574,21 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         }
     }
 
+    /// The state in which `base` is to be read: the state at its label if it
+    /// is labelled, otherwise the state at `label` (the state before a package
+    /// in a package script) or the current state.
+    fn state_label_of(
+        &mut self,
+        base: MaybeLabelledPlace<'vir>,
+        label: Option<&'vir str>,
+    ) -> Option<vir::OldLabel<'vir>> {
+        if let MaybeLabelledPlace::Labelled(snap) = base {
+            Some(self.get_location_label(snap.at()))
+        } else {
+            label.map(vir::OldLabel::Label)
+        }
+    }
+
     /// Returns what a fold consumes besides the places the predicate is
     /// expanded into (see `fold_frame`), `None` if the place is not
     /// (un)folded.
@@ -585,11 +600,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         label: Option<&'vir str>,
     ) -> EncodeResult<'vir, Option<Vec<vir::ExprBool<'vir>>>, E> {
         let place = base.place();
-        let label = if let MaybeLabelledPlace::Labelled(snap) = base {
-            Some(self.get_location_label(snap.at()))
-        } else {
-            label.map(vir::OldLabel::Label)
-        };
+        let label = self.state_label_of(base, label);
 
         // We don't want to unfold because for immutable refs we only use snapshot read/writes
         if place.is_shared_ref(self.pcg_ctxt()) || place.projects_shared_ref(self.pcg_ctxt()) {
@@ -717,18 +728,26 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 // reverses that effect
                 self.unfold(borrow.assigned_ref(), label)?;
 
-                // transfer back Viper permissions by calling `expire` method
+                // transfer back Viper permissions by calling `expire` method.
+                // Both places are read in the state they are labelled with:
+                // e.g. a reference moved into a call is labelled with the state
+                // before the call, as its permission is gone afterwards.
                 let ty_out = self.ty_use_impure(borrow.blocked_place().ty(self.pcg_ctxt()).ty);
+                let blocked_label = self.state_label_of(borrow.blocked_place(), label);
                 let blocked = self
                     .encode_place(borrow.blocked_place().place())?
                     .expr
                     .address;
+                let blocked = self.vcx.maybe_apply_label(blocked, blocked_label);
                 let ty_mutref = self.ty_use_impure(borrow.assigned_ref().ty(self.pcg_ctxt()).ty);
+                let assigned_label = self.state_label_of(borrow.assigned_ref(), label);
+                let assigned_ref = self
+                    .encode_place(borrow.assigned_ref().place())?
+                    .expr
+                    .address;
                 let assigned_deref = ty_mutref.expect_mutref().deref(
-                    self.encode_place(borrow.assigned_ref().place())?
-                        .expr
-                        .address,
-                    None,
+                    self.vcx.maybe_apply_label(assigned_ref, assigned_label),
+                    assigned_label,
                 );
                 self.stmt(ty_out.apply_method_expire(self.vcx, blocked, assigned_deref));
             }
