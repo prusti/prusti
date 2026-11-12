@@ -390,6 +390,34 @@ impl<'vir> TyUseImpureData<'vir> {
         ))))
     }
 
+    pub fn apply_method_borrow<'tcx>(
+        &self,
+        vcx: &'vir vir::VirCtxt<'tcx>,
+        self_ref: vir::ExprRef<'vir>,
+        self_borrow: vir::ExprRef<'vir>,
+    ) -> vir::Stmt<'vir> {
+        vcx.alloc(vir::StmtData::new(vcx.alloc((self.impure.method_borrow)(
+            self_ref,
+            self.args.get_ty(),
+            self.args.get_const(),
+            self_borrow,
+        ))))
+    }
+
+    pub fn apply_method_expire<'tcx>(
+        &self,
+        vcx: &'vir vir::VirCtxt<'tcx>,
+        self_ref: vir::ExprRef<'vir>,
+        self_borrow: vir::ExprRef<'vir>,
+    ) -> vir::Stmt<'vir> {
+        vcx.alloc(vir::StmtData::new(vcx.alloc((self.impure.method_expire)(
+            self_ref,
+            self.args.get_ty(),
+            self.args.get_const(),
+            self_borrow,
+        ))))
+    }
+
     /// Constructs the Viper predicate application expression.
     pub fn ref_to_pred<'tcx>(
         &self,

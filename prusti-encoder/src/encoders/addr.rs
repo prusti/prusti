@@ -40,13 +40,21 @@ impl TaskEncoder for RefDataEnc {
             let arg_decl = vcx.mk_local_decl("arg", vir::TYPE_INT);
             vcx.mk_function(addr_to_ref, (arg_decl,), &[], &[], None, None)
         });
-        let parent =
-            FunctionIdn::new(ViperIdent::new("parent"), vir::TYPE_REF, vir::TYPE_REF);
+        let parent = FunctionIdn::new(ViperIdent::new("parent"), vir::TYPE_REF, vir::TYPE_REF);
         let parent_fn = vir::with_vcx(|vcx| {
             let arg_decl = vcx.mk_local_decl("arg", vir::TYPE_REF);
             vcx.mk_function(parent, (arg_decl,), &[], &[], None, None)
         });
-        Ok((RefDataLocal { addr_to_ref_fn, parent_fn }, RefData { addr_to_ref, parent }))
+        Ok((
+            RefDataLocal {
+                addr_to_ref_fn,
+                parent_fn,
+            },
+            RefData {
+                addr_to_ref,
+                parent,
+            },
+        ))
     }
 
     fn emit_outputs<'vir>(program: &mut task_encoder::Program<'vir>) {
@@ -55,7 +63,7 @@ impl TaskEncoder for RefDataEnc {
             [output] => {
                 program.add_function(output.addr_to_ref_fn);
                 program.add_function(output.parent_fn);
-            },
+            }
             _ => unreachable!(),
         }
     }

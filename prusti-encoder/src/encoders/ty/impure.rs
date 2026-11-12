@@ -117,10 +117,8 @@ pub struct TyImpureRef<'vir> {
     /// `TyImpureEncLocalRef::apply_method_assign`.
     pub(super) method_assign:
         MethodIdn<'vir, (vir::Ref, vir::ManyTyVal, vir::ManyCSnap, vir::Snap)>,
-    pub(super) method_borrow:
-        MethodIdn<'vir, (vir::Ref, vir::ManyTyVal, vir::ManyCSnap, vir::Ref)>,
-    pub(super) method_expire:
-        MethodIdn<'vir, (vir::Ref, vir::ManyTyVal, vir::ManyCSnap, vir::Ref)>,
+    pub(super) method_borrow: MethodIdn<'vir, (vir::Ref, vir::ManyTyVal, vir::ManyCSnap, vir::Ref)>,
+    pub(super) method_expire: MethodIdn<'vir, (vir::Ref, vir::ManyTyVal, vir::ManyCSnap, vir::Ref)>,
 }
 
 impl<'vir> task_encoder::OutputRefAny for TyImpureRef<'vir> {}
@@ -223,7 +221,7 @@ impl TaskEncoder for TyImpureEnc {
                 ref_to_snap: builder.ref_to_snap,
                 method_assign,
                 method_borrow,
-                method_expire
+                method_expire,
             };
             deps.emit_output_ref(*task_key, data)?;
 

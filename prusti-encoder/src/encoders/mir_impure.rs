@@ -416,8 +416,14 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                         metadata.unwrap_or_else(|| self.expect_thin_ptr_metadata(rvalue_ty));
                     let inner = p_rvalue_ty.expect_mutref();
                     let place_ref = place_expr.expr.expect_predicate();
+
+                    let ty = (*place).ty(self.local_decls, self.vcx.tcx());
+                    let ty_out = self.ty_use_impure(ty.ty);
+                    let borrow_ref = self.new_tmp(vir::TYPE_REF);
+                    self.stmt(ty_out.apply_method_borrow(self.vcx, place_ref, borrow_ref));
+
                     EncodedRvalue {
-                        expr: inner.prim_to_snap_assign(place_ref, metadata).upcast_ty(),
+                        expr: inner.prim_to_snap_assign(borrow_ref, metadata).upcast_ty(),
                         post_assign_folds: Some(Box::new(move |lhs_place| {
                             p_rvalue_ty.fold(None, lhs_place, None, None, None)
                         })),
@@ -427,7 +433,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             }),
 
             mir::Rvalue::RawPtr(_, place) => {
-                // For the snapshot, we check if we have permission to dereference the Viper place. 
+                // For the snapshot, we check if we have permission to dereference the Viper place.
                 // If so, we dereference the pointer and load the pointee's snapshot.
                 // If not, we place None. Therefore, in pure code, we can check if we're allowed
                 // to dereference the pointer even if we don't have access to the heap.
@@ -710,6 +716,21 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 // folded into the Rvalue `&mut y` that is stored in `x`. This
                 // reverses that effect
                 self.unfold(borrow.assigned_ref(), label)?;
+
+                // transfer back Viper permissions by calling `expire` method
+                let ty_out = self.ty_use_impure(borrow.blocked_place().ty(self.pcg_ctxt()).ty);
+                let blocked = self
+                    .encode_place(borrow.blocked_place().place())?
+                    .expr
+                    .address;
+                let ty_mutref = self.ty_use_impure(borrow.assigned_ref().ty(self.pcg_ctxt()).ty);
+                let assigned_deref = ty_mutref.expect_mutref().deref(
+                    self.encode_place(borrow.assigned_ref().place())?
+                        .expr
+                        .address,
+                    None,
+                );
+                self.stmt(ty_out.apply_method_expire(self.vcx, blocked, assigned_deref));
             }
             BorrowPcgEdgeKind::BorrowFlow(borrow_flow)
                 if let BorrowFlowEdgeKind::Assignment(assignment_data) = borrow_flow.kind()
