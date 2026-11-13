@@ -1,4 +1,4 @@
-fn main() {
+pub fn main() {
     let mut x = 3;
     let r_x = &mut x;
     let p_x = r_x as *mut i32;

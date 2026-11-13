@@ -5,7 +5,7 @@ fn set(a: &mut i32) {
     *a = 1;
 }
 
-fn main() {
+pub fn main() {
     let mut x = 0;
     let r_x = &mut x;
     // Implicit reborrow `&mut *r_x`, which is moved into the call. When it

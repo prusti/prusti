@@ -1235,12 +1235,43 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
 
         let place_enc = self.encode_place(place)?;
         comment!(self, "exhale due to weaken to Write");
+        // Writing through a raw pointer requires full permission to the
+        // pointee, which is exactly what this exhale checks. If the place is
+        // reached via a raw-pointer deref, a failure here means the pointer
+        // could not be dereferenced.
+        if self.place_derefs_raw_ptr(place) {
+            self.handle_rawptr_deref_error("exhale.failed:insufficient.permission");
+        }
         self.stmt(self.vcx.mk_exhale_stmt(place_ty_out.ref_to_pred(
             self.vcx,
             place_enc.expr.expect_predicate(),
             None,
         )));
         Ok(())
+    }
+
+    /// Whether `place` contains a dereference of a raw pointer.
+    fn place_derefs_raw_ptr(&self, place: Place<'vir>) -> bool {
+        let mut place_ty = mir::PlaceTy::from_ty(self.local_decls[place.local].ty);
+        for (_, elem) in place.iter_projections() {
+            if matches!(elem, mir::ProjectionElem::Deref) && place_ty.ty.is_raw_ptr() {
+                return true;
+            }
+            place_ty = place_ty.projection_ty(self.vcx.tcx(), elem);
+        }
+        false
+    }
+
+    /// Report a Viper error of kind `error_kind` at the current span as a
+    /// failed raw-pointer dereference.
+    fn handle_rawptr_deref_error(&self, error_kind: &'static str) {
+        let span = self.current_span();
+        self.vcx.handle_error(error_kind, move |_| {
+            Some(vec![PrustiError::verification(
+                "the dereference of this raw pointer might not be permitted",
+                span.into(),
+            )])
+        });
     }
 
     fn loop_analysis(&self) -> &LoopAnalysis {
@@ -1557,15 +1588,8 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                         }
                     }
                     ty::TyKind::RawPtr(..) => {
-                        let span = self.current_span();
-                        self.vcx.handle_error(
+                        self.handle_rawptr_deref_error(
                             "application.precondition:insufficient.permission",
-                            move |_| {
-                                Some(vec![PrustiError::verification(
-                                    "the dereference of this raw pointer might not be permitted",
-                                    span.into(),
-                                )])
-                            },
                         );
                         let ref_snap = e_ty.ref_to_snap(expr.address).downcast_ty();
                         let p_ty = self.ty_use_pure(place_ty.ty).expect_raw();
