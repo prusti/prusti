@@ -1,4 +1,3 @@
-//@ known-failure
 //! Example of program that uses a non-lexical lifetime for reference `z`
 
 #![feature(nll)]
