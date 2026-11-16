@@ -1336,25 +1336,10 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
         span: Span,
     ) -> EncodeResult<'vir, ExprRet<'vir>, MirPureEnc> {
         for (base, elem) in place.iter_projections().rev() {
-            let base_ty = base.ty(self.body, self.vcx.tcx());
-            let field_idx = match elem {
-                // A downcast does not change the snapshot.
-                mir::ProjectionElem::Downcast(..) => continue,
-                mir::ProjectionElem::Field(field_idx, _) => Some(field_idx),
-                mir::ProjectionElem::Deref if base_ty.ty.is_box() => None,
-                _ => {
-                    return Err(self.unsupported_rvalue(
-                        format!(
-                            "assignment to a part of a `{}` in pure code: only fields and \
-                             boxed values can be assigned to",
-                            base_ty.ty
-                        ),
-                        span,
-                    ));
-                }
-            };
-            let e_ty = self.ty_use(base_ty.ty);
-            let variant = e_ty.expect_variant_opt(base_ty.variant_index);
+            // A downcast does not change the snapshot.
+            if matches!(elem, mir::ProjectionElem::Downcast(..)) {
+                continue;
+            }
             // A place ending in a downcast cannot be encoded on its own.
             let base_proj = match base.projection {
                 [rest @ .., mir::ProjectionElem::Downcast(..)] => rest,
@@ -1367,9 +1352,25 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
             let base_snap = self
                 .encode_place_snap(base_place.into(), curr_ver)?
                 .downcast_ty();
-            value = match field_idx {
-                Some(field_idx) => variant.with_field(base_snap, field_idx, value),
-                None => variant.with_box_value(base_snap, value),
+            let base_ty = base.ty(self.body, self.vcx.tcx());
+            let e_ty = self.ty_use(base_ty.ty);
+            value = match elem {
+                mir::ProjectionElem::Field(field_idx, _) => e_ty
+                    .expect_variant_opt(base_ty.variant_index)
+                    .with_field(base_snap, field_idx, value),
+                mir::ProjectionElem::Deref if base_ty.ty.is_box() => {
+                    e_ty.expect_structlike().with_box_value(base_snap, value)
+                }
+                _ => {
+                    return Err(self.unsupported_rvalue(
+                        format!(
+                            "assignment to a part of a `{}` in pure code: only fields and \
+                             boxed values can be assigned to",
+                            base_ty.ty
+                        ),
+                        span,
+                    ));
+                }
             }
             .upcast_ty();
         }
