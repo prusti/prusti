@@ -161,20 +161,22 @@ pub(crate) fn generate_extern_spec_method_stub<T: HasSignature + HasAttributes +
     stub_method.attrs.extend(generated_attributes);
     stub_method.rewrite_self_type(self_type, self_type_trait);
     stub_method.rewrite_receiver(self_type);
-    // The self type parameter of a trait stub is `?Sized`; a method taking
-    // `self` by value needs it `Sized` (a trait may declare such a method
-    // for an unsized `Self`, a free function cannot).
-    let by_value_receiver = matches!(extern_spec_kind, ExternSpecKind::Trait)
-        && match method_sig.receiver() {
-            Some(syn::FnArg::Receiver(receiver)) => receiver.reference.is_none(),
-            Some(syn::FnArg::Typed(receiver)) => matches!(
-                &*receiver.ty,
-                syn::Type::Path(path) if path.qself.is_none() && path.path.is_ident("Self")
-            ),
-            None => false,
-        };
+    // The self type parameter of a trait stub is `?Sized`; a method taking or
+    // returning `Self` by value needs it `Sized` (a trait may declare such a
+    // method for an unsized `Self`, a free function cannot).
+    let is_self = |ty: &syn::Type| {
+        matches!(
+            ty,
+            syn::Type::Path(path) if path.qself.is_none() && path.path.is_ident("Self")
+        )
+    };
+    let self_by_value = matches!(extern_spec_kind, ExternSpecKind::Trait)
+        && (method_sig.inputs.iter().any(|input| match input {
+            syn::FnArg::Receiver(receiver) => receiver.reference.is_none(),
+            syn::FnArg::Typed(input) => is_self(&input.ty),
+        }) || matches!(&method_sig.output, syn::ReturnType::Type(_, ty) if is_self(ty)));
     let require_sized = |sig: &mut syn::Signature| {
-        if by_value_receiver {
+        if self_by_value {
             sig.generics
                 .make_where_clause()
                 .predicates

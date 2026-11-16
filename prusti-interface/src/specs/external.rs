@@ -242,9 +242,10 @@ impl<'tcx> ExternSpecResolver<'tcx> {
     /// Only trait, projection and const-argument clauses are compared:
     /// lifetime/outlives and well-formedness clauses carry erased or implied
     /// information that differs structurally between the generated spec item
-    /// and the target without changing which specs are meaningful. The
-    /// `Sized` bound a trait stub declares for a by-value `self` receiver is
-    /// implied at every use of such a method and not compared either.
+    /// and the target without changing which specs are meaningful. A `Sized`
+    /// bound on a by-value input or the output of the target (which a trait
+    /// stub declares for `Self`) holds at every use of the target and is not
+    /// compared either.
     fn bounds_mismatch(
         &self,
         spec_def_id: DefId,
@@ -254,9 +255,10 @@ impl<'tcx> ExternSpecResolver<'tcx> {
         use prusti_rustc_interface::{
             hir::attrs::LangItem,
             middle::ty::{self, ClauseKind},
+            trait_selection::traits::{normalize_param_env_or_error, ObligationCause},
         };
         let tcx = self.env_query.tcx();
-        let spec_args = ty::GenericArgs::identity_for_item(tcx, spec_def_id);
+        let spec_args = self.env_query.identity_substs(spec_def_id);
         let relevant = |clauses: ty::GenericClauses<'tcx>, args: ty::GenericArgsRef<'tcx>| {
             clauses
                 .instantiate(tcx, args)
@@ -279,33 +281,31 @@ impl<'tcx> ExternSpecResolver<'tcx> {
         };
         let mut declared = relevant(tcx.clauses_of(spec_def_id), spec_args);
         let target = relevant(tcx.clauses_of(target_def_id), target_args);
-        let by_value_self = tcx
-            .opt_associated_item(target_def_id)
-            .is_some_and(|item| item.is_method())
-            .then(|| {
-                let self_ty = tcx
-                    .fn_sig(target_def_id)
-                    .skip_binder()
-                    .skip_binder()
-                    .inputs()[0];
-                ty::EarlyBinder::bind(tcx, self_ty)
-                    .instantiate(tcx, target_args)
-                    .skip_normalization()
-            })
-            .filter(|self_ty| matches!(self_ty.kind(), ty::TyKind::Param(_)));
-        if let Some(self_ty) = by_value_self {
-            declared.retain(|clause| match clause.kind().skip_binder() {
-                ClauseKind::Trait(pred) => {
-                    pred.self_ty() != self_ty
-                        || !matches!(tcx.as_lang_item(pred.def_id()), Some(LangItem::Sized))
-                }
-                _ => true,
-            });
+        // Every use of the target needs its by-value inputs and output to be
+        // `Sized`.
+        let by_value = tcx
+            .erase_and_anonymize_regions(self.env_query.get_fn_sig(target_def_id, target_args))
+            .skip_binder()
+            .inputs_and_output;
+        declared.retain(|clause| match clause.kind().skip_binder() {
+            ClauseKind::Trait(pred) => {
+                !matches!(tcx.as_lang_item(pred.def_id()), Some(LangItem::Sized))
+                    || !by_value.contains(&pred.self_ty())
+            }
+            _ => true,
+        });
+        if declared.is_empty() {
+            return None;
         }
-        let target_env = ty::ParamEnv::new(
-            tcx.mk_clauses_from_iter(ty::elaborate::elaborate(tcx, target.iter().copied())),
+        let target_env = normalize_param_env_or_error(
+            tcx,
+            ty::ParamEnv::new(
+                tcx.mk_clauses_from_iter(ty::elaborate::elaborate(tcx, target.iter().copied())),
+            ),
+            ObligationCause::dummy(),
         );
         declared.retain(|clause| {
+            let clause = self.env_query.resolve_assoc_types(*clause, target_env);
             !self
                 .env_query
                 .evaluate_predicate(clause.as_predicate(), target_env)
