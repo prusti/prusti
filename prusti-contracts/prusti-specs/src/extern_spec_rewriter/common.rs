@@ -243,7 +243,10 @@ impl MethodParamsAsCallArguments for Punctuated<FnArg, Token![,]> {
                 FnArg::Typed(PatType {
                     pat: box Pat::Ident(ident),
                     ..
-                }) => parse_quote_spanned! {span=>#ident },
+                }) => {
+                    let ident = &ident.ident;
+                    parse_quote_spanned! {span=>#ident }
+                }
                 FnArg::Receiver(_) => parse_quote_spanned! {span=>self},
                 _ => unimplemented!(),
             }
