@@ -207,7 +207,7 @@ impl prusti_rustc_interface::driver::Callbacks for PrustiCompilerCalls {
 
         // TODO: can we replace `get_annotated_procedures` with information
         // that is already in `def_spec`?
-        let (annotated_procedures, types) = env.get_annotated_procedures_and_types();
+        let annotated_procedures = env.get_annotated_procedures();
 
         if config::show_ide_info() && !config::verify_mode().is_compile_only() {
             let compiler_info = IdeInfo::collect(&env, &annotated_procedures, &def_spec);
@@ -242,7 +242,6 @@ impl prusti_rustc_interface::driver::Callbacks for PrustiCompilerCalls {
                     if !procedures.is_empty() {
                         let selective_task = VerificationTask {
                             procedures,
-                            types,
                             selective: true,
                         };
                         verify(env, def_spec, selective_task);
@@ -254,7 +253,6 @@ impl prusti_rustc_interface::driver::Callbacks for PrustiCompilerCalls {
             } else {
                 let verification_task = VerificationTask {
                     procedures: annotated_procedures,
-                    types,
                     selective: false,
                 };
                 verify(env, def_spec, verification_task);

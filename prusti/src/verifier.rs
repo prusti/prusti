@@ -8,7 +8,7 @@ use prusti_utils::{config, report::user};
 pub fn verify<'tcx>(
     env: Environment<'tcx>,
     def_spec: typed::DefSpecificationMap,
-    verification_task: VerificationTask<'tcx>,
+    verification_task: VerificationTask,
 ) {
     if env.diagnostic.has_errors() {
         warn!("The compiler reported an error, so the program will not be verified.");

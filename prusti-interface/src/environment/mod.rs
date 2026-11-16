@@ -6,36 +6,20 @@
 
 //! This module defines the interface provided to a verifier.
 
-use prusti_rustc_interface::middle::ty::{self, TyCtxt};
+use prusti_rustc_interface::middle::ty::TyCtxt;
 
 pub mod body;
 mod collect_closure_defs_visitor;
 mod collect_prusti_spec_visitor;
 mod diagnostic;
-//mod loops;
-//mod loops_utils;
-//pub mod mir_analyses;
-//pub mod mir_body;
-//pub mod mir_sets;
 pub mod mir_storage;
-//pub mod mir_utils;
 mod name;
-//mod procedure;
 mod query;
 
 pub use self::{
-    body::EnvBody,
-    collect_closure_defs_visitor::CollectClosureDefsVisitor,
-    collect_prusti_spec_visitor::CollectPrustiSpecVisitor,
-    diagnostic::EnvDiagnostic,
-    //loops::{LoopAnalysisError, PlaceAccess, PlaceAccessKind, ProcedureLoops},
-    //loops_utils::*,
-    name::EnvName,
-    //procedure::{
-    //    get_loop_invariant, is_ghost_begin_marker, is_ghost_end_marker, is_loop_invariant_block,
-    //    is_loop_variant_block, is_marked_specification_block, BasicBlockIndex, Procedure,
-    //},
-    query::EnvQuery,
+    body::EnvBody, collect_closure_defs_visitor::CollectClosureDefsVisitor,
+    collect_prusti_spec_visitor::CollectPrustiSpecVisitor, diagnostic::EnvDiagnostic,
+    name::EnvName, query::EnvQuery,
 };
 use crate::data::ProcedureDefId;
 
@@ -67,7 +51,7 @@ impl<'tcx> Environment<'tcx> {
 
     /// Get ids of Rust procedures that are annotated with a Prusti specification
     #[tracing::instrument(level = "debug", skip(self))]
-    pub fn get_annotated_procedures_and_types(&self) -> (Vec<ProcedureDefId>, Vec<ty::Ty<'tcx>>) {
+    pub fn get_annotated_procedures(&self) -> Vec<ProcedureDefId> {
         let mut visitor = CollectPrustiSpecVisitor::new(self);
         visitor.visit_all_item_likes();
 
@@ -76,9 +60,9 @@ impl<'tcx> Environment<'tcx> {
             .tcx()
             .hir_visit_all_item_likes_in_crate(&mut cl_visitor);
 
-        let (mut procedures, types) = visitor.into_result();
+        let mut procedures = visitor.into_result();
         procedures.extend(cl_visitor.get_closure_defs());
-        (procedures, types)
+        procedures
     }
 
     /// Compare the current version of the `prusti` crate to the given other version
