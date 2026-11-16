@@ -19,30 +19,30 @@ struct T {
 
 #[pure]
 fn read_pure(t: T) -> u32 {
-    t.x //~ERROR: cannot encode function body `read_pure`: using the fields of `T` is not supported
-    //~^ ERROR: cannot encode method body `read_pure`: using the fields of `T` is not supported
+    t.x //~ERROR: cannot encode function body `read_pure`: using the contents of `T` is not supported
+    //~^ ERROR: cannot encode method body `read_pure`: using the contents of `T` is not supported
 }
 
 fn read(t: T) -> u32 {
-    t.x //~ERROR: using the fields of `T` is not supported
+    t.x //~ERROR: using the contents of `T` is not supported
 }
 
 fn read_ref(t: &T) -> u32 {
-    t.x //~ERROR: using the fields of `T` is not supported
+    t.x //~ERROR: using the contents of `T` is not supported
 }
 
 fn write(mut t: T) -> T {
-    t.x = 5; //~ERROR: using the fields of `T` is not supported
+    t.x = 5; //~ERROR: using the contents of `T` is not supported
     t
 }
 
 fn write_mut_ref(t: &mut T) {
-    t.x = 5; //~ERROR: using the fields of `T` is not supported
+    t.x = 5; //~ERROR: using the contents of `T` is not supported
 }
 
 #[pure]
 fn construct_pure() -> T {
-    T { x: 1 } //~ERROR: cannot encode function body `construct_pure`: using the fields of `T` is not supported
+    T { x: 1 } //~ERROR: cannot encode function body `construct_pure`: using the contents of `T` is not supported
     //~^ ERROR: unsupported rvalue T
 }
 
@@ -59,7 +59,7 @@ enum E {
 
 #[pure]
 fn is_b(e: E) -> bool {
-    matches!(e, E::B) //~ERROR: cannot encode function body `is_b`: using the variant of `E` is not supported
+    matches!(e, E::B) //~ERROR: cannot encode function body `is_b`: using the contents of `E` is not supported
     //~^ ERROR: unsupported rvalue discriminant
 }
 
@@ -79,8 +79,8 @@ fn match_impure(e: E) -> u32 {
 
 // The derived `eq` reads the discriminant through `discriminant_value`.
 #[trusted]
-#[derive(PartialEq)] //~ERROR: cannot encode function body `<P as std::cmp::PartialEq>::eq`: using the variant of `P` is not supported
-//~^ ERROR: cannot encode method body `<P as std::cmp::PartialEq>::eq`: using the variant of `P` is not supported
+#[derive(PartialEq)] //~ERROR: cannot encode function body `<P as std::cmp::PartialEq>::eq`: using the contents of `P` is not supported
+//~^ ERROR: cannot encode method body `<P as std::cmp::PartialEq>::eq`: using the contents of `P` is not supported
 enum P {
     A(u32),
     B,
@@ -90,14 +90,14 @@ enum P {
 // and the field read fails the whole body, so only the field error is reported.
 #[pure]
 fn get_pure(p: P) -> u32 {
-    match p { //~ERROR: cannot encode function body `get_pure`: using the variant of `P` is not supported
-        P::A(x) => x, //~ERROR: cannot encode method body `get_pure`: using the fields of `P` is not supported
+    match p { //~ERROR: cannot encode function body `get_pure`: using the contents of `P` is not supported
+        P::A(x) => x, //~ERROR: cannot encode method body `get_pure`: using the contents of `P` is not supported
         P::B => 0,
     }
 }
 
 fn get(p: P) -> u32 {
-    if let P::A(x) = p { x } else { 0 } //~ERROR: using the fields of `P` is not supported
+    if let P::A(x) = p { x } else { 0 } //~ERROR: using the contents of `P` is not supported
 }
 
 fn construct_variant() -> P {
@@ -106,12 +106,12 @@ fn construct_variant() -> P {
 
 #[pure]
 fn construct_unit_variant_pure() -> P {
-    P::B //~ERROR: cannot encode function body `construct_unit_variant_pure`: using the variant of `P` is not supported
+    P::B //~ERROR: cannot encode function body `construct_unit_variant_pure`: using the contents of `P` is not supported
     //~^ ERROR: unsupported rvalue P::B
 }
 
 #[pure]
 fn discriminant_pure(p: &P) -> isize {
-    core::intrinsics::discriminant_value(p) //~ERROR: cannot encode function body `discriminant_pure`: using the variant of `P` is not supported
-    //~^ ERROR: cannot encode method body `discriminant_pure`: using the variant of `P` is not supported
+    core::intrinsics::discriminant_value(p) //~ERROR: cannot encode function body `discriminant_pure`: using the contents of `P` is not supported
+    //~^ ERROR: cannot encode method body `discriminant_pure`: using the contents of `P` is not supported
 }

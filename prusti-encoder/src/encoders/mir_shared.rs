@@ -119,19 +119,18 @@ pub(crate) trait PureRvalueEnc<'vir> {
         )])
     }
 
-    /// Build an error for using a `part` of `ty` (its fields or variant) that
-    /// its opaque encoding does not have.
+    /// Build an error for using the fields or variant of `ty`, which its
+    /// opaque encoding does not have.
     fn unsupported_opaque(
         &self,
         ty: ty::Ty<'vir>,
-        part: &str,
         span: Span,
     ) -> EncodeFullError<'vir, Self::Encoder> {
         EncodeFullError::DependencyError(vec![
             DependencyErrorLink::new(
                 <Self::Encoder as TaskEncoder>::ENCODER_NAME,
                 format!(
-                    "using the {part} of `{ty}` is not supported, as Prusti does not yet \
+                    "using the contents of `{ty}` is not supported, as Prusti does not yet \
                      support unions and does not look inside `#[trusted]` types"
                 ),
                 vec![span],
@@ -282,12 +281,7 @@ pub(crate) trait PureRvalueEnc<'vir> {
     ) -> ExprResult<'vir, Self> {
         let e_rvalue_ty = self.ty_use_pure(rvalue_ty);
         if e_rvalue_ty.specifics.is_opaque() {
-            let part = if rvalue_ty.is_enum() {
-                "variant"
-            } else {
-                "fields"
-            };
-            return Err(self.unsupported_opaque(rvalue_ty, part, self.current_span()));
+            return Err(self.unsupported_opaque(rvalue_ty, self.current_span()));
         }
         let encoded_fields = fields
             .iter()
@@ -372,7 +366,7 @@ pub(crate) trait PureRvalueEnc<'vir> {
                 };
                 let e_enum_ty = self.ty_use_pure(enum_ty);
                 if e_enum_ty.specifics.is_opaque() {
-                    return Err(self.unsupported_opaque(enum_ty, "variant", args[0].span));
+                    return Err(self.unsupported_opaque(enum_ty, args[0].span));
                 }
                 let deref_place = self.vcx().tcx().mk_place_deref(place);
                 let snap = self.encode_place_snap(deref_place.into(), ctxt)?;
