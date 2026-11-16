@@ -1075,7 +1075,11 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                 let place_ty = place.ty(self.body, self.vcx.tcx());
                 let ty = self.ty_use(place_ty.ty);
                 if ty.specifics.is_opaque() {
-                    return Err(self.unsupported_opaque(place_ty.ty, "variant"));
+                    return Err(self.unsupported_opaque(
+                        place_ty.ty,
+                        "variant",
+                        self.current_span(),
+                    ));
                 }
                 let discr = match ty
                     .get_enumlike()
@@ -1204,7 +1208,11 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
             }
             mir::ProjectionElem::Field(field_idx, _) => {
                 if e_ty.specifics.is_opaque() {
-                    return Err(self.unsupported_opaque(place_ty.ty, "fields"));
+                    return Err(self.unsupported_opaque(
+                        place_ty.ty,
+                        "fields",
+                        self.current_span(),
+                    ));
                 }
                 let variant = e_ty.expect_variant_opt(place_ty.variant_index);
                 let proj = variant[field_idx];

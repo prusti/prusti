@@ -1,3 +1,4 @@
+#![feature(core_intrinsics)]
 use prusti_contracts::*;
 
 // A `#[trusted]` type is encoded as an opaque value, so its fields cannot be
@@ -101,4 +102,10 @@ fn get(p: P) -> u32 {
 
 fn construct_variant() -> P {
     P::A(3) //~ERROR: unsupported rvalue P::A
+}
+
+#[pure]
+fn discriminant_pure(p: &P) -> isize {
+    core::intrinsics::discriminant_value(p) //~ERROR: cannot encode function body `discriminant_pure`: using the variant of `P` is not supported
+    //~^ ERROR: cannot encode method body `discriminant_pure`: using the variant of `P` is not supported
 }

@@ -125,6 +125,7 @@ pub(crate) trait PureRvalueEnc<'vir> {
         &self,
         ty: ty::Ty<'vir>,
         part: &str,
+        span: Span,
     ) -> EncodeFullError<'vir, Self::Encoder> {
         EncodeFullError::DependencyError(vec![
             DependencyErrorLink::new(
@@ -133,7 +134,7 @@ pub(crate) trait PureRvalueEnc<'vir> {
                     "using the {part} of `{ty}` is not supported, as Prusti does not yet \
                      support unions and does not look inside `#[trusted]` types"
                 ),
-                vec![self.current_span()],
+                vec![span],
             )
             .with_help(
                 "move this code into a `#[trusted]` function, and describe what it does \
@@ -280,7 +281,7 @@ pub(crate) trait PureRvalueEnc<'vir> {
     ) -> ExprResult<'vir, Self> {
         let e_rvalue_ty = self.ty_use_pure(rvalue_ty);
         if e_rvalue_ty.specifics.is_opaque() {
-            return Err(self.unsupported_opaque(rvalue_ty, "fields"));
+            return Err(self.unsupported_opaque(rvalue_ty, "fields", self.current_span()));
         }
         let encoded_fields = fields
             .iter()
@@ -365,7 +366,7 @@ pub(crate) trait PureRvalueEnc<'vir> {
                 };
                 let e_enum_ty = self.ty_use_pure(enum_ty);
                 if e_enum_ty.specifics.is_opaque() {
-                    return Err(self.unsupported_opaque(enum_ty, "variant"));
+                    return Err(self.unsupported_opaque(enum_ty, "variant", args[0].span));
                 }
                 let deref_place = self.vcx().tcx().mk_place_deref(place);
                 let snap = self.encode_place_snap(deref_place.into(), ctxt)?;

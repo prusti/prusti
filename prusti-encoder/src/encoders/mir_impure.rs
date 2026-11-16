@@ -344,7 +344,9 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 let place_ty = place.ty(self.local_decls, self.vcx.tcx());
                 let ty = self.ty_use_impure(place_ty.ty);
                 if ty.specifics.is_opaque() {
-                    return Err(self.unsupported_opaque(place_ty.ty, "variant").into());
+                    return Err(self
+                        .unsupported_opaque(place_ty.ty, "variant", self.current_span())
+                        .into());
                 }
                 let place_expr = self.encode_place(Place::from(*place))?.expr;
 
@@ -564,7 +566,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             .maybe_apply_label(ref_p.expr.expect_predicate(), label);
         let data = self.ty_use_impure(place_ty.ty);
         if data.specifics.is_opaque() {
-            return Err(self.unsupported_opaque(place_ty.ty, "fields"));
+            return Err(self.unsupported_opaque(place_ty.ty, "fields", self.current_span()));
         }
 
         let index = expansion
@@ -1098,7 +1100,11 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 let place_enc = place_enc.expr.expect_predicate();
                 let data = self.ty_use_impure(place_ty.ty);
                 if data.specifics.is_opaque() {
-                    return Err(self.unsupported_opaque(place_ty.ty, "fields"));
+                    return Err(self.unsupported_opaque(
+                        place_ty.ty,
+                        "fields",
+                        self.current_span(),
+                    ));
                 }
                 // TODO: guide should be implemented on `RepackOp`
                 let guide = match repack_op {
@@ -1379,7 +1385,11 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             mir::ProjectionElem::Field(field_idx, _) => {
                 let e_ty = self.ty_use_impure(place_ty.ty);
                 if e_ty.specifics.is_opaque() {
-                    return Err(self.unsupported_opaque(place_ty.ty, "fields"));
+                    return Err(self.unsupported_opaque(
+                        place_ty.ty,
+                        "fields",
+                        self.current_span(),
+                    ));
                 }
                 let field_access = e_ty.expect_variant_opt(place_ty.variant_index);
                 // Only the last field of a struct/tuple can be unsized (a DST's
