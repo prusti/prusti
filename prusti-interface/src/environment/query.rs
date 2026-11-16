@@ -34,7 +34,7 @@ impl<'tcx> EnvQuery<'tcx> {
         self.tcx
     }
 
-    fn infer_ctxt(self) -> InferCtxt<'tcx> {
+    pub(crate) fn infer_ctxt(self) -> InferCtxt<'tcx> {
         self.tcx.infer_ctxt().build(ty::TypingMode::PostAnalysis)
     }
 

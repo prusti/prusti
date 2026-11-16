@@ -61,10 +61,9 @@ fn generate_new_struct(
     let new_generics = &mut new_struct.generics.params;
 
     // Add a new type parameter to struct which represents an implementation
-    // of the trait. `Self` of a trait is `?Sized` by default; any sizedness
-    // requirement must come from an explicit supertrait on the extern-spec
-    // trait declaration (propagated below), so that the spec item's bounds
-    // faithfully mirror the target trait's.
+    // of the trait. Like `Self` of a trait, it is `?Sized` unless the trait
+    // requires `Sized`. The supertraits declared in the spec are propagated
+    // below, so that they are checked against the trait's.
     let self_type_ident = syn::Ident::new("Prusti_T_Self", item_trait.span());
     new_generics.push(syn::GenericParam::Type(
         parse_quote!(#self_type_ident: ?Sized),
@@ -72,12 +71,9 @@ fn generate_new_struct(
 
     let parsed_generics = parse_trait_type_params(item_trait)?;
 
-    // Only the parameter *idents* may appear in path-argument position
-    // (bounds like `?Sized` are not permitted there).
-    let generic_idents = parsed_generics
-        .iter()
-        .map(|param| param.ident.clone())
-        .collect::<Vec<_>>();
+    // Generic arguments are plain idents; bounds such as `?Sized` are not
+    // allowed there.
+    let generic_idents = parsed_generics.iter().map(|param| &param.ident);
     let self_type_trait: syn::TypePath = parse_quote_spanned! {item_trait.span()=>
         #trait_path :: <#(#generic_idents),*>
     };

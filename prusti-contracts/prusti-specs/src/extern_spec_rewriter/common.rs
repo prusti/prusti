@@ -161,15 +161,21 @@ pub(crate) fn generate_extern_spec_method_stub<T: HasSignature + HasAttributes +
     stub_method.attrs.extend(generated_attributes);
     stub_method.rewrite_self_type(self_type, self_type_trait);
     stub_method.rewrite_receiver(self_type);
-    // The self type parameter of a trait stub is `?Sized`; a method taking or
-    // returning `Self` by value needs it `Sized` (a trait may declare such a
-    // method for an unsized `Self`, a free function cannot).
-    let is_self = |ty: &syn::Type| {
-        matches!(
-            ty,
-            syn::Type::Path(path) if path.qself.is_none() && path.path.is_ident("Self")
-        )
-    };
+    // The self type parameter of a trait stub is `?Sized`. A trait method
+    // declaration may take or return an unsized `Self` by value, but the stub
+    // and the spec functions have bodies, so they need `Self: Sized`.
+    // Whether `ty` is `Self` or a tuple ending in it (the last element of a
+    // tuple may be unsized).
+    fn is_self(ty: &syn::Type) -> bool {
+        match ty {
+            syn::Type::Path(path) => path.qself.is_none() && path.path.is_ident("Self"),
+            // A type passed through a macro (`$t:ty`) is wrapped in a group.
+            syn::Type::Group(group) => is_self(&group.elem),
+            syn::Type::Paren(paren) => is_self(&paren.elem),
+            syn::Type::Tuple(tuple) => tuple.elems.last().is_some_and(is_self),
+            _ => false,
+        }
+    }
     let self_by_value = matches!(extern_spec_kind, ExternSpecKind::Trait)
         && (method_sig.inputs.iter().any(|input| match input {
             syn::FnArg::Receiver(receiver) => receiver.reference.is_none(),

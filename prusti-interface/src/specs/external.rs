@@ -9,11 +9,17 @@ use prusti_rustc_interface::{
 
 use crate::{
     environment::{EnvDiagnostic, EnvName, EnvQuery, Environment},
+    specs::specifications::find_trait_method_substs,
     PrustiError,
 };
 use prusti_rustc_interface::{
     data_structures::fx::{FxHashMap, FxHashSet},
-    middle::ty::GenericArgsRef,
+    hir::attrs::LangItem,
+    middle::ty::{self, ClauseKind, GenericArgsRef},
+    trait_selection::traits::{
+        normalize_param_env_or_error, query::evaluate_obligation::InferCtxtExt, Obligation,
+        ObligationCause,
+    },
 };
 use prusti_specs::ExternSpecKind;
 use std::cmp::{Eq, PartialEq};
@@ -230,39 +236,27 @@ impl<'tcx> ExternSpecResolver<'tcx> {
     }
 
     /// Checks the trait bounds declared by the extern spec (`spec_def_id`,
-    /// including its impl block's bounds) against the target definition's.
-    /// `target_args` are the target's generic arguments in the stub's call to
-    /// it, so the target's bounds are stated in the spec's own parameters.
-    /// The spec is applied at every use of the target, so each declared bound
-    /// must follow from the target's; the spec may leave out bounds of the
-    /// target (some cannot even be named, e.g. a private sealing supertrait).
-    /// Returns the rendered `(declared, target)` bounds if some declared bound
-    /// does not follow, listing only those that do not.
+    /// including its impl block's bounds) against the target's. The spec is
+    /// applied at every use of the target, so each declared bound must follow
+    /// from the target's bounds; it may leave some of them out (some cannot
+    /// even be named, e.g. a private sealing supertrait). `target_args` are
+    /// the target's generic arguments in the stub's call to it, which state
+    /// the target's bounds in the spec's parameters. The bounds of an impl
+    /// method of a trait include those of the trait method, which may be
+    /// stronger: every use of the impl method goes through the trait. Returns
+    /// the declared bounds that do not follow and the target's bounds,
+    /// rendered, if there are any.
     ///
-    /// Only trait, projection and const-argument clauses are compared:
-    /// lifetime/outlives and well-formedness clauses carry erased or implied
-    /// information that differs structurally between the generated spec item
-    /// and the target without changing which specs are meaningful. A `Sized`
-    /// bound on a by-value input or the output of the target (which a trait
-    /// stub declares for `Self`) holds at every use of the target and is not
-    /// compared either.
+    /// Only trait, projection and const-argument clauses are compared;
+    /// regions are erased in Prusti, so outlives clauses are ignored.
     fn bounds_mismatch(
         &self,
         spec_def_id: DefId,
         target_def_id: DefId,
         target_args: GenericArgsRef<'tcx>,
     ) -> Option<(String, String)> {
-        use prusti_rustc_interface::{
-            hir::attrs::LangItem,
-            middle::ty::{self, ClauseKind},
-            trait_selection::traits::{
-                normalize_param_env_or_error, query::evaluate_obligation::InferCtxtExt, Obligation,
-                ObligationCause,
-            },
-        };
         let tcx = self.env_query.tcx();
-        let spec_args = self.env_query.identity_substs(spec_def_id);
-        let relevant = |clauses: ty::GenericClauses<'tcx>, args: ty::GenericArgsRef<'tcx>| {
+        let compared_clauses = |clauses: ty::GenericClauses<'tcx>, args: GenericArgsRef<'tcx>| {
             clauses
                 .instantiate(tcx, args)
                 .into_iter()
@@ -275,13 +269,12 @@ impl<'tcx> ExternSpecResolver<'tcx> {
                             | ClauseKind::ConstArgHasType(..)
                     )
                 })
-                .collect::<FxHashSet<_>>()
         };
         // The sizedness hierarchy below `Sized` is not compared, though it is
         // part of the target's environment: surface `?Sized` means
         // `MetaSized`, while std traits may use the unstable `PointeeSized`
-        // (which leaves no clause at all). Only the `Sized` line matters for
-        // whether spec expressions are well-formed at all instantiations.
+        // (which leaves no clause at all), and the two differ only for extern
+        // types.
         let below_sized = |clause: &ty::Clause<'tcx>| {
             matches!(
                 clause.kind().skip_binder(),
@@ -291,25 +284,51 @@ impl<'tcx> ExternSpecResolver<'tcx> {
                 )
             )
         };
-        let mut declared = relevant(tcx.clauses_of(spec_def_id), spec_args);
-        declared.retain(|clause| !below_sized(clause));
-        let mut target = relevant(tcx.clauses_of(target_def_id), target_args);
         // Every use of the target needs its by-value inputs and output to be
-        // `Sized`.
+        // `Sized`, and with a tuple also its last element (the only one that
+        // may be unsized), so such a bound of the spec always holds.
         let by_value = tcx
-            .erase_and_anonymize_regions(self.env_query.get_fn_sig(target_def_id, target_args))
+            .erase_and_anonymize_regions(
+                tcx.fn_sig(target_def_id)
+                    .instantiate(tcx, target_args)
+                    .skip_normalization(),
+            )
             .skip_binder()
-            .inputs_and_output;
-        declared.retain(|clause| match clause.kind().skip_binder() {
-            ClauseKind::Trait(pred) => {
-                !matches!(tcx.as_lang_item(pred.def_id()), Some(LangItem::Sized))
-                    || !by_value.contains(&pred.self_ty())
-            }
-            _ => true,
-        });
+            .inputs_and_output
+            .iter()
+            .flat_map(|ty| {
+                std::iter::successors(Some(ty), |ty| match ty.kind() {
+                    ty::TyKind::Tuple(tys) => tys.last().copied(),
+                    _ => None,
+                })
+            })
+            .collect::<Vec<_>>();
+        let sized_by_value = |clause: &ty::Clause<'tcx>| {
+            matches!(
+                clause.kind().skip_binder(),
+                ClauseKind::Trait(pred) if tcx.is_lang_item(pred.def_id(), LangItem::Sized)
+                    && by_value.contains(&pred.self_ty())
+            )
+        };
+        let declared = compared_clauses(
+            tcx.clauses_of(spec_def_id),
+            self.env_query.identity_substs(spec_def_id),
+        )
+        .filter(|clause| !below_sized(clause) && !sized_by_value(clause))
+        .collect::<FxHashSet<_>>();
         if declared.is_empty() {
             return None;
         }
+        let trait_method = find_trait_method_substs(tcx, target_def_id, target_args);
+        let target = compared_clauses(tcx.clauses_of(target_def_id), target_args)
+            .chain(
+                trait_method
+                    .into_iter()
+                    .flat_map(|(trait_method, trait_args)| {
+                        compared_clauses(tcx.clauses_of(trait_method), tcx.mk_args(trait_args))
+                    }),
+            )
+            .collect::<FxHashSet<_>>();
         let target_env = normalize_param_env_or_error(
             tcx,
             ty::ParamEnv::new(
@@ -318,26 +337,35 @@ impl<'tcx> ExternSpecResolver<'tcx> {
             ObligationCause::dummy(),
         );
         let infcx = self.env_query.infer_ctxt();
-        declared.retain(|clause| {
-            let clause = self.env_query.resolve_assoc_types(*clause, target_env);
-            let obligation = Obligation::new(tcx, ObligationCause::dummy(), target_env, clause);
-            // Regions are erased, so the region constraints that remain (e.g.
-            // from instantiating a higher-ranked bound) are not decided.
-            !infcx.predicate_must_hold_modulo_regions(&obligation)
-        });
-        if declared.is_empty() {
+        let unimplied = declared
+            .into_iter()
+            .filter(|clause| {
+                let clause = tcx
+                    .try_normalize_erasing_regions(
+                        ty::TypingEnv::new(target_env, ty::TypingMode::PostAnalysis),
+                        ty::Unnormalized::new(*clause),
+                    )
+                    .unwrap_or(*clause);
+                let obligation = Obligation::new(tcx, ObligationCause::dummy(), target_env, clause);
+                // Regions are erased, so the region constraints that remain
+                // (e.g. from instantiating a higher-ranked bound) are not
+                // decided.
+                !infcx.predicate_must_hold_modulo_regions(&obligation)
+            })
+            .collect::<FxHashSet<_>>();
+        if unimplied.is_empty() {
             return None;
         }
-        target.retain(|clause| !below_sized(clause));
         let render = |clauses: &FxHashSet<ty::Clause<'tcx>>| {
             let mut strs = clauses
                 .iter()
+                .filter(|clause| !below_sized(clause))
                 .map(|clause| clause.to_string())
                 .collect::<Vec<_>>();
             strs.sort();
             strs.join(", ")
         };
-        Some((render(&declared), render(&target)))
+        Some((render(&unimplied), render(&target)))
     }
 
     fn register_duplicate_spec(&mut self, decl_def_id: DefId, dup_spec_def_id: DefId, span: Span) {
@@ -408,7 +436,7 @@ impl<'tcx> ExternSpecResolver<'tcx> {
                     let function_name = self.env_name.get_item_name(*def_id);
                     let err_note = format!(
                         "The external spec for '{function_name}' may not declare trait bounds \
-                        that do not follow from the target definition's, since the spec is \
+                        that do not follow from the bounds of the target, since the spec is \
                         applied at every use of the target. Declared bounds that do not follow: \
                         [{declared}]; target bounds: [{target}]."
                     );
