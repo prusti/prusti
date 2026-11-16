@@ -144,7 +144,7 @@ impl TaskEncoder for MirPureEnc {
             // Encode under the body's span: expression nodes pick up the
             // ambient span at creation, so everything in a pure/spec body
             // defaults to the body's source (e.g. the spec attribute for a
-            // spec closure), refined per statement in `encode_stmt`. This is
+            // spec closure), refined per statement and terminator. This is
             // what error positions inside the body backtranslate to. The MIR
             // span of a body deserialized from another crate is dummy; the
             // definition's span survives in the crate metadata.
@@ -647,7 +647,9 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
             stmt_update = stmt_update.merge_inner(newer);
         }
 
-        // then walk terminator
+        // then walk terminator. Its operands and call are encoded under its
+        // span, like statements in `encode_stmt`; the walks of its successors
+        // are not, as they encode other blocks.
         let term = self.body[curr].terminator.as_ref().unwrap();
         let location = mir::Location {
             block: curr,
@@ -676,7 +678,10 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
 
                 // encode the discriminant operand
                 let discr_expr = self
-                    .encode_operand_snap(discr, &new_curr_ver)?
+                    .vcx
+                    .with_span(term.source_info.span, |_| {
+                        self.encode_operand_snap(discr, &new_curr_ver)
+                    })?
                     .downcast_ty();
                 let discr_ty = discr.ty(self.body, self.vcx.tcx());
                 let discr_ty_out = self.ty_use(discr_ty).expect_primitive();
@@ -786,7 +791,10 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                 let cond_ty = cond.ty(self.body, self.vcx.tcx());
                 assert_eq!(*cond_ty.kind(), TyKind::Bool);
                 let cond_expr = self
-                    .encode_operand_snap(cond, &new_curr_ver)?
+                    .vcx
+                    .with_span(term.source_info.span, |_| {
+                        self.encode_operand_snap(cond, &new_curr_ver)
+                    })?
                     .downcast_ty::<vir::Bool>();
 
                 // if cond == expected: walk the rest of the CFG
@@ -886,7 +894,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
 
                 let func_ty = func.ty(self.body, self.vcx.tcx());
                 let (def_id, arg_tys) = RustSignature::get_def_id_and_caller_substs(func_ty);
-                let expr = {
+                let expr = self.vcx.with_span(term.source_info.span, |_| {
                     // A fn call in pure can only be one of two kinds: a
                     // call to another pure function, or a call to a prusti
                     // builtin function.
@@ -938,7 +946,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                     } else {
                         panic!("call to unknown non-pure function in pure code ({def_id:?})");
                     }
-                };
+                });
 
                 let expr = self.encode_place_update(
                     &new_curr_ver,

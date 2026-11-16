@@ -2152,7 +2152,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         statement: &mir::Statement<'vir>,
         location: mir::Location,
     ) -> EncodeResult<'vir, (), E> {
-        self.vcx.with_span(statement.source_info.span, |_vcx| {
+        self.vcx.with_span(statement.source_info.span, |_| {
             self.deps().check_cycle()?;
 
             self.new_before_label(location);
@@ -2251,6 +2251,16 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
     }
 
     fn visit_terminator(
+        &mut self,
+        terminator: &mir::Terminator<'vir>,
+        location: mir::Location,
+    ) -> EncodeResult<'vir, (), E> {
+        self.vcx.with_span(terminator.source_info.span, |_| {
+            self.encode_terminator(terminator, location)
+        })
+    }
+
+    fn encode_terminator(
         &mut self,
         terminator: &mir::Terminator<'vir>,
         location: mir::Location,
