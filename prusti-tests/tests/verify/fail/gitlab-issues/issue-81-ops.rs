@@ -1,4 +1,3 @@
-//@ compile-flags: -Poptimizations=none
 use prusti_contracts::*;
 
 #[pure]

@@ -268,16 +268,11 @@ pub fn find_z3_exe(base_dir: &Path) -> Option<PathBuf> {
     None
 }
 
-pub fn set_environment_settings(
-    cmd: &mut Command,
-    current_executable_dir: &Path,
-    java_home: &Path,
-) {
+pub fn set_environment_settings(cmd: &mut Command, current_executable_dir: &Path) {
     set_smt_solver_path_setting(cmd, current_executable_dir);
     set_smt_solver_wrapper_path_setting(cmd, current_executable_dir);
     set_boogie_path_setting(cmd);
     set_viper_home_setting(cmd, current_executable_dir);
-    set_java_home_setting(cmd, java_home)
 }
 
 pub fn set_smt_solver_path_setting(cmd: &mut Command, current_executable_dir: &Path) {
@@ -324,14 +319,9 @@ pub fn set_viper_home_setting(cmd: &mut Command, current_executable_dir: &Path) 
     cmd.env("PRUSTI_VIPER_HOME", viper_home);
 }
 
-pub fn set_java_home_setting(cmd: &mut Command, java_home: &Path) {
-    cmd.env("PRUSTI_JAVA_HOME", java_home);
-}
-
 /// Paths required for running Prusti tools (driver, server, etc.)
 pub struct PrustiPaths {
     current_executable_dir: PathBuf,
-    java_home: PathBuf,
     libjvm_path: PathBuf,
     compiler_bin: PathBuf,
     compiler_lib: PathBuf,
@@ -365,15 +355,10 @@ impl PrustiPaths {
 
         Self {
             current_executable_dir,
-            java_home,
             libjvm_path,
             compiler_bin,
             compiler_lib,
         }
-    }
-
-    pub fn java_home(&self) -> &Path {
-        &self.java_home
     }
 
     pub fn current_executable_dir(&self) -> &Path {
@@ -419,7 +404,7 @@ impl PrustiPaths {
     /// Configure command with loader path and environment settings
     fn configure_command(&self, cmd: &mut Command) {
         self.setup_loader_path(cmd);
-        set_environment_settings(cmd, &self.current_executable_dir, &self.java_home);
+        set_environment_settings(cmd, &self.current_executable_dir);
     }
 }
 
