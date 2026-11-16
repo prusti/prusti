@@ -5,7 +5,9 @@ description: >
 
 inputs:
   cache-shared-key:
-    description: The `shared-key` of the cargo cache; empty for a cache of the calling job.
+    description: >
+      The `shared-key` of the cargo cache, for jobs that share one; empty to keep a separate
+      cache for the calling job.
     default: ''
   cache-save-if:
     description: Whether to save the cargo cache at the end of the job.

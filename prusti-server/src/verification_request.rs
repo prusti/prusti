@@ -102,8 +102,8 @@ impl VerificationRequest {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         self.program.get_hash().hash(&mut hasher);
         self.backend_config.hash(&mut hasher);
-        // The settings that the verifying process takes from its own configuration rather than
-        // from the request.
+        // The verifying process takes these settings from its own configuration rather than from
+        // the request, and they affect the result.
         config::extra_jvm_args().hash(&mut hasher);
         (
             config::use_smt_wrapper(),

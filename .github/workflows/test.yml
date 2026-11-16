@@ -169,7 +169,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ${{ env.PRUSTI_CACHE_PATH }}
-          key: ${{ env.VER_CACHE_KEY_UNIQUE }}
+          key: ${{ env.VER_CACHE_KEY_SHARED }}
           # Restore from the most recent cache that matches a shared prefix of the key
           restore-keys: ${{ env.VER_CACHE_KEY_SHARED }}
       - name: Build with cargo

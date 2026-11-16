@@ -119,8 +119,7 @@ impl PersistentCache {
         }
     }
     pub fn save(&mut self) {
-        // Save cache to disk, if changed and a path is configured; an empty path means that the
-        // cache is not persisted.
+        // Save cache to disk, if changed; an empty path disables saving.
         if self.updated && !self.load_loc.as_os_str().is_empty() {
             let mut save_dir = self.load_loc.clone();
             save_dir.pop();

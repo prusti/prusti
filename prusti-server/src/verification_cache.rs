@@ -21,6 +21,7 @@ pub(crate) fn load_verification_cache() -> PersistentCache {
     PersistentCache::load_cache(cache_path, fingerprint)
 }
 
+/// Identifies the Prusti backend together with the Z3 and Boogie files it runs.
 fn tools_fingerprint() -> u64 {
     let mut hasher = DefaultHasher::new();
     env!("BACKEND_FINGERPRINT").hash(&mut hasher);
@@ -31,7 +32,8 @@ fn tools_fingerprint() -> u64 {
         .map(fs::read_dir)
     {
         // Besides Boogie's own files, which are named after it, the directory of the Boogie
-        // executable holds the .NET runtime that Boogie ships with.
+        // executable holds the .NET runtime that Boogie ships with. Boogie's files identify the
+        // release, so the runtime, which is most of the directory's size, is not hashed.
         let mut boogie_files = boogie_dir
             .filter_map(|entry| Some(entry.ok()?.path()))
             .filter(|path| {

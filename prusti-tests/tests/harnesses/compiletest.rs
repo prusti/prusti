@@ -207,6 +207,7 @@ pub(crate) fn run() -> TestsResult {
             fixed.push(path);
         }
     }
+
     save_verification_cache();
 
     let known_failures = format!(
