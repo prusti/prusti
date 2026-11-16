@@ -30,16 +30,23 @@ pub(crate) struct DepError {
     pub message: String,
     pub help: Option<String>,
     pub span: Option<Span>,
+    pub incorrect: bool,
 }
 
 impl DepError {
-    /// The unsupported-feature error reporting that `what` cannot be encoded,
-    /// at `span`.
+    /// The error to report at `span` when `what` cannot be encoded. A mistake
+    /// in the user's program is reported as an invalid-specification error
+    /// stating only the cause; anything else is an unsupported-feature error
+    /// that also names `what`.
     pub(crate) fn report(self, what: String, span: Span) -> PrustiError {
-        let error = PrustiError::unsupported(
-            format!("cannot encode {what}: {}", self.message),
-            span.into(),
-        );
+        let error = if self.incorrect {
+            PrustiError::incorrect(self.message, span.into())
+        } else {
+            PrustiError::unsupported(
+                format!("cannot encode {what}: {}", self.message),
+                span.into(),
+            )
+        };
         match self.help {
             Some(help) => error.set_help(help),
             None => error,
@@ -48,9 +55,9 @@ impl DepError {
 }
 
 /// Extracts the cause of an encoding error. For a dependency error, the
-/// message and help come from the root cause (the last link of the chain),
-/// which holds the actual unsupported-feature message, and the span is the
-/// innermost one in the chain.
+/// message, the help and whether the user's program is at fault come from the
+/// root cause (the last link of the chain), which holds the actual error, and
+/// the span is the innermost one in the chain.
 pub(crate) fn dep_error<'vir, E: TaskEncoder + ?Sized>(err: &EncodeFullError<'vir, E>) -> DepError {
     match err {
         EncodeFullError::DependencyError(chain) => {
@@ -65,12 +72,14 @@ pub(crate) fn dep_error<'vir, E: TaskEncoder + ?Sized>(err: &EncodeFullError<'vi
                     .iter()
                     .rev()
                     .find_map(|link| link.spans.first().copied()),
+                incorrect: root.is_some_and(|link| link.incorrect),
             }
         }
         other => DepError {
             message: format!("{other:?}"),
             help: None,
             span: None,
+            incorrect: false,
         },
     }
 }

@@ -22,7 +22,9 @@ use prusti_rustc_interface::{
 };
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::fmt;
-use task_encoder::{EncodeFullResult, TaskEncoder, TaskEncoderDependencies};
+use task_encoder::{
+    DependencyErrorLink, EncodeFullError, EncodeFullResult, TaskEncoder, TaskEncoderDependencies,
+};
 use vir::{CastType, CompType, add_debug_note};
 
 pub struct MirPureEnc;
@@ -895,9 +897,9 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                 let func_ty = func.ty(self.body, self.vcx.tcx());
                 let (def_id, arg_tys) = RustSignature::get_def_id_and_caller_substs(func_ty);
                 let expr = self.vcx.with_span(term.source_info.span, |_| {
-                    // A fn call in pure can only be one of two kinds: a
-                    // call to another pure function, or a call to a prusti
-                    // builtin function.
+                    // Diverging calls were handled above; every other call
+                    // must be to an intrinsic, a Prusti builtin or a pure
+                    // function.
                     let is_pure = crate::encoders::is_function_pure(def_id, self.gargs(arg_tys));
 
                     // The bodiless `ptr_metadata` intrinsic is only lowered to
@@ -944,7 +946,17 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                             .collect::<Result<Vec<_>, _>>()?;
                         Ok(pure_func.call_pure(snap_args))
                     } else {
-                        panic!("call to unknown non-pure function in pure code ({def_id:?})");
+                        Err(EncodeFullError::DependencyError(vec![
+                            DependencyErrorLink::new(
+                                MirPureEnc::ENCODER_NAME,
+                                format!(
+                                    "use of impure function `{}` in pure code is not allowed",
+                                    self.vcx.tcx().def_path_str(def_id)
+                                ),
+                                vec![term.source_info.span],
+                            )
+                            .incorrect(),
+                        ]))
                     }
                 });
 

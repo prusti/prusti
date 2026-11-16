@@ -22,14 +22,17 @@ pub type EncodeFullResult<'vir, E /*: TaskEncoder + 'vir + ?Sized*/> = Result<
 >;
 
 /// One link of a dependency error: the encoder, the task it was encoding (or,
-/// for the last link, the error itself), the spans involved, and optionally
-/// advice for the user on how to avoid the error.
+/// for the last link, the error itself), the spans involved, optionally
+/// advice for the user on how to avoid the error, and, for the last link,
+/// whether the error is a mistake in the user's program rather than a
+/// limitation of the encoder.
 #[derive(Clone, Debug)]
 pub struct DependencyErrorLink {
     pub encoder: &'static str,
     pub message: String,
     pub spans: Vec<Span>,
     pub help: Option<String>,
+    pub incorrect: bool,
 }
 
 impl DependencyErrorLink {
@@ -39,12 +42,21 @@ impl DependencyErrorLink {
             message,
             spans,
             help: None,
+            incorrect: false,
         }
     }
 
     #[must_use]
     pub fn with_help(mut self, help: String) -> Self {
         self.help = Some(help);
+        self
+    }
+
+    /// Marks the error as a mistake in the user's program, such as a
+    /// specification that calls an impure function.
+    #[must_use]
+    pub fn incorrect(mut self) -> Self {
+        self.incorrect = true;
         self
     }
 }
