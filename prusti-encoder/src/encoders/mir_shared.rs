@@ -130,7 +130,7 @@ pub(crate) trait PureRvalueEnc<'vir> {
             DependencyErrorLink::new(
                 <Self::Encoder as TaskEncoder>::ENCODER_NAME,
                 format!(
-                    "Prusti cannot reason about the {part} of `{ty}`, as it does not \
+                    "using the {part} of `{ty}` is not supported, as Prusti does not yet \
                      support unions and does not look inside `#[trusted]` types"
                 ),
                 vec![self.current_span()],
