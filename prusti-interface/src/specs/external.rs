@@ -255,7 +255,10 @@ impl<'tcx> ExternSpecResolver<'tcx> {
         use prusti_rustc_interface::{
             hir::attrs::LangItem,
             middle::ty::{self, ClauseKind},
-            trait_selection::traits::{normalize_param_env_or_error, ObligationCause},
+            trait_selection::traits::{
+                normalize_param_env_or_error, query::evaluate_obligation::InferCtxtExt, Obligation,
+                ObligationCause,
+            },
         };
         let tcx = self.env_query.tcx();
         let spec_args = self.env_query.identity_substs(spec_def_id);
@@ -264,23 +267,33 @@ impl<'tcx> ExternSpecResolver<'tcx> {
                 .instantiate(tcx, args)
                 .into_iter()
                 .map(|(clause, _)| tcx.erase_and_anonymize_regions(clause.skip_normalization()))
-                .filter(|clause| match clause.kind().skip_binder() {
-                    // The sizedness hierarchy below `Sized` is not comparable:
-                    // surface `?Sized` means `MetaSized`, while std traits may
-                    // use the unstable `PointeeSized` (which leaves no clause
-                    // at all). Only the `Sized` line matters for whether spec
-                    // expressions are well-formed at all instantiations.
-                    ClauseKind::Trait(pred) => !matches!(
-                        tcx.as_lang_item(pred.def_id()),
-                        Some(LangItem::MetaSized | LangItem::PointeeSized)
-                    ),
-                    ClauseKind::Projection(_) | ClauseKind::ConstArgHasType(..) => true,
-                    _ => false,
+                .filter(|clause| {
+                    matches!(
+                        clause.kind().skip_binder(),
+                        ClauseKind::Trait(_)
+                            | ClauseKind::Projection(_)
+                            | ClauseKind::ConstArgHasType(..)
+                    )
                 })
                 .collect::<FxHashSet<_>>()
         };
+        // The sizedness hierarchy below `Sized` is not compared, though it is
+        // part of the target's environment: surface `?Sized` means
+        // `MetaSized`, while std traits may use the unstable `PointeeSized`
+        // (which leaves no clause at all). Only the `Sized` line matters for
+        // whether spec expressions are well-formed at all instantiations.
+        let below_sized = |clause: &ty::Clause<'tcx>| {
+            matches!(
+                clause.kind().skip_binder(),
+                ClauseKind::Trait(pred) if matches!(
+                    tcx.as_lang_item(pred.def_id()),
+                    Some(LangItem::MetaSized | LangItem::PointeeSized)
+                )
+            )
+        };
         let mut declared = relevant(tcx.clauses_of(spec_def_id), spec_args);
-        let target = relevant(tcx.clauses_of(target_def_id), target_args);
+        declared.retain(|clause| !below_sized(clause));
+        let mut target = relevant(tcx.clauses_of(target_def_id), target_args);
         // Every use of the target needs its by-value inputs and output to be
         // `Sized`.
         let by_value = tcx
@@ -304,15 +317,18 @@ impl<'tcx> ExternSpecResolver<'tcx> {
             ),
             ObligationCause::dummy(),
         );
+        let infcx = self.env_query.infer_ctxt();
         declared.retain(|clause| {
             let clause = self.env_query.resolve_assoc_types(*clause, target_env);
-            !self
-                .env_query
-                .evaluate_predicate(clause.as_predicate(), target_env)
+            let obligation = Obligation::new(tcx, ObligationCause::dummy(), target_env, clause);
+            // Regions are erased, so the region constraints that remain (e.g.
+            // from instantiating a higher-ranked bound) are not decided.
+            !infcx.predicate_must_hold_modulo_regions(&obligation)
         });
         if declared.is_empty() {
             return None;
         }
+        target.retain(|clause| !below_sized(clause));
         let render = |clauses: &FxHashSet<ty::Clause<'tcx>>| {
             let mut strs = clauses
                 .iter()

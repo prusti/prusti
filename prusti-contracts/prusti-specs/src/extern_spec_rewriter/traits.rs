@@ -20,11 +20,12 @@ use syn::{parse_quote, spanned::Spanned, TypeParam};
 /// ```
 /// it produces a struct
 /// ```rust
-/// struct Aux<T, TSelf> where TSelf: SomeTrait {
-///     // phantom data for T, TSelf
+/// struct Aux<TSelf: ?Sized, T> where TSelf: SomeTrait<T> {
+///     // phantom data for TSelf, T
 /// }
 /// ```
-/// and a corresponding impl block with methods of `SomeTrait`.
+/// whose `TSelf` also has the supertraits of `SomeTrait` as bounds, and a
+/// corresponding impl block with methods of `SomeTrait`.
 ///
 pub fn rewrite_extern_spec(
     item_trait: &syn::ItemTrait,

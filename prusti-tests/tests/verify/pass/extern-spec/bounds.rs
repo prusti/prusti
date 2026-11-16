@@ -39,6 +39,7 @@ trait Not {
 }
 
 // `Self` returned by value, from a trait without a `Sized` supertrait.
+#[cfg(unix)]
 #[extern_spec(std::os::fd)]
 trait FromRawFd {
     #[trusted]
@@ -54,4 +55,11 @@ trait Iterator {
         I: IntoIterator<Item = Self::Item>,
         I::Item: Ord,
         Self: Sized;
+
+    // A higher-ranked bound, as in the target.
+    #[trusted]
+    fn filter<P>(self, predicate: P) -> std::iter::Filter<Self, P>
+    where
+        Self: Sized,
+        P: FnMut(&Self::Item) -> bool;
 }
