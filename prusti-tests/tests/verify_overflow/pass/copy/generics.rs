@@ -39,13 +39,13 @@ fn bar<'a, T: Copy>(val: T) -> &'a Option<&'a T> { unimplemented!() }
 fn baz<'a, T>(val: &'a T) -> Option<&'a T> { unimplemented!() }
 
 #[model]
-struct Iter<'a, #[generic] T: Copy> {
+struct Iter<'a, #[generic] T> {
     position: usize,
 }
 
 type SliceTy<T> = [T];
 #[extern_spec]
-impl<T: Copy+PartialEq> SliceTy<T> {
+impl<T> SliceTy<T> {
     #[trusted]
     #[ensures( result.model().position == 0 )]
     fn iter(&self) -> std::slice::Iter<'_, T>;
