@@ -24,15 +24,17 @@ pub trait Cache {
 pub struct PersistentCache {
     updated: bool,
     load_loc: PathBuf,
+    fingerprint: u64,
     data: FxHashMap<u64, VerificationResult>,
 }
 
-const RESULT_CACHE_VERSION: u64 = 3;
+const RESULT_CACHE_VERSION: u64 = 4;
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct ResultCache {
     data: FxHashMap<u64, VerificationResult>,
     version: u64,
+    fingerprint: u64,
 }
 
 impl From<(PathBuf, ResultCache)> for PersistentCache {
@@ -43,6 +45,7 @@ impl From<(PathBuf, ResultCache)> for PersistentCache {
         PersistentCache {
             updated: false,
             load_loc,
+            fingerprint: rc.fingerprint,
             data,
         }
     }
@@ -53,22 +56,23 @@ impl From<&PersistentCache> for ResultCache {
         ResultCache {
             data: cache.data.clone(),
             version: RESULT_CACHE_VERSION,
+            fingerprint: cache.fingerprint,
         }
     }
 }
 
 impl PersistentCache {
+    /// Loads the cache stored at `cache_loc`, or starts an empty one. `fingerprint` identifies
+    /// everything that the results depend on beyond their keys, such as the verifier; a stored
+    /// cache with a different fingerprint is discarded.
     #[tracing::instrument(level = "debug")]
-    pub fn load_cache(cache_loc: PathBuf) -> Self {
+    pub fn load_cache(cache_loc: PathBuf, fingerprint: u64) -> Self {
         let mut data_res: Option<ResultCache> = None;
         if !cache_loc.as_os_str().is_empty() {
             if let Ok(f) = fs::File::open(&cache_loc) {
                 match bincode::deserialize_from::<_, ResultCache>(&mut io::BufReader::new(f)) {
                     Ok(data) => {
-                        if data.version == RESULT_CACHE_VERSION {
-                            info!("Loaded cache from \"{}\"", cache_loc.display());
-                            data_res = Some(data);
-                        } else {
+                        if data.version != RESULT_CACHE_VERSION {
                             error!(
                                 "Cache version mismatch when reading from \"{}\": \
                                     expected={} actual={}",
@@ -76,6 +80,15 @@ impl PersistentCache {
                                 RESULT_CACHE_VERSION,
                                 data.version
                             )
+                        } else if data.fingerprint != fingerprint {
+                            info!(
+                                "Discarding the cache in \"{}\", whose results were produced by \
+                                    a different verifier or Prusti backend",
+                                cache_loc.display()
+                            )
+                        } else {
+                            info!("Loaded cache from \"{}\"", cache_loc.display());
+                            data_res = Some(data);
                         }
                     }
                     Err(e) => error!("Failed to read cache from \"{}\": {e}", cache_loc.display()),
@@ -89,6 +102,7 @@ impl PersistentCache {
                 ResultCache {
                     data: FxHashMap::default(),
                     version: RESULT_CACHE_VERSION,
+                    fingerprint,
                 }
             }),
         ))

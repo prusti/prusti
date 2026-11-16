@@ -113,6 +113,8 @@ A path to Boogie.
 
 Path to a cache file, where verification cache will be loaded from and saved to. The default empty string disables saving any cache to disk. A path to a file which does not yet exist will result in using an empty cache, but then creating and saving to that location on exit.
 
+The cache file records the Viper jars Prusti was built with, the code Prusti uses to translate programs to Viper and read back the results, and the contents of the Z3 and Boogie executables. A cache file recorded with any of these differing is discarded.
+
 > **Note:** `cargo prusti` sets this flag with `DEFAULT_PRUSTI_CACHE_PATH=$CARGO_TARGET_DIR/cache.bin`.
 
 ## `CARGO_COMMAND`

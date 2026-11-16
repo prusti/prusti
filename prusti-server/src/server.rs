@@ -4,7 +4,9 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-use crate::{ServerMessage, VerificationRequest, VerificationRequestProcessing};
+use crate::{
+    load_verification_cache, ServerMessage, VerificationRequest, VerificationRequestProcessing,
+};
 use futures_util::{pin_mut, SinkExt, StreamExt};
 use log::info;
 use once_cell::sync::Lazy;
@@ -48,11 +50,19 @@ static VERIFICATION_REQUEST_PROCESSING: Lazy<VerificationRequestProcessing> =
 // TODO: caching currently does not work properly. The subject of caching needs to be redetermined.
 // currently, it is the whole program, and the returned result is the final errors (without
 // per-method ones).
-static CACHE: Lazy<Arc<sync::Mutex<PersistentCache>>> = Lazy::new(|| {
-    Arc::new(sync::Mutex::new(PersistentCache::load_cache(
-        config::cache_path(),
-    )))
-});
+static CACHE: Lazy<Arc<sync::Mutex<PersistentCache>>> =
+    Lazy::new(|| Arc::new(sync::Mutex::new(load_verification_cache())));
+
+/// Writes the server's verification cache to its configured path. `CACHE` is never dropped,
+/// so this is the only way its results reach later runs. Returns whether the cache was in use.
+pub fn save_verification_cache() -> bool {
+    if let Some(cache) = Lazy::get(&CACHE) {
+        cache.lock().unwrap().save();
+        true
+    } else {
+        false
+    }
+}
 
 fn listen_on_port_with_address_callback<F>(port: u16, address_callback: F) -> !
 where
@@ -107,8 +117,7 @@ where
         .and(warp::path("save"))
         .and(warp::path::end())
         .map(move || {
-            if let Some(cache) = Lazy::get(&CACHE) {
-                cache.lock().unwrap().save();
+            if save_verification_cache() {
                 warp::reply::html("Saved")
             } else {
                 warp::reply::html("Nothing to save")

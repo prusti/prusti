@@ -4,7 +4,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-use prusti_server::spawn_server_thread;
+use prusti_server::{save_verification_cache, spawn_server_thread};
 use std::{
     env, fs,
     io::Write,
@@ -207,6 +207,7 @@ pub(crate) fn run() -> TestsResult {
             fixed.push(path);
         }
     }
+    save_verification_cache();
 
     let known_failures = format!(
         "Test files still marked `//@ known-failure`: {}",
