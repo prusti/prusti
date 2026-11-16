@@ -38,20 +38,11 @@ jobs:
         with:
           python-version: '3.x'
 
-      - name: Set up Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'temurin'
-          java-version: '23'
-
-      - name: Set up the environment
-        run: python x.py setup
-
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+      - name: Set up the build environment
+        uses: ./.github/actions/setup
         with:
           # Not the `build` cache of the debug builds in test.yml.
-          shared-key: "release"
+          cache-shared-key: "release"
 
       - name: Build with cargo --release
         run: python x.py build --release --all

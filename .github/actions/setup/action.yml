@@ -1,0 +1,33 @@
+name: Set up Prusti's build environment
+description: >
+  Installs the JDK that runs Viper, downloads Viper and Z3 with `x.py setup`, and restores the
+  cargo cache. The repository must be checked out first.
+
+inputs:
+  cache-shared-key:
+    description: The `shared-key` of the cargo cache; empty for a cache of the calling job.
+    default: ''
+  cache-save-if:
+    description: Whether to save the cargo cache at the end of the job.
+    default: 'true'
+  cache-on-failure:
+    description: Whether to save the cargo cache even if the job fails.
+    default: 'false'
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Java
+      uses: actions/setup-java@v4
+      with:
+        distribution: 'temurin'
+        java-version: '21'
+    - name: Set up the environment
+      shell: bash
+      run: python x.py setup
+    - name: Cache cargo
+      uses: Swatinem/rust-cache@v2
+      with:
+        shared-key: ${{ inputs.cache-shared-key }}
+        save-if: ${{ inputs.cache-save-if }}
+        cache-on-failure: ${{ inputs.cache-on-failure }}
