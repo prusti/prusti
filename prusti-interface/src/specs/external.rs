@@ -41,11 +41,12 @@ pub enum ExternSpecResolverError {
     /// Occurs when a trait impl extern spec resolves to the trait method.
     ResolvedToDefault(DefId, Span),
 
-    /// Occurs when the extern spec declares trait bounds the target definition
-    /// lacks. The spec would otherwise be applied at every use of the target,
-    /// including instantiations where the extra bounds do not hold (and the
-    /// spec expressions are not even well-formed). The strings render the
-    /// (sorted) bound sets: declared, target.
+    /// Occurs when the extern spec declares trait bounds that do not follow
+    /// from the target definition's. The spec would otherwise be applied at
+    /// every use of the target, including instantiations where the extra
+    /// bounds do not hold (and the spec expressions are not even well-formed).
+    /// The strings render the (sorted) bounds: the declared ones that do not
+    /// follow, and the target's.
     MismatchedBounds(DefId, Span, String, String),
 }
 
@@ -174,7 +175,7 @@ impl<'tcx> ExternSpecResolver<'tcx> {
             {
                 // TODO: this resolution happens here but also in SpecCollector
                 // maybe it can be done once only?
-                let (resolved_def_id, _) =
+                let (resolved_def_id, resolved_substs) =
                     self.env_query
                         .resolve_method_call(current_def_id, target_def_id, substs);
                 if matches!(extern_spec_kind, ExternSpecKind::TraitImpl)
@@ -188,8 +189,6 @@ impl<'tcx> ExternSpecResolver<'tcx> {
                 } else {
                     // A call to the extern spec must be possible with the same exact
                     // type substitutions applied.
-                    // TODO: there is more that we could check, e.g. that trait
-                    // constraints are the same (otherwise specs might not make sense)
                     let (resolved_gens, current_gens) = (
                         self.env_query
                             .identity_substs(resolved_def_id)
@@ -208,7 +207,7 @@ impl<'tcx> ExternSpecResolver<'tcx> {
                             span,
                         ));
                     } else if let Some((declared, target)) =
-                        self.bounds_mismatch(current_def_id, resolved_def_id)
+                        self.bounds_mismatch(current_def_id, resolved_def_id, resolved_substs)
                     {
                         self.errors.push(ExternSpecResolverError::MismatchedBounds(
                             resolved_def_id,
@@ -230,14 +229,15 @@ impl<'tcx> ExternSpecResolver<'tcx> {
         }
     }
 
-    /// Compares the trait bounds declared by the extern spec (`spec_def_id`,
-    /// including its impl block's bounds) with the target definition's,
-    /// positionally instantiating the target's predicates with the spec's own
-    /// generic parameters (so parameter names do not matter). The spec is
-    /// applied at every use of the target, so it may not assume a bound the
-    /// target lacks; it may leave out bounds of the target (some cannot even
-    /// be named, e.g. a private sealing supertrait). Returns the rendered
-    /// `(declared, target)` bound sets if the declared ones are not a subset.
+    /// Checks the trait bounds declared by the extern spec (`spec_def_id`,
+    /// including its impl block's bounds) against the target definition's.
+    /// `target_args` are the target's generic arguments in the stub's call to
+    /// it, so the target's bounds are stated in the spec's own parameters.
+    /// The spec is applied at every use of the target, so each declared bound
+    /// must follow from the target's; the spec may leave out bounds of the
+    /// target (some cannot even be named, e.g. a private sealing supertrait).
+    /// Returns the rendered `(declared, target)` bounds if some declared bound
+    /// does not follow, listing only those that do not.
     ///
     /// Only trait, projection and const-argument clauses are compared:
     /// lifetime/outlives and well-formedness clauses carry erased or implied
@@ -249,6 +249,7 @@ impl<'tcx> ExternSpecResolver<'tcx> {
         &self,
         spec_def_id: DefId,
         target_def_id: DefId,
+        target_args: GenericArgsRef<'tcx>,
     ) -> Option<(String, String)> {
         use prusti_rustc_interface::{
             hir::attrs::LangItem,
@@ -256,21 +257,6 @@ impl<'tcx> ExternSpecResolver<'tcx> {
         };
         let tcx = self.env_query.tcx();
         let spec_args = ty::GenericArgs::identity_for_item(tcx, spec_def_id);
-        // The target's generics may interleave lifetime parameters with the
-        // type/const parameters (shifting their indices relative to the spec
-        // item's), so its predicates cannot be instantiated with the spec's
-        // identity args directly. Build args of the target's own shape,
-        // mapping its type/const parameters positionally to the spec's and
-        // erasing its lifetimes (regions are erased for the comparison
-        // anyway).
-        let mut spec_non_region = spec_args.iter().filter(|arg| arg.as_region().is_none());
-        let target_args =
-            ty::GenericArgs::for_item(tcx, target_def_id, |param, _| match param.kind {
-                ty::GenericParamDefKind::Lifetime => tcx.lifetimes.re_erased.into(),
-                _ => spec_non_region
-                    .next()
-                    .expect("target/spec generics arity mismatch"),
-            });
         let relevant = |clauses: ty::GenericClauses<'tcx>, args: ty::GenericArgsRef<'tcx>| {
             clauses
                 .instantiate(tcx, args)
@@ -316,7 +302,15 @@ impl<'tcx> ExternSpecResolver<'tcx> {
                 _ => true,
             });
         }
-        if declared.is_subset(&target) {
+        let target_env = ty::ParamEnv::new(
+            tcx.mk_clauses_from_iter(ty::elaborate::elaborate(tcx, target.iter().copied())),
+        );
+        declared.retain(|clause| {
+            !self
+                .env_query
+                .evaluate_predicate(clause.as_predicate(), target_env)
+        });
+        if declared.is_empty() {
             return None;
         }
         let render = |clauses: &FxHashSet<ty::Clause<'tcx>>| {
@@ -398,8 +392,9 @@ impl<'tcx> ExternSpecResolver<'tcx> {
                     let function_name = self.env_name.get_item_name(*def_id);
                     let err_note = format!(
                         "The external spec for '{function_name}' may not declare trait bounds \
-                        beyond the target definition's, since the spec is applied at every use \
-                        of the target. Declared bounds: [{declared}]; target bounds: [{target}]."
+                        that do not follow from the target definition's, since the spec is \
+                        applied at every use of the target. Declared bounds that do not follow: \
+                        [{declared}]; target bounds: [{target}]."
                     );
                     PrustiError::incorrect(
                         "Invalid external specification",

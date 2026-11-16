@@ -165,10 +165,14 @@ pub(crate) fn generate_extern_spec_method_stub<T: HasSignature + HasAttributes +
     // `self` by value needs it `Sized` (a trait may declare such a method
     // for an unsized `Self`, a free function cannot).
     let by_value_receiver = matches!(extern_spec_kind, ExternSpecKind::Trait)
-        && matches!(
-            method_sig.receiver(),
-            Some(syn::FnArg::Receiver(receiver)) if receiver.reference.is_none()
-        );
+        && match method_sig.receiver() {
+            Some(syn::FnArg::Receiver(receiver)) => receiver.reference.is_none(),
+            Some(syn::FnArg::Typed(receiver)) => matches!(
+                &*receiver.ty,
+                syn::Type::Path(path) if path.qself.is_none() && path.path.is_ident("Self")
+            ),
+            None => false,
+        };
     let require_sized = |sig: &mut syn::Signature| {
         if by_value_receiver {
             sig.generics
