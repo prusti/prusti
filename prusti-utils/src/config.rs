@@ -26,6 +26,7 @@ lazy_static::lazy_static! {
         settings.set_default::<Option<String>>("smt_solver_wrapper_path", None).unwrap();
         settings.set_default::<Option<String>>("boogie_path", env::var("BOOGIE_EXE").ok()).unwrap();
         settings.set_default::<Option<String>>("viper_home", None).unwrap();
+        settings.set_default::<Option<String>>("java_home", None).unwrap();
 
         settings.set_default::<Option<u32>>("check_timeout", None).unwrap();
         settings.set_default("check_overflows", true).unwrap();
@@ -290,6 +291,13 @@ pub fn viper_home() -> String {
             panic!("Failed to detect Vipe home, please set viper_home configuration flag")
         }
     }
+}
+
+/// The path to the Viper JARs. `prusti-rustc` is expected to set this
+/// configuration flag to the correct path.
+pub fn java_home() -> String {
+    read_setting::<Option<String>>("java_home")
+        .expect("Please set the java_home configuration flag")
 }
 
 /// When enabled, Prusti will check for an absence of `panic!`s.

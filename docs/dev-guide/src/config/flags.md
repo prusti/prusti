@@ -27,6 +27,7 @@
 | [`HIDE_UUIDS`](#hide_uuids) | `bool` | `false` | A |
 | [`IGNORE_REGIONS`](#ignore_regions) | `bool` | `false` | A |
 | [`INTERNAL_ERRORS_AS_WARNINGS`](#internal_errors_as_warnings) | `bool` | `false` | A |
+| [`JAVA_HOME`](#java_home) | `Option<String>` | `None` | A |
 | [`JSON_COMMUNICATION`](#json_communication) | `bool` | `false` | A |
 | [`LOG`](#log) | `String` | `""` | A |
 | [`LOG_DIR`](#log_dir) | `String` | `"log"` | A* |
@@ -200,6 +201,12 @@ When enabled, internal errors are presented as warnings.
 
 **Note**: This should only be used for debugging, as enabling this setting could
 hide actual verification errors.
+
+## `JAVA_HOME`
+
+The path the directory containing Java.
+
+> **Note:** `prusti-rustc` sets this option.
 
 ## `JSON_COMMUNICATION`
 
