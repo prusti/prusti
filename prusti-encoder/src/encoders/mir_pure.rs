@@ -1340,8 +1340,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
             let field_idx = match elem {
                 // A downcast does not change the snapshot.
                 mir::ProjectionElem::Downcast(..) => continue,
-                mir::ProjectionElem::Field(field_idx, _) => Some(field_idx.as_usize()),
-                // The boxed value is the box's last field.
+                mir::ProjectionElem::Field(field_idx, _) => Some(field_idx),
                 mir::ProjectionElem::Deref if base_ty.ty.is_box() => None,
                 _ => {
                     return Err(self.unsupported_rvalue(
@@ -1356,7 +1355,6 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
             };
             let e_ty = self.ty_use(base_ty.ty);
             let variant = e_ty.expect_variant_opt(base_ty.variant_index);
-            let field_idx = field_idx.unwrap_or(variant.fields.len() - 1);
             // A place ending in a downcast cannot be encoded on its own.
             let base_proj = match base.projection {
                 [rest @ .., mir::ProjectionElem::Downcast(..)] => rest,
@@ -1369,19 +1367,11 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
             let base_snap = self
                 .encode_place_snap(base_place.into(), curr_ver)?
                 .downcast_ty();
-            let fields = variant
-                .fields
-                .iter()
-                .enumerate()
-                .map(|(idx, field)| {
-                    if idx == field_idx {
-                        value
-                    } else {
-                        field.read(base_snap)
-                    }
-                })
-                .collect();
-            value = variant.field_snaps_to_snap(fields).upcast_ty();
+            value = match field_idx {
+                Some(field_idx) => variant.with_field(base_snap, field_idx, value),
+                None => variant.with_box_value(base_snap, value),
+            }
+            .upcast_ty();
         }
         Ok(value)
     }
