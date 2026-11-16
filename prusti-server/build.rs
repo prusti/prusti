@@ -22,6 +22,7 @@ const BACKEND_SOURCES: &[&str] = &[
     "../viper-sys/build.rs",
     "../jni-gen/src",
     "../prusti-smt-solver/src",
+    "../smt-log-analyzer/src",
     "../Cargo.lock",
     "../rust-toolchain",
 ];

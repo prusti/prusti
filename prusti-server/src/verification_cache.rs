@@ -25,13 +25,15 @@ fn tools_fingerprint() -> u64 {
     let mut hasher = DefaultHasher::new();
     env!("BACKEND_FINGERPRINT").hash(&mut hasher);
     hash_file(&mut hasher, Path::new(&config::smt_solver_path()));
-    if let Some(boogie_path) = config::boogie_path() {
+    if let Some(Ok(boogie_dir)) = config::boogie_path()
+        .as_deref()
+        .and_then(|path| Path::new(path).parent())
+        .map(fs::read_dir)
+    {
         // Besides Boogie's own files, which are named after it, the directory of the Boogie
         // executable holds the .NET runtime that Boogie ships with.
-        let boogie_dir = Path::new(&boogie_path).parent().unwrap();
-        let mut boogie_files = fs::read_dir(boogie_dir)
-            .unwrap_or_else(|err| panic!("failed to read {}: {err}", boogie_dir.display()))
-            .map(|entry| entry.unwrap().path())
+        let mut boogie_files = boogie_dir
+            .filter_map(|entry| Some(entry.ok()?.path()))
             .filter(|path| {
                 path.file_name()
                     .and_then(|name| name.to_str())
@@ -47,8 +49,8 @@ fn tools_fingerprint() -> u64 {
     hasher.finish()
 }
 
+/// Hashes the contents of the file at `path`. A tool that cannot be read is hashed as missing:
+/// the verifier reports the problem if it needs the tool.
 fn hash_file(hasher: &mut DefaultHasher, path: &Path) {
-    fs::read(path)
-        .unwrap_or_else(|err| panic!("failed to read {}: {err}", path.display()))
-        .hash(hasher);
+    fs::read(path).ok().hash(hasher);
 }
