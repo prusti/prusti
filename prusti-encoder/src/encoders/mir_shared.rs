@@ -101,9 +101,8 @@ pub(crate) trait PureRvalueEnc<'vir> {
     }
 
     /// The source position currently being encoded under: the MIR statement
-    /// (or, in a pure body, the expression) whose encoding is in progress.
-    /// Falls back to the body when no span is on the stack, as when encoding
-    /// the repacks of a terminator's outgoing edges.
+    /// or terminator (or, in a pure body, the expression) whose encoding is
+    /// in progress. Falls back to the body when no span is on the stack.
     fn current_span(&self) -> Span {
         let vcx = self.vcx();
         vcx.top_span()
