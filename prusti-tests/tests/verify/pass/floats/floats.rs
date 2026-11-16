@@ -24,6 +24,66 @@ fn foo4(f: f32) -> f32 {
     f % 3.0
 }
 
+// `%` is computed exactly: the quotient 9.99... is truncated to 9, not
+// rounded to 10.
+#[requires(x == 1.0 && y == 0.1)]
+#[ensures(result == 0.09999999999999995)]
+fn rem_exact_f64(x: f64, y: f64) -> f64 {
+    x % y
+}
+
+#[requires(x == 1.0 && y == 0.1)]
+#[ensures(result == 0.09999999)]
+fn rem_exact_f32(x: f32, y: f32) -> f32 {
+    x % y
+}
+
+// For a quotient too large for the significand, only bounds on the result are
+// known.
+#[requires(x == 1e20 && y == 3.0)]
+#[ensures(!result.is_nan() && result >= 0.0 && result < 3.0)]
+fn rem_large_quotient(x: f64, y: f64) -> f64 {
+    x % y
+}
+
+// The result has the sign of `x`.
+#[requires(x == -4.5 && y == 3.0)]
+#[ensures(result == -1.5)]
+fn rem_neg_lhs(x: f64, y: f64) -> f64 {
+    x % y
+}
+
+#[requires(x == 4.5 && y == -3.0)]
+#[ensures(result == 1.5)]
+fn rem_neg_rhs(x: f64, y: f64) -> f64 {
+    x % y
+}
+
+// A zero result has the sign of `x` too (`1.0 / -0.0` is negative).
+#[requires(x == -1.0 && y == 1.0)]
+#[ensures(result == 0.0 && 1.0 / result < 0.0)]
+fn rem_neg_zero(x: f64, y: f64) -> f64 {
+    x % y
+}
+
+#[requires(x == 2.0 && y == -1.0)]
+#[ensures(result == 0.0 && 1.0 / result > 0.0)]
+fn rem_pos_zero(x: f64, y: f64) -> f64 {
+    x % y
+}
+
+#[requires(!x.is_nan() && !x.is_infinite() && y.is_infinite())]
+#[ensures(result == x)]
+fn rem_inf_rhs(x: f64, y: f64) -> f64 {
+    x % y
+}
+
+#[requires((x == 1.0 && y == 0.0) || ((x.is_nan() || x.is_infinite()) && y == 2.0))]
+#[ensures(result.is_nan())]
+fn rem_nan(x: f64, y: f64) -> f64 {
+    x % y
+}
+
 #[requires(!f32_is_nan(f))]
 #[ensures(result == f)]
 fn foo5(f: f32) -> f32 {

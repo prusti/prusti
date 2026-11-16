@@ -25,7 +25,8 @@ pub struct FloatDomainData<'vir> {
     pub fp_sub: FunctionIdn<'vir, (vir::CSnap, vir::CSnap), vir::CSnap>,
     pub fp_mul: FunctionIdn<'vir, (vir::CSnap, vir::CSnap), vir::CSnap>,
     pub fp_div: FunctionIdn<'vir, (vir::CSnap, vir::CSnap), vir::CSnap>,
-    pub fp_trunc: FunctionIdn<'vir, vir::CSnap, vir::CSnap>,
+    /// Rust's `%`, defined by the `rem` axiom.
+    pub rem: FunctionIdn<'vir, (vir::CSnap, vir::CSnap), vir::CSnap>,
     pub fp_is_nan: FunctionIdn<'vir, vir::CSnap, vir::Bool>,
     pub fp_is_infinite: FunctionIdn<'vir, vir::CSnap, vir::Bool>,
     pub fp_lt: FunctionIdn<'vir, (vir::CSnap, vir::CSnap), vir::Bool>,
@@ -89,9 +90,9 @@ pub(crate) fn ty_pure_float<'vir>(
     builder.set_interpretation(backend_type);
 
     let self_type = builder.self_type();
-    let fp_eq = wrapped_binary(builder, "eq", vir::TYPE_BOOL, "fp.eq");
-    let fp_add = wrapped_binary(builder, "add", self_type, "fp.add RNE");
-    let fp_sub = wrapped_binary(builder, "sub", self_type, "fp.sub RNE");
+    let (fp_eq, _) = wrapped_binary(builder, "eq", vir::TYPE_BOOL, "fp.eq");
+    let (fp_add, _) = wrapped_binary(builder, "add", self_type, "fp.add RNE");
+    let (fp_sub, _) = wrapped_binary(builder, "sub", self_type, "fp.sub RNE");
 
     let fp_mul = builder.backend_func(
         "mul",
@@ -107,7 +108,26 @@ pub(crate) fn ty_pure_float<'vir>(
         Some("fp.div RNE"),
     );
 
-    let fp_trunc = builder.backend_func(
+    let fp_div_rtz: FunctionIdn<'vir, (vir::CSnap, vir::CSnap), vir::CSnap> = builder.backend_func(
+        "div_rtz",
+        (builder.self_type(), builder.self_type()),
+        builder.self_type(),
+        Some("fp.div RTZ"),
+    );
+
+    let fp_fma: FunctionIdn<'vir, (vir::CSnap, vir::CSnap, vir::CSnap), vir::CSnap> = builder
+        .backend_func(
+            "fma",
+            (
+                builder.self_type(),
+                builder.self_type(),
+                builder.self_type(),
+            ),
+            builder.self_type(),
+            Some("fp.fma RNE"),
+        );
+
+    let fp_trunc: FunctionIdn<'vir, vir::CSnap, vir::CSnap> = builder.backend_func(
         "trunc",
         builder.self_type(),
         builder.self_type(),
@@ -128,12 +148,19 @@ pub(crate) fn ty_pure_float<'vir>(
         Some("fp.isInfinite"),
     );
 
-    let fp_lt = wrapped_binary(builder, "lt", vir::TYPE_BOOL, "fp.lt");
-    let fp_leq = wrapped_binary(builder, "leq", vir::TYPE_BOOL, "fp.leq");
-    let fp_geq = wrapped_binary(builder, "geq", vir::TYPE_BOOL, "fp.geq");
-    let fp_gt = wrapped_binary(builder, "gt", vir::TYPE_BOOL, "fp.gt");
-    let fp_neg = wrapped_unary(builder, "neg", "fp.neg");
-    let fp_abs = wrapped_unary(builder, "abs", "fp.abs");
+    let fp_is_negative: FunctionIdn<'vir, vir::CSnap, vir::Bool> = builder.backend_func(
+        "is_negative",
+        builder.self_type(),
+        vir::TYPE_BOOL,
+        Some("fp.isNegative"),
+    );
+
+    let (fp_lt, fp_lt_ieee) = wrapped_binary(builder, "lt", vir::TYPE_BOOL, "fp.lt");
+    let (fp_leq, _) = wrapped_binary(builder, "leq", vir::TYPE_BOOL, "fp.leq");
+    let (fp_geq, fp_geq_ieee) = wrapped_binary(builder, "geq", vir::TYPE_BOOL, "fp.geq");
+    let (fp_gt, _) = wrapped_binary(builder, "gt", vir::TYPE_BOOL, "fp.gt");
+    let (fp_neg, fp_neg_ieee) = wrapped_unary(builder, "neg", "fp.neg");
+    let (fp_abs, fp_abs_ieee) = wrapped_unary(builder, "abs", "fp.abs");
 
     let bit_vec = deps.require_dep::<BitVecEnc>(match float {
         ty::FloatTy::F16 => BitVecSize::BitVec16,
@@ -166,6 +193,50 @@ pub(crate) fn ty_pure_float<'vir>(
         forall i: [prim_to_snap.arity()] :: {[prim_to_snap](i)} ([prim_to_snap](i)) == ([from_bv]([bit_vec.from_int](i)))
     });
 
+    // Rust's `x % y` is `x - trunc(x / y) * y` computed exactly; the result is
+    // always representable and has the sign of `x`. SMT's `fp.rem` is exact
+    // too, but rounds the quotient to nearest, and Z3 bit-blasts it into a
+    // circuit covering every exponent difference, which for f64 is several
+    // times slower than a division. The axiom therefore uses
+    // `m = fma(-n, b, a)` for `a = |x|`, `b = |y|` and `n = trunc(a / b)`, the
+    // division rounding toward zero. `n` never exceeds the quotient, so
+    // `a - n * b` is at least zero.
+    // - An infinite `y` with an `x` that is not infinite gives `x`. The fma
+    //   cannot compute this case: `n` is zero, and `0 * inf` is NaN.
+    // - If `m >= b`, `n` is below the truncated quotient, which happens only
+    //   for finite operands with a quotient of at least `2^p` (`p` being the
+    //   significand width). The axiom then only states what holds for every
+    //   finite `x` and nonzero finite `y`: the result is not NaN, has the sign
+    //   of `x` and is smaller than `y` in magnitude. Defining the exact result
+    //   there through `fp.rem` makes Z3 time out on false specifications about
+    //   symbolic operands instead of reporting them.
+    // - Otherwise `n` is the truncated quotient and the single rounding of
+    //   the fma is exact, so the result is `m` with the sign of `x`. A zero
+    //   `m` is `+0`, since an exact zero sum rounds to `+0`, so negating it
+    //   gives the `-0` that a negative `x` needs. For a NaN operand, an
+    //   infinite `x` or a zero `y`, `m` is NaN, which is also the result.
+    let rem = builder.function("rem", (self_type, self_type), self_type);
+    let x = vcx.mk_local_decl("x", self_type);
+    let y = vcx.mk_local_decl("y", self_type);
+    let (xe, ye) = (vcx.mk_local_ex(x), vcx.mk_local_ex(y));
+    let app = rem(xe, ye);
+    let a = fp_abs_ieee(xe);
+    let b = fp_abs_ieee(ye);
+    let n = fp_trunc(fp_div_rtz(a, b));
+    let m = fp_fma(fp_neg_ieee(n), b, a);
+    let bounds = vir::expr! {
+        (!([fp_is_nan](app)))
+            && ((([fp_is_negative](app)) == ([fp_is_negative](xe)))
+                && ([fp_lt_ieee](([fp_abs_ieee](app)), b)))
+    };
+    let signed_m = vir::expr! { ([fp_is_negative](xe)) ? ([fp_neg_ieee](m)) : (m) };
+    let body = vir::expr! {
+        (([fp_is_infinite](ye)) && (!([fp_is_infinite](xe))))
+            ? ((app) == (xe))
+            : (([fp_geq_ieee](m, b)) ? (bounds) : ((app) == (signed_m)))
+    };
+    builder.axiom("rem", vir::expr! { forall [x], [y] :: {app} body });
+
     let data = FloatDomainData {
         prim_to_snap,
         from_bv,
@@ -174,7 +245,7 @@ pub(crate) fn ty_pure_float<'vir>(
         fp_sub,
         fp_mul,
         fp_div,
-        fp_trunc,
+        rem,
         fp_is_nan,
         fp_is_infinite,
         fp_lt,
@@ -189,14 +260,22 @@ pub(crate) fn ty_pure_float<'vir>(
     Ok(data)
 }
 
+type BinaryOp<'vir, T> = FunctionIdn<'vir, (vir::CSnap, vir::CSnap), T>;
+type UnaryOp<'vir> = FunctionIdn<'vir, vir::CSnap, vir::CSnap>;
+
 /// An uninterpreted wrapper around a binary backend operation, so that axioms
 /// can trigger on it (Viper rejects interpreted functions in triggers).
+/// Returns the wrapper and the backend operation. An axiom that computes a
+/// value from its arguments, rather than triggering on the operation, should
+/// use the backend operation: a wrapper only gets its meaning once Z3
+/// instantiates its definition, and before that Z3 may case-split on the
+/// axiom's branches without knowing the wrapper's value.
 fn wrapped_binary<'vir, T: vir::CompType>(
     builder: &mut DomainBuilder<'vir>,
     name: &str,
     ret: vir::Type<'vir, T>,
     interpretation: &'static str,
-) -> FunctionIdn<'vir, (vir::CSnap, vir::CSnap), T> {
+) -> (BinaryOp<'vir, T>, BinaryOp<'vir, T>) {
     let ty = builder.self_type();
     let backend: FunctionIdn<'vir, (vir::CSnap, vir::CSnap), T> =
         builder.backend_func(&format!("{name}_ieee"), (ty, ty), ret, Some(interpretation));
@@ -207,7 +286,7 @@ fn wrapped_binary<'vir, T: vir::CompType>(
             forall x: [ty], y: [ty] :: {[wrapper](x, y)} ([wrapper](x, y)) == ([backend](x, y))
         },
     );
-    wrapper
+    (wrapper, backend)
 }
 
 /// Like [`wrapped_binary`], for a unary operation on the float itself.
@@ -215,7 +294,7 @@ fn wrapped_unary<'vir>(
     builder: &mut DomainBuilder<'vir>,
     name: &str,
     interpretation: &'static str,
-) -> FunctionIdn<'vir, vir::CSnap, vir::CSnap> {
+) -> (UnaryOp<'vir>, UnaryOp<'vir>) {
     let ty = builder.self_type();
     let backend: FunctionIdn<'vir, vir::CSnap, vir::CSnap> =
         builder.backend_func(&format!("{name}_ieee"), ty, ty, Some(interpretation));
@@ -226,7 +305,7 @@ fn wrapped_unary<'vir>(
             forall x: [ty] :: {[wrapper](x)} ([wrapper](x)) == ([backend](x))
         },
     );
-    wrapper
+    (wrapper, backend)
 }
 
 /// The precision `p` (significand bits, including the implicit one) and the
@@ -330,7 +409,7 @@ pub(crate) fn rne_rounded<'vir>(
 /// (Subnormal results of additions are exact, so no absolute error term is
 /// needed.) Negation and absolute value of a finite float are exact. This
 /// keeps the reasoning in linear real arithmetic. The values of products,
-/// quotients and truncations are left unconstrained.
+/// quotients and remainders are left unconstrained.
 fn real_value_axioms<'vir>(
     vcx: &'vir VirCtxt<'vir>,
     builder: &mut DomainBuilder<'vir>,
