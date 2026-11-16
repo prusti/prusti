@@ -1360,6 +1360,9 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                     .expect_structlike()
                     .with_box_value(base_snap.downcast_ty(), value)
                     .upcast_ty(),
+                // TODO: array elements need a function on the array snapshot
+                // that replaces one element; writes through a `&mut` need its
+                // referent's value, which pure code does not have.
                 _ => {
                     return Err(self.unsupported_rvalue(
                         format!(
