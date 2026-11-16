@@ -47,6 +47,12 @@ jobs:
       - name: Set up the environment
         run: python x.py setup
 
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          # Not the `build` cache of the debug builds in test.yml.
+          shared-key: "release"
+
       - name: Build with cargo --release
         run: python x.py build --release --all
 
