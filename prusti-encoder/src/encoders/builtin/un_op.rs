@@ -107,14 +107,32 @@ impl TaskEncoder for MirBuiltinUnOpEnc {
                     match prim_res_ty.kind {
                         TyPurePrimDataKind::Bool | TyPurePrimDataKind::Int(_) => {
                             let prim_arg = prim_res_ty.snap_to_prim(snap_arg);
-                            let mut val = prim_res_ty.prim_to_snap(
-                                vcx.mk_unary_op_expr(vir::UnOpKind::from(op), prim_arg),
-                            );
+                            let operand_ty = *operand_ty.expect_primitive();
+                            let prim_val = if op == mir::UnOp::Not
+                                && matches!(prim_res_ty.kind, TyPurePrimDataKind::Int(_))
+                            {
+                                // `!x` flips every bit, which is the same as subtracting
+                                // `x` from the all-ones value: `-1` for signed and `MAX`
+                                // for unsigned types. The result is always in range, so
+                                // unlike `Neg` there is no overflow case.
+                                let all_ones = if operand_ty.is_signed() {
+                                    vcx.mk_int::<-1>()
+                                } else {
+                                    vcx.get_max_int(operand_ty.kind())
+                                };
+                                vcx.mk_bin_op_expr(
+                                    vir::BinOpKind::Sub,
+                                    all_ones,
+                                    prim_arg.downcast_ty(),
+                                )
+                            } else {
+                                vcx.mk_unary_op_expr(vir::UnOpKind::from(op), prim_arg)
+                            };
+                            let mut val = prim_res_ty.prim_to_snap(prim_val);
                             // Can overflow when doing `- iN::MIN -> iN::MIN`. There is no
                             // `CheckedUnOp`, instead the compiler puts an `TerminatorKind::Assert`
                             // before in debug mode. We should still produce the correct result in
                             // release mode, which the code under this branch does.
-                            let operand_ty = *operand_ty.expect_primitive();
                             if op == mir::UnOp::Neg && operand_ty.is_signed() {
                                 let bound = vcx.get_min_int(operand_ty.kind());
                                 // `snap_to_prim(arg) == -iN::MIN`
