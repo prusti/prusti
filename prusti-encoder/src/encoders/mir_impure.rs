@@ -395,7 +395,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 .into())
             }
 
-            mir::Rvalue::Ref(_reg, _kind, place) => Ok(match rvalue_ty.kind() {
+            mir::Rvalue::Ref(_reg, kind, place) => Ok(match rvalue_ty.kind() {
                 TyKind::Ref(.., ty::Mutability::Not) => {
                     let (address, snap, _, _) = self.encode_place_with_snap((*place).into())?;
                     let metadata = address.expr.metadata;
@@ -416,11 +416,21 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                         metadata.unwrap_or_else(|| self.expect_thin_ptr_metadata(rvalue_ty));
                     let inner = p_rvalue_ty.expect_mutref();
                     let place_ref = place_expr.expr.expect_predicate();
+                    // A two-phase borrow keeps the place's permission until
+                    // the PCG activates it.
+                    let two_phase = matches!(
+                        kind,
+                        mir::BorrowKind::Mut {
+                            kind: mir::MutBorrowKind::TwoPhaseBorrow
+                        }
+                    );
                     EncodedRvalue {
                         expr: inner.prim_to_snap_assign(place_ref, metadata).upcast_ty(),
-                        post_assign_folds: Some(Box::new(move |lhs_place| {
-                            p_rvalue_ty.fold(None, lhs_place, None, None, None)
-                        })),
+                        post_assign_folds: (!two_phase).then(|| {
+                            Box::new(move |lhs_place| {
+                                p_rvalue_ty.fold(None, lhs_place, None, None, None)
+                            }) as Box<dyn FnOnce(_) -> _>
+                        }),
                     }
                 }
                 _ => unreachable!(),
@@ -1031,11 +1041,10 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
     ) -> EncodeResult<'vir, (), E> {
         let mut to_skip = Vec::new();
         match action.kind() {
-            //Restore(RestoreCapability<'tcx>),
             //MakePlaceOld(Place<'tcx>),
             //SetLatest(Place<'tcx>, Location),
             //AddRegionProjectionMember(RegionProjectionMember<'tcx>, PathConditions),
-            BorrowPcgActionKind::RemoveEdge(edge) => self.pcs_handle_edge(
+            BorrowPcgActionKind::RemoveEdge { edge, .. } => self.pcs_handle_edge(
                 pcg.borrow_pcg(),
                 edge,
                 EdgeAction::Remove,
@@ -1043,7 +1052,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 &mut to_skip,
                 None,
             ),
-            BorrowPcgActionKind::AddEdge { edge } => self.pcs_handle_edge(
+            BorrowPcgActionKind::AddEdge { edge, .. } => self.pcs_handle_edge(
                 pcg.borrow_pcg(),
                 edge,
                 EdgeAction::Add,
@@ -1051,13 +1060,31 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 &mut to_skip,
                 None,
             ),
+            // Lending a place to a loop abstraction introduces its edge.
+            BorrowPcgActionKind::Lend { edge, .. }
+                if matches!(edge.kind(), BorrowPcgEdgeKind::Abstraction(_)) =>
+            {
+                self.pcs_handle_edge(
+                    pcg.borrow_pcg(),
+                    edge,
+                    EdgeAction::Add,
+                    edge_to_loop,
+                    &mut to_skip,
+                    None,
+                )
+            }
             BorrowPcgActionKind::Weaken(weaken)
                 if matches!(
                     weaken.from_cap(),
                     CapabilityKind::Exclusive | CapabilityKind::ShallowExclusive
-                ) && matches!(weaken.to_cap(), None | Some(CapabilityKind::Write)) =>
+                ) && weaken.to_cap().is_write() =>
             {
                 self.pcg_weaken(weaken.place(), weaken.is_for_storage_dead())
+            }
+            BorrowPcgActionKind::ActivateTwoPhaseBorrow { borrow } => {
+                // The permission the reservation kept moves into the reference.
+                self.fold_or_unfold(borrow.assigned_ref(), FoldOrUnfold::Fold, None, None)?;
+                Ok(())
             }
             //RenamePlace {
             //    old: MaybeLabelledPlace<'tcx>,
@@ -1072,21 +1099,6 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
 
     fn pcg_repack(&mut self, repack_op: &RepackOp<'vir>) -> EncodeResult<'vir, (), E> {
         comment!(self, "[PCG] {repack_op:?}");
-
-        fn should_ignore(repack_op: &RepackOp<'_>) -> bool {
-            match repack_op {
-                RepackOp::RegainLoanedCapability(..) => true,
-                RepackOp::Weaken(weaken) => {
-                    weaken.from_cap().is_exclusive()
-                        && matches!(
-                            weaken.to_cap(),
-                            CapabilityKind::Read | CapabilityKind::ShallowExclusive
-                        )
-                }
-                RepackOp::StorageDead(..) => true,
-                _ => false,
-            }
-        }
 
         match repack_op {
             RepackOp::Expand(_) | RepackOp::Collapse(_) => {
@@ -1124,27 +1136,19 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 }
                 Ok(())
             }
-            RepackOp::Weaken(weaken)
-                if matches!(
-                    weaken.from_cap(),
-                    CapabilityKind::Exclusive | CapabilityKind::ShallowExclusive
-                ) && weaken.to_cap().is_write() =>
-            {
-                self.pcg_weaken(weaken.place(), weaken.is_for_storage_dead())
+            RepackOp::StorageDead(..) => {
+                self.stmt(self.vcx.mk_comment_stmt(vir::vir_format!(
+                    self.vcx,
+                    "ignored repack op: {repack_op:?}"
+                )));
+                Ok(())
             }
             other => {
-                if should_ignore(other) {
-                    self.stmt(self.vcx.mk_comment_stmt(vir::vir_format!(
-                        self.vcx,
-                        "ignored repack op: {other:?}"
-                    )));
-                } else {
-                    self.stmt(self.vcx.mk_comment_stmt(vir::vir_format!(
-                        self.vcx,
-                        "unsupported repack op: {other:?}"
-                    )));
-                    self.stmt(self.vcx.mk_exhale_stmt(self.vcx.mk_bool::<false>()));
-                }
+                self.stmt(self.vcx.mk_comment_stmt(vir::vir_format!(
+                    self.vcx,
+                    "unsupported repack op: {other:?}"
+                )));
+                self.stmt(self.vcx.mk_exhale_stmt(self.vcx.mk_bool::<false>()));
                 Ok(())
             }
         }
@@ -1175,10 +1179,10 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
 
         let place_enc = self.encode_place(place)?;
         comment!(self, "exhale due to weaken to Write");
-        self.stmt(self.vcx.mk_exhale_stmt(place_ty_out.ref_to_pred(
-            self.vcx,
-            place_enc.expr.expect_predicate(),
-            None,
+        // Only the permission is given up; inhabitedness is a pure fact that
+        // need not be known for a place assigned a value.
+        self.stmt(self.vcx.mk_exhale_stmt(self.vcx.mk_predicate_app_expr(
+            place_ty_out.ref_to_pred_app(place_enc.expr.expect_predicate(), None),
         )));
         Ok(())
     }
