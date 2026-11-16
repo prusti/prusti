@@ -111,11 +111,7 @@ pub(crate) trait PureRvalueEnc<'vir> {
     }
 
     /// Build an error for an unsupported feature at `span`.
-    fn unsupported_rvalue(
-        &self,
-        message: String,
-        span: Span,
-    ) -> EncodeFullError<'vir, Self::Encoder> {
+    fn unsupported(&self, message: String, span: Span) -> EncodeFullError<'vir, Self::Encoder> {
         EncodeFullError::DependencyError(vec![(
             <Self::Encoder as TaskEncoder>::ENCODER_NAME,
             message,
@@ -335,7 +331,7 @@ pub(crate) trait PureRvalueEnc<'vir> {
                 assert_eq!(args.len(), 1);
                 let enum_ty = arg_tys[0].expect_ty();
                 let Some(place) = args[0].node.place() else {
-                    return Err(self.unsupported_rvalue(
+                    return Err(self.unsupported(
                         "`discriminant_value` of a constant operand".to_string(),
                         args[0].span,
                     ));
@@ -347,7 +343,7 @@ pub(crate) trait PureRvalueEnc<'vir> {
                     Some(e_enum_ty) => {
                         Ok(e_enum_ty.snap_to_discr_snap(snap.downcast_ty()).upcast_ty())
                     }
-                    None => Err(self.unsupported_rvalue(
+                    None => Err(self.unsupported(
                         format!("`discriminant_value` of `{enum_ty}`, which has no discriminant"),
                         args[0].span,
                     )),

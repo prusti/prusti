@@ -417,7 +417,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                     .into())
             }
 
-            _ => Err(self.unsupported_rvalue(format!("unsupported rvalue {rvalue:?}"), span)),
+            _ => Err(self.unsupported(format!("unsupported rvalue {rvalue:?}"), span)),
         }
     }
 
@@ -1123,8 +1123,8 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                     )));
                     Ok(())
                 } else {
-                    Err(self.unsupported_rvalue(
-                        format!("unsupported repack op {other:?}"),
+                    Err(self.unsupported(
+                        format!("INTERNAL ERROR: unexpected PCG operation {other:?}"),
                         self.current_span(),
                     ))
                 }
@@ -1479,7 +1479,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                         }
                     }
                     ty::TyKind::RawPtr(..) => {
-                        return Err(self.unsupported_rvalue(
+                        return Err(self.unsupported(
                             format!("dereference of the raw pointer `{}`", place_ty.ty),
                             self.current_span(),
                         ));
@@ -1911,7 +1911,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             // for other specblocks we take the owned capabilities
             let Some(capability) = pcg_state.computed_owned_capability(place, self.pcg_ctxt())
             else {
-                return Err(self.unsupported_rvalue(
+                return Err(self.unsupported(
                     format!("INTERNAL ERROR: no capability for `{place:?}` when encoding a specification"),
                     self.current_span(),
                 ));
@@ -2197,7 +2197,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 | mir::StatementKind::BackwardIncompatibleDropHint { .. } => {}
 
                 mir::StatementKind::Intrinsic(intrinsic_kind) => {
-                    return Err(self.unsupported_rvalue(
+                    return Err(self.unsupported(
                         format!("unsupported intrinsic statement {intrinsic_kind:?}"),
                         span,
                     ));
@@ -2494,24 +2494,18 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             }
 
             mir::TerminatorKind::TailCall { .. } => {
-                return Err(
-                    self.unsupported_rvalue("tail calls are not supported".to_string(), span)
-                );
+                return Err(self.unsupported("tail calls are not supported".to_string(), span));
             }
             mir::TerminatorKind::Yield { .. } => {
                 return Err(
-                    self.unsupported_rvalue("yield statements are not supported".to_string(), span)
+                    self.unsupported("yield statements are not supported".to_string(), span)
                 );
             }
             mir::TerminatorKind::CoroutineDrop => {
-                return Err(
-                    self.unsupported_rvalue("coroutines are not supported".to_string(), span)
-                );
+                return Err(self.unsupported("coroutines are not supported".to_string(), span));
             }
             mir::TerminatorKind::InlineAsm { .. } => {
-                return Err(
-                    self.unsupported_rvalue("inline assembly is not supported".to_string(), span)
-                );
+                return Err(self.unsupported("inline assembly is not supported".to_string(), span));
             }
         };
         assert!(self.current_terminator.replace(terminator).is_none());
@@ -2548,7 +2542,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             if builtin.is_spec_only()
                 && (!in_ghost_code || matches!(builtin, PrustiBuiltin::Spec(_)))
             {
-                return Err(self.unsupported_rvalue(
+                return Err(self.unsupported(
                     format!(
                         "`prusti_contracts` builtin {builtin:?} cannot be used in executable code"
                     ),
