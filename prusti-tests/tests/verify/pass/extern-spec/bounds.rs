@@ -1,5 +1,5 @@
-//@ aux-build: compare.rs
-use compare::Compare;
+//@ aux-build: foreign_traits.rs
+use foreign_traits::{Compare, Convert, Pair, Plain};
 use prusti_contracts::*;
 use std::{fmt::Debug, ops::Not};
 
@@ -23,11 +23,26 @@ impl<T: Copy + Clone> Option<&T> {
 }
 
 // The supertraits of the target, including one that mentions `Self`.
-#[extern_spec(compare)]
+#[extern_spec(foreign_traits)]
 trait Compare: Eq + PartialOrd<Self> {
     #[pure]
     #[trusted]
     fn compare(&self, other: &Self) -> std::cmp::Ordering;
+}
+
+// The impl method only requires `U: Sized`, the trait method `U: Clone`.
+#[extern_spec]
+impl Convert for Plain {
+    #[trusted]
+    #[ensures(result)]
+    fn convert<U: Clone>(&self, u: U) -> bool;
+}
+
+// `Self` as the last element of a returned tuple.
+#[extern_spec(foreign_traits)]
+trait Pair {
+    #[trusted]
+    fn pair(&self) -> (u8, Self);
 }
 
 // A by-value receiver written with its type.
