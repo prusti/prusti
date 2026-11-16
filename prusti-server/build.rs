@@ -10,22 +10,10 @@ use std::{
     path::Path,
 };
 
-/// Paths relative to this crate that hold code or dependency versions affecting verification
-/// results. A directory stands for every file in it.
-const BACKEND_SOURCES: &[&str] = &[
-    "src",
-    "../vir/src",
-    "../vir-proc-macro/src",
-    "../prusti-viper/src",
-    "../viper/src",
-    "../viper-sys/src",
-    "../viper-sys/build.rs",
-    "../jni-gen/src",
-    "../prusti-smt-solver/src",
-    "../smt-log-analyzer/src",
-    "../Cargo.lock",
-    "../rust-toolchain",
-];
+/// The directories, relative to this crate, of the code that turns a VIR program into a Viper
+/// program (`prusti-viper`, using the type inference of `vir`) and that runs the verifier and
+/// reads its results back (`viper`).
+const BACKEND_SOURCES: &[&str] = &["../vir/src", "../prusti-viper/src", "../viper/src"];
 
 fn main() {
     let mut hasher = DefaultHasher::new();

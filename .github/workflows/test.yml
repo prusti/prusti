@@ -166,10 +166,11 @@ jobs:
       # The cache file records which verifier and Prusti backend produced its results, and
       # Prusti discards it if they differ from its own.
       - name: Load verification cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache@v4
         with:
           path: ${{ env.PRUSTI_CACHE_PATH }}
-          key: ${{ env.VER_CACHE_KEY_SHARED }}
+          # Use a unique key, so that the job will always store the cache at the end of the run
+          key: ${{ env.VER_CACHE_KEY_UNIQUE }}
           # Restore from the most recent cache that matches a shared prefix of the key
           restore-keys: ${{ env.VER_CACHE_KEY_SHARED }}
       - name: Build with cargo
@@ -177,14 +178,6 @@ jobs:
       - name: Run cargo tests
         run: python x.py test -p prusti-tests -- ${{ matrix.tests.filters }}
         #run: python x.py test --all
-      # Only main saves the cache, under a new key each time; PRs restore main's caches. The
-      # results of failing tests are worth keeping too.
-      - name: Save verification cache
-        if: ${{ !cancelled() && github.ref == 'refs/heads/main' }}
-        uses: actions/cache/save@v4
-        with:
-          path: ${{ env.PRUSTI_CACHE_PATH }}
-          key: ${{ env.VER_CACHE_KEY_UNIQUE }}
       - name: Check prusti-contracts
         if: strategy.job-index == 0
         run: |

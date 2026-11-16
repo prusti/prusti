@@ -102,20 +102,6 @@ impl VerificationRequest {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         self.program.get_hash().hash(&mut hasher);
         self.backend_config.hash(&mut hasher);
-        // The verifying process takes these settings from its own configuration rather than from
-        // the request, and they affect the result.
-        config::extra_jvm_args().hash(&mut hasher);
-        (
-            config::use_smt_wrapper(),
-            config::smt_qi_ignore_builtin(),
-            config::smt_qi_bound_global(),
-            config::smt_qi_bound_global_kind(),
-            config::smt_qi_bound_trace(),
-            config::smt_qi_bound_trace_kind(),
-            config::smt_unique_triggers_bound(),
-            config::smt_unique_triggers_bound_total(),
-        )
-            .hash(&mut hasher);
         hasher.finish()
     }
 

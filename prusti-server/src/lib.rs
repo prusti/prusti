@@ -22,7 +22,6 @@ mod client;
 mod process_verification;
 pub mod server;
 mod server_message;
-mod verification_cache;
 mod verification_request;
 mod backend;
 
@@ -31,7 +30,6 @@ pub(crate) use client::*;
 pub(crate) use process_verification::*;
 pub use server::{save_verification_cache, spawn_server_thread, start_server_on_port};
 pub(crate) use server_message::*;
-pub(crate) use verification_cache::*;
 pub(crate) use verification_request::*;
 
 // Futures returned by `Client` need to be executed in a compatible tokio runtime.
@@ -78,7 +76,12 @@ pub fn verify_programs(
                 verify_requests_server(verification_requests, server_address);
             handle_stream(env_diagnostic, verification_messages).await
         } else {
-            let cache = Lazy::new(move || Arc::new(sync::Mutex::new(load_verification_cache())));
+            let cache = Lazy::new(move || {
+                Arc::new(sync::Mutex::new(PersistentCache::load_cache(
+                    config::cache_path(),
+                    env!("BACKEND_FINGERPRINT"),
+                )))
+            });
             let vrp = Lazy::new(VerificationRequestProcessing::new);
             let verification_messages = verify_requests_local(verification_requests, &cache, &vrp);
             handle_stream(env_diagnostic, verification_messages).await
