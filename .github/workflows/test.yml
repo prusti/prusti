@@ -7,6 +7,8 @@ on:
   pull_request:
     branches: [main]
     paths-ignore: 'docs/**'
+  # The merge queue requires `can-merge` on the queued changes as well.
+  merge_group:
 
 # Cancel previous runs in a PR when pushing new commits
 concurrency:
