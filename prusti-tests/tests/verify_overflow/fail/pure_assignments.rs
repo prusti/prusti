@@ -1,6 +1,6 @@
 //@ known-failure
-//! Mutable borrows and assignments to array elements are not supported in
-//! pure code.
+//! Clients see the value after a field assignment in pure code; mutable
+//! borrows and assignments to array elements are rejected.
 use prusti_contracts::*;
 
 #[pure]
@@ -31,6 +31,6 @@ fn client2() {
 #[pure]
 fn pure3() -> [u32; 2] {
     let mut a = [1, 2];
-    a[0] = 3; //~ ERROR: assignment into a value of type `[u32; 2]` in pure code
+    a[0] = 3; //~ ERROR: assignment to a part of a `[u32; 2]` in pure code
     a
 }

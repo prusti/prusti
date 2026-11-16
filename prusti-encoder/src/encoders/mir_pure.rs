@@ -940,13 +940,13 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                     }
                 };
 
-                let mut term_update = Update::new();
                 let expr = self.encode_place_update(
                     &new_curr_ver,
                     *destination,
                     expr?,
                     term.source_info.span,
                 )?;
+                let mut term_update = Update::new();
                 self.bump_version(&mut term_update, destination.local, expr, location);
                 term_update.add_to_map(&mut new_curr_ver);
 
@@ -1327,8 +1327,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
     }
 
     /// The snapshot of `place.local` after `value` is written to `place`: the
-    /// local's snapshot with the projected part replaced, rebuilt from the
-    /// innermost projection outwards.
+    /// old snapshot with only the part at `place` replaced.
     fn encode_place_update(
         &mut self,
         curr_ver: &FxHashMap<mir::Local, Version<'vir>>,
@@ -1347,8 +1346,8 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                 _ => {
                     return Err(self.unsupported_rvalue(
                         format!(
-                            "assignment into a value of type `{}` in pure code: only fields \
-                             and boxed values can be assigned to",
+                            "assignment to a part of a `{}` in pure code: only fields and \
+                             boxed values can be assigned to",
                             base_ty.ty
                         ),
                         span,
@@ -1358,6 +1357,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
             let e_ty = self.ty_use(base_ty.ty);
             let variant = e_ty.expect_variant_opt(base_ty.variant_index);
             let field_idx = field_idx.unwrap_or(variant.fields.len() - 1);
+            // A place ending in a downcast cannot be encoded on its own.
             let base_proj = match base.projection {
                 [rest @ .., mir::ProjectionElem::Downcast(..)] => rest,
                 proj => proj,
