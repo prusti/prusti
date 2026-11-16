@@ -31,3 +31,15 @@ fn from_nth(r: &mut List, n: usize) -> &mut List {
         }
     }
 }
+
+fn last(mut r: &mut List) -> &mut u32 {
+    while let Some(ref mut tail) = r.next {
+        r = tail;
+    }
+    &mut r.value
+}
+
+fn set_last(r: &mut List) {
+    let v = last(r);
+    *v = 3;
+}

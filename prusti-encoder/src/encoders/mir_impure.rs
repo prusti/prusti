@@ -894,37 +894,38 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
     /// there when consumed. Asserting the footprint first moves it there before
     /// any statement, which may need it earlier (e.g. to read the address of a
     /// `Box` that is folded).
-    pub(crate) fn pcs_package_script<N: Into<BlockedNode<'vir>>>(
+    ///
+    /// Each entry of `rhs` holds the nodes through which one input of the wand
+    /// is given back. All nodes are unblocked together, as several may be
+    /// blocked through the same edges (e.g. two arguments that flow into the
+    /// same local).
+    pub(crate) fn pcs_package_script(
         &mut self,
         borrows_state: &BorrowsState<'_, 'vir>,
-        rhs: Vec<(N, Vec<vir::ExprBool<'vir>>)>,
+        rhs: Vec<(Vec<BlockedNode<'vir>>, Vec<vir::ExprBool<'vir>>)>,
         label: &'vir str,
     ) -> EncodeResult<'vir, Vec<vir::Stmt<'vir>>, E> {
-        let mut parts = Vec::new();
-        let mut unblock = Vec::new();
-        for (node, resources) in rhs {
-            let node = node.into();
-            let ug = UnblockGraph::for_node(node, borrows_state, self.pcg_ctxt());
-            let actions = ug.actions(self.pcg_ctxt()).unwrap();
-            let mut footprint = Footprint {
-                actions: &actions,
-                label,
-                parts: Vec::new(),
-            };
-            // Where nothing unblocks the node, it is given back as it is.
+        let nodes = rhs.iter().flat_map(|(nodes, _)| nodes.iter().copied());
+        let ug = UnblockGraph::for_nodes(nodes, borrows_state, self.pcg_ctxt());
+        let actions = ug.actions(self.pcg_ctxt()).unwrap();
+        let mut footprint = Footprint {
+            actions: &actions,
+            label,
+            parts: Vec::new(),
+        };
+        // Where nothing unblocks the nodes, they are given back as they are.
+        for (nodes, resources) in rhs {
             if !resources.is_empty() {
                 let resources = self.vcx.mk_conj(&resources);
-                let part = self.unless_unblocked(&footprint, node, None, resources);
+                let part = self.unless_unblocked(&footprint, &nodes, None, resources);
                 footprint.parts.extend(part);
             }
-            unblock.extend(
-                self.block(|visitor| visitor.pcs_unblock_actions(borrows_state, &mut footprint))?,
-            );
-            parts.extend(footprint.parts);
         }
+        let unblock =
+            self.block(|visitor| visitor.pcs_unblock_actions(borrows_state, &mut footprint))?;
         let mut script = Vec::new();
-        if !parts.is_empty() {
-            script.push(self.vcx.mk_assert_stmt(self.vcx.mk_conj(&parts)));
+        if !footprint.parts.is_empty() {
+            script.push(self.vcx.mk_assert_stmt(self.vcx.mk_conj(&footprint.parts)));
         }
         script.extend(unblock);
         Ok(script)
@@ -949,19 +950,19 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             let mut old_outer = WandOldOuter::Label(Some(footprint.label));
             self.encode_pcg_node(&child, &mut resources, &mut old_outer)?;
             let resources = self.vcx.mk_conj(&resources);
-            let part = self.unless_unblocked(footprint, child.into(), Some(edge), resources);
+            let part = self.unless_unblocked(footprint, &[child.into()], Some(edge), resources);
             footprint.parts.extend(part);
         }
         Ok(())
     }
 
     /// `resource` under the conditions where none of the footprint's actions
-    /// unblock `node`, `None` if one always does (or does whenever `edge` is
-    /// valid).
+    /// unblock any of `nodes`, `None` if one always does (or does whenever
+    /// `edge` is valid).
     fn unless_unblocked(
         &mut self,
         footprint: &Footprint<'_, 'vir>,
-        node: BlockedNode<'vir>,
+        nodes: &[BlockedNode<'vir>],
         edge: Option<&BorrowPcgEdge<'vir>>,
         resource: vir::ExprBool<'vir>,
     ) -> Option<vir::ExprBool<'vir>> {
@@ -969,7 +970,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         let mut unblocked_under = Vec::new();
         for action in footprint.actions {
             let unblocking = action.edge();
-            if !unblocking.blocks_node(node, ctxt) {
+            if !nodes.iter().any(|node| unblocking.blocks_node(*node, ctxt)) {
                 continue;
             }
             let cond_conjuncts = self.edge_condition(unblocking);
