@@ -948,9 +948,14 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                     }
                 });
 
+                let expr = self.encode_place_update(
+                    &new_curr_ver,
+                    *destination,
+                    expr?,
+                    term.source_info.span,
+                )?;
                 let mut term_update = Update::new();
-                assert!(destination.projection.is_empty());
-                self.bump_version(&mut term_update, destination.local, expr?, location);
+                self.bump_version(&mut term_update, destination.local, expr, location);
                 term_update.add_to_map(&mut new_curr_ver);
 
                 // walk rest of CFG
@@ -989,9 +994,9 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                 | mir::StatementKind::Nop
                 | mir::StatementKind::BackwardIncompatibleDropHint { .. } => {} // nop
                 mir::StatementKind::Assign(box (dest, rvalue)) => {
-                    //assert!(dest.projection.is_empty());
                     let span = stmt.source_info.span;
                     let expr = self.encode_rvalue(curr_ver, rvalue, span)?;
+                    let expr = self.encode_place_update(curr_ver, *dest, expr, span)?;
                     self.bump_version(&mut update, dest.local, expr, location);
                 }
                 k => todo!("statement kind {k:?}"),
@@ -1327,6 +1332,58 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
         }
 
         Ok(encoded_place)
+    }
+
+    /// The snapshot of `place.local` after `value` is written to `place`: the
+    /// old snapshot with only the part at `place` replaced.
+    fn encode_place_update(
+        &mut self,
+        curr_ver: &FxHashMap<mir::Local, Version<'vir>>,
+        place: mir::Place<'vir>,
+        mut value: ExprRet<'vir>,
+        span: Span,
+    ) -> EncodeResult<'vir, ExprRet<'vir>, MirPureEnc> {
+        let Some((_, prefix)) = place.projection.split_last() else {
+            return Ok(value);
+        };
+        // The type and snapshot of each place that `place` projects from.
+        let mut base_ty = mir::PlaceTy::from_ty(self.body.local_decls[place.local].ty);
+        let mut base =
+            self.encode_place_with_ref(curr_ver, mir::Place::from(place.local).into())?;
+        let mut bases = vec![(base_ty, base.snap)];
+        for &elem in prefix {
+            base = self.encode_place_element(curr_ver, base_ty, elem, base)?;
+            base_ty = base_ty.projection_ty(self.vcx.tcx(), elem);
+            bases.push((base_ty, base.snap));
+        }
+        for ((base_ty, base_snap), &elem) in bases.into_iter().zip(&place.projection[..]).rev() {
+            let e_ty = self.ty_use(base_ty.ty);
+            value = match elem {
+                mir::ProjectionElem::Downcast(..) => value,
+                mir::ProjectionElem::Field(field_idx, _) => e_ty
+                    .expect_variant_opt(base_ty.variant_index)
+                    .with_field(base_snap.downcast_ty(), field_idx, value)
+                    .upcast_ty(),
+                mir::ProjectionElem::Deref if base_ty.ty.is_box() => e_ty
+                    .expect_structlike()
+                    .with_box_value(base_snap.downcast_ty(), value)
+                    .upcast_ty(),
+                // TODO: array elements need a function on the array snapshot
+                // that replaces one element; writes through a `&mut` need its
+                // referent's value, which pure code does not have.
+                _ => {
+                    return Err(self.unsupported_rvalue(
+                        format!(
+                            "assignment to a part of a `{}` in pure code: only fields and \
+                             boxed values can be assigned to",
+                            base_ty.ty
+                        ),
+                        span,
+                    ));
+                }
+            };
+        }
+        Ok(value)
     }
 
     /// Encodes the closure argument of a quantifier/spec-block builtin: the

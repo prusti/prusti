@@ -630,6 +630,22 @@ impl<'vir> TyUsePureStruct<'vir> {
         self.fields.last().unwrap().read(snap)
     }
 
+    /// The snapshot of a `Box` (given as `snap`) with the boxed `T` replaced
+    /// by `value`.
+    #[track_caller]
+    pub fn with_box_value<Curr, Next>(
+        &self,
+        snap: vir::ExprGenCSnap<'vir, Curr, Next>,
+        value: vir::ExprGenSnap<'vir, Curr, Next>,
+    ) -> vir::ExprGenCSnap<'vir, Curr, Next> {
+        assert!(self.data.box_data.is_some(), "expected box");
+        self.with_field(
+            snap,
+            abi::FieldIdx::from_usize(self.fields.len() - 1),
+            value,
+        )
+    }
+
     /// The snapshot of a `Box` (given as `snap`) with the same address and
     /// other fields, but new pointer metadata and value; used for unsize
     /// coercions. `metadata` and `value` are given in this box's context.
@@ -668,6 +684,28 @@ impl<'vir> TyUsePureStruct<'vir> {
             *snap = field.caster.cast_to_callee_ctx(*snap);
         }
         self.pure.field_snaps_to_snap.call()(&snaps)
+    }
+
+    /// The snapshot `snap` with field `idx` replaced by `value`.
+    pub fn with_field<Curr, Next>(
+        &self,
+        snap: vir::ExprGenCSnap<'vir, Curr, Next>,
+        idx: abi::FieldIdx,
+        value: vir::ExprGenSnap<'vir, Curr, Next>,
+    ) -> vir::ExprGenCSnap<'vir, Curr, Next> {
+        let snaps = self
+            .fields
+            .iter()
+            .enumerate()
+            .map(|(i, field)| {
+                if i == idx.as_usize() {
+                    value
+                } else {
+                    field.read(snap)
+                }
+            })
+            .collect();
+        self.field_snaps_to_snap(snaps)
     }
 }
 
