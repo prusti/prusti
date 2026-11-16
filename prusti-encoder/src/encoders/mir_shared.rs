@@ -137,8 +137,9 @@ pub(crate) trait PureRvalueEnc<'vir> {
                 vec![span],
             )
             .with_help(
-                "move this code into a `#[trusted]` function, and describe what it does \
-                 with pre- and postconditions"
+                "move this code into a `#[trusted]` function (also marked `#[pure]` if \
+                 pure code or specifications call it), and describe what it does with \
+                 pre- and postconditions"
                     .to_string(),
             ),
         ])
@@ -281,7 +282,12 @@ pub(crate) trait PureRvalueEnc<'vir> {
     ) -> ExprResult<'vir, Self> {
         let e_rvalue_ty = self.ty_use_pure(rvalue_ty);
         if e_rvalue_ty.specifics.is_opaque() {
-            return Err(self.unsupported_opaque(rvalue_ty, "fields", self.current_span()));
+            let part = if rvalue_ty.is_enum() {
+                "variant"
+            } else {
+                "fields"
+            };
+            return Err(self.unsupported_opaque(rvalue_ty, part, self.current_span()));
         }
         let encoded_fields = fields
             .iter()

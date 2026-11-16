@@ -105,6 +105,12 @@ fn construct_variant() -> P {
 }
 
 #[pure]
+fn construct_unit_variant_pure() -> P {
+    P::B //~ERROR: cannot encode function body `construct_unit_variant_pure`: using the variant of `P` is not supported
+    //~^ ERROR: unsupported rvalue P::B
+}
+
+#[pure]
 fn discriminant_pure(p: &P) -> isize {
     core::intrinsics::discriminant_value(p) //~ERROR: cannot encode function body `discriminant_pure`: using the variant of `P` is not supported
     //~^ ERROR: cannot encode method body `discriminant_pure`: using the variant of `P` is not supported
