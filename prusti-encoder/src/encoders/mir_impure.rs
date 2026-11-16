@@ -2255,9 +2255,6 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         terminator: &mir::Terminator<'vir>,
         location: mir::Location,
     ) -> EncodeResult<'vir, (), E> {
-        // Everything emitted for the terminator, from its PCG repacks to those
-        // of its outgoing edges, is encoded under its span, like statements
-        // in `visit_statement`.
         self.vcx.with_span(terminator.source_info.span, |_vcx| {
             self.encode_terminator(terminator, location)
         })
