@@ -110,7 +110,7 @@ pub(crate) trait PureRvalueEnc<'vir> {
             .unwrap_or_else(|| self.body().span)
     }
 
-    /// Build an error for an unsupported feature reached during rvalue encoding.
+    /// Build an error for an unsupported feature at `span`.
     fn unsupported_rvalue(
         &self,
         message: String,

@@ -38,7 +38,7 @@ use prusti_rustc_interface::{
     span::{Span, Spanned, def_id::DefId},
 };
 use rustc_hash::{FxHashMap, FxHashSet};
-use task_encoder::{EncodeFullError, TaskEncoder, TaskEncoderDependencies};
+use task_encoder::{TaskEncoder, TaskEncoderDependencies};
 use vir::{CastType, CompType, LocalDeclData};
 
 use crate::encoders::{
@@ -273,17 +273,6 @@ pub(crate) struct Footprint<'a, 'vir> {
     pub(crate) parts: Vec<vir::ExprBool<'vir>>,
 }
 
-enum EncodeRvalueError<'vir, E: TaskEncoder> {
-    UnsupportedRvalue,
-    EncoderError(EncodeFullError<'vir, E>),
-}
-
-impl<'vir, E: TaskEncoder> From<EncodeFullError<'vir, E>> for EncodeRvalueError<'vir, E> {
-    fn from(e: EncodeFullError<'vir, E>) -> Self {
-        EncodeRvalueError::EncoderError(e)
-    }
-}
-
 impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
     pub(crate) fn pcg_ctxt(&self) -> CompilerCtxt<'enc, 'vir> {
         self.fpcs_analysis.ctxt()
@@ -314,34 +303,27 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         rvalue: &mir::Rvalue<'vir>,
         span: Span,
         operand_snaps: &OperandSnaps<'vir>,
-    ) -> Result<EncodedRvalue<'vir>, EncodeRvalueError<'vir, E>> {
+    ) -> EncodeResult<'vir, EncodedRvalue<'vir>, E> {
         let rvalue_ty = rvalue.ty(self.local_decls, self.vcx.tcx());
         match rvalue {
-            mir::Rvalue::Use(op, _) => Ok(self
-                .encode_operand_snap(op, operand_snaps)
-                .map_err(EncodeRvalueError::from)?
-                .into()),
+            mir::Rvalue::Use(op, _) => Ok(self.encode_operand_snap(op, operand_snaps)?.into()),
             mir::Rvalue::Cast(cast_kind, operand, ty) => {
                 assert_eq!(*ty, rvalue_ty);
-                let (stmt, cast) = self
-                    .encode_cast_snap(rvalue_ty, *cast_kind, operand, operand_snaps)
-                    .map_err(EncodeRvalueError::from)?;
+                let (stmt, cast) =
+                    self.encode_cast_snap(rvalue_ty, *cast_kind, operand, operand_snaps)?;
                 self.stmts(stmt);
                 Ok(cast.into())
             }
             mir::Rvalue::BinaryOp(op, box (l, r)) => Ok(self
-                .encode_binop_snap(rvalue_ty, *op, l, r, operand_snaps, span)
-                .map_err(EncodeRvalueError::from)?
+                .encode_binop_snap(rvalue_ty, *op, l, r, operand_snaps, span)?
                 .into()),
 
             mir::Rvalue::UnaryOp(unop, operand) => Ok(self
-                .encode_unary_op_snap(rvalue_ty, *unop, operand, operand_snaps)
-                .map_err(EncodeRvalueError::from)?
+                .encode_unary_op_snap(rvalue_ty, *unop, operand, operand_snaps)?
                 .into()),
 
             mir::Rvalue::Aggregate(box mir::AggregateKind::Array(..), elements) => Ok(self
-                .encode_array_snap(rvalue_ty, elements, operand_snaps)
-                .map_err(EncodeRvalueError::from)?
+                .encode_array_snap(rvalue_ty, elements, operand_snaps)?
                 .into()),
 
             mir::Rvalue::Aggregate(
@@ -350,13 +332,11 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 | mir::AggregateKind::Closure(..)),
                 fields,
             ) => Ok(self
-                .encode_aggregate_snap(rvalue_ty, kind, fields, operand_snaps)
-                .map_err(EncodeRvalueError::from)?
+                .encode_aggregate_snap(rvalue_ty, kind, fields, operand_snaps)?
                 .into()),
 
             mir::Rvalue::Repeat(operand, len) => Ok(self
-                .encode_repeat_snap(rvalue_ty, operand, *len, operand_snaps)
-                .map_err(EncodeRvalueError::from)?
+                .encode_repeat_snap(rvalue_ty, operand, *len, operand_snaps)?
                 .into()),
 
             mir::Rvalue::Discriminant(place) => {
@@ -437,7 +417,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                     .into())
             }
 
-            _ => Err(EncodeRvalueError::UnsupportedRvalue),
+            _ => Err(self.unsupported_rvalue(format!("unsupported rvalue {rvalue:?}"), span)),
         }
     }
 
@@ -1141,14 +1121,13 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                         self.vcx,
                         "ignored repack op: {other:?}"
                     )));
+                    Ok(())
                 } else {
-                    self.stmt(self.vcx.mk_comment_stmt(vir::vir_format!(
-                        self.vcx,
-                        "unsupported repack op: {other:?}"
-                    )));
-                    self.stmt(self.vcx.mk_exhale_stmt(self.vcx.mk_bool::<false>()));
+                    Err(self.unsupported_rvalue(
+                        format!("unsupported repack op {other:?}"),
+                        self.current_span(),
+                    ))
                 }
-                Ok(())
             }
         }
     }
@@ -2195,28 +2174,15 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                         .expect_predicate();
 
                     // The snapshot of the value that we are assigning.
-                    let rval_enc = self.encode_rvalue(rvalue, span, &captured);
+                    let rval_enc = self.encode_rvalue(rvalue, span, &captured)?;
 
-                    match rval_enc {
-                        Ok(rval_enc) => {
-                            let dest_ty = dest.ty(self.local_decls, self.vcx.tcx());
-                            assert!(dest_ty.variant_index.is_none());
-                            let dest_ty_out = self.ty_use_impure(dest_ty.ty);
-                            let method_assign_app =
-                                dest_ty_out.apply_method_assign(self.vcx, proj_enc, rval_enc.expr);
-                            self.stmt(method_assign_app);
-                            self.stmts(rval_enc.post_fold_stmts(proj_enc));
-                        }
-                        Err(_) => {
-                            self.vcx.with_span(span, |vcx| {
-                                let error_msg = format!("unsupported rvalue {rvalue:?} might be reached");
-                                vcx.handle_error("exhale.failed:assertion.false", move |_| {
-                                    Some(vec![PrustiError::verification(&error_msg, span.into())])
-                                });
-                                self.stmt(self.vcx.mk_exhale_stmt(self.vcx.mk_bool::<false>()));
-                            });
-                        }
-                    }
+                    let dest_ty = dest.ty(self.local_decls, self.vcx.tcx());
+                    assert!(dest_ty.variant_index.is_none());
+                    let dest_ty_out = self.ty_use_impure(dest_ty.ty);
+                    let method_assign_app =
+                        dest_ty_out.apply_method_assign(self.vcx, proj_enc, rval_enc.expr);
+                    self.stmt(method_assign_app);
+                    self.stmts(rval_enc.post_fold_stmts(proj_enc));
                 }
 
                 // no-ops
@@ -2231,16 +2197,10 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 | mir::StatementKind::BackwardIncompatibleDropHint { .. } => {}
 
                 mir::StatementKind::Intrinsic(intrinsic_kind) => {
-                    let intrinsic_kind = intrinsic_kind.clone();
-                    self.vcx.with_span(span, |vcx| {
-                        vcx.handle_error("exhale.failed:assertion.false", move |_| {
-                            Some(vec![PrustiError::verification(
-                                format!("unsupported intrinsic statement {intrinsic_kind:?} might be reached"),
-                                span.into(),
-                            )])
-                        });
-                        self.stmt(self.vcx.mk_exhale_stmt(self.vcx.mk_bool::<false>()));
-                    });
+                    return Err(self.unsupported_rvalue(
+                        format!("unsupported intrinsic statement {intrinsic_kind:?}"),
+                        span,
+                    ));
                 }
                 mir::StatementKind::SetDiscriminant { .. } => unreachable!(
                     "the statement kind {:?} is not allowed in the MIR analysis phase",
@@ -2533,46 +2493,26 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 })
             }
 
-            mir::TerminatorKind::TailCall { .. } => self.vcx.with_span(span, |vcx| {
-                vcx.handle_error("exhale.failed:assertion.false", move |_| {
-                    Some(vec![PrustiError::unsupported(
-                        "tail calls are not supported",
-                        span.into(),
-                    )])
-                });
-                self.stmt(self.vcx.mk_exhale_stmt(self.vcx.mk_bool::<false>()));
-                self.vcx.mk_assume_false_stmt()
-            }),
-            mir::TerminatorKind::Yield { .. } => self.vcx.with_span(span, |vcx| {
-                vcx.handle_error("exhale.failed:assertion.false", move |_| {
-                    Some(vec![PrustiError::unsupported(
-                        "yield statements are not supported",
-                        span.into(),
-                    )])
-                });
-                self.stmt(self.vcx.mk_exhale_stmt(self.vcx.mk_bool::<false>()));
-                self.vcx.mk_assume_false_stmt()
-            }),
-            mir::TerminatorKind::CoroutineDrop => self.vcx.with_span(span, |vcx| {
-                vcx.handle_error("exhale.failed:assertion.false", move |_| {
-                    Some(vec![PrustiError::unsupported(
-                        "coroutines are not supported",
-                        span.into(),
-                    )])
-                });
-                self.stmt(self.vcx.mk_exhale_stmt(self.vcx.mk_bool::<false>()));
-                self.vcx.mk_assume_false_stmt()
-            }),
-            mir::TerminatorKind::InlineAsm { .. } => self.vcx.with_span(span, |vcx| {
-                vcx.handle_error("exhale.failed:assertion.false", move |_| {
-                    Some(vec![PrustiError::unsupported(
-                        "inline assembly is not supported",
-                        span.into(),
-                    )])
-                });
-                self.stmt(self.vcx.mk_exhale_stmt(self.vcx.mk_bool::<false>()));
-                self.vcx.mk_assume_false_stmt()
-            }),
+            mir::TerminatorKind::TailCall { .. } => {
+                return Err(
+                    self.unsupported_rvalue("tail calls are not supported".to_string(), span)
+                );
+            }
+            mir::TerminatorKind::Yield { .. } => {
+                return Err(
+                    self.unsupported_rvalue("yield statements are not supported".to_string(), span)
+                );
+            }
+            mir::TerminatorKind::CoroutineDrop => {
+                return Err(
+                    self.unsupported_rvalue("coroutines are not supported".to_string(), span)
+                );
+            }
+            mir::TerminatorKind::InlineAsm { .. } => {
+                return Err(
+                    self.unsupported_rvalue("inline assembly is not supported".to_string(), span)
+                );
+            }
         };
         assert!(self.current_terminator.replace(terminator).is_none());
         Ok(())
