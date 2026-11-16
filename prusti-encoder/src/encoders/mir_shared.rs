@@ -355,12 +355,12 @@ pub(crate) trait PureRvalueEnc<'vir> {
                         args[0].span,
                     ));
                 };
-                let deref_place = self.vcx().tcx().mk_place_deref(place);
-                let snap = self.encode_place_snap(deref_place.into(), ctxt)?;
                 let e_enum_ty = self.ty_use_pure(enum_ty);
                 if e_enum_ty.specifics.is_opaque() {
                     return Err(self.unsupported_opaque(enum_ty, "discriminant"));
                 }
+                let deref_place = self.vcx().tcx().mk_place_deref(place);
+                let snap = self.encode_place_snap(deref_place.into(), ctxt)?;
                 match e_enum_ty.get_enumlike() {
                     Some(e_enum_ty) => {
                         Ok(e_enum_ty.snap_to_discr_snap(snap.downcast_ty()).upcast_ty())

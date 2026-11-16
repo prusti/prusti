@@ -4,10 +4,11 @@ use prusti_contracts::*;
 // read or written, its values cannot be built from fields, and its
 // discriminant cannot be read.
 //
-// A pure function is also encoded as a method. There, as in other non-pure
-// code, an unsupported rvalue (building a value, reading a discriminant) only
-// gives the generic "unsupported rvalue ... might be reached" error, and only
-// where it may be reached.
+// A pure function is encoded both as a Viper function and as a method, so it
+// gets an error from each. In the method, as in other non-pure code, an
+// unsupported rvalue (building a value, reading a discriminant) only gives the
+// generic "unsupported rvalue ... might be reached" error, and only where it
+// may be reached.
 
 #[trusted]
 #[derive(Clone, Copy)]
@@ -84,8 +85,8 @@ enum P {
     B,
 }
 
-// In the method body the discriminant read is an rvalue, so the field read is
-// the first error reported.
+// In the method, the discriminant read only gives the deferred rvalue error,
+// and the field read fails the whole body, so only the field error is reported.
 #[pure]
 fn get_pure(p: P) -> u32 {
     match p { //~ERROR: cannot encode function body `get_pure`: the discriminant of `P` cannot be used
