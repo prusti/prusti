@@ -37,3 +37,21 @@ trait Not {
     #[trusted]
     fn not(self: Self) -> Self::Output;
 }
+
+// `Self` returned by value, from a trait without a `Sized` supertrait.
+#[extern_spec(std::os::fd)]
+trait FromRawFd {
+    #[trusted]
+    unsafe fn from_raw_fd(fd: std::os::fd::RawFd) -> Self;
+}
+
+// A bound on a projection that the target states on an equal projection.
+#[extern_spec]
+trait Iterator {
+    #[trusted]
+    fn cmp<I>(self, other: I) -> std::cmp::Ordering
+    where
+        I: IntoIterator<Item = Self::Item>,
+        I::Item: Ord,
+        Self: Sized;
+}
