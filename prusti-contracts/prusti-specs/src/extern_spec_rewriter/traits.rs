@@ -104,10 +104,14 @@ fn generate_new_struct(
     };
     // Propagate the declared supertraits (e.g. `trait Default: Sized`) as
     // bounds on the self type parameter.
-    for supertrait in &item_trait.supertraits {
+    let supertraits = &item_trait.supertraits;
+    if !supertraits.is_empty() {
+        let mut supertrait_clause: syn::WhereClause = parse_quote! { where Self: #supertraits };
+        supertrait_clause
+            .rewrite_self_type(&parse_quote! { #self_type_ident }, Some(&self_type_trait));
         self_where_clause
             .predicates
-            .push(parse_quote! { #self_type_ident: #supertrait });
+            .extend(supertrait_clause.predicates);
     }
     new_struct.generics.where_clause = Some(self_where_clause);
 
@@ -147,19 +151,7 @@ impl GeneratedStruct<'_> {
             .params
             .clone()
             .into_token_stream();
-        // Only the parameter *idents* may appear in the struct's type-argument
-        // position (bounds like `?Sized` are not permitted there).
-        let generic_args = self
-            .generated_struct
-            .generics
-            .params
-            .iter()
-            .map(|param| match param {
-                syn::GenericParam::Type(param) => param.ident.to_token_stream(),
-                syn::GenericParam::Lifetime(param) => param.lifetime.to_token_stream(),
-                syn::GenericParam::Const(param) => param.ident.to_token_stream(),
-            })
-            .collect::<Vec<_>>();
+        let generic_args = rewrite_generics(&self.generated_struct.generics);
         let where_clause = self
             .generated_struct
             .generics
@@ -169,7 +161,7 @@ impl GeneratedStruct<'_> {
 
         let mut struct_impl: syn::ItemImpl = parse_quote_spanned! {self.item_trait.span()=>
             #[allow(non_camel_case_types)]
-            impl< #generic_params > #struct_ident < #(#generic_args),* > #where_clause {}
+            impl< #generic_params > #struct_ident #generic_args #where_clause {}
         };
 
         // Add items to impl block
