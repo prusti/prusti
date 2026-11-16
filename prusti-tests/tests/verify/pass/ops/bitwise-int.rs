@@ -78,3 +78,14 @@ fn mul2(x: i16) -> i16 {
 fn div2(x: u16) -> u16 {
     x >> 1
 }
+
+#[ensures(result == u32::MAX - x)]
+fn not_u32(x: u32) -> u32 {
+    !x
+}
+
+#[ensures(result == -1 - x)]
+#[ensures(!result == x)]
+fn not_i64(x: i64) -> i64 {
+    !x
+}

@@ -79,3 +79,27 @@ fn bitxor_2() {
     let b = a ^ 2;
     assert!(b == 253);  //~ ERROR: might not hold
 }
+
+fn bitnot_1() {
+    let a = 5u8;
+    let b = !a;
+    assert!(b == 250);
+}
+
+fn bitnot_2() {
+    let a = 5u8;
+    let b = !a;
+    assert!(b == 251);  //~ ERROR: might not hold
+}
+
+fn bitnot_3() {
+    let a = 5i8;
+    let b = !a;
+    assert!(b == -6);
+}
+
+fn bitnot_4() {
+    let a = 5i8;
+    let b = !a;
+    assert!(b == -5);   //~ ERROR: might not hold
+}
