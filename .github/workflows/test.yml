@@ -4,9 +4,10 @@ on:
   push:
     branches: [main]
     paths-ignore: 'docs/**'
+  # Not filtered by path: a required check whose workflow is skipped never reports, which
+  # blocks the pull request.
   pull_request:
     branches: [main]
-    paths-ignore: 'docs/**'
   # The merge queue requires `can-merge` on the queued changes as well.
   merge_group:
 
