@@ -131,8 +131,8 @@ impl TaskEncoder for MirBuiltinCastEnc {
                 mir::CastKind::IntToInt => {
                     let e_op_ty = op_ty.expect_primitive();
                     let e_res_ty = res_ty.expect_primitive();
-                    let result_kind = result_ty.expect_primitive().kind();
-                    let operand_kind = operand_ty.expect_primitive().kind();
+                    let result_prim = *result_ty.expect_primitive();
+                    let operand_prim = *operand_ty.expect_primitive();
 
                     // An integer `as` cast never panics: when every value of the
                     // source type is representable in the target the value is
@@ -140,7 +140,7 @@ impl TaskEncoder for MirBuiltinCastEnc {
                     // width and reinterpreted with the target's signedness. Either
                     // way any input is valid, so the cast function needs NO
                     // precondition.
-                    let wrapped = if matches!(operand_kind, ty::TyKind::Bool) {
+                    let wrapped = if matches!(operand_prim.kind(), ty::TyKind::Bool) {
                         // `bool as <int>` is `b ? 1 : 0`; always lossless.
                         vcx.mk_ternary_expr(
                             arg_ex.downcast_ty(),
@@ -149,8 +149,8 @@ impl TaskEncoder for MirBuiltinCastEnc {
                         )
                         .upcast_ty()
                     } else {
-                        let (to_bits, to_signed) = vir::VirCtxt::get_int_data(result_kind);
-                        let (from_bits, from_signed) = vir::VirCtxt::get_int_data(operand_kind);
+                        let (to_bits, to_signed) = vcx.get_int_data(result_prim);
+                        let (from_bits, from_signed) = vcx.get_int_data(operand_prim);
 
                         let arg_prim = e_op_ty.snap_to_prim(arg_ex);
 
@@ -165,7 +165,7 @@ impl TaskEncoder for MirBuiltinCastEnc {
                             // Truncate to the target width and reinterpret with its
                             // signedness (two's complement); the shared helper wraps
                             // `((x [+ 2^(N-1)]) mod 2^N) [- 2^(N-1)]`.
-                            vcx.get_wrapped_val(arg_prim.downcast_ty(), result_kind)
+                            vcx.get_wrapped_val(arg_prim.downcast_ty(), result_prim)
                                 .upcast_ty()
                         }
                     };
@@ -210,8 +210,7 @@ impl TaskEncoder for MirBuiltinCastEnc {
                 mir::CastKind::IntToFloat => {
                     let e_op_ty = op_ty.expect_primitive();
                     let e_res_ty = res_ty.expect_float();
-                    let (bits, signed) =
-                        vir::VirCtxt::get_int_data(operand_ty.expect_primitive().kind());
+                    let (bits, signed) = vcx.get_int_data(*operand_ty.expect_primitive());
                     // Convert at the width of the source type, which keeps `int2bv` cheaper for Z3.
                     let ty::Float(float) = *result_ty.expect_primitive().kind() else {
                         unreachable!()
@@ -254,11 +253,11 @@ impl TaskEncoder for MirBuiltinCastEnc {
                 mir::CastKind::FloatToInt => {
                     let e_op_ty = op_ty.expect_float();
                     let e_res_ty = res_ty.expect_primitive();
-                    let result_kind = result_ty.expect_primitive().kind();
+                    let result_prim = *result_ty.expect_primitive();
                     let ty::Float(float) = *operand_ty.expect_primitive().kind() else {
                         unreachable!()
                     };
-                    let (bits, signed) = vir::VirCtxt::get_int_data(result_kind);
+                    let (bits, signed) = vcx.get_int_data(result_prim);
                     // Convert at the width of the target type, so that every
                     // in-range value is representable.
                     let conv = deps
@@ -296,10 +295,10 @@ impl TaskEncoder for MirBuiltinCastEnc {
                         e_res_ty.prim_to_snap(vcx.mk_int::<0>().upcast_ty()),
                         vcx.mk_ternary_expr(
                             (e_op_ty.fp_leq)(arg_ex, float_const(lower)),
-                            e_res_ty.prim_to_snap(vcx.get_min_int(result_kind).upcast_ty()),
+                            e_res_ty.prim_to_snap(vcx.get_min_int(result_prim).upcast_ty()),
                             vcx.mk_ternary_expr(
                                 (e_op_ty.fp_geq)(arg_ex, float_const(upper)),
-                                e_res_ty.prim_to_snap(vcx.get_max_int(result_kind).upcast_ty()),
+                                e_res_ty.prim_to_snap(vcx.get_max_int(result_prim).upcast_ty()),
                                 e_res_ty.prim_to_snap(in_range.upcast_ty()),
                             ),
                         ),

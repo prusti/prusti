@@ -118,7 +118,7 @@ impl TaskEncoder for MirBuiltinUnOpEnc {
                                 let all_ones = if operand_ty.is_signed() {
                                     vcx.mk_int::<-1>()
                                 } else {
-                                    vcx.get_max_int(operand_ty.kind())
+                                    vcx.get_max_int(operand_ty)
                                 };
                                 vcx.mk_bin_op_expr(
                                     vir::BinOpKind::Sub,
@@ -134,7 +134,7 @@ impl TaskEncoder for MirBuiltinUnOpEnc {
                             // before in debug mode. We should still produce the correct result in
                             // release mode, which the code under this branch does.
                             if op == mir::UnOp::Neg && operand_ty.is_signed() {
-                                let bound = vcx.get_min_int(operand_ty.kind());
+                                let bound = vcx.get_min_int(operand_ty);
                                 // `snap_to_prim(arg) == -iN::MIN`
                                 let cond = vcx.mk_eq_expr(prim_arg.downcast_ty(), bound);
                                 // `snap_to_prim(arg) == -iN::MIN ? arg :

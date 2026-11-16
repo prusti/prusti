@@ -3,7 +3,7 @@ use crate::{
     CastType, CompType, HasType, ViperIdent, VirCtxt,
 };
 use cfg_if::cfg_if;
-use prusti_rustc_interface::middle::ty;
+use prusti_rustc_interface::{abi::Size, middle::ty};
 use std::fmt::Debug;
 
 cfg_if! {
@@ -1506,89 +1506,68 @@ impl<'tcx> VirCtxt<'tcx> {
         self.mk_assoc_op(BinOpKind::Or, default, elems)
     }
 
-    pub const fn get_int_data(rust_ty: &ty::TyKind) -> (u32, bool) {
-        match rust_ty {
-            ty::Int(ty::IntTy::Isize) => ((std::mem::size_of::<isize>() * 8) as u32, true),
-            ty::Int(ty::IntTy::I8) => (8, true),
-            ty::Int(ty::IntTy::I16) => (16, true),
-            ty::Int(ty::IntTy::I32) => (32, true),
-            ty::Int(ty::IntTy::I64) => (64, true),
-            ty::Int(ty::IntTy::I128) => (128, true),
-            ty::Uint(ty::UintTy::Usize) => ((std::mem::size_of::<usize>() * 8) as u32, false),
-            ty::Uint(ty::UintTy::U8) => (8, false),
-            ty::Uint(ty::UintTy::U16) => (16, false),
-            ty::Uint(ty::UintTy::U32) => (32, false),
-            ty::Uint(ty::UintTy::U64) => (64, false),
-            ty::Uint(ty::UintTy::U128) => (128, false),
-            // See https://doc.rust-lang.org/book/ch03-02-data-types.html#the-character-type
-            ty::Char => (32, false),
-            _ => unreachable!(),
+    /// The width in bits and the signedness of the integer type `rust_ty` on
+    /// the compilation target. A `char` counts as an unsigned integer of its
+    /// size, which holds its Unicode scalar value.
+    pub fn get_int_data(&self, rust_ty: ty::Ty<'tcx>) -> (u32, bool) {
+        let (size, signed) = match rust_ty.kind() {
+            ty::Char => (rust_ty.primitive_size(self.tcx()), false),
+            _ => rust_ty.int_size_and_signed(self.tcx()),
+        };
+        (size.bits().try_into().unwrap(), signed)
+    }
+    /// The value of the integer type `rust_ty` (or `char`) whose bit pattern
+    /// is `value`. A `ConstData::Int` holds an unsigned value, so a negative
+    /// value is the negation of its magnitude.
+    pub fn mk_int_from_bits<'vir>(&'vir self, rust_ty: ty::Ty<'tcx>, value: u128) -> ExprInt<'vir> {
+        let (bit_width, signed) = self.get_int_data(rust_ty);
+        let size = Size::from_bits(bit_width);
+        let negative_value = if signed {
+            let value = size.sign_extend(value);
+            Some(value).filter(|value| value.is_negative())
+        } else {
+            None
+        };
+        match negative_value {
+            Some(value) => {
+                let value = self.mk_const_expr(ConstData::Int(value.unsigned_abs()));
+                self.mk_unary_op_expr(UnOpKind::Neg, value).downcast_ty()
+            }
+            None => self.mk_const_expr(ConstData::Int(value)).downcast_ty(),
         }
     }
-    pub const fn get_min_int<'vir>(&'vir self, rust_ty: &ty::TyKind) -> ExprInt<'vir> {
-        match Self::get_int_data(rust_ty) {
-            (_, false) => self.mk_uint::<0>(),
-            (i8::BITS, true) => self.mk_int::<{ i8::MIN as i128 }>(),
-            (i16::BITS, true) => self.mk_int::<{ i16::MIN as i128 }>(),
-            (i32::BITS, true) => self.mk_int::<{ i32::MIN as i128 }>(),
-            (i64::BITS, true) => self.mk_int::<{ i64::MIN as i128 }>(),
-            (i128::BITS, true) => self.mk_int::<{ i128::MIN }>(),
-            (_, true) => unreachable!(),
-        }
+    pub fn get_min_int<'vir>(&'vir self, rust_ty: ty::Ty<'tcx>) -> ExprInt<'vir> {
+        let (min, _) = rust_ty.numeric_min_and_max_as_bits(self.tcx()).unwrap();
+        self.mk_int_from_bits(rust_ty, min)
     }
-    pub const fn get_max_int<'vir>(&'vir self, rust_ty: &ty::TyKind) -> ExprInt<'vir> {
-        match Self::get_int_data(rust_ty) {
-            (u8::BITS, false) => self.mk_uint::<{ u8::MAX as u128 }>(),
-            (u16::BITS, false) => self.mk_uint::<{ u16::MAX as u128 }>(),
-            (u32::BITS, false) => self.mk_uint::<{ u32::MAX as u128 }>(),
-            (u64::BITS, false) => self.mk_uint::<{ u64::MAX as u128 }>(),
-            (u128::BITS, false) => self.mk_uint::<{ u128::MAX }>(),
-            (i8::BITS, true) => self.mk_int::<{ i8::MAX as i128 }>(),
-            (i16::BITS, true) => self.mk_int::<{ i16::MAX as i128 }>(),
-            (i32::BITS, true) => self.mk_int::<{ i32::MAX as i128 }>(),
-            (i64::BITS, true) => self.mk_int::<{ i64::MAX as i128 }>(),
-            (i128::BITS, true) => self.mk_int::<{ i128::MAX }>(),
-            _ => unreachable!(),
-        }
+    pub fn get_max_int<'vir>(&'vir self, rust_ty: ty::Ty<'tcx>) -> ExprInt<'vir> {
+        let (_, max) = rust_ty.numeric_min_and_max_as_bits(self.tcx()).unwrap();
+        self.mk_int_from_bits(rust_ty, max)
     }
-    pub fn get_modulo_int<'vir>(&'vir self, rust_ty: &ty::TyKind) -> ExprInt<'vir> {
-        match Self::get_int_data(rust_ty) {
-            (u8::BITS, _) => self.mk_uint::<{ 1_u128 << u8::BITS }>(),
-            (u16::BITS, _) => self.mk_uint::<{ 1_u128 << u16::BITS }>(),
-            (u32::BITS, _) => self.mk_uint::<{ 1_u128 << u32::BITS }>(),
-            (u64::BITS, _) => self.mk_uint::<{ 1_u128 << u64::BITS }>(),
-            (u128::BITS, _) => {
+    pub fn get_modulo_int<'vir>(&'vir self, rust_ty: ty::Ty<'tcx>) -> ExprInt<'vir> {
+        let (bit_width, _) = self.get_int_data(rust_ty);
+        match 1_u128.checked_shl(bit_width) {
+            Some(modulo) => self.mk_const_expr(ConstData::Int(modulo)).downcast_ty(),
+            None => {
                 // `2^128` overflows `u128` and can't be written as a literal, so
                 // build it as `2^127 + 2^127` in the (unbounded) Viper `Int`.
-                // TODO: make this a `const` once `Expr` isn't invariant in `'vir` so that it can be `'const` instead
-                let half = self.mk_uint::<{ 1_u128 << (u128::BITS - 1) }>();
-                self.mk_bin_op_expr(BinOpKind::Add, half.as_dyn(), half.as_dyn())
+                let half = self.mk_const_expr(ConstData::Int(1 << (bit_width - 1)));
+                self.mk_bin_op_expr(BinOpKind::Add, half, half)
                     .downcast_ty()
             }
-            _ => unreachable!(),
         }
     }
-    pub fn get_signed_shift_int<'vir>(&'vir self, rust_ty: &ty::TyKind) -> Option<ExprInt<'vir>> {
-        let int = match Self::get_int_data(rust_ty) {
-            (_, false) => return None,
-            (u8::BITS, true) => self.mk_uint::<{ 1_u128 << (u8::BITS - 1) }>(),
-            (u16::BITS, true) => self.mk_uint::<{ 1_u128 << (u16::BITS - 1) }>(),
-            (u32::BITS, true) => self.mk_uint::<{ 1_u128 << (u32::BITS - 1) }>(),
-            (u64::BITS, true) => self.mk_uint::<{ 1_u128 << (u64::BITS - 1) }>(),
-            (u128::BITS, true) => self.mk_uint::<{ 1_u128 << (u128::BITS - 1) }>(),
-            (_, true) => unreachable!(),
-        };
-        Some(int)
+    pub fn get_signed_shift_int<'vir>(&'vir self, rust_ty: ty::Ty<'tcx>) -> Option<ExprInt<'vir>> {
+        let (bit_width, signed) = self.get_int_data(rust_ty);
+        signed.then(|| {
+            self.mk_const_expr(ConstData::Int(1 << (bit_width - 1)))
+                .downcast_ty()
+        })
     }
-    pub fn get_bit_width_int<'vir>(&'vir self, rust_ty: &ty::TyKind) -> ExprInt<'vir> {
-        match Self::get_int_data(rust_ty) {
-            (u8::BITS, _) => self.mk_uint::<{ u8::BITS as u128 }>(),
-            (u16::BITS, _) => self.mk_uint::<{ u16::BITS as u128 }>(),
-            (u32::BITS, _) => self.mk_uint::<{ u32::BITS as u128 }>(),
-            (u64::BITS, _) => self.mk_uint::<{ u64::BITS as u128 }>(),
-            (u128::BITS, _) => self.mk_uint::<{ u128::BITS as u128 }>(),
-            _ => unreachable!(),
-        }
+    pub fn get_bit_width_int<'vir>(&'vir self, rust_ty: ty::Ty<'tcx>) -> ExprInt<'vir> {
+        let (bit_width, _) = self.get_int_data(rust_ty);
+        self.mk_const_expr(ConstData::Int(bit_width.into()))
+            .downcast_ty()
     }
     /// Wrap `exp` into the range of the integer type `rust_ty` (two's complement):
     /// a `uN` target is `exp mod 2^N`; an `iN` target is
@@ -1597,7 +1576,7 @@ impl<'tcx> VirCtxt<'tcx> {
     pub fn get_wrapped_val<'vir>(
         &'vir self,
         mut exp: ExprInt<'vir>,
-        rust_ty: &ty::TyKind,
+        rust_ty: ty::Ty<'tcx>,
     ) -> ExprInt<'vir> {
         let shift_amount = self.get_signed_shift_int(rust_ty);
         if let Some(half) = shift_amount {
