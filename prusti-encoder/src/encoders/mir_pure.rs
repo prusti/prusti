@@ -1335,32 +1335,31 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
         mut value: ExprRet<'vir>,
         span: Span,
     ) -> EncodeResult<'vir, ExprRet<'vir>, MirPureEnc> {
-        for (base, elem) in place.iter_projections().rev() {
-            // A downcast does not change the snapshot.
-            if matches!(elem, mir::ProjectionElem::Downcast(..)) {
-                continue;
-            }
-            // A place ending in a downcast cannot be encoded on its own.
-            let base_proj = match base.projection {
-                [rest @ .., mir::ProjectionElem::Downcast(..)] => rest,
-                proj => proj,
-            };
-            let base_place = mir::Place {
-                local: base.local,
-                projection: self.vcx.tcx().mk_place_elems(base_proj),
-            };
-            let base_snap = self
-                .encode_place_snap(base_place.into(), curr_ver)?
-                .downcast_ty();
-            let base_ty = base.ty(self.body, self.vcx.tcx());
+        let Some((_, prefix)) = place.projection.split_last() else {
+            return Ok(value);
+        };
+        // The type and snapshot of each place that `place` projects from.
+        let mut base_ty = mir::PlaceTy::from_ty(self.body.local_decls[place.local].ty);
+        let mut base =
+            self.encode_place_with_ref(curr_ver, mir::Place::from(place.local).into())?;
+        let mut bases = vec![(base_ty, base.snap)];
+        for &elem in prefix {
+            base = self.encode_place_element(curr_ver, base_ty, elem, base)?;
+            base_ty = base_ty.projection_ty(self.vcx.tcx(), elem);
+            bases.push((base_ty, base.snap));
+        }
+        for ((base_ty, base_snap), &elem) in bases.into_iter().zip(&place.projection[..]).rev() {
             let e_ty = self.ty_use(base_ty.ty);
             value = match elem {
+                mir::ProjectionElem::Downcast(..) => value,
                 mir::ProjectionElem::Field(field_idx, _) => e_ty
                     .expect_variant_opt(base_ty.variant_index)
-                    .with_field(base_snap, field_idx, value),
-                mir::ProjectionElem::Deref if base_ty.ty.is_box() => {
-                    e_ty.expect_structlike().with_box_value(base_snap, value)
-                }
+                    .with_field(base_snap.downcast_ty(), field_idx, value)
+                    .upcast_ty(),
+                mir::ProjectionElem::Deref if base_ty.ty.is_box() => e_ty
+                    .expect_structlike()
+                    .with_box_value(base_snap.downcast_ty(), value)
+                    .upcast_ty(),
                 _ => {
                     return Err(self.unsupported_rvalue(
                         format!(
@@ -1371,8 +1370,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                         span,
                     ));
                 }
-            }
-            .upcast_ty();
+            };
         }
         Ok(value)
     }
