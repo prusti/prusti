@@ -23,10 +23,9 @@ use prusti_rustc_interface::{
 };
 use task_encoder::{EncodeFullError, TaskEncoder, TaskEncoderDependencies};
 
-/// A human-readable message, the advice for the user (if any), and the
-/// position it was raised at (if it carries one), taken from an encoding
-/// error; used when a function/method body or contract cannot be encoded
-/// (e.g. an unsupported feature) and we fall back to an abstract stub.
+/// The cause of an encoding error, reported when a function or method body or
+/// a contract cannot be encoded (e.g. an unsupported feature) and an abstract
+/// stub is used instead.
 pub(crate) struct DepError {
     pub message: String,
     pub help: Option<String>,
@@ -48,21 +47,26 @@ impl DepError {
     }
 }
 
-/// For a dependency error we surface the root cause (the last link of the
-/// chain), which is the actual unsupported-feature message.
+/// Extracts the cause of an encoding error. For a dependency error, the
+/// message and help come from the root cause (the last link of the chain),
+/// which holds the actual unsupported-feature message, and the span is the
+/// innermost one in the chain.
 pub(crate) fn dep_error<'vir, E: TaskEncoder + ?Sized>(err: &EncodeFullError<'vir, E>) -> DepError {
     match err {
-        EncodeFullError::DependencyError(chain) => DepError {
-            message: chain.last().map_or_else(
-                || "encoding dependency error".to_string(),
-                |link| link.message.clone(),
-            ),
-            help: chain.last().and_then(|link| link.help.clone()),
-            span: chain
-                .iter()
-                .rev()
-                .find_map(|link| link.spans.first().copied()),
-        },
+        EncodeFullError::DependencyError(chain) => {
+            let root = chain.last();
+            DepError {
+                message: root.map_or_else(
+                    || "encoding dependency error".to_string(),
+                    |link| link.message.clone(),
+                ),
+                help: root.and_then(|link| link.help.clone()),
+                span: chain
+                    .iter()
+                    .rev()
+                    .find_map(|link| link.spans.first().copied()),
+            }
+        }
         other => DepError {
             message: format!("{other:?}"),
             help: None,
