@@ -1075,7 +1075,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                 let place_ty = place.ty(self.body, self.vcx.tcx());
                 let ty = self.ty_use(place_ty.ty);
                 if ty.specifics.is_opaque() {
-                    return Err(self.unsupported_opaque(place_ty.ty, "discriminant"));
+                    return Err(self.unsupported_opaque(place_ty.ty, "variant"));
                 }
                 let discr = match ty
                     .get_enumlike()

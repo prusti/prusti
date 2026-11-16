@@ -21,6 +21,34 @@ pub type EncodeFullResult<'vir, E /*: TaskEncoder + 'vir + ?Sized*/> = Result<
     EncodeFullError<'vir, E>,
 >;
 
+/// One link of a dependency error: the encoder, the task it was encoding (or,
+/// for the last link, the error itself), the spans involved, and optionally
+/// advice for the user on how to avoid the error.
+#[derive(Clone, Debug)]
+pub struct DependencyErrorLink {
+    pub encoder: &'static str,
+    pub message: String,
+    pub spans: Vec<Span>,
+    pub help: Option<String>,
+}
+
+impl DependencyErrorLink {
+    pub fn new(encoder: &'static str, message: String, spans: Vec<Span>) -> Self {
+        Self {
+            encoder,
+            message,
+            spans,
+            help: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_help(mut self, help: String) -> Self {
+        self.help = Some(help);
+        self
+    }
+}
+
 /// An unsuccessful result occurring in `do_encode_full`.
 pub enum EncodeFullError<'vir, E: TaskEncoder + 'vir + ?Sized> {
     /// Indicates that the current task has already been encoded. This can
@@ -39,7 +67,7 @@ pub enum EncodeFullError<'vir, E: TaskEncoder + 'vir + ?Sized> {
         Option<Box<E::OutputFullDependency<'vir>>>,
     ),
 
-    DependencyError(Vec<(&'static str, String, Vec<Span>)>),
+    DependencyError(Vec<DependencyErrorLink>),
 }
 
 // Manual implementation, since neither `E` nor `E::OutputFullDependency` are
@@ -60,7 +88,7 @@ impl<'vir, E: TaskEncoder + 'vir + ?Sized> std::fmt::Debug for EncodeFullError<'
 pub enum TaskEncoderError<E: TaskEncoder + ?Sized> {
     EnqueueingError(<E as TaskEncoder>::EnqueueingError),
     EncodingError(<E as TaskEncoder>::EncodingError),
-    DependencyError(Vec<(&'static str, String, Vec<Span>)>),
+    DependencyError(Vec<DependencyErrorLink>),
     CyclicError,
     PanicError(String),
 }

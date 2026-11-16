@@ -11,16 +11,20 @@ union U {
 
 #[pure]
 fn read_pure(u: U) -> u32 {
-    unsafe { u.a } //~ERROR: cannot encode function body `read_pure`: the fields of `U` cannot be used
-    //~^ ERROR: cannot encode method body `read_pure`: the fields of `U` cannot be used
+    unsafe { u.a } //~ERROR: cannot encode function body `read_pure`: Prusti cannot reason about the fields of `U`
+    //~^ ERROR: cannot encode method body `read_pure`: Prusti cannot reason about the fields of `U`
+    //~| HELP: move this code into a `#[trusted]` function
+    //~| HELP: move this code into a `#[trusted]` function
 }
 
 fn read(u: U) -> u32 {
-    unsafe { u.a } //~ERROR: the fields of `U` cannot be used
+    unsafe { u.a } //~ERROR: Prusti cannot reason about the fields of `U`
+    //~^ HELP: move this code into a `#[trusted]` function
 }
 
 fn write(mut u: U) -> U {
-    u.b = 5; //~ERROR: the fields of `U` cannot be used
+    u.b = 5; //~ERROR: Prusti cannot reason about the fields of `U`
+    //~^ HELP: move this code into a `#[trusted]` function
     u
 }
 

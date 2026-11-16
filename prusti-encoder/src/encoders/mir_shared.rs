@@ -1,5 +1,5 @@
 use pcg::utils::Place;
-use task_encoder::{EncodeFullError, TaskEncoder, TaskEncoderDependencies};
+use task_encoder::{DependencyErrorLink, EncodeFullError, TaskEncoder, TaskEncoderDependencies};
 use vir::CastType;
 
 use crate::encoders::{
@@ -112,27 +112,35 @@ pub(crate) trait PureRvalueEnc<'vir> {
 
     /// Build an error for an unsupported feature at `span`.
     fn unsupported(&self, message: String, span: Span) -> EncodeFullError<'vir, Self::Encoder> {
-        EncodeFullError::DependencyError(vec![(
+        EncodeFullError::DependencyError(vec![DependencyErrorLink::new(
             <Self::Encoder as TaskEncoder>::ENCODER_NAME,
             message,
             vec![span],
         )])
     }
 
-    /// Build an error for using a `part` of `ty` (its fields or discriminant)
-    /// that its opaque encoding does not have.
+    /// Build an error for using a `part` of `ty` (its fields or variant) that
+    /// its opaque encoding does not have.
     fn unsupported_opaque(
         &self,
         ty: ty::Ty<'vir>,
         part: &str,
     ) -> EncodeFullError<'vir, Self::Encoder> {
-        self.unsupported_rvalue(
-            format!(
-                "the {part} of `{ty}` cannot be used, since Prusti treats its values \
-                 as opaque (as it does for unions and `#[trusted]` types)"
+        EncodeFullError::DependencyError(vec![
+            DependencyErrorLink::new(
+                <Self::Encoder as TaskEncoder>::ENCODER_NAME,
+                format!(
+                    "Prusti cannot reason about the {part} of `{ty}`, as it does not \
+                     support unions and does not look inside `#[trusted]` types"
+                ),
+                vec![self.current_span()],
+            )
+            .with_help(
+                "move this code into a `#[trusted]` function, and describe what it does \
+                 with pre- and postconditions"
+                    .to_string(),
             ),
-            self.current_span(),
-        )
+        ])
     }
 
     /// Encodes the snapshot of an operand. In an impure context this may
@@ -357,7 +365,7 @@ pub(crate) trait PureRvalueEnc<'vir> {
                 };
                 let e_enum_ty = self.ty_use_pure(enum_ty);
                 if e_enum_ty.specifics.is_opaque() {
-                    return Err(self.unsupported_opaque(enum_ty, "discriminant"));
+                    return Err(self.unsupported_opaque(enum_ty, "variant"));
                 }
                 let deref_place = self.vcx().tcx().mk_place_deref(place);
                 let snap = self.encode_place_snap(deref_place.into(), ctxt)?;

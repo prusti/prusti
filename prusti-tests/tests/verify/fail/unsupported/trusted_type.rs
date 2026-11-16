@@ -18,30 +18,30 @@ struct T {
 
 #[pure]
 fn read_pure(t: T) -> u32 {
-    t.x //~ERROR: cannot encode function body `read_pure`: the fields of `T` cannot be used
-    //~^ ERROR: cannot encode method body `read_pure`: the fields of `T` cannot be used
+    t.x //~ERROR: cannot encode function body `read_pure`: Prusti cannot reason about the fields of `T`
+    //~^ ERROR: cannot encode method body `read_pure`: Prusti cannot reason about the fields of `T`
 }
 
 fn read(t: T) -> u32 {
-    t.x //~ERROR: the fields of `T` cannot be used
+    t.x //~ERROR: Prusti cannot reason about the fields of `T`
 }
 
 fn read_ref(t: &T) -> u32 {
-    t.x //~ERROR: the fields of `T` cannot be used
+    t.x //~ERROR: Prusti cannot reason about the fields of `T`
 }
 
 fn write(mut t: T) -> T {
-    t.x = 5; //~ERROR: the fields of `T` cannot be used
+    t.x = 5; //~ERROR: Prusti cannot reason about the fields of `T`
     t
 }
 
 fn write_mut_ref(t: &mut T) {
-    t.x = 5; //~ERROR: the fields of `T` cannot be used
+    t.x = 5; //~ERROR: Prusti cannot reason about the fields of `T`
 }
 
 #[pure]
 fn construct_pure() -> T {
-    T { x: 1 } //~ERROR: cannot encode function body `construct_pure`: the fields of `T` cannot be used
+    T { x: 1 } //~ERROR: cannot encode function body `construct_pure`: Prusti cannot reason about the fields of `T`
     //~^ ERROR: unsupported rvalue T
 }
 
@@ -58,7 +58,7 @@ enum E {
 
 #[pure]
 fn is_b(e: E) -> bool {
-    matches!(e, E::B) //~ERROR: cannot encode function body `is_b`: the discriminant of `E` cannot be used
+    matches!(e, E::B) //~ERROR: cannot encode function body `is_b`: Prusti cannot reason about the variant of `E`
     //~^ ERROR: unsupported rvalue discriminant
 }
 
@@ -78,8 +78,8 @@ fn match_impure(e: E) -> u32 {
 
 // The derived `eq` reads the discriminant through `discriminant_value`.
 #[trusted]
-#[derive(PartialEq)] //~ERROR: cannot encode function body `<P as std::cmp::PartialEq>::eq`: the discriminant of `P` cannot be used
-//~^ ERROR: cannot encode method body `<P as std::cmp::PartialEq>::eq`: the discriminant of `P` cannot be used
+#[derive(PartialEq)] //~ERROR: cannot encode function body `<P as std::cmp::PartialEq>::eq`: Prusti cannot reason about the variant of `P`
+//~^ ERROR: cannot encode method body `<P as std::cmp::PartialEq>::eq`: Prusti cannot reason about the variant of `P`
 enum P {
     A(u32),
     B,
@@ -89,14 +89,14 @@ enum P {
 // and the field read fails the whole body, so only the field error is reported.
 #[pure]
 fn get_pure(p: P) -> u32 {
-    match p { //~ERROR: cannot encode function body `get_pure`: the discriminant of `P` cannot be used
-        P::A(x) => x, //~ERROR: cannot encode method body `get_pure`: the fields of `P` cannot be used
+    match p { //~ERROR: cannot encode function body `get_pure`: Prusti cannot reason about the variant of `P`
+        P::A(x) => x, //~ERROR: cannot encode method body `get_pure`: Prusti cannot reason about the fields of `P`
         P::B => 0,
     }
 }
 
 fn get(p: P) -> u32 {
-    if let P::A(x) = p { x } else { 0 } //~ERROR: the fields of `P` cannot be used
+    if let P::A(x) = p { x } else { 0 } //~ERROR: Prusti cannot reason about the fields of `P`
 }
 
 fn construct_variant() -> P {

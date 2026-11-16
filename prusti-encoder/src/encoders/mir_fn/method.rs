@@ -217,13 +217,9 @@ impl TaskEncoder for MethodEnc {
                 )
                 .map_err(|err| {
                     // Without its wands, the method has no contract.
-                    let (message, _) = super::dep_error(&err);
-                    vcx.emit_early_error(PrustiError::unsupported(
-                        format!(
-                            "cannot encode method `{}`: {message}",
-                            vcx.tcx().def_path_str(def_id),
-                        ),
-                        vcx.tcx().def_span(def_id).into(),
+                    vcx.emit_early_error(super::dep_error(&err).report(
+                        format!("method `{}`", vcx.tcx().def_path_str(def_id)),
+                        vcx.tcx().def_span(def_id),
                     ));
                     EncodeFullError::EncodingError(MethodEncError::Reported, None)
                 })?;
@@ -400,13 +396,11 @@ impl TaskEncoder for MethodEnc {
                     }
                     Err(EncodeFullError::AlreadyEncoded) => None,
                     Err(err) => {
-                        let (message, span) = super::dep_error(&err);
-                        vcx.emit_early_error(PrustiError::unsupported(
-                            format!(
-                                "cannot encode method body `{}`: {message}",
-                                vcx.tcx().def_path_str(def_id),
-                            ),
-                            span.unwrap_or_else(|| vcx.tcx().def_span(def_id)).into(),
+                        let err = super::dep_error(&err);
+                        let span = err.span.unwrap_or_else(|| vcx.tcx().def_span(def_id));
+                        vcx.emit_early_error(err.report(
+                            format!("method body `{}`", vcx.tcx().def_path_str(def_id)),
+                            span,
                         ));
                         None
                     }

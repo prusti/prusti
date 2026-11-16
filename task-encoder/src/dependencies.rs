@@ -56,18 +56,18 @@ impl<'vir, E: TaskEncoder + 'vir + ?Sized> TaskEncoderDependencies<'vir, E> {
             });
         }
         res.map_err(|err| {
-            let mut chain = vec![(
+            let mut chain = vec![DependencyErrorLink::new(
                 EOther::ENCODER_NAME,
                 EOther::describe_task(task),
                 span.into_iter().collect(),
             )];
             match err {
-                TaskEncoderError::EnqueueingError(_) => chain.push((
+                TaskEncoderError::EnqueueingError(_) => chain.push(DependencyErrorLink::new(
                     EOther::ENCODER_NAME,
                     "? EnqueueingError".to_string(),
                     Vec::new(),
                 )),
-                TaskEncoderError::EncodingError(err) => chain.push((
+                TaskEncoderError::EncodingError(err) => chain.push(DependencyErrorLink::new(
                     EOther::ENCODER_NAME,
                     EOther::describe_error(err),
                     Vec::new(),
@@ -76,14 +76,16 @@ impl<'vir, E: TaskEncoder + 'vir + ?Sized> TaskEncoderDependencies<'vir, E> {
                 // unsupported-feature message) is preserved instead of being
                 // collapsed to an opaque "? DependencyError".
                 TaskEncoderError::DependencyError(items) => chain.extend(items),
-                TaskEncoderError::CyclicError => chain.push((
+                TaskEncoderError::CyclicError => chain.push(DependencyErrorLink::new(
                     EOther::ENCODER_NAME,
                     "? CyclicError".to_string(),
                     Vec::new(),
                 )),
-                TaskEncoderError::PanicError(_) => {
-                    chain.push((EOther::ENCODER_NAME, "? PanicError".to_string(), Vec::new()))
-                }
+                TaskEncoderError::PanicError(_) => chain.push(DependencyErrorLink::new(
+                    EOther::ENCODER_NAME,
+                    "? PanicError".to_string(),
+                    Vec::new(),
+                )),
             }
             EncodeFullError::DependencyError(chain)
         })

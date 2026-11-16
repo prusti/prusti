@@ -4,7 +4,9 @@ use prusti_rustc_interface::{
     middle::ty,
     span::{Span, Symbol, def_id::DefId},
 };
-use task_encoder::{EncodeFullError, EncodeFullResult, TaskEncoder, TaskEncoderDependencies};
+use task_encoder::{
+    DependencyErrorLink, EncodeFullError, EncodeFullResult, TaskEncoder, TaskEncoderDependencies,
+};
 use vir::{CastType, FunctionIdn};
 
 use crate::encoders::ty::{
@@ -591,11 +593,13 @@ impl<'enc, 'vir> BuiltinCtxt<'enc, 'vir> {
                 .field_snaps_to_snap(vec![self.operands[1]])
                 .upcast_ty(),
             GhostOp::Erased => {
-                return Err(EncodeFullError::DependencyError(vec![(
-                    PrustiBuiltinEnc::ENCODER_NAME,
-                    "`ghost_erased` outside of a `ghost!` block".to_string(),
-                    self.span.into_iter().collect(),
-                )]));
+                return Err(EncodeFullError::DependencyError(vec![
+                    DependencyErrorLink::new(
+                        PrustiBuiltinEnc::ENCODER_NAME,
+                        "`ghost_erased` outside of a `ghost!` block".to_string(),
+                        self.span.into_iter().collect(),
+                    ),
+                ]));
             }
         })
     }
@@ -1145,7 +1149,7 @@ impl<'enc, 'vir> BuiltinCtxt<'enc, 'vir> {
         // This can only happen for `Ghost::deref` (the `index` functions all
         // return `&Ghost<T>`).
         let metadata = self.encode_ty(metadata_ty)?.zst_to_snap().ok_or_else(|| {
-            EncodeFullError::DependencyError(vec![(
+            EncodeFullError::DependencyError(vec![DependencyErrorLink::new(
                 PrustiBuiltinEnc::ENCODER_NAME,
                 format!(
                     "Ghost::deref on maybe unsized `{:?}` not supported",

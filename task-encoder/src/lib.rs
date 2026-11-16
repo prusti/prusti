@@ -558,14 +558,13 @@ pub trait TaskEncoder {
                 })
             }
             Err(EncodeFullError::DependencyError(stack)) => {
-                let owned_stack =
-                    std::iter::once((Self::ENCODER_NAME, Self::describe_task(task), Vec::new()))
-                        .chain(
-                            stack
-                                .into_iter()
-                                .map(|(encoder, task, spans)| (encoder, task, spans.clone())),
-                        )
-                        .collect::<Vec<_>>();
+                let owned_stack = std::iter::once(DependencyErrorLink::new(
+                    Self::ENCODER_NAME,
+                    Self::describe_task(task),
+                    Vec::new(),
+                ))
+                .chain(stack)
+                .collect::<Vec<_>>();
                 Self::with_cache(|cache| {
                     cache.borrow_mut().insert(
                         task_key,
