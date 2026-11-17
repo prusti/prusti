@@ -37,7 +37,7 @@ impl Interval {
 }
 ```
 
-Here, Prusti reports that the result of `Interval::start_bound` might not match its definition with the addresses of its shared-reference arguments ignored.
+Here, Prusti reports that the result of `Interval::start_bound` might depend on the addresses of its shared-reference arguments.
 
 The *mode* `memory` lets the result also depend on the memory addresses of the arguments. Callers then learn the whole result, addresses included, but two calls on different objects with equal contents may give different results:
 

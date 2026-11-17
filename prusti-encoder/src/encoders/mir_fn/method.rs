@@ -296,12 +296,9 @@ impl TaskEncoder for MethodEnc {
                             PureMode::Value => {
                                 let error = PrustiError::verification(
                                     format!(
-                                        "the result of pure function `{name}` might not match \
-                                         its definition with the addresses of its \
-                                         shared-reference arguments ignored: either the result \
-                                         depends on those addresses, which a `#[pure]` function \
-                                         must not, or Prusti's impure and pure encodings of the \
-                                         function disagree"
+                                        "the result of pure function `{name}` might depend on \
+                                         the addresses of its shared-reference arguments, which \
+                                         the result of a `#[pure]` function must not"
                                     ),
                                     span.into(),
                                 );
@@ -310,11 +307,12 @@ impl TaskEncoder for MethodEnc {
                                     None => error,
                                 }
                             }
-                            PureMode::Memory => PrustiError::verification(
+                            // Nothing is dummied, so the body is the definition
+                            // and only a bug in Prusti can make this fail.
+                            PureMode::Memory => PrustiError::internal(
                                 format!(
-                                    "the result of pure function `{name}` might not match its \
-                                     definition: Prusti's impure and pure encodings of the \
-                                     function disagree"
+                                    "could not prove that pure function `{name}` returns the \
+                                     result of its own body"
                                 ),
                                 span.into(),
                             ),
