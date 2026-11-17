@@ -4,7 +4,7 @@ fn double_tuple<'a>(x: &'a mut (i32, (i32, i32))) -> &'a mut i32
 where
     'a: 'a,
 {
-    &mut x.1 .0
+    &mut x.1.0
 }
 
 fn tuple<'a>(x: &'a mut (i32, i32)) -> &'a mut i32
@@ -23,8 +23,7 @@ fn use_container<'a, 'b: 'a>(c: Container<'b>) -> &'a mut i32 {
 }
 
 fn basic<'l, 's>(num: &'l mut i32) -> &'s mut i32
-where
-    'l: 's,
+where 'l: 's
 {
     &mut *num
 }

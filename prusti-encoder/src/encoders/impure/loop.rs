@@ -58,8 +58,9 @@ impl<'vir: 'a, 'a, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             if capability.is_write() {
                 continue; // No permissions are encoded for places with write capabilities currently
             }
-            let (place_res, _snap, _, _) = self.encode_place_with_snap(*place)?;
-            let ty = (*place).ty(self.pcg_ctxt());
+            let place = place.with_inherent_region(ctxt);
+            let (place_res, _snap, _, _) = self.encode_place_with_snap(place)?;
+            let ty = place.ty(self.pcg_ctxt());
             let task = RustTyDecomposition::from_ty(ty.ty, self.def_id);
             let ty_out = self.deps.require_dep::<TyUseImpureEnc>(task).unwrap();
             let pred = ty_out.ref_to_pred(self.vcx, place_res.expr.expect_predicate(), None);
@@ -67,9 +68,7 @@ impl<'vir: 'a, 'a, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             // gets all the lifetime projections of the place
             // for example, if we add an invariant for x and x is a reference, then we also want to add
             // an invariant for *x
-            let projs = place
-                .with_inherent_region(ctxt)
-                .generalized_lifetime_projections(ctxt);
+            let projs = ctxt.extract_lifetime_projections(place);
             for proj in projs {
                 let region = proj.region(ctxt);
                 let Some(proj) = LifetimeProjection::new(task, region, None, PrustiPcgCtxt) else {
