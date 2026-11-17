@@ -1,6 +1,9 @@
 use itertools::Itertools;
-use pcg::borrow_pcg::region_projection::{
-    ExtractRegionsCtxt, LifetimeProjection, LifetimeProjectionIdx, PcgRegion, Region,
+use pcg::borrow_pcg::{
+    GeneralizedLifetime,
+    region_projection::{
+        ExtractRegionsCtxt, Generalized, LifetimeProjection, LifetimeProjectionIdx, PcgRegion,
+    },
 };
 use prusti_rustc_interface::{
     index::IndexVec,
@@ -20,16 +23,24 @@ use super::{
 #[derive(Copy, Clone)]
 pub struct PrustiPcgCtxt;
 
-impl<'tcx> ExtractRegionsCtxt<'tcx, RustTyDecomposition<'tcx>, PcgRegion<'tcx>> for PrustiPcgCtxt {
+impl<'tcx> ExtractRegionsCtxt<'tcx, RustTyDecomposition<'tcx>, GeneralizedLifetime<'tcx>>
+    for PrustiPcgCtxt
+{
     fn extract_regions(
         self,
         data: RustTyDecomposition<'tcx>,
-    ) -> IndexVec<LifetimeProjectionIdx<Region>, PcgRegion<'tcx>> {
+    ) -> IndexVec<LifetimeProjectionIdx<Generalized>, GeneralizedLifetime<'tcx>> {
         data.args
             .args()
             .iter()
-            .flat_map(|arg| arg.walk())
-            .filter_map(|arg| arg.as_region().map(PcgRegion::from))
+            .flat_map(|arg| match arg.as_type() {
+                Some(ty) => self.regions_vec(ty),
+                None => arg
+                    .as_region()
+                    .map(|r| GeneralizedLifetime::Region(r.into()))
+                    .into_iter()
+                    .collect(),
+            })
             .unique()
             .collect()
     }
@@ -55,9 +66,9 @@ impl<'vir> IndirectPredicatesEncOutputRef<'vir> {
 
 impl<'vir> task_encoder::OutputRefAny for IndirectPredicatesEncOutputRef<'vir> {}
 
-fn projection_region<'tcx>(
-    proj: &LifetimeProjection<'tcx, RustTyDecomposition<'tcx>, Region>,
-) -> PcgRegion<'tcx> {
+fn projection_lifetime<'tcx>(
+    proj: &LifetimeProjection<'tcx, RustTyDecomposition<'tcx>>,
+) -> GeneralizedLifetime<'tcx> {
     let regions = PrustiPcgCtxt.extract_regions(proj.base());
     regions[proj.region_idx()]
 }
@@ -66,7 +77,7 @@ impl TaskEncoder for IndirectPredicatesEnc {
     task_encoder::encoder_cache!(IndirectPredicatesEnc);
     const ENCODER_NAME: &'static str = "indirect predicates encoder";
 
-    type TaskDescription<'vir> = LifetimeProjection<'vir, RustTyDecomposition<'vir>, Region>;
+    type TaskDescription<'vir> = LifetimeProjection<'vir, RustTyDecomposition<'vir>>;
 
     type TaskKey<'tcx> = Self::TaskDescription<'tcx>;
 
@@ -84,7 +95,12 @@ impl TaskEncoder for IndirectPredicatesEnc {
     ) -> EncodeFullResult<'vir, Self> {
         deps.emit_output_ref(*task_key, ())?;
         vir::with_vcx(|vcx| {
-            let task_region = projection_region(task_key);
+            let task_lifetime = projection_lifetime(task_key);
+            // TODO: the lifetime `RegionsIn(T)` of an opaque type `T` is
+            // encoded as no resources, so whatever `T` borrows is omitted.
+            let GeneralizedLifetime::Region(task_region) = task_lifetime else {
+                return Ok(((), IndirectPredicatesEncOutputRef::new(vec![])));
+            };
             let ty = task_key.base();
             let self_ty_enc = deps.require_dep::<TyUsePureEnc>(ty)?;
             let combined = ty.ty.zip(self_ty_enc);
@@ -99,7 +115,7 @@ impl TaskEncoder for IndirectPredicatesEnc {
                     for (field_ty, accessor) in struct_data.fields {
                         let field_ty = field_ty.decompose_normalize(ty.args);
                         if let Some(new_projection) =
-                            LifetimeProjection::new(field_ty, task_region, None, PrustiPcgCtxt)
+                            LifetimeProjection::new(field_ty, task_lifetime, None, PrustiPcgCtxt)
                         {
                             let field_indirect =
                                 deps.require_dep::<IndirectPredicatesEnc>(new_projection)?;
@@ -146,7 +162,7 @@ impl TaskEncoder for IndirectPredicatesEnc {
                     // (e.g. of the inner reference in `&'a mut &'b mut i32`).
                     let referent_ty = data.referent.decompose_normalize(ty.args);
                     if let Some(new_projection) =
-                        LifetimeProjection::new(referent_ty, task_region, None, PrustiPcgCtxt)
+                        LifetimeProjection::new(referent_ty, task_lifetime, None, PrustiPcgCtxt)
                     {
                         let inner_indirect =
                             deps.require_dep::<IndirectPredicatesEnc>(new_projection)?;
@@ -247,15 +263,10 @@ impl TaskEncoder for IndirectPredicatesEnc {
 
 pub fn projection_for_generalized_idx<'tcx>(
     ty: ty::Ty<'tcx>,
-    idx: LifetimeProjectionIdx<pcg::borrow_pcg::region_projection::Generalized>,
+    idx: LifetimeProjectionIdx<Generalized>,
     decomp: RustTyDecomposition<'tcx>,
     tcx: TyCtxt<'tcx>,
-) -> Option<LifetimeProjection<'tcx, RustTyDecomposition<'tcx>, Region>> {
-    use pcg::borrow_pcg::GeneralizedLifetime;
+) -> Option<LifetimeProjection<'tcx, RustTyDecomposition<'tcx>>> {
     let lifetimes: IndexVec<_, GeneralizedLifetime<'tcx>> = tcx.extract_regions(ty);
-    let region = match lifetimes.get(idx)? {
-        GeneralizedLifetime::Region(r) => *r,
-        GeneralizedLifetime::RegionsIn(_) => return None,
-    };
-    LifetimeProjection::new(decomp, region, None, PrustiPcgCtxt)
+    LifetimeProjection::new(decomp, *lifetimes.get(idx)?, None, PrustiPcgCtxt)
 }

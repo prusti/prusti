@@ -516,9 +516,12 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
     fn expansion_index(&mut self, guide: RepackGuide) -> Option<vir::ExprInt<'vir>> {
         match guide {
             RepackGuide::Index(index_local, _) => {
-                let index = self
-                    .encode_operand_snap(&mir::Operand::Copy(index_local.into()), &None)
+                let mut index = self
+                    .encode_operand_snap(&mir::Operand::Copy(index_local.local().into()), &None)
                     .unwrap();
+                if let Some(label) = index_local.label() {
+                    index = self.vcx.mk_old(index, self.get_location_label(label));
+                }
                 let usize_ty_out = self.ty_use_pure(self.vcx.tcx().types.usize);
                 Some(
                     usize_ty_out

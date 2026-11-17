@@ -2,8 +2,7 @@ use rustc_hash::FxHashMap;
 
 use pcg::{
     borrow_pcg::region_projection::{
-        ExtractRegionsCtxt, LifetimeProjection, PcgLifetimeProjectionBase,
-        PcgLifetimeProjectionBaseLike,
+        HasTy, LifetimeProjection, PcgLifetimeProjectionBase, PcgLifetimeProjectionBaseLike,
     },
     r#loop::PlaceUsages,
     pcg::{CapabilityKind, EvalStmtPhase, PcgNode},
@@ -62,7 +61,9 @@ impl<'vir: 'a, 'a, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             // gets all the lifetime projections of the place
             // for example, if we add an invariant for x and x is a reference, then we also want to add
             // an invariant for *x
-            let projs = ctxt.extract_lifetime_projections(place.with_inherent_region(ctxt));
+            let projs = place
+                .with_inherent_region(ctxt)
+                .generalized_lifetime_projections(ctxt);
             for proj in projs {
                 let indirect = self
                     .deps
