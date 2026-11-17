@@ -138,7 +138,7 @@ dependencies = [
 
 [[package]]
 name = "prusti-contracts"
-version = "0.3.4"
+version = "0.3.5"
 dependencies = [
  "prusti-contracts-proc-macros",
  "trybuild",
@@ -146,7 +146,7 @@ dependencies = [
 
 [[package]]
 name = "prusti-contracts-proc-macros"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "proc-macro2",
  "prusti-specs",
@@ -154,7 +154,7 @@ dependencies = [
 
 [[package]]
 name = "prusti-specs"
-version = "0.3.4"
+version = "0.3.5"
 dependencies = [
  "itertools",
  "proc-macro2",
