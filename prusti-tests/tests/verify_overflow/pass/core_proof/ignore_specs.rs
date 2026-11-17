@@ -86,6 +86,7 @@ fn division(x: u32, y: u32) -> u32 {
     x / y
 }
 
+// The ownership and borrowing of safe code is still verified.
 fn moves_and_borrows(v: &mut Vec<u32>, x: Option<Box<u32>>) -> u32 {
     v.push(1);
     let r = &mut *v;
@@ -94,4 +95,31 @@ fn moves_and_borrows(v: &mut Vec<u32>, x: Option<Box<u32>>) -> u32 {
         Some(b) => *b,
         None => v.len() as u32,
     }
+}
+
+// Panics are control flow: the paths where a call unwinds, running the
+// cleanup code (here dropping `b`), are verified too.
+
+fn id_mut(x: &mut u32) -> &mut u32 {
+    x
+}
+
+fn unwinding_call_returning_reborrow(x: &mut u32, b: Box<u32>) {
+    let r = id_mut(x);
+    *r = *b;
+}
+
+fn read(x: &mut u32) -> u32 {
+    *x
+}
+
+fn unwinding_call_dropping_box(x: &mut u32, b: Box<u32>) -> u32 {
+    let r = read(&mut *x);
+    r + *b
+}
+
+// `?` in a closure body, whose return value is only cast to the caller's
+// generic context if the call returned.
+fn try_in_closure() {
+    let _f = |x: i32| -> Option<i32> { Some(Some(x)?) };
 }

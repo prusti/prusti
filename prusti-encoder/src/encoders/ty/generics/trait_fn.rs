@@ -9,6 +9,7 @@ use vir::{FunctionIdn, MethodIdn, ViperIdent, vir_format_identifier};
 use crate::{
     encoders::{
         FunctionCallEnc, MirLocalDefEnc, MirLocalDefEncTask, MirSpecEnc,
+        impure::panic,
         mir_fn::CallTaskDescription,
         pure::spec::MirSpecEncMode,
         ty::{
@@ -315,7 +316,11 @@ impl TaskEncoder for TraitFnEnc {
                         stub_pres.push(local_defs[arg_idx].impure_pred);
                     }
                 }
-                stub_posts.push(local_defs[mir::RETURN_PLACE].impure_pred);
+                // The postconditions that read the result hold only if the
+                // call returned.
+                let returns = panic::method_returns(vcx, &local_defs[mir::RETURN_PLACE]);
+                let returned = returns.returned;
+                stub_posts.extend(returns.posts);
                 // TODO: wands
 
                 stub_pres.push(pre_func.call()(
@@ -329,16 +334,20 @@ impl TaskEncoder for TraitFnEnc {
                     item_generics.const_exprs(),
                 ));
                 // TODO: mutable arguments should also have a post-state
-                stub_posts.push(post_func.call()(
-                    local_defs.ret().impure_snap,
-                    vcx.alloc_slice(
-                        &local_defs
-                            .args()
-                            .map(|arg| vcx.mk_old_expr(arg.impure_snap))
-                            .collect::<Vec<_>>(),
+                stub_posts.push(panic::if_returned(
+                    vcx,
+                    returned,
+                    post_func.call()(
+                        local_defs.ret().impure_snap,
+                        vcx.alloc_slice(
+                            &local_defs
+                                .args()
+                                .map(|arg| vcx.mk_old_expr(arg.impure_snap))
+                                .collect::<Vec<_>>(),
+                        ),
+                        item_generics.ty_exprs(),
+                        item_generics.const_exprs(),
                     ),
-                    item_generics.ty_exprs(),
-                    item_generics.const_exprs(),
                 ));
 
                 if is_pure {
@@ -347,7 +356,9 @@ impl TaskEncoder for TraitFnEnc {
                     let pure_func = deps.require_dep::<FunctionCallEnc>(
                         CallTaskDescription::new(def_id, item_params.rust_params(), def_id),
                     )?;
-                    stub_posts.push(
+                    stub_posts.push(panic::if_returned(
+                        vcx,
+                        returned,
                         vcx.mk_eq_expr(
                             local_defs.ret().impure_snap,
                             pure_func.call_pure(
@@ -357,7 +368,7 @@ impl TaskEncoder for TraitFnEnc {
                                     .collect(),
                             ),
                         ),
-                    );
+                    ));
                 }
 
                 methods.push(vcx.mk_method(
@@ -367,7 +378,7 @@ impl TaskEncoder for TraitFnEnc {
                         item_generics.ty_decls(),
                         item_generics.const_decls(),
                     ),
-                    &[],
+                    returns.decls,
                     vcx.alloc_slice(&stub_pres),
                     vcx.alloc_slice(&stub_posts),
                     None,

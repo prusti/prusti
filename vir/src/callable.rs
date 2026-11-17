@@ -263,6 +263,23 @@ impl<'vir, A: Arity> MethodIdn<'vir, A> {
             _p: core::marker::PhantomData,
         }
     }
+
+    /// A call of this method that assigns its return values to the locals
+    /// `targets`.
+    pub fn call_with_targets<'a>(
+        self,
+        targets: &[LocalDeclDyn<'vir>],
+        args: A::Exprs<'a, 'vir, (), !>,
+    ) -> StmtKindGenData<'vir, (), !> {
+        let targets = with_vcx(|vcx| {
+            let targets = targets
+                .iter()
+                .map(|decl| vcx.mk_local(*decl))
+                .collect::<Vec<_>>();
+            vcx.alloc_slice(&targets)
+        });
+        self.call().call_with_targets(targets, args)
+    }
 }
 impl<'a, 'vir, A: Arity> FnOnce<A::Exprs<'a, 'vir, (), !>> for MethodIdn<'vir, A> {
     type Output = StmtKindGenData<'vir, (), !>;
@@ -270,20 +287,29 @@ impl<'a, 'vir, A: Arity> FnOnce<A::Exprs<'a, 'vir, (), !>> for MethodIdn<'vir, A
         self.call().call_once(args)
     }
 }
+impl<'vir, Curr: 'vir, Next: 'vir, A: Arity> MethodIdnGen<'vir, Curr, Next, A> {
+    fn call_with_targets<'a>(
+        self,
+        targets: &'vir [LocalDyn<'vir>],
+        args: A::Exprs<'a, 'vir, Curr, Next>,
+    ) -> StmtKindGenData<'vir, Curr, Next> {
+        with_vcx(|vcx| {
+            let args = A::args(vcx, args);
+            A::types_match(self.inner.args, args, self.inner.debug_info);
+            StmtKindGenData::MethodCall(vcx.alloc(MethodCallGenData {
+                targets,
+                method: self.inner.idn.to_str(),
+                args,
+            }))
+        })
+    }
+}
 impl<'a, 'vir, Curr: 'vir, Next: 'vir, A: Arity> FnOnce<A::Exprs<'a, 'vir, Curr, Next>>
     for MethodIdnGen<'vir, Curr, Next, A>
 {
     type Output = StmtKindGenData<'vir, Curr, Next>;
     extern "rust-call" fn call_once(self, args: A::Exprs<'a, 'vir, Curr, Next>) -> Self::Output {
-        with_vcx(|vcx| {
-            let args = A::args(vcx, args);
-            A::types_match(self.inner.args, args, self.inner.debug_info);
-            StmtKindGenData::MethodCall(vcx.alloc(MethodCallGenData {
-                targets: &[],
-                method: self.inner.idn.to_str(),
-                args,
-            }))
-        })
+        self.call_with_targets(&[], args)
     }
 }
 

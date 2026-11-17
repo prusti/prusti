@@ -377,14 +377,12 @@ pub struct PrustiBuiltinTask<'vir> {
     pub def_id: DefId,
     pub args: GArgs<'vir>,
     /// Whether the partial collection operations (element
-    /// indexing/update/lookup, slicing) are checked: true in impure code
-    /// unless only the core proof is verified, where they encode to their
-    /// *checked* native form (the well-definedness obligation is a meaningful
-    /// verification condition; a failing bounds check panics, and the core
-    /// proof does not include the absence of panics). Otherwise, in
-    /// particular in pure code (where the precondition-free `f_` functions
-    /// could never discharge it), they encode to the total wrappers of
-    /// [`CollectionOpsEnc`].
+    /// indexing/update/lookup, slicing) are checked, i.e. encoded to their
+    /// native form, whose well-definedness is a verification condition. They
+    /// are checked in impure code unless only the core proof is verified,
+    /// which ignores specifications and ghost code. Otherwise they encode to
+    /// the total wrappers of [`CollectionOpsEnc`]; in pure code, the
+    /// precondition-free `f_` functions could never discharge the check.
     pub checked: bool,
     /// The call-site span in impure code (`None` in pure code), where
     /// encoding errors are reported. The returned expression is partial iff

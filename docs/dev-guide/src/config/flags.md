@@ -273,9 +273,13 @@ When enabled, Prusti will only try to verify the functions annotated with `#[ver
 
 ## `ONLY_CORE_PROOF`
 
-When enabled, only the core proof is verified: the absence of undefined behaviour, which the Rust type system guarantees for safe code. Neither functional correctness nor the absence of panics (which in general needs specifications to prove) is verified. Every function is encoded as if it had no specifications: contracts, pledges, loop invariants, and `prusti_assert!`, `prusti_assume!` and `prusti_refute!` are ignored, including the extern specs of the standard library. MIR assertions (bounds, overflow, division by zero, ...) are assumed, and the bounds of operations on ghost collections (e.g. `Seq` indexing) are not checked. `#[pure]` is ignored: every function is encoded as impure. `#[trusted]` keeps its meaning.
+When enabled, only the core proof is verified: the absence of undefined behaviour, which the Rust type system guarantees for safe code. Neither functional correctness nor the absence of panics (which in general needs specifications to prove) is verified:
 
-> **Note:** The checks that debug assertions add to turn undefined behaviour (e.g. a misaligned pointer dereference) into a panic are panics too, so they are assumed. Prusti checks for undefined behaviour itself; to have it cover such undefined behaviour fully, disable debug assertions (`-C debug-assertions=off`).
+- Every function is encoded as if it had no specifications: contracts, pledges, loop invariants, and `prusti_assert!`, `prusti_assume!` and `prusti_refute!` are ignored, including the extern specs of the standard library.
+- The ignored contracts include those of unsafe functions, so calls of unsafe functions are not checked against the conditions under which they are safe to call.
+- `#[pure]` is ignored: every function is encoded as impure. `#[trusted]` keeps its meaning.
+- The bounds of operations on ghost collections (e.g. `Seq` indexing) are not checked.
+- Panics are control flow: a failing MIR assertion (bounds, overflow, division by zero, ...), a call or a drop may unwind, and the cleanup code then run (e.g. drops) is verified too.
 
 ## `PRESERVE_SMT_TRACE_FILES`
 

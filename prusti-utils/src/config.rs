@@ -714,19 +714,10 @@ pub fn verify_core_proof() -> bool {
 }
 
 /// When enabled, only the core proof is verified: the absence of undefined
-/// behaviour, which the Rust type system guarantees for safe code. Neither
-/// functional correctness nor the absence of panics (which in general needs
-/// specifications to prove) is verified: every function is encoded as if it
-/// had no specifications (no contracts, pledges, loop invariants, or
-/// `prusti_assert!`/`prusti_assume!`/`prusti_refute!`, including the extern
-/// specs of the standard library), MIR assertions (bounds, overflow, division
-/// by zero, ...) are assumed, and the bounds of operations on ghost
-/// collections (e.g. `Seq` indexing) are not checked. `#[pure]` is ignored:
-/// every function is encoded as impure. `#[trusted]` keeps its meaning. The
-/// checks that debug assertions add to turn
-/// undefined behaviour into a panic are panics too, so they are assumed:
-/// undefined behaviour is checked by Prusti itself, which therefore covers it
-/// fully only when debug assertions are disabled.
+/// behaviour, which the Rust type system guarantees for safe code.
+/// Specifications (including the contracts of unsafe functions) and `#[pure]`
+/// are ignored, and panics are control flow. The developer guide's
+/// description of `ONLY_CORE_PROOF` has the details.
 pub fn only_core_proof() -> bool {
     read_setting("only_core_proof")
 }
