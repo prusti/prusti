@@ -144,7 +144,7 @@ impl TaskEncoder for MirPureEnc {
             // Encode under the body's span: expression nodes pick up the
             // ambient span at creation, so everything in a pure/spec body
             // defaults to the body's source (e.g. the spec attribute for a
-            // spec closure), refined per statement in `encode_stmt`. This is
+            // spec closure), refined per statement and terminator. This is
             // what error positions inside the body backtranslate to. The MIR
             // span of a body deserialized from another crate is dummy; the
             // definition's span survives in the crate metadata.
@@ -647,7 +647,9 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
             stmt_update = stmt_update.merge_inner(newer);
         }
 
-        // then walk terminator
+        // then walk terminator. Its operands and call are encoded under its
+        // span, like statements in `encode_stmt`; the walks of its successors
+        // are not, as they encode other blocks.
         let term = self.body[curr].terminator.as_ref().unwrap();
         let location = mir::Location {
             block: curr,
@@ -676,7 +678,10 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
 
                 // encode the discriminant operand
                 let discr_expr = self
-                    .encode_operand_snap(discr, &new_curr_ver)?
+                    .vcx
+                    .with_span(term.source_info.span, |_| {
+                        self.encode_operand_snap(discr, &new_curr_ver)
+                    })?
                     .downcast_ty();
                 let discr_ty = discr.ty(self.body, self.vcx.tcx());
                 let discr_ty_out = self.ty_use(discr_ty).expect_primitive();
@@ -786,7 +791,10 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                 let cond_ty = cond.ty(self.body, self.vcx.tcx());
                 assert_eq!(*cond_ty.kind(), TyKind::Bool);
                 let cond_expr = self
-                    .encode_operand_snap(cond, &new_curr_ver)?
+                    .vcx
+                    .with_span(term.source_info.span, |_| {
+                        self.encode_operand_snap(cond, &new_curr_ver)
+                    })?
                     .downcast_ty::<vir::Bool>();
 
                 // if cond == expected: walk the rest of the CFG
@@ -886,7 +894,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
 
                 let func_ty = func.ty(self.body, self.vcx.tcx());
                 let (def_id, arg_tys) = RustSignature::get_def_id_and_caller_substs(func_ty);
-                let expr = {
+                let expr = self.vcx.with_span(term.source_info.span, |_| {
                     // A fn call in pure can only be one of two kinds: a
                     // call to another pure function, or a call to a prusti
                     // builtin function.
@@ -938,11 +946,16 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                     } else {
                         panic!("call to unknown non-pure function in pure code ({def_id:?})");
                     }
-                };
+                });
 
+                let expr = self.encode_place_update(
+                    &new_curr_ver,
+                    *destination,
+                    expr?,
+                    term.source_info.span,
+                )?;
                 let mut term_update = Update::new();
-                assert!(destination.projection.is_empty());
-                self.bump_version(&mut term_update, destination.local, expr?, location);
+                self.bump_version(&mut term_update, destination.local, expr, location);
                 term_update.add_to_map(&mut new_curr_ver);
 
                 // walk rest of CFG
@@ -981,9 +994,9 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                 | mir::StatementKind::Nop
                 | mir::StatementKind::BackwardIncompatibleDropHint { .. } => {} // nop
                 mir::StatementKind::Assign(box (dest, rvalue)) => {
-                    //assert!(dest.projection.is_empty());
                     let span = stmt.source_info.span;
                     let expr = self.encode_rvalue(curr_ver, rvalue, span)?;
+                    let expr = self.encode_place_update(curr_ver, *dest, expr, span)?;
                     self.bump_version(&mut update, dest.local, expr, location);
                 }
                 k => todo!("statement kind {k:?}"),
@@ -1319,6 +1332,58 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
         }
 
         Ok(encoded_place)
+    }
+
+    /// The snapshot of `place.local` after `value` is written to `place`: the
+    /// old snapshot with only the part at `place` replaced.
+    fn encode_place_update(
+        &mut self,
+        curr_ver: &FxHashMap<mir::Local, Version<'vir>>,
+        place: mir::Place<'vir>,
+        mut value: ExprRet<'vir>,
+        span: Span,
+    ) -> EncodeResult<'vir, ExprRet<'vir>, MirPureEnc> {
+        let Some((_, prefix)) = place.projection.split_last() else {
+            return Ok(value);
+        };
+        // The type and snapshot of each place that `place` projects from.
+        let mut base_ty = mir::PlaceTy::from_ty(self.body.local_decls[place.local].ty);
+        let mut base =
+            self.encode_place_with_ref(curr_ver, mir::Place::from(place.local).into())?;
+        let mut bases = vec![(base_ty, base.snap)];
+        for &elem in prefix {
+            base = self.encode_place_element(curr_ver, base_ty, elem, base)?;
+            base_ty = base_ty.projection_ty(self.vcx.tcx(), elem);
+            bases.push((base_ty, base.snap));
+        }
+        for ((base_ty, base_snap), &elem) in bases.into_iter().zip(&place.projection[..]).rev() {
+            let e_ty = self.ty_use(base_ty.ty);
+            value = match elem {
+                mir::ProjectionElem::Downcast(..) => value,
+                mir::ProjectionElem::Field(field_idx, _) => e_ty
+                    .expect_variant_opt(base_ty.variant_index)
+                    .with_field(base_snap.downcast_ty(), field_idx, value)
+                    .upcast_ty(),
+                mir::ProjectionElem::Deref if base_ty.ty.is_box() => e_ty
+                    .expect_structlike()
+                    .with_box_value(base_snap.downcast_ty(), value)
+                    .upcast_ty(),
+                // TODO: array elements need a function on the array snapshot
+                // that replaces one element; writes through a `&mut` need its
+                // referent's value, which pure code does not have.
+                _ => {
+                    return Err(self.unsupported_rvalue(
+                        format!(
+                            "assignment to a part of a `{}` in pure code: only fields and \
+                             boxed values can be assigned to",
+                            base_ty.ty
+                        ),
+                        span,
+                    ));
+                }
+            };
+        }
+        Ok(value)
     }
 
     /// Encodes the closure argument of a quantifier/spec-block builtin: the
