@@ -85,6 +85,16 @@ pub fn is_function_pure<'tcx>(def_id: DefId, args: GArgs<'tcx>) -> bool {
     .unwrap_or_default()
 }
 
+/// The mode of a pure function, `None` for an impure one. An invalid
+/// trait-to-impl kind refinement counts as impure, as in [`kind_is_pure`].
+pub fn pure_mode<'tcx>(def_id: DefId, args: GArgs<'tcx>) -> Option<typed::PureMode> {
+    with_proc_spec(
+        SpecQuery::GetProcKind(def_id, args.args()),
+        |proc_spec: &ProcedureSpecification| proc_spec.kind.pure_mode().ok().flatten(),
+    )
+    .flatten()
+}
+
 /// `kind.is_pure()`, treating an invalid trait-to-impl kind refinement as
 /// impure. This is a pure query; the refinement error itself is reported to
 /// the user separately by [`report_kind_refinement_error`].
@@ -109,36 +119,62 @@ pub fn report_kind_refinement_error(
     vir::with_vcx(|vcx| {
         let name = vcx.tcx().def_path_str(def_id);
         let span = vcx.tcx().def_span(def_id).into();
-        let error = match (base, refined) {
-            (Pure, Impure) => {
-                let mut error = prusti_interface::PrustiError::incorrect(
-                    format!("`{name}` implements a `#[pure]` trait method and so must itself be `#[pure]`"),
-                    span,
-                )
-                .set_help("add `#[pure]` to the implementation");
-                // Point at the `#[pure]` in the trait definition (its
-                // `specs_version` marker is spanned at the annotation), when
-                // the trait method is available locally.
-                if let Some(trait_item) = vcx
-                    .tcx()
-                    .opt_associated_item(def_id)
-                    .and_then(|item| item.trait_item_def_id())
-                    && let Some(pure_span) =
-                        prusti_interface::utils::get_prusti_attr_of(vcx.tcx(), trait_item, "pure")
-                            .map(|item| item.span)
-                {
-                    error = error.add_note(
-                        "the trait method is declared `#[pure]` here",
-                        Some(pure_span),
-                    );
-                }
-                error
-            }
-            _ => prusti_interface::PrustiError::incorrect(
-                format!("the specification of `{name}` is incompatible with the trait declaration"),
-                span,
+        let (trait_mode, message, help) = match (base, refined) {
+            (Pure(mode @ typed::PureMode::Value), Impure) => (
+                mode,
+                format!(
+                    "`{name}` implements a `#[pure]` trait method and so must itself be `#[pure]`"
+                ),
+                "add `#[pure]` to the implementation",
             ),
+            (Pure(mode @ typed::PureMode::Memory), Impure) => (
+                mode,
+                format!(
+                    "`{name}` implements a `#[pure(memory)]` trait method and so must itself be \
+                     `#[pure(memory)]` or `#[pure]`"
+                ),
+                "add `#[pure(memory)]` to the implementation, or `#[pure]` if its result does \
+                 not depend on memory addresses",
+            ),
+            (Pure(mode @ typed::PureMode::Value), Pure(typed::PureMode::Memory)) => (
+                mode,
+                format!(
+                    "`{name}` implements a `#[pure]` trait method, so its result must not \
+                     depend on memory addresses"
+                ),
+                "use `#[pure]` on the implementation, or declare the trait method \
+                 `#[pure(memory)]`",
+            ),
+            _ => {
+                vcx.emit_early_error(prusti_interface::PrustiError::incorrect(
+                    format!(
+                        "the specification of `{name}` is incompatible with the trait declaration"
+                    ),
+                    span,
+                ));
+                return;
+            }
         };
+        let mut error = prusti_interface::PrustiError::incorrect(message, span).set_help(help);
+        // Point at the `#[pure]` in the trait definition (its
+        // `prusti::pure` marker is spanned at the annotation), when
+        // the trait method is available locally.
+        if let Some(trait_item) = vcx
+            .tcx()
+            .opt_associated_item(def_id)
+            .and_then(|item| item.trait_item_def_id())
+            && let Some(pure_span) =
+                prusti_interface::utils::get_prusti_attr_of(vcx.tcx(), trait_item, "pure")
+                    .map(|item| item.span)
+        {
+            error = error.add_note(
+                format!(
+                    "the trait method is declared `{}` here",
+                    trait_mode.attribute()
+                ),
+                Some(pure_span),
+            );
+        }
         vcx.emit_early_error(error);
     });
 }

@@ -26,7 +26,7 @@ pub const SPECS_MAGIC: &[u8] = b"prusti-specs";
 /// or any of the serialized types change: `cargo-prusti` then cleans its
 /// target directory, since cargo does not rebuild dependencies (and hence
 /// their `.specs` files) when only Prusti changes.
-pub const SPECS_FORMAT_VERSION: u32 = 1;
+pub const SPECS_FORMAT_VERSION: u32 = 2;
 
 /// Name of the file in `cargo-prusti`'s target directory that records the
 /// `SPECS_FORMAT_VERSION` of the `.specs` files in it.

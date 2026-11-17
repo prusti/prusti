@@ -1,5 +1,5 @@
 use pcg::borrow_pcg::FunctionData;
-use prusti_interface::PrustiError;
+use prusti_interface::{PrustiError, specs::typed::PureMode};
 use prusti_rustc_interface::{middle::mir, span::def_id::DefId};
 use task_encoder::{
     EncodeFullError, EncodeFullResult, OutputRefAny, TaskEncoder, TaskEncoderDependencies,
@@ -245,14 +245,13 @@ impl TaskEncoder for MethodEnc {
 
             // The method of a pure function `f` gets the postcondition
             //     ensures snap(result) == f_(old(snap(args)))
-            // with the addresses of `&T` arguments nulled, exactly as a call
-            // `f(args)` in a specification is encoded. So an impure call
-            // learns the same value; the body proves it like any other
-            // postcondition.
-            let tie = if crate::encoders::is_function_pure(
-                def_id,
-                GArgs::new(params, params.rust_params()),
-            ) {
+            // with the addresses of `&T` arguments nulled unless `f` is in
+            // memory mode, exactly as a call `f(args)` in a specification is
+            // encoded. So an impure call learns the same value; the body
+            // proves it like any other postcondition.
+            let tie = if let Some(mode) =
+                crate::encoders::pure_mode(def_id, GArgs::new(params, params.rust_params()))
+            {
                 let pure_func = deps.require_dep_spanned::<FunctionCallEnc>(
                     CallTaskDescription::new(def_id, params.rust_params(), def_id)
                         .resolve_trait_calls(false),
@@ -263,19 +262,64 @@ impl TaskEncoder for MethodEnc {
                     .map(|arg_idx| vcx.mk_old_expr(arg_defs[arg_idx].impure_snap))
                     .collect::<Vec<_>>();
                 let name = vcx.tcx().def_path_str(def_id);
+                // An implementation of a trait method may only be in memory
+                // mode if the trait method is.
+                let value_mode_trait_method = vcx
+                    .tcx()
+                    .opt_associated_item(def_id)
+                    .and_then(|item| item.trait_item_def_id())
+                    .filter(|&trait_item| {
+                        let trait_params = GParams::from(trait_item);
+                        crate::encoders::pure_mode(
+                            trait_item,
+                            GArgs::new(trait_params, trait_params.rust_params()),
+                        ) == Some(PureMode::Value)
+                    });
+                let to_declare = match value_mode_trait_method {
+                    None => Some("the function"),
+                    Some(trait_item) if trait_item.is_local() => {
+                        Some("both this function and the trait method it implements")
+                    }
+                    // The specification of a foreign trait method is fixed.
+                    Some(_) => None,
+                };
+                let help = to_declare.map(|to_declare| {
+                    format!(
+                        "if the result is meant to depend on the addresses (e.g. it is a \
+                         reference into an argument), declare {to_declare} `#[pure(memory)]`"
+                    )
+                });
                 Some(vcx.with_span(span, |vcx| {
                     vcx.add_error_taint(pure_func.body_taint());
                     vcx.handle_error("postcondition.violated:assertion.false", move |_| {
-                        Some(vec![PrustiError::verification(
-                            format!(
-                                "the result of pure function `{name}` might not match its \
-                                 definition with the addresses of its shared-reference \
-                                 arguments ignored: either the result depends on those \
-                                 addresses, which a pure function must not, or Prusti's \
-                                 impure and pure encodings of the function disagree"
+                        let error = match mode {
+                            PureMode::Value => {
+                                let error = PrustiError::verification(
+                                    format!(
+                                        "the result of pure function `{name}` might not match \
+                                         its definition with the addresses of its \
+                                         shared-reference arguments ignored: either the result \
+                                         depends on those addresses, which a `#[pure]` function \
+                                         must not, or Prusti's impure and pure encodings of the \
+                                         function disagree"
+                                    ),
+                                    span.into(),
+                                );
+                                match &help {
+                                    Some(help) => error.set_help(help),
+                                    None => error,
+                                }
+                            }
+                            PureMode::Memory => PrustiError::verification(
+                                format!(
+                                    "the result of pure function `{name}` might not match its \
+                                     definition: Prusti's impure and pure encodings of the \
+                                     function disagree"
+                                ),
+                                span.into(),
                             ),
-                            span.into(),
-                        )])
+                        };
+                        Some(vec![error])
                     });
                     vcx.mk_eq_expr(
                         arg_defs[mir::RETURN_PLACE].impure_snap,
@@ -418,7 +462,8 @@ impl TaskEncoder for MethodEnc {
             posts.extend(spec.post_exprs());
             // After the functional postconditions: applying `f_` assumes its
             // (unchecked) postconditions, so they must be checked first.
-            // Proving the tie still assumes them on the dummied arguments.
+            // In value mode, proving the tie still assumes them on the dummied
+            // arguments.
             // A postcondition that holds on the real arguments but not on the
             // dummied ones (e.g. `x as *const i32 != null`) is then assumed
             // false, which makes the tie vacuously provable and lets callers

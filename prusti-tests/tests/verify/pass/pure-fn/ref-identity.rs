@@ -50,3 +50,20 @@ fn nested_pure_call(x: &S) {
     let b = len(x);
     prusti_assert!(a == b + b);
 }
+
+/// A `#[pure(memory)]` function sees the addresses of its arguments, so it
+/// can return a reference into one.
+#[pure(memory)]
+#[ensures(result as *const i32 == &s.f as *const i32)]
+fn field(s: &S) -> &i32 {
+    &s.f
+}
+
+/// Callers learn the referent and the address. On a reference argument, the
+/// call in executable code and the same call in a specification agree.
+fn memory_call(x: &S) {
+    let r = field(x);
+    prusti_assert!(*r == x.f);
+    prusti_assert!(r as *const i32 == &x.f as *const i32);
+    prusti_assert!(r === field(x));
+}

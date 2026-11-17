@@ -1,3 +1,4 @@
+use prusti_interface::specs::typed::PureMode;
 use prusti_rustc_interface::span::def_id::DefId;
 use task_encoder::{EncodeFullResult, OutputRefAny, TaskEncoder, TaskEncoderDependencies};
 use vir::{CastType, FunctionIdn, Reify};
@@ -22,7 +23,8 @@ pub struct FunctionCallEncOutput<'vir> {
     function: FunctionEncOutputRef<'vir>,
     ty_args: GArgsTy<'vir>,
     /// The (instantiated) types of the arguments the callee declares as
-    /// shared references, whose addresses are dummied.
+    /// shared references, whose addresses are dummied. `None` throughout for
+    /// a callee in [`PureMode::Memory`], which may depend on the addresses.
     shared_ref_args: Vec<Option<TyUsePureImmRef<'vir>>>,
     inputs: Vec<GArgCaster<'vir, Pure>>,
     output: GArgCaster<'vir, Pure>,
@@ -102,12 +104,15 @@ impl TaskEncoder for FunctionCallEnc {
         // Only arguments declared as shared references are dummied, not ones
         // of a type parameter instantiated with a reference: the dummying
         // must agree with the callee's (generic) contract, which ties its
-        // result to `f_` on the same dummied arguments.
+        // result to `f_` on the same dummied arguments. Nothing is dummied for
+        // a callee in memory mode, whose result may depend on the addresses.
+        let keeps_addresses =
+            crate::encoders::pure_mode(callee_def_id, task_key.gargs) == Some(PureMode::Memory);
         let shared_ref_args = signature
             .inputs
             .iter()
             .map(|ty| {
-                if !ty.is_immref() {
+                if keeps_addresses || !ty.is_immref() {
                     return Ok(None);
                 }
                 let ty_task = ty.decompose_normalize(task_key.gargs);

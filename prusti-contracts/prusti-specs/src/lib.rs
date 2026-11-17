@@ -86,8 +86,10 @@ fn extract_prusti_attributes(
                     | SpecAttributeKind::AfterExpiry
                     | SpecAttributeKind::AssertOnExpiry
                     | SpecAttributeKind::RefineSpec => unwrap_argument(attr.tokens),
-                    // The argument of `terminates` is optional.
-                    SpecAttributeKind::Terminates if !attr.tokens.is_empty() => {
+                    // The arguments of `pure` and `terminates` are optional.
+                    SpecAttributeKind::Pure | SpecAttributeKind::Terminates
+                        if !attr.tokens.is_empty() =>
+                    {
                         unwrap_argument(attr.tokens)
                     }
                     // Nothing to do for attributes without arguments.
@@ -145,6 +147,15 @@ pub fn rewrite_prusti_attributes(
             "`predicate!` is incompatible with other Prusti attributes",
         )
         .to_compile_error();
+    }
+
+    // A function has one purity mode.
+    if let Some((_, span, _)) = prusti_attributes
+        .iter()
+        .filter(|(ak, _, _)| ak == &SpecAttributeKind::Pure)
+        .nth(1)
+    {
+        return syn::Error::new(*span, "`#[pure]` may be given only once").to_compile_error();
     }
 
     let (generated_spec_items, generated_attributes) =
@@ -314,20 +325,28 @@ fn generate_for_terminates(
 }
 
 /// Generate spec items and attributes to typecheck and later retrieve "pure" annotations.
+/// The optional argument is the mode (see `PureMode` in `prusti-interface`), which is
+/// stored as the value of the marker.
 fn generate_for_pure(attr: TokenStream, span: Span, _item: &untyped::AnyFnItem) -> GeneratedResult {
-    if !attr.is_empty() {
-        return Err(syn::Error::new(
-            attr.span(),
-            "the `#[pure]` attribute does not take parameters",
-        ));
-    }
-
-    Ok((
-        vec![],
-        vec![parse_quote_spanned! {span=>
+    let marker = if attr.is_empty() {
+        parse_quote_spanned! {span=>
             #[prusti::pure]
-        }],
-    ))
+        }
+    } else {
+        let attr_span = attr.span();
+        match syn::parse2::<syn::Ident>(attr) {
+            Ok(mode) if mode == "memory" => parse_quote_spanned! {span=>
+                #[prusti::pure = "memory"]
+            },
+            _ => {
+                return Err(syn::Error::new(
+                    attr_span,
+                    "expected the mode `memory`: `#[pure]` takes either no argument or a mode",
+                ));
+            }
+        }
+    };
+    Ok((vec![], vec![marker]))
 }
 
 /// Generate spec items and attributes to typecheck and later retrieve "verified" annotations.
@@ -691,6 +710,13 @@ pub fn closure(tokens: TokenStream) -> TokenStream {
     for a in attrs {
         match a.path.get_ident() {
             Some(ident) if ident == "pure" => {
+                if !a.tokens.is_empty() {
+                    return syn::Error::new(
+                        a.tokens.span(),
+                        "a mode of `#[pure]` is not supported on `closure!`",
+                    )
+                    .to_compile_error();
+                }
                 attrs_ts.extend(quote_spanned! {a.span()=> #[prusti::pure] });
             }
             Some(ident) if ident == "trusted" => {
