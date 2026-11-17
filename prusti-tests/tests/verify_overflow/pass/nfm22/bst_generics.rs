@@ -26,13 +26,6 @@ pub enum Tree<T: Ord> {
 #[pure]
 fn snap<T>(x: &T) -> &T { x }
 
-#[extern_spec]
-trait Ord {
-    #[pure]
-    // TODO: move `compare` spec here
-    fn cmp(&self, other: &Self) -> Ordering;
-}
-
 // Issue 1: could not use `a.cmp(other)` directly within a `forall`
 // as it would complain about `cmp` not being pure. May be related to issue #4?
 #[pure]

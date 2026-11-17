@@ -30,6 +30,9 @@ impl Ord for i32 {
     fn cmp(&self, other: &Self) -> Ordering;
 }
 
+// This extern spec duplicates the one in `prusti-contracts`, which is an
+// error. `prusti-contracts` does not specify transitivity; once it does,
+// remove this extern spec.
 #[extern_spec]
 trait Ord {
     #[pure]

@@ -1,13 +1,6 @@
 use prusti_contracts::*;
 use std::cmp::{Ord, Ordering};
 
-#[extern_spec]
-trait Ord {
-    #[trusted]
-    #[pure]
-    fn cmp(&self, other: &Self) -> Ordering;
-}
-
 #[pure]
 pub fn eq<T: Ord>(a: &T, b: &T) -> bool {
     match a.cmp(b) {

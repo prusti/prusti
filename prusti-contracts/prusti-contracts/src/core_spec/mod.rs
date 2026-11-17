@@ -3,7 +3,9 @@ use crate::*;
 pub mod default;
 pub mod eq;
 pub mod float;
+pub mod ord;
 pub mod panicking;
+pub mod range;
 pub mod result;
 pub mod slice;
 
