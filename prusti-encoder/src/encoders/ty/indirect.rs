@@ -268,14 +268,5 @@ pub fn projection_for_generalized_idx<'tcx>(
     tcx: TyCtxt<'tcx>,
 ) -> Option<LifetimeProjection<'tcx, RustTyDecomposition<'tcx>>> {
     let lifetimes: IndexVec<_, GeneralizedLifetime<'tcx>> = tcx.extract_regions(ty);
-    let region = match lifetimes.get(idx)? {
-        GeneralizedLifetime::Region(r) => *r,
-        GeneralizedLifetime::RegionsIn(_) => return None,
-    };
-    LifetimeProjection::new(
-        decomp,
-        GeneralizedLifetime::Region(region),
-        None,
-        PrustiPcgCtxt,
-    )
+    LifetimeProjection::new(decomp, *lifetimes.get(idx)?, None, PrustiPcgCtxt)
 }
