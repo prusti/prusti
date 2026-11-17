@@ -1,22 +1,13 @@
-// ignore-test: slicing with RangeInclusive (e.g. [x..=y]) currently not supported
+//@ known-failure
 
 #![feature(const_panic)]
 #![feature(slice_index_methods)]
 
 use prusti_contracts::*;
 
-// #[extern_spec]
-// impl std::ops::RangeInclusive<usize> {
-//     #[ensures(*result.start() == start)]
-//     #[ensures(*result.end() == end)]
-//     pub const fn new(start: usize, end: usize) -> std::ops::RangeInclusive<usize>;
-
-//     #[pure]
-//     pub const fn start(&self) -> &usize;
-//     #[pure]
-//     pub const fn end(&self) -> &usize;
-// }
-
+// These extern specs duplicate the ones in `prusti-contracts`, which is an
+// error. `prusti-contracts` only specifies the length of a subslice; once it
+// also specifies its elements, remove these extern specs.
 #[extern_spec]
 impl<T> std::slice::SliceIndex<[T]> for std::ops::Range<usize> {
     #[trusted]
