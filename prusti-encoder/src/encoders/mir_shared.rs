@@ -20,6 +20,7 @@ use prusti_rustc_interface::{
     middle::{mir, ty},
     span::{Span, Spanned, def_id::DefId, sym},
 };
+use prusti_utils::config;
 
 #[allow(type_alias_bounds)]
 type ExprOutput<'vir, Enc: PureRvalueEnc<'vir>> =
@@ -255,15 +256,15 @@ pub(crate) trait PureRvalueEnc<'vir> {
         if matches!(builtin, PrustiBuiltin::Spec(_)) {
             return Ok(None);
         }
-        let is_pure = Self::PURE;
+        let checked = !Self::PURE && !config::only_core_proof();
         let expr = self
             .deps()
             .require_dep::<PrustiBuiltinEnc>(PrustiBuiltinTask {
                 builtin,
                 def_id,
                 args: gargs,
-                is_pure,
-                span: (!is_pure).then_some(span),
+                checked,
+                span: (!Self::PURE).then_some(span),
             })?;
         let operands = args
             .iter()

@@ -30,7 +30,6 @@ lazy_static::lazy_static! {
 
         settings.set_default::<Option<u32>>("check_timeout", None).unwrap();
         settings.set_default("check_overflows", true).unwrap();
-        settings.set_default("check_panics", true).unwrap();
         settings.set_default("encode_unsigned_num_constraint", true).unwrap();
         settings.set_default("encode_bitvectors", false).unwrap();
         settings.set_default("simplify_encoding", true).unwrap();
@@ -62,7 +61,7 @@ lazy_static::lazy_static! {
         settings.set_default("full_compilation", false).unwrap();
         settings.set_default("json_communication", false).unwrap();
         settings.set_default("verify_core_proof", true).unwrap();
-        settings.set_default("verify_specifications", true).unwrap();
+        settings.set_default("only_core_proof", false).unwrap();
         settings.set_default("enable_type_invariants", false).unwrap();
         settings.set_default::<Option<u8>>("number_of_parallel_verifiers", None).unwrap();
         settings.set_default::<Option<String>>("min_prusti_version", None).unwrap();
@@ -298,11 +297,6 @@ pub fn viper_home() -> String {
 pub fn java_home() -> String {
     read_setting::<Option<String>>("java_home")
         .expect("Please set the java_home configuration flag")
-}
-
-/// When enabled, Prusti will check for an absence of `panic!`s.
-pub fn check_panics() -> bool {
-    read_setting("check_panics")
 }
 
 /// When enabled, the encoded program is simplified before it is passed to
@@ -719,12 +713,22 @@ pub fn verify_core_proof() -> bool {
     read_setting("verify_core_proof")
 }
 
-/// Whether the functional specifications should be verified.
-///
-/// **Note:** This option is taken into account only when `unsafe_core_proof` is
-/// true.
-pub fn verify_specifications() -> bool {
-    read_setting("verify_specifications")
+/// When enabled, only the core proof is verified: the absence of undefined
+/// behaviour, which the Rust type system guarantees for safe code. Neither
+/// functional correctness nor the absence of panics (which in general needs
+/// specifications to prove) is verified: every function is encoded as if it
+/// had no specifications (no contracts, pledges, loop invariants, or
+/// `prusti_assert!`/`prusti_assume!`/`prusti_refute!`, including the extern
+/// specs of the standard library), MIR assertions (bounds, overflow, division
+/// by zero, ...) are assumed, and the bounds of operations on ghost
+/// collections (e.g. `Seq` indexing) are not checked. `#[pure]` is ignored:
+/// every function is encoded as impure. `#[trusted]` keeps its meaning. The
+/// checks that debug assertions add to turn
+/// undefined behaviour into a panic are panics too, so they are assumed:
+/// undefined behaviour is checked by Prusti itself, which therefore covers it
+/// fully only when debug assertions are disabled.
+pub fn only_core_proof() -> bool {
+    read_setting("only_core_proof")
 }
 
 /// How many parallel verifiers Silicon should use.

@@ -5,6 +5,11 @@ use prusti_utils::config;
 /// message `msg` might not hold, or `None` if the condition is assumed rather
 /// than checked.
 pub(crate) fn assert_error_message(msg: &mir::AssertMessage<'_>) -> Option<&'static str> {
+    // A failing assertion panics, and when only the core proof is verified,
+    // the absence of panics is not.
+    if config::only_core_proof() {
+        return None;
+    }
     match *msg {
         mir::AssertMessage::BoundsCheck { .. } => {
             Some("the array or slice index may be out of bounds")
