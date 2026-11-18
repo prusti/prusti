@@ -1,0 +1,25 @@
+name: Resolve the features of each build separately
+description: >
+  Switches the workspace to resolver 2 and to feature unification over the selected packages
+  only. Development builds instead enable the features that any workspace member, its tests or
+  its build dependencies need (see `resolver` in `Cargo.toml`); after this step, a build
+  enables only the features that the packages it builds need, as the published binaries should
+  and as the check that each package declares its dependencies requires. To build like this
+  locally, set `resolver = "2"` in `Cargo.toml` and `CARGO_RESOLVER_FEATURE_UNIFICATION=selected`.
+  The repository must be checked out first.
+
+runs:
+  using: composite
+  steps:
+    - name: Use resolver 2 and unify features over the selected packages
+      shell: bash
+      run: |
+        python - <<'EOF'
+        from pathlib import Path
+        manifest = Path("Cargo.toml")
+        text = manifest.read_text()
+        # Fail instead of building with resolver 1 if the line changed.
+        assert '\nresolver = "1"\n' in text
+        manifest.write_text(text.replace('\nresolver = "1"\n', '\nresolver = "2"\n'))
+        EOF
+        echo "CARGO_RESOLVER_FEATURE_UNIFICATION=selected" >> "$GITHUB_ENV"

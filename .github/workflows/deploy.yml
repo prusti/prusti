@@ -44,6 +44,10 @@ jobs:
           # Not the `build` cache of the debug builds in test.yml.
           cache-shared-key: "release"
 
+      # So that the published binaries contain only the features of dependencies they use.
+      - name: Resolve the features of each build separately
+        uses: ./.github/actions/resolve-features-separately
+
       - name: Build with cargo --release
         run: python x.py build --release --all
 

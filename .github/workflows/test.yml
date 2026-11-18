@@ -65,6 +65,9 @@ jobs:
         uses: ./.github/actions/setup
         with:
           cache-save-if: ${{ github.ref == 'refs/heads/main' }}
+      # So that a package's build does not get the features that other packages enable.
+      - name: Resolve the features of each build separately
+        uses: ./.github/actions/resolve-features-separately
       - name: Compile each workspace package individually
         run: |
           cargo install cargo-hack
