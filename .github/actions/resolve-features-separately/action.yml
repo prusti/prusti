@@ -2,10 +2,11 @@ name: Resolve the features of each build separately
 description: >
   Switches the workspace to resolver 3 and to feature unification over the selected packages
   only. Development builds instead enable the features that any workspace member, its tests or
-  its build dependencies need (see `resolver` in `Cargo.toml`); after this step, a build
-  enables only the features that the packages it builds need, as the published binaries should
-  and as the check that each package declares its dependencies requires. To build like this
-  locally, set `resolver = "3"` in `Cargo.toml` and `CARGO_RESOLVER_FEATURE_UNIFICATION=selected`.
+  its build dependencies need (see `resolver` in `Cargo.toml`); after this step, cargo resolves
+  features for the selected packages only, and separately for normal, build and
+  dev-dependencies, which the release build uses and the check that each package declares its
+  dependencies requires. To build like this locally, set `resolver = "3"` in `Cargo.toml` and
+  `CARGO_RESOLVER_FEATURE_UNIFICATION=selected`.
   The repository must be checked out first.
 
 runs:

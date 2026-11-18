@@ -44,8 +44,8 @@ jobs:
           # Not the `build` cache of the debug builds in test.yml.
           cache-shared-key: "release"
 
-      # So that the release build resolves the features of dependencies as before, not as the
-      # development builds do.
+      # So that the release build resolves the features of dependencies per selected package and
+      # separately for normal, build and dev-dependencies, not as the development builds do.
       - name: Resolve the features of each build separately
         uses: ./.github/actions/resolve-features-separately
 

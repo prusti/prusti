@@ -42,8 +42,8 @@ pub fn generate_module(class_names: Vec<&ClassName>) -> String {
         .unwrap_or_else(|| "// No modules".to_string());
 
     [
-        // The module is included with `include!`, which does not accept inner attributes or
-        // inner doc comments.
+        // Users include this module with `include!`, which does not accept inner attributes or
+        // inner doc comments, so they add `#[allow(non_snake_case)]` on the including module.
         "// Automatically generated code\n".to_string(),
         "pub mod builtins;\n".to_string(),
         modules_tree,

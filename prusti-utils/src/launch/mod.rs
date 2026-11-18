@@ -79,8 +79,9 @@ pub fn get_prusti_contracts_dir(exe_dir: &Path) -> Option<PathBuf> {
     let candidates = [
         // Libraries in the Prusti artifact will show up here
         exe_dir.to_path_buf(),
-        // Libraries when building Prusti will show up here, in the target directory of the
-        // binaries (e.g. `target/debug` or `target/prusti-contracts-build-debug`)
+        // Libraries when building Prusti will show up here, in `verify/<profile>` next to the
+        // binaries' directory (e.g. `target/verify/debug` for `target/debug` and
+        // `target/prusti-contracts-build-debug`)
         exe_dir.parent().unwrap().join("verify").join(target_dir),
     ];
     candidates

@@ -19,9 +19,9 @@ fn main() {
     // workspace members, built there separately (cargo builds artifact
     // dependencies on their own), and cargo replacing one of them while
     // `cargo-prusti` spawns it intermittently fails the spawn with "No such
-    // file or directory". The directory sits next to `target/debug` because
-    // the binaries find the contracts, Viper and Z3 relative to their own
-    // location.
+    // file or directory". The directory sits next to the profile directory
+    // (e.g. `target/debug`) because the binaries find the contracts, Viper
+    // and Z3 relative to their own location.
     let bin_dir = target.join(if cfg!(debug_assertions) {
         "prusti-contracts-build-debug"
     } else {
@@ -124,15 +124,15 @@ fn main() {
 /// The directory above the `<profile>` directory of the build that runs this script: the target
 /// directory, or cargo's build directory if `build.build-dir` is set. The binaries and contracts
 /// go there so that builds in different target directories (e.g. rust-analyzer's) do not
-/// replace each other's. `OUT_DIR` is `<target>/<profile>/build/...`, with one or two directories between
-/// `build` and `out` depending on cargo's layout.
+/// replace each other's. `OUT_DIR` is `<target>/<profile>/build/...`, with one or two
+/// directories between `build` and `out` depending on cargo's layout.
 fn target_dir() -> PathBuf {
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
-    let build_dir = out_dir
+    let build_subdir = out_dir
         .ancestors()
         .find(|dir| dir.file_name().is_some_and(|name| name == "build"))
         .unwrap_or_else(|| panic!("no `build` directory above OUT_DIR {}", out_dir.display()));
-    build_dir.parent().unwrap().parent().unwrap().to_path_buf()
+    build_subdir.ancestors().nth(2).unwrap().to_path_buf()
 }
 
 /// Cargo will rebuild prusti-contracts if any of those files changed, however we also want to

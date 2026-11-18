@@ -22,7 +22,7 @@ The [options available](https://doc.rust-lang.org/book/ch11-02-running-tests.htm
 $ ./x.py test mod
 ```
 
-To run only Prusti's test files, run `main`, the test target of `prusti-tests` that runs these files, with the paths to run:
+To run only Prusti's test files, select the `main` test target of `prusti-tests` and pass the paths:
 
 ```bash
 $ ./x.py test --test main -- tests/verify/pass/arrays/
