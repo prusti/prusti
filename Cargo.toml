@@ -34,6 +34,13 @@ resolver = "2"
 [profile.dev]
 debug = 1
 
+# Build scripts, proc macros and their dependencies get the same debuginfo as the other
+# crates. A proc macro that a command builds as a package of its own (e.g. `vir-proc-macro`
+# in `cargo build --all`) is then the same build as when it is only a dependency, so that
+# `cargo test` after `cargo build --all` does not compile it and its dependents again.
+[profile.dev.build-override]
+debug = 1
+
 [profile.test]
 debug = 1
 
