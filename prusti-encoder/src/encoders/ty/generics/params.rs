@@ -151,7 +151,9 @@ impl<'tcx> GParams<'tcx> {
 
     /// Tries to normalize associated types of the corresponding type. Returns
     /// `Some` if managed to normalize (or there were no associated types), else
-    /// returns None.
+    /// returns None. The regions of `ty` are preserved, including inference
+    /// variables and regions escaping `ty`; regions that normalization
+    /// introduces are erased.
     pub fn try_normalize(self, ty: ty::Ty<'tcx>) -> Option<ty::Ty<'tcx>> {
         use prusti_rustc_interface::{
             middle::{
@@ -173,7 +175,8 @@ impl<'tcx> GParams<'tcx> {
             // `skip_binder`), are unknown to a fresh InferCtxt, so they are
             // bound by a binder for the duration of the normalization. An
             // escaping region is recorded relative to the outside of `ty`;
-            // instantiating the binder only supports it escaping by one binder.
+            // instantiating the binder only supports it escaping by one binder,
+            // and rustc's `BoundVarReplacer` panics on a deeper escape.
             let mut originals = FxIndexSet::default();
             let ty = ty::fold_regions(tcx, ty, |r, debruijn| {
                 let original = match r.kind() {
@@ -199,7 +202,7 @@ impl<'tcx> GParams<'tcx> {
                 .deeply_normalize(Unnormalized::new(ty), &mut fulfill_cx)
                 .ok()?;
             // Any ReVar left is one of `ifctxt`'s, which would alias an
-            // unrelated region of the original context.
+            // unrelated region of the original context, so it is erased.
             let nty = ty::fold_regions(tcx, nty, |r, _| {
                 if r.is_var() {
                     tcx.lifetimes.re_erased

@@ -469,7 +469,12 @@ impl TraitImplEnc {
                     DependencyErrorLink::new(
                         <E as TaskEncoder>::ENCODER_NAME,
                         format!(
-                            "the generics that the left-hand sides of these projection bounds mention cannot be determined: {proj_preds:?}"
+                            "these projection bounds mention generics that are never bound: {}",
+                            proj_preds
+                                .iter()
+                                .map(ToString::to_string)
+                                .collect::<Vec<_>>()
+                                .join(", ")
                         ),
                         vec![],
                     ),
