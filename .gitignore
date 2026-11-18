@@ -13,6 +13,7 @@ report.csv
 
 *.lock
 !/Cargo.lock
+!/prusti-contracts/Cargo.lock
 
 .workspaces/
 viper_tools/

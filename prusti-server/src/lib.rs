@@ -28,7 +28,10 @@ mod backend;
 pub(crate) use backend::*;
 pub(crate) use client::*;
 pub(crate) use process_verification::*;
-pub use server::{save_verification_cache, spawn_server_thread, start_server_on_port};
+pub use server::{
+    save_verification_cache, spawn_server_thread, start_server_on_port,
+    verification_cache_hits_and_misses,
+};
 pub(crate) use server_message::*;
 pub(crate) use verification_request::*;
 

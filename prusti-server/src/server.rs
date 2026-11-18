@@ -11,7 +11,11 @@ use once_cell::sync::Lazy;
 use prusti_utils::config;
 use std::{
     net::{Ipv4Addr, SocketAddr},
-    sync::{self, mpsc, Arc},
+    sync::{
+        self,
+        atomic::{AtomicUsize, Ordering},
+        mpsc, Arc,
+    },
     thread,
 };
 use tokio::runtime::Builder;
@@ -54,6 +58,18 @@ static CACHE: Lazy<Arc<sync::Mutex<PersistentCache>>> = Lazy::new(|| {
         env!("BACKEND_FINGERPRINT"),
     )))
 });
+
+static CACHE_HITS: AtomicUsize = AtomicUsize::new(0);
+static CACHE_MISSES: AtomicUsize = AtomicUsize::new(0);
+
+/// How many verification requests the server has answered from its verification cache, and
+/// how many it has verified because the cache held no result for them.
+pub fn verification_cache_hits_and_misses() -> (usize, usize) {
+    (
+        CACHE_HITS.load(Ordering::Relaxed),
+        CACHE_MISSES.load(Ordering::Relaxed),
+    )
+}
 
 /// Writes the server's verification cache to its configured path. `CACHE` is never dropped,
 /// so this is the only way its results reach later runs. Returns whether the cache was in use.
@@ -171,6 +187,7 @@ where
         let stream = if config::enable_cache() {
             match Lazy::force(&CACHE).get(request_hash) {
                 Some(mut result) => {
+                    CACHE_HITS.fetch_add(1, Ordering::Relaxed);
                     info!(
                         "Using cached result {:?} for program {}",
                         result, program_name
@@ -179,9 +196,12 @@ where
                     futures::stream::once(async move { ServerMessage::Termination(result) })
                         .left_stream()
                 }
-                None => VERIFICATION_REQUEST_PROCESSING
-                    .verify(verification_request)
-                    .right_stream(),
+                None => {
+                    CACHE_MISSES.fetch_add(1, Ordering::Relaxed);
+                    VERIFICATION_REQUEST_PROCESSING
+                        .verify(verification_request)
+                        .right_stream()
+                }
             }
         } else {
             VERIFICATION_REQUEST_PROCESSING
