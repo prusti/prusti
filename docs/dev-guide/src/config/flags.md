@@ -9,32 +9,24 @@
 | [`CACHE_PATH`](#cache_path) | `String` | `""` | A* |
 | [`CARGO_COMMAND`](#cargo_command) | `String` | `"check"` | B |
 | [`CARGO_PATH`](#cargo_path) | `String` | `"cargo"` | B |
-| [`CHECK_FOLDUNFOLD_STATE`](#check_foldunfold_state) | `bool` | `false` | A |
 | [`CHECK_OVERFLOWS`](#check_overflows) | `bool` | `true` | A |
 | [`CHECK_PANICS`](#check_panics) | `bool` | `true` | A |
 | [`CHECK_TIMEOUT`](#check_timeout) | `Option<u32>` | `None` | A |
 | [`COUNTEREXAMPLE`](#counterexample) | `bool` | `false` | A |
 | [`DELETE_BASIC_BLOCKS`](#delete_basic_blocks) | `Vec<String>` | `vec![]` | A |
-| [`DUMP_BORROWCK_INFO`](#dump_borrowck_info) | `bool` | `false` | A |
 | [`DUMP_DEBUG_INFO`](#dump_debug_info) | `bool` | `false` | A |
-| [`DUMP_DEBUG_INFO_DURING_FOLD`](#dump_debug_info_during_fold) | `bool` | `false` | A |
-| [`DUMP_PATH_CTXT_IN_DEBUG_INFO`](#dump_path_ctxt_in_debug_info) | `bool` | `false` | A |
-| [`DUMP_REBORROWING_DAG_IN_DEBUG_INFO`](#dump_reborrowing_dag_in_debug_info) | `bool` | `false` | A |
 | [`DUMP_VIPER_PROGRAM`](#dump_viper_program) | `bool` | `false` | A |
 | [`ENABLE_CACHE`](#enable_cache) | `bool` | `true` | A |
-| [`ENABLE_PURIFICATION_OPTIMIZATION`](#enable_purification_optimization) | `bool` | `false` | A |
 | [`ENABLE_TYPE_INVARIANTS`](#enable_type_invariants) | `bool` | `false` | A |
 | [`ENABLE_VERIFY_ONLY_BASIC_BLOCK_PATH`](#enable_verify_only_basic_block_path) | `bool` | `false` | A |
 | [`ENCODE_BITVECTORS`](#encode_bitvectors) | `bool` | `false` | A |
 | [`ENCODE_UNSIGNED_NUM_CONSTRAINT`](#encode_unsigned_num_constraint) | `bool` | `false` | A |
 | [`EXTRA_JVM_ARGS`](#extra_jvm_args) | `Vec<String>` | `vec![]` | A |
 | [`EXTRA_VERIFIER_ARGS`](#extra_verifier_args) | `Vec<String>` | `vec![]` | A |
-| [`FOLDUNFOLD_STATE_FILTER`](#foldunfold_state_filter) | `String` | `""` | A |
 | [`FULL_COMPILATION`](#full_compilation) | `bool` | `false` | A* |
 | [`HIDE_UUIDS`](#hide_uuids) | `bool` | `false` | A |
 | [`IGNORE_REGIONS`](#ignore_regions) | `bool` | `false` | A |
 | [`INTERNAL_ERRORS_AS_WARNINGS`](#internal_errors_as_warnings) | `bool` | `false` | A |
-| [`INTERN_NAMES`](#intern_names) | `bool` | `true` | A |
 | [`JAVA_HOME`](#java_home) | `Option<String>` | `None` | A |
 | [`JSON_COMMUNICATION`](#json_communication) | `bool` | `false` | A |
 | [`LOG`](#log) | `String` | `""` | A |
@@ -48,7 +40,6 @@
 | [`NO_VERIFY_DEPS`](#no_verify_deps) | `bool` | `false` | B |
 | [`IGNORE_DEPS_CONTRACTS`](#ignore_deps_contracts) | `bool` | `false` | B |
 | [`OPT_IN_VERIFICATION`](#opt_in_verification) | `bool` | `false` | A |
-| [`OPTIMIZATIONS`](#optimizations) | `Vec<String>` | "all" | A |
 | [`PRESERVE_SMT_TRACE_FILES`](#preserve_smt_trace_files) | `bool` | `false` | A |
 | [`PRINT_COLLECTED_VERIFICATION_ITEMS`](#print_collected_verification_items) | `bool` | `false` | A |
 | [`PRINT_COUNTEREXAMPLE_IF_MODEL_IS_PRESENT`](#print_counterexample_if_model_is_present) | `bool` | `false` | A |
@@ -78,7 +69,6 @@
 | [`SMT_SOLVER_WRAPPER_PATH`](#smt_solver_wrapper_path) | `Option<String>` | `None` | A |
 | [`SMT_UNIQUE_TRIGGERS_BOUND`](#smt_unique_triggers_bound) | `Option<u64>` | `None` | A |
 | [`SMT_UNIQUE_TRIGGERS_BOUND_TOTAL`](#smt_unique_triggers_bound_total) | `Option<u64>` | `None` | A |
-| [`UNSAFE_CORE_PROOF`](#unsafe_core_proof) | `bool` | `false` | A |
 | [`USE_MORE_COMPLETE_EXHALE`](#use_more_complete_exhale) | `bool` | `true` | A |
 | [`USE_SMT_WRAPPER`](#use_smt_wrapper) | `bool` | `false` | A |
 | [`VERIFICATION_DEADLINE`](#verification_deadline) | `Option<u64>` | `None` | A |
@@ -129,10 +119,6 @@ The path to `cargo` when running `cargo prusti`. Useful if `cargo` is not availa
 
 > **Note:** Applicable only under `cargo prusti`.
 
-## `CHECK_FOLDUNFOLD_STATE`
-
-When enabled, additional, *slow*, checks for the `fold`/`unfold` algorithm will be generated.
-
 ## `CHECK_OVERFLOWS`
 
 When enabled, binary operations and numeric casts will be checked for overflows. See [integer type encoding](../encoding/types-heap.md#i-u-char).
@@ -156,25 +142,9 @@ When enabled, Prusti will try to find and print a counterexample for any failed 
 
 The given basic blocks will be replaced with `assume false`.
 
-## `DUMP_BORROWCK_INFO`
-
-When enabled, borrow checking info will be output.
-
 ## `DUMP_DEBUG_INFO`
 
 When enabled, debug files will be created.
-
-## `DUMP_DEBUG_INFO_DURING_FOLD`
-
-When enabled, the state of the fold-unfold algorithm after each step will be dumped to a file.
-
-## `DUMP_PATH_CTXT_IN_DEBUG_INFO`
-
-When enabled, branch context state will be output in debug files.
-
-## `DUMP_REBORROWING_DAG_IN_DEBUG_INFO`
-
-When enabled, reborrowing DAGs will be output in debug files.
 
 ## `DUMP_VIPER_PROGRAM`
 
@@ -184,12 +154,6 @@ You can find them either in `log/viper_program` or `target/verify/log/viper_prog
 ## `ENABLE_CACHE`
 
 When enabled, verification requests (to verify individual `fn`s) are cached to improve future verification. By default the cache is only saved in memory (of the `prusti-server` if enabled). For long-running verification projects use [`CACHE_PATH`](#cache_path) to save to disk.
-
-## `ENABLE_PURIFICATION_OPTIMIZATION`
-
-When enabled, impure methods are optimized using the purification optimization, which tries to convert heap operations to pure (snapshot-based) operations.
-
-> **Note:** This option is highly experimental.
 
 ## `ENABLE_TYPE_INVARIANTS`
 
@@ -219,10 +183,6 @@ Additional arguments to pass to the JVM when launching a verifier backend.
 
 Additional arguments to pass to the verifier backend.
 
-## `FOLDUNFOLD_STATE_FILTER`
-
-Filter for `fold`/`unfold` nodes when debug info is dumped.
-
 ## `FULL_COMPILATION`
 
 When enabled, compilation will continue and a binary will be generated after Prusti terminates.
@@ -243,10 +203,6 @@ When enabled, internal errors are presented as warnings.
 
 **Note**: This should only be used for debugging, as enabling this setting could
 hide actual verification errors.
-
-## `INTERN_NAMES`
-
-When enabled, Viper identifiers are interned to shorten them when possible.
 
 ## `JAVA_HOME`
 
@@ -318,27 +274,6 @@ When enabled, Prusti will not collect contracts from the project's dependencies.
 ## `OPT_IN_VERIFICATION`
 
 When enabled, Prusti will only try to verify the functions annotated with `#[verified]`. All other functions are assumed to be `#[trusted]`, by default. Functions annotated with both `#[trusted]` and `#[verified]` will not be verified.
-
-## `ONLY_MEMORY_SAFETY`
-
-When enabled, only the core proof is verified.
-
-> **Note:** This should be used only when `UNSAFE_CORE_PROOF` is enabled.
-
-## `OPTIMIZATIONS`
-
-Comma-separated list of optimizations to enable, or `"all"` to enable all. Possible values in the list are:
-
-- `"inline_constant_functions"`
-- `"delete_unused_predicates"`
-- `"optimize_folding"`
-- `"remove_empty_if"`
-- `"purify_vars"`
-- `"fix_quantifiers"`
-- `"fix_unfoldings"`
-- `"remove_unused_vars"`
-- `"remove_trivial_assertions"`
-- `"clean_cfg"`
 
 ## `PRESERVE_SMT_TRACE_FILES`
 
@@ -483,12 +418,6 @@ If not `None`, checks that the number of unique triggers used for each quantifie
 If not `None`, checks that the total number of unique triggers reported by the SMT wrapper is smaller than the specified bound.
 
 > **Note:** Requires `USE_SMT_WRAPPER` to be `true`.
-
-## `UNSAFE_CORE_PROOF`
-
-When enabled, the new core proof is used, suitable for unsafe code
-
-> **Note:** This option is currently very incomplete.
 
 ## `USE_MORE_COMPLETE_EXHALE`
 

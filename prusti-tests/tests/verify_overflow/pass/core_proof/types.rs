@@ -1,5 +1,3 @@
-//@ compile-flags: -Punsafe_core_proof=true -Pverify_types=true
-
 use prusti_contracts::*;
 
 struct T1 {}

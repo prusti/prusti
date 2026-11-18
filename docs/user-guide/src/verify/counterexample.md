@@ -23,7 +23,7 @@ Note 2: Verification will be slower with `counterexamples = true`.
 
 # Customizable counterexamples
 
-A counterexample for structs and enums can be formatted by annotating the type with `#[print_counterexample(..)]`. This is only available if the [`unsafe_core_proof`](https://prusti.github.io/prusti/dev-guide/config/flags.html#unsafe_core_proof) flag is set to `true`.
+Annotating a struct or enum with `#[print_counterexample(..)]` is meant to customize how its counterexamples are printed, but this is currently not supported.
 
 ## Syntax structs
 

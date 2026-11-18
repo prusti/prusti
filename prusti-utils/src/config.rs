@@ -11,56 +11,8 @@ pub mod commandline;
 use self::commandline::CommandLine;
 use crate::launch::{find_viper_home, get_current_executable_dir};
 use ::config::{Config, Environment, File};
-use log::warn;
 use serde::Deserialize;
 use std::{collections::HashSet, env, path::PathBuf, str::FromStr, sync::RwLock};
-
-#[derive(Debug, PartialEq, Eq)]
-pub struct Optimizations {
-    pub inline_constant_functions: bool,
-    pub delete_unused_predicates: bool,
-    pub optimize_folding: bool,
-    pub remove_empty_if: bool,
-    pub purify_vars: bool,
-    pub fix_quantifiers: bool,
-    pub fix_unfoldings: bool,
-    pub remove_unused_vars: bool,
-    pub remove_trivial_assertions: bool,
-    pub clean_cfg: bool,
-}
-
-impl Optimizations {
-    fn all_disabled() -> Self {
-        Optimizations {
-            inline_constant_functions: false,
-            delete_unused_predicates: false,
-            optimize_folding: false,
-            remove_empty_if: false,
-            purify_vars: false,
-            fix_quantifiers: false,
-            fix_unfoldings: false,
-            remove_unused_vars: false,
-            remove_trivial_assertions: false,
-            clean_cfg: false,
-        }
-    }
-
-    fn all_enabled() -> Self {
-        Optimizations {
-            inline_constant_functions: true,
-            delete_unused_predicates: true,
-            optimize_folding: true,
-            remove_empty_if: true,
-            purify_vars: true,
-            fix_quantifiers: true,
-            // Disabled because https://github.com/prusti/prusti/issues/892 has been fixed
-            fix_unfoldings: false,
-            remove_unused_vars: true,
-            remove_trivial_assertions: true,
-            clean_cfg: true,
-        }
-    }
-}
 
 lazy_static::lazy_static! {
     // Is this RwLock<..> necessary?
@@ -77,7 +29,6 @@ lazy_static::lazy_static! {
         settings.set_default::<Option<String>>("java_home", None).unwrap();
 
         settings.set_default::<Option<u32>>("check_timeout", None).unwrap();
-        settings.set_default("check_foldunfold_state", false).unwrap();
         settings.set_default("check_overflows", true).unwrap();
         settings.set_default("check_panics", true).unwrap();
         settings.set_default("encode_unsigned_num_constraint", true).unwrap();
@@ -89,15 +40,10 @@ lazy_static::lazy_static! {
         settings.set_default("log_tracing", false).unwrap();
         settings.set_default("cache_path", "").unwrap();
         settings.set_default("dump_debug_info", false).unwrap();
-        settings.set_default("dump_debug_info_during_fold", false).unwrap();
         settings.set_default("dump_nll_facts", false).unwrap();
         settings.set_default("ignore_regions", false).unwrap();
         settings.set_default("max_log_file_name_length", 60).unwrap();
-        settings.set_default("dump_path_ctxt_in_debug_info", false).unwrap();
-        settings.set_default("dump_reborrowing_dag_in_debug_info", false).unwrap();
-        settings.set_default("dump_borrowck_info", false).unwrap();
         settings.set_default("dump_viper_program", false).unwrap();
-        settings.set_default("foldunfold_state_filter", "").unwrap();
         settings.set_default::<Vec<String>>("extra_jvm_args", vec![]).unwrap();
         settings.set_default::<Vec<String>>("extra_verifier_args", vec![]).unwrap();
         settings.set_default("quiet", false).unwrap();
@@ -115,27 +61,13 @@ lazy_static::lazy_static! {
         settings.set_default("opt_in_verification", false).unwrap();
         settings.set_default("full_compilation", false).unwrap();
         settings.set_default("json_communication", false).unwrap();
-        settings.set_default("optimizations", "all").unwrap();
-        settings.set_default("intern_names", true).unwrap();
-        settings.set_default("enable_purification_optimization", false).unwrap();
-        // settings.set_default("enable_manual_axiomatization", false).unwrap();
-        settings.set_default("unsafe_core_proof", false).unwrap();
         settings.set_default("verify_core_proof", true).unwrap();
         settings.set_default("verify_specifications", true).unwrap();
-        settings.set_default("verify_types", false).unwrap();
-        settings.set_default("verify_specifications_with_core_proof", false).unwrap();
-        settings.set_default("verify_specifications_backend", "Silicon").unwrap();
-        settings.set_default("use_eval_axioms", true).unwrap();
-        settings.set_default("inline_caller_for", false).unwrap();
-        settings.set_default("check_no_drops", false).unwrap();
         settings.set_default("enable_type_invariants", false).unwrap();
-        settings.set_default("use_new_encoder", true).unwrap();
         settings.set_default::<Option<u8>>("number_of_parallel_verifiers", None).unwrap();
         settings.set_default::<Option<String>>("min_prusti_version", None).unwrap();
         settings.set_default("num_errors_per_function", 1).unwrap();
         settings.set_default("ignore_deps_contracts", false).unwrap();
-        // TODO: remove this option
-        settings.set_default("test_free_pcs", false).unwrap();
 
         settings.set_default("print_desugared_specs", false).unwrap();
         settings.set_default("print_typeckd_specs", false).unwrap();
@@ -145,7 +77,6 @@ lazy_static::lazy_static! {
         settings.set_default("print_counterexample_if_model_is_present", false).unwrap();
         settings.set_default::<Option<String>>("save_failing_trace_to_file", None).unwrap();
         settings.set_default::<Option<String>>("execute_only_failing_trace", None).unwrap();
-        settings.set_default::<Option<String>>("dump_fold_unfold_state_of_blocks", None).unwrap();
         settings.set_default("enable_cache", true).unwrap();
 
         settings.set_default("cargo_path", "cargo").unwrap();
@@ -312,12 +243,6 @@ pub fn be_rustc() -> bool {
     read_setting("be_rustc")
 }
 
-/// When enabled, additional, *slow*, checks for the `fold`/`unfold` algorithm
-/// will be generated.
-pub fn check_foldunfold_state() -> bool {
-    read_setting("check_foldunfold_state")
-}
-
 /// Verification backend to use. Possible values:
 ///
 /// - `Carbon` - verification-condition-generation-based backend
@@ -391,12 +316,6 @@ pub fn dump_debug_info() -> bool {
     read_setting("dump_debug_info")
 }
 
-/// When enabled, the state of the fold-unfold algorithm after each step will
-/// be dumped to a file.
-pub fn dump_debug_info_during_fold() -> bool {
-    read_setting("dump_debug_info_during_fold")
-}
-
 /// When enabled, dumps Polonius nll-facts in the log directory.
 pub fn dump_nll_facts() -> bool {
     read_setting("dump_nll_facts")
@@ -414,29 +333,9 @@ pub fn max_log_file_name_length() -> usize {
     read_setting("max_log_file_name_length")
 }
 
-/// When enabled, branch context state will be output in debug files.
-pub fn dump_path_ctxt_in_debug_info() -> bool {
-    read_setting("dump_path_ctxt_in_debug_info")
-}
-
-/// When enabled, reborrowing DAGs will be output in debug files.
-pub fn dump_reborrowing_dag_in_debug_info() -> bool {
-    read_setting("dump_reborrowing_dag_in_debug_info")
-}
-
-/// When enabled, borrow checking info will be output.
-pub fn dump_borrowck_info() -> bool {
-    read_setting("dump_borrowck_info")
-}
-
 /// When enabled, the encoded Viper program will be output.
 pub fn dump_viper_program() -> bool {
     read_setting("dump_viper_program")
-}
-
-/// Filter for `fold`/`unfold` nodes when debug info is dumped.
-pub fn foldunfold_state_filter() -> String {
-    read_setting("foldunfold_state_filter")
 }
 
 /// Set the log level of `env_logger`.
@@ -583,15 +482,10 @@ pub fn print_counterexample_if_model_is_present() -> bool {
 /// If this is set to a path, Prusti will extract the information about the
 /// trace that led to the error and save it to the given file.
 ///
-/// Note: This requires the `counterexample` and `unsafe_core_proof` options to
-/// be enabled.
+/// Note: This requires the `counterexample` option to be enabled.
 pub fn save_failing_trace_to_file() -> Option<String> {
     let value: Option<String> = read_setting("save_failing_trace_to_file");
     if value.is_some() {
-        assert!(
-            unsafe_core_proof(),
-            "Unsafe core proof needs to be enabled to save failing trace to file"
-        );
         assert!(
             counterexample(),
             "Counterexamples need to be enabled to save failing trace to file"
@@ -604,36 +498,9 @@ pub fn save_failing_trace_to_file() -> Option<String> {
 /// `save_failing_trace_to_file`. This is done by replacing all non-executed
 /// basic blocks with `assume false`.
 ///
-/// Note: This requires the `unsafe_core_proof` option to be enabled.
-///
 /// Note: This assumes that the program contains only a single method.
 pub fn execute_only_failing_trace() -> Option<String> {
-    let value: Option<String> = read_setting("execute_only_failing_trace");
-    if value.is_some() {
-        assert!(
-            unsafe_core_proof(),
-            "Unsafe core proof needs to be enabled to save failing trace to file"
-        );
-    }
-    value
-}
-
-/// Dump additional information about the fold-unfold state of the specified
-/// blocks. The blocks are expected to be generated by
-/// `save_failing_trace_to_file` (and potentially edited by hand if needed).
-///
-/// Note: This requires the `unsafe_core_proof` option to be enabled.
-///
-/// Note: This assumes that the program contains only a single method.
-pub fn dump_fold_unfold_state_of_blocks() -> Option<String> {
-    let value: Option<String> = read_setting("dump_fold_unfold_state_of_blocks");
-    if value.is_some() {
-        assert!(
-            unsafe_core_proof(),
-            "Unsafe core proof needs to be enabled to save failing trace to file"
-        );
-    }
-    value
+    read_setting("execute_only_failing_trace")
 }
 
 /// When enabled, verification requests (to verify individual `fn`s) are cached
@@ -717,54 +584,6 @@ pub fn enable_verify_only_basic_block_path() -> bool {
 /// **Note:** This option is only for debugging Prusti.
 pub fn verify_only_basic_block_path() -> Vec<String> {
     read_setting("verify_only_basic_block_path")
-}
-
-/// Comma-separated list of optimizations to enable, or `"all"` to enable all.
-/// Possible values in the list are:
-///
-/// - `"inline_constant_functions"`
-/// - `"delete_unused_predicates"`
-/// - `"optimize_folding"`
-/// - `"remove_empty_if"`
-/// - `"purify_vars"`
-/// - `"fix_quantifiers"`
-/// - `"fix_unfoldings"`
-/// - `"remove_unused_vars"`
-/// - `"remove_trivial_assertions"`
-/// - `"clean_cfg"`
-pub fn optimizations() -> Optimizations {
-    let optimizations_string = read_setting::<String>("optimizations");
-
-    let mut opt = Optimizations::all_disabled();
-
-    for s in optimizations_string.split(',') {
-        let trimmed = s.trim();
-        match trimmed {
-            "all" => opt = Optimizations::all_enabled(),
-            "inline_constant_functions" => opt.inline_constant_functions = true,
-            "delete_unused_predicates" => opt.delete_unused_predicates = true,
-            "optimize_folding" => opt.optimize_folding = true,
-            "remove_empty_if" => opt.remove_empty_if = true,
-            "purify_vars" => opt.purify_vars = true,
-            "fix_quantifiers" => opt.fix_quantifiers = true,
-            "fix_unfoldings" => opt.fix_unfoldings = true,
-            "remove_unused_vars" => opt.remove_unused_vars = true,
-            "remove_trivial_assertions" => opt.remove_trivial_assertions = true,
-            "clean_cfg" => opt.clean_cfg = true,
-            _ => warn!("Ignoring Unknown optimization '{trimmed}'"),
-        }
-    }
-
-    opt
-}
-
-/// When enabled, impure methods are optimized using the purification
-/// optimization, which tries to convert heap operations to pure (snapshot-
-/// based) operations.
-///
-/// **Note:** this option is highly experimental.
-pub fn enable_purification_optimization() -> bool {
-    read_setting("enable_purification_optimization")
 }
 
 /// Deadline (in seconds) within which Prusti should encode and verify
@@ -895,17 +714,7 @@ pub fn log_smt_wrapper_interaction() -> bool {
     read_smt_wrapper_dependent_bool("log_smt_wrapper_interaction")
 }
 
-/// When enabled, the new core proof is used, suitable for unsafe code
-///
-/// **Note:** This option is currently very incomplete.
-pub fn unsafe_core_proof() -> bool {
-    read_setting("unsafe_core_proof")
-}
-
 /// Whether the core proof (memory safety) should be verified.
-///
-/// **Note:** This option is taken into account only when `unsafe_core_proof` is
-/// true.
 pub fn verify_core_proof() -> bool {
     read_setting("verify_core_proof")
 }
@@ -916,63 +725,6 @@ pub fn verify_core_proof() -> bool {
 /// true.
 pub fn verify_specifications() -> bool {
     read_setting("verify_specifications")
-}
-
-/// Whether the types should be verified.
-///
-/// **Note:** This option is taken into account only when `unsafe_core_proof` is
-/// true.
-pub fn verify_types() -> bool {
-    read_setting("verify_types")
-}
-
-/// Whether when verifying functional specifications, the core proof should be
-/// also included.
-///
-/// **Note:** This option is taken into account only when `unsafe_core_proof` is
-/// true.
-pub fn verify_specifications_with_core_proof() -> bool {
-    read_setting("verify_specifications_with_core_proof")
-}
-
-/// Verification backend to use for functional specification only.
-pub fn verify_specifications_backend() -> String {
-    read_setting::<String>("verify_specifications_backend")
-        .to_lowercase()
-        .trim()
-        .to_string()
-}
-
-/// Whether to generate `eval_axiom`.
-///
-/// **Note:** This option is taken into account only when `unsafe_core_proof` is
-/// true.
-pub fn use_eval_axioms() -> bool {
-    read_setting("use_eval_axioms")
-}
-
-/// When enabled, inlines `caller_for` heap dependent functions.
-pub fn inline_caller_for() -> bool {
-    read_setting("inline_caller_for")
-}
-
-/// When enabled, replaces calls to the drop function with `assert false`.
-///
-/// **Note:** This option is used only for testing.
-pub fn check_no_drops() -> bool {
-    read_setting("check_no_drops")
-}
-
-/// When enabled, Prusti uses the new VIR encoder.
-///
-/// This is a temporary configuration flag.
-/// The new VIR encoder is still a work in progress,
-/// once finished this will become the only encoder.
-///
-/// If you run into `todo!()` or `unreachable!()`,
-/// then setting this flag to `false` may help.
-pub fn use_new_encoder() -> bool {
-    read_setting("use_new_encoder")
 }
 
 /// How many parallel verifiers Silicon should use.
@@ -1083,11 +835,6 @@ pub fn full_compilation() -> bool {
     read_setting("full_compilation")
 }
 
-/// When enabled, Viper identifiers are interned to shorten them when possible.
-pub fn intern_names() -> bool {
-    read_setting("intern_names")
-}
-
 /// Determines which cargo `cargo-prusti` should run (e.g. if "cargo" isn't in
 /// the path can point to it directly). Not relevant when only running as `prusti=rustc`.
 pub fn cargo_path() -> String {
@@ -1115,10 +862,6 @@ pub fn num_errors_per_function() -> u32 {
 /// When enabled Prusti won't collect contracts from the project's dependencies
 pub fn ignore_deps_contracts() -> bool {
     read_setting("ignore_deps_contracts")
-}
-
-pub fn test_free_pcs() -> bool {
-    read_setting("test_free_pcs")
 }
 
 /// When enabled, prusti should return various Data structures that are
