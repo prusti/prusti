@@ -1,11 +1,13 @@
 use prusti_interface::PrustiError;
 use prusti_rustc_interface::{
-    data_structures::fx::{FxHashSet, FxIndexMap, FxIndexSet},
+    data_structures::fx::{FxHashSet, FxIndexMap},
     errors::MultiSpan,
     middle::{mir, traits::specialization_graph, ty},
     span::def_id::DefId,
 };
-use task_encoder::{EncodeFullError, EncodeFullResult, TaskEncoder, TaskEncoderDependencies};
+use task_encoder::{
+    DependencyErrorLink, EncodeFullError, EncodeFullResult, TaskEncoder, TaskEncoderDependencies,
+};
 use vir::{CastType, Domain, Method, MethodIdn, ViperIdent, vir_format_identifier};
 
 use crate::{
@@ -337,88 +339,28 @@ impl TaskEncoder for TraitImplConditionEnc {
 }
 
 impl TraitImplEnc {
-    /// The generic indices a projection requires to be bound before it can be
-    /// processed, and those it binds itself.
-    fn projection_deps<'vir>(
+    /// Whether every generic that `projection`'s left-hand side mentions is
+    /// already in `bound`.
+    fn projection_ready<'vir>(
         projection: ty::ProjectionPredicate<'vir>,
-    ) -> (FxIndexSet<u32>, FxIndexSet<u32>) {
-        let generic_idx = |arg: ty::GenericArg| match arg.kind() {
-            ty::GenericArgKind::Type(ty) if let ty::TyKind::Param(p) = ty.kind() => Some(p.index),
-            ty::GenericArgKind::Const(const_) if let ty::ConstKind::Param(p) = const_.kind() => {
-                Some(p.index)
-            }
-            _ => None,
-        };
-
-        let required = projection
+        bound: &FxIndexMap<u32, vir::ExprDyn<'vir>>,
+    ) -> bool {
+        projection
             .projection_term
             .args
             .iter()
-            .flat_map(|arg| arg.walk().filter_map(generic_idx))
-            .collect();
-
-        let produced = projection.term.walk().filter_map(generic_idx).collect();
-
-        (required, produced)
-    }
-
-    /// Topologically sorts the projections such that each one requires only
-    /// generics that are initially known or produced by an earlier projection
-    /// (Kahn's algorithm, where emitting a projection makes its produced
-    /// generics known). Panics if no such order exists; rustc's constrained-
-    /// parameter check guarantees one does for valid impls.
-    fn order_projections<'vir>(
-        known_generics: impl IntoIterator<Item = u32>,
-        projections: impl IntoIterator<Item = ty::ProjectionPredicate<'vir>>,
-    ) -> Vec<ty::ProjectionPredicate<'vir>> {
-        let mut known: FxIndexSet<u32> = known_generics.into_iter().collect();
-
-        let projections: Vec<_> = projections
-            .into_iter()
-            .map(|p| (p, Self::projection_deps(p)))
-            .collect();
-
-        // For each unknown generic, the projections waiting on it; for each
-        // projection, the number of its required generics still unknown.
-        let mut waiting_on: FxIndexMap<u32, Vec<usize>> = FxIndexMap::default();
-        let mut unmet = vec![0usize; projections.len()];
-        // The output doubles as the FIFO worklist: `ordered[cursor..]` are the
-        // ready but not yet processed projections.
-        let mut ordered = Vec::with_capacity(projections.len());
-        for (i, (_, (required, _))) in projections.iter().enumerate() {
-            for &g in required {
-                if !known.contains(&g) {
-                    unmet[i] += 1;
-                    waiting_on.entry(g).or_default().push(i);
+            .flat_map(|arg| arg.walk())
+            .all(|arg| match arg.kind() {
+                ty::GenericArgKind::Type(ty) if let ty::TyKind::Param(p) = ty.kind() => {
+                    bound.contains_key(&p.index)
                 }
-            }
-            if unmet[i] == 0 {
-                ordered.push(i);
-            }
-        }
-
-        let mut cursor = 0;
-        while let Some(&i) = ordered.get(cursor) {
-            cursor += 1;
-            let (_, (_, produced)) = &projections[i];
-            for &g in produced {
-                if known.insert(g) {
-                    for &j in waiting_on.get(&g).into_iter().flatten() {
-                        unmet[j] -= 1;
-                        if unmet[j] == 0 {
-                            ordered.push(j);
-                        }
-                    }
+                ty::GenericArgKind::Const(const_)
+                    if let ty::ConstKind::Param(p) = const_.kind() =>
+                {
+                    bound.contains_key(&p.index)
                 }
-            }
-        }
-
-        assert_eq!(
-            ordered.len(),
-            projections.len(),
-            "cyclic or unresolvable projection bounds"
-        );
-        ordered.into_iter().map(|i| projections[i].0).collect()
+                _ => true,
+            })
     }
 
     fn discover_bind_points<'vir, E: TaskEncoder + 'vir + ?Sized>(
@@ -430,6 +372,11 @@ impl TraitImplEnc {
     ) -> Result<(), EncodeFullError<'vir, E>> {
         if let ty::TyKind::Param(p) = ty.kind() {
             generic_map.entry(p.index).or_insert(expr.upcast_ty());
+            return Ok(());
+        }
+        if matches!(ty.kind(), ty::TyKind::Alias(..)) {
+            // Nothing can be bound through an alias, e.g. an unresolved
+            // associated-type projection whose self-type is still generic.
             return Ok(());
         }
 
@@ -476,9 +423,10 @@ impl TraitImplEnc {
     /// The where-clauses in force in `ctx`, stated over its parameters.
     ///
     /// With `bind_points`, the projection bounds are processed in an order in
-    /// which each only reads parameters already bound, and any parameter a
-    /// projection determines is added to `bind_points` (the parameters
-    /// initially in `bind_points` count as bound).
+    /// which every generic that a projection's left-hand side mentions is
+    /// already bound; its right-hand side (e.g. `<J as B>::Y`) may mention
+    /// generics bound later. Any parameter a projection determines is added to
+    /// `bind_points` (the parameters initially in `bind_points` count as bound).
     pub(crate) fn context_bounds<'vir, E: TaskEncoder + 'vir + ?Sized>(
         vcx: &'vir vir::VirCtxt<'vir>,
         deps: &mut TaskEncoderDependencies<'vir, E>,
@@ -504,15 +452,35 @@ impl TraitImplEnc {
             checks.push((trait_.impl_fun)(gargs.get_ty(), gargs.get_const()));
         }
 
-        let proj_preds = caller_bounds
+        let mut proj_preds: Vec<_> = caller_bounds
             .iter()
             .filter_map(ty::Clause::as_projection_clause)
-            .map(ty::Binder::skip_binder);
-        let proj_preds: Vec<_> = match &bind_points {
-            Some(bound) => Self::order_projections(bound.keys().copied(), proj_preds),
-            None => proj_preds.collect(),
-        };
-        for proj_pred in proj_preds {
+            .map(ty::Binder::skip_binder)
+            .collect();
+        while !proj_preds.is_empty() {
+            let next = match &bind_points {
+                Some(bound) => proj_preds
+                    .iter()
+                    .position(|&p| Self::projection_ready(p, bound)),
+                None => Some(0),
+            };
+            let Some(next) = next else {
+                return Err(EncodeFullError::DependencyError(vec![
+                    DependencyErrorLink::new(
+                        <E as TaskEncoder>::ENCODER_NAME,
+                        format!(
+                            "these projection bounds mention generics that are never bound: {}",
+                            proj_preds
+                                .iter()
+                                .map(ToString::to_string)
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ),
+                        vec![],
+                    ),
+                ]));
+            };
+            let proj_pred = proj_preds.remove(next);
             let trait_did = proj_pred.trait_def_id(tcx);
             let trait_ = deps.require_ref::<TraitEnc>(trait_did)?;
             let gargs = GArgs::new(ctx, proj_pred.projection_term.args);

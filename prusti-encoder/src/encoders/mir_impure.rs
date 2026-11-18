@@ -1993,8 +1993,15 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 .clone();
             let invariants = loop_spec.invariants.clone();
             let loop_id = loop_spec.loop_id;
-            let (permissions, place_capabilities) =
-                self.get_loop_inv(&cfpcs, &loop_place_usages, self.pcg_ctxt())?;
+            // The permission part of the invariant, and errors encoding it, refer to the
+            // loop head.
+            let head_span = self
+                .body
+                .source_info(loop_spec.original_head_block.start_location())
+                .span;
+            let (permissions, place_capabilities) = self.vcx.with_span(head_span, |_| {
+                self.get_loop_inv(&cfpcs, &loop_place_usages, self.pcg_ctxt())
+            })?;
             let pcg_state = &cfpcs.statements[0].states[EvalStmtPhase::PreOperands];
             // The Viper loop havocs the edge flags set in the loop, including
             // those set between the loop's first block and the body invariant,

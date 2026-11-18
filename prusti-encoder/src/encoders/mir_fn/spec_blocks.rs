@@ -346,7 +346,6 @@ pub struct LoopSpec {
     pub loop_id: LoopId,
 
     /// Loop head as identified by the PCG.
-    #[allow(dead_code)]
     pub original_head_block: BasicBlock,
 
     /// Loop head as identified by Prusti, i.e., the body invariant, or the
