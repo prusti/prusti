@@ -205,7 +205,8 @@ fn generate_spec_and_assertions(
     let mut generated_attributes = vec![];
 
     for (attr_kind, attr_span, attr_tokens) in prusti_attributes.drain(..) {
-        // The argument of `terminates` is optional.
+        // Every attribute that takes an argument except `terminates`, whose
+        // argument is optional.
         let needs_argument = matches!(
             attr_kind,
             SpecAttributeKind::Requires
@@ -1004,8 +1005,8 @@ pub fn rewrite_prusti_attributes_for_types(
     }
 
     // A model declaration describes the model of another type and is replaced
-    // by a generated struct, together with the attributes left on it. Of the
-    // other Prusti attributes, only `#[print_counterexample]` applies to it.
+    // by a generated struct; attributes left on the declaration are lost. Of
+    // the other Prusti attributes, only `#[print_counterexample]` applies to it.
     if let Some(model) = prusti_attributes
         .iter()
         .position(|(ak, _, _)| ak == &SpecAttributeKind::Model)

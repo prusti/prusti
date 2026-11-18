@@ -23,8 +23,8 @@ impl Parse for ClosureWithSpec {
         // leave other attributes intact
         attrs.retain(|attr| {
             match prusti_attribute_kind(attr) {
-                Some(SpecAttributeKind::Requires) => pres.push(parse_argument(attr)),
-                Some(SpecAttributeKind::Ensures) => posts.push(parse_argument(attr)),
+                Some(SpecAttributeKind::Requires) => pres.push(spec_argument(attr)),
+                Some(SpecAttributeKind::Ensures) => posts.push(spec_argument(attr)),
                 _ => return true,
             }
             false
@@ -41,7 +41,7 @@ impl Parse for ClosureWithSpec {
 
 /// The argument of the specification attribute `attr`, which is parsed later
 /// as a Prusti assertion.
-fn parse_argument(attr: &syn::Attribute) -> syn::Result<TokenStream> {
+fn spec_argument(attr: &syn::Attribute) -> syn::Result<TokenStream> {
     let argument = unwrap_argument(attr)?;
     require_argument(attr.span(), &argument)?;
     Ok(argument)

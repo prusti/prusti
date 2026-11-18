@@ -45,6 +45,12 @@ struct TrustedWithCounterexample { //~ERROR: `trusted!` is incompatible with oth
     a: i32,
 }
 
+#[invariant(self.a > 0)]
+#[trusted]
+struct TrustedWithInvariant { //~ERROR: `trusted!` is incompatible with other Prusti attributes
+    a: i32,
+}
+
 // The type that the `#[model]` declarations below describe.
 pub struct Modelled {
     a: i32,
