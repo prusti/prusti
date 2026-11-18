@@ -84,34 +84,63 @@ fn prusti_attribute_kind(attr: &syn::Attribute) -> Option<SpecAttributeKind> {
     segments.last()?.ident.to_string().try_into().ok()
 }
 
-/// Removes the Prusti attributes that apply to functions from `item`. The
-/// others, such as `#[invariant]`, are left for the compiler to expand: a
-/// Prusti attribute then rejects the item it does not apply to, and an
-/// attribute of another crate that has the same name keeps its meaning.
+/// Removes the Prusti attributes that apply to functions from `item`, as
+/// [extract_applicable_attributes] describes.
 fn extract_prusti_attributes(
     item: &mut untyped::AnyFnItem,
 ) -> syn::Result<Vec<(SpecAttributeKind, Span, TokenStream)>> {
+    extract_applicable_attributes(item.attrs_mut(), |kind| match kind {
+        SpecAttributeKind::Requires
+        | SpecAttributeKind::Ensures
+        | SpecAttributeKind::AfterExpiry
+        | SpecAttributeKind::AssertOnExpiry
+        | SpecAttributeKind::RefineSpec
+        | SpecAttributeKind::Terminates
+        | SpecAttributeKind::Pure
+        | SpecAttributeKind::Trusted
+        | SpecAttributeKind::Verified => true,
+        SpecAttributeKind::Invariant
+        | SpecAttributeKind::Model
+        | SpecAttributeKind::PrintCounterexample => false,
+    })
+}
+
+/// Removes the Prusti attributes that apply to types from `item`, as
+/// [extract_applicable_attributes] describes.
+fn extract_prusti_attributes_for_types(
+    item: &mut syn::DeriveInput,
+) -> syn::Result<Vec<(SpecAttributeKind, Span, TokenStream)>> {
+    extract_applicable_attributes(&mut item.attrs, |kind| match kind {
+        SpecAttributeKind::Trusted
+        | SpecAttributeKind::Invariant
+        | SpecAttributeKind::Model
+        | SpecAttributeKind::PrintCounterexample => true,
+        SpecAttributeKind::Requires
+        | SpecAttributeKind::Ensures
+        | SpecAttributeKind::AfterExpiry
+        | SpecAttributeKind::AssertOnExpiry
+        | SpecAttributeKind::RefineSpec
+        | SpecAttributeKind::Pure
+        | SpecAttributeKind::Verified
+        | SpecAttributeKind::Terminates => false,
+    })
+}
+
+/// Removes the Prusti attributes whose kind `applies` to the item from
+/// `attrs`, returning each with its span and argument. The others, such as
+/// `#[invariant]` on a function, are left for the compiler to expand: a
+/// Prusti attribute then rejects the item it does not apply to, and an
+/// attribute of another crate that has the same name keeps its meaning.
+fn extract_applicable_attributes(
+    attrs: &mut Vec<syn::Attribute>,
+    applies: impl Fn(SpecAttributeKind) -> bool,
+) -> syn::Result<Vec<(SpecAttributeKind, Span, TokenStream)>> {
     let mut prusti_attributes = Vec::new();
     let mut regular_attributes = Vec::new();
-    for attr in item.attrs_mut().drain(0..) {
+    for attr in attrs.drain(0..) {
         let attr_kind = match prusti_attribute_kind(&attr) {
-            Some(
-                attr_kind @ (SpecAttributeKind::Requires
-                | SpecAttributeKind::Ensures
-                | SpecAttributeKind::AfterExpiry
-                | SpecAttributeKind::AssertOnExpiry
-                | SpecAttributeKind::RefineSpec
-                | SpecAttributeKind::Terminates
-                | SpecAttributeKind::Pure
-                | SpecAttributeKind::Trusted
-                | SpecAttributeKind::Verified),
-            ) => attr_kind,
-            Some(
-                SpecAttributeKind::Invariant
-                | SpecAttributeKind::Model
-                | SpecAttributeKind::PrintCounterexample,
-            )
-            | None => {
+            Some(attr_kind) if applies(attr_kind) => attr_kind,
+            _ => {
                 regular_attributes.push(attr);
                 continue;
             }
@@ -121,8 +150,19 @@ fn extract_prusti_attributes(
         let attr_span = attr.path.span();
         prusti_attributes.push((attr_kind, attr_span, unwrap_argument(&attr)?));
     }
-    *item.attrs_mut() = regular_attributes;
+    *attrs = regular_attributes;
     Ok(prusti_attributes)
+}
+
+/// Rejects the empty argument of a Prusti attribute that needs one, which
+/// would otherwise be reported as an unexpected end of input at the
+/// outermost attribute.
+fn require_argument(span: Span, argument: &TokenStream) -> syn::Result<()> {
+    if argument.is_empty() {
+        Err(syn::Error::new(span, "this attribute expects an argument"))
+    } else {
+        Ok(())
+    }
 }
 
 /// Rewrite an item as required by *all* its specification attributes.
@@ -165,9 +205,7 @@ fn generate_spec_and_assertions(
     let mut generated_attributes = vec![];
 
     for (attr_kind, attr_span, attr_tokens) in prusti_attributes.drain(..) {
-        // Without this check, a missing argument would be reported as an
-        // unexpected end of input at the outermost attribute. The argument
-        // of `terminates` is optional.
+        // The argument of `terminates` is optional.
         let needs_argument = matches!(
             attr_kind,
             SpecAttributeKind::Requires
@@ -176,11 +214,8 @@ fn generate_spec_and_assertions(
                 | SpecAttributeKind::AssertOnExpiry
                 | SpecAttributeKind::RefineSpec
         );
-        if needs_argument && attr_tokens.is_empty() {
-            return Err(syn::Error::new(
-                attr_span,
-                "this attribute expects an argument",
-            ));
+        if needs_argument {
+            require_argument(attr_span, &attr_tokens)?;
         }
         let rewriting_result = match attr_kind {
             SpecAttributeKind::Requires => generate_for_requires(attr_tokens, attr_span, item),
@@ -210,53 +245,6 @@ fn generate_spec_and_assertions(
     }
 
     Ok((generated_items, generated_attributes))
-}
-
-/// Generates the spec item built by `process`, which typechecks a
-/// specification, and the attribute `#[prusti::<ref_attr> = "<spec id>"]`,
-/// with which the spec collection of `prusti-interface` later finds it.
-fn generate_spec_item(
-    ref_attr: &str,
-    span: Span,
-    process: impl FnOnce(&mut AstRewriter, SpecificationId) -> syn::Result<syn::Item>,
-) -> GeneratedResult {
-    let mut rewriter = rewriter::AstRewriter::new();
-    let spec_id = rewriter.generate_spec_id();
-    let spec_id_str = spec_id.to_string();
-    let spec_item = process(&mut rewriter, spec_id)?;
-    let ref_attr = syn::Ident::new(ref_attr, span);
-    Ok((
-        vec![spec_item],
-        vec![parse_quote_spanned! {span=>
-            #[prusti::#ref_attr = #spec_id_str]
-        }],
-    ))
-}
-
-/// Rejects the argument `attr` of the Prusti attribute `#[<name>]`, which
-/// takes no parameters, unless it is empty.
-fn reject_parameters(name: &str, attr: &TokenStream) -> syn::Result<()> {
-    if attr.is_empty() {
-        Ok(())
-    } else {
-        Err(syn::Error::new(
-            attr.span(),
-            format!("the `#[{name}]` attribute does not take parameters"),
-        ))
-    }
-}
-
-/// Generates the attribute `#[prusti::<name>]` for the Prusti attribute
-/// `#[<name>]`, which takes no parameters.
-fn generate_marker_attribute(name: &str, attr: TokenStream, span: Span) -> GeneratedResult {
-    reject_parameters(name, &attr)?;
-    let name = syn::Ident::new(name, span);
-    Ok((
-        vec![],
-        vec![parse_quote_spanned! {span=>
-            #[prusti::#name]
-        }],
-    ))
 }
 
 /// Generate spec items and attributes to typecheck the and later retrieve "requires" annotations.
@@ -341,6 +329,53 @@ fn generate_for_terminates(
     })
 }
 
+/// Generates the spec item built by `process`, which typechecks a
+/// specification, and the attribute `#[prusti::<ref_attr> = "<spec id>"]`,
+/// with which the spec collection of `prusti-interface` later finds it.
+fn generate_spec_item(
+    ref_attr: &str,
+    span: Span,
+    process: impl FnOnce(&mut AstRewriter, SpecificationId) -> syn::Result<syn::Item>,
+) -> GeneratedResult {
+    let mut rewriter = rewriter::AstRewriter::new();
+    let spec_id = rewriter.generate_spec_id();
+    let spec_id_str = spec_id.to_string();
+    let spec_item = process(&mut rewriter, spec_id)?;
+    let ref_attr = syn::Ident::new(ref_attr, span);
+    Ok((
+        vec![spec_item],
+        vec![parse_quote_spanned! {span=>
+            #[prusti::#ref_attr = #spec_id_str]
+        }],
+    ))
+}
+
+/// Rejects the argument `attr` of the Prusti attribute `#[<name>]`, which
+/// takes no parameters, unless it is empty.
+fn reject_parameters(name: &str, attr: &TokenStream) -> syn::Result<()> {
+    if attr.is_empty() {
+        Ok(())
+    } else {
+        Err(syn::Error::new(
+            attr.span(),
+            format!("the `#[{name}]` attribute does not take parameters"),
+        ))
+    }
+}
+
+/// Generates the attribute `#[prusti::<name>]` for the Prusti attribute
+/// `#[<name>]`, which takes no parameters.
+fn generate_marker_attribute(name: &str, attr: TokenStream, span: Span) -> GeneratedResult {
+    reject_parameters(name, &attr)?;
+    let name = syn::Ident::new(name, span);
+    Ok((
+        vec![],
+        vec![parse_quote_spanned! {span=>
+            #[prusti::#name]
+        }],
+    ))
+}
+
 /// Generate spec items and attributes to typecheck and later retrieve "pure" annotations, but encoded as a referenced separate function that type-conditional spec refinements can apply trait bounds to.
 fn generate_for_pure_refinements(item: &untyped::AnyFnItem) -> GeneratedResult {
     generate_spec_item("pure_spec_id_ref", item.span(), |rewriter, spec_id| {
@@ -368,9 +403,7 @@ fn generate_for_invariant(
     span: Span,
     item: &syn::DeriveInput,
 ) -> GeneratedResult {
-    if attr.is_empty() {
-        return Err(syn::Error::new(span, "this attribute expects an argument"));
-    }
+    require_argument(span, &attr)?;
     let attr = parse_prusti(attr)?;
     // TODO: move some of this to AstRewriter?
     // see AstRewriter::generate_spec_item_fn for explanation of syntax below
@@ -967,14 +1000,19 @@ pub fn rewrite_prusti_attributes_for_types(
         .to_compile_error();
     }
 
-    // Type invariants of models are not supported.
-    if prusti_attributes
+    // A model declaration describes the model of another type, and of the
+    // other type attributes only `#[print_counterexample]` applies to it.
+    if let Some(model) = prusti_attributes
         .iter()
-        .any(|(ak, _, _)| ak == &SpecAttributeKind::Model)
+        .position(|(ak, _, _)| ak == &SpecAttributeKind::Model)
     {
-        if let Some((_, span, _)) = prusti_attributes
-            .iter()
-            .find(|(ak, _, _)| ak == &SpecAttributeKind::Invariant)
+        if let Some((_, (_, span, _))) =
+            prusti_attributes
+                .iter()
+                .enumerate()
+                .find(|(index, (ak, _, _))| {
+                    *index != model && ak != &SpecAttributeKind::PrintCounterexample
+                })
         {
             return syn::Error::new(*span, "this attribute cannot be combined with `#[model]`")
                 .to_compile_error();
@@ -994,42 +1032,6 @@ pub fn rewrite_prusti_attributes_for_types(
         #item
         #(#generated_spec_items)*
     }
-}
-
-/// Removes the Prusti attributes that apply to types from `item`. The others
-/// are left for the compiler to expand, as in [extract_prusti_attributes].
-fn extract_prusti_attributes_for_types(
-    item: &mut syn::DeriveInput,
-) -> syn::Result<Vec<(SpecAttributeKind, Span, TokenStream)>> {
-    let mut prusti_attributes = Vec::new();
-    let mut regular_attributes = Vec::new();
-    for attr in item.attrs.drain(0..) {
-        let attr_kind = match prusti_attribute_kind(&attr) {
-            Some(
-                attr_kind @ (SpecAttributeKind::Trusted
-                | SpecAttributeKind::Invariant
-                | SpecAttributeKind::Model
-                | SpecAttributeKind::PrintCounterexample),
-            ) => attr_kind,
-            Some(
-                SpecAttributeKind::Requires
-                | SpecAttributeKind::Ensures
-                | SpecAttributeKind::AfterExpiry
-                | SpecAttributeKind::AssertOnExpiry
-                | SpecAttributeKind::RefineSpec
-                | SpecAttributeKind::Pure
-                | SpecAttributeKind::Verified
-                | SpecAttributeKind::Terminates,
-            )
-            | None => {
-                regular_attributes.push(attr);
-                continue;
-            }
-        };
-        prusti_attributes.push((attr_kind, attr.path.span(), unwrap_argument(&attr)?));
-    }
-    item.attrs = regular_attributes;
-    Ok(prusti_attributes)
 }
 
 /// Generate spec items and attributes for `item` from the Prusti attributes

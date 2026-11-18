@@ -45,6 +45,7 @@ struct TrustedWithCounterexample { //~ERROR: `trusted!` is incompatible with oth
     a: i32,
 }
 
+// The type that the `#[model]` declarations below describe.
 pub struct Modelled {
     a: i32,
 }
@@ -62,6 +63,12 @@ struct Modelled {
 
 #[invariant(self.a > 0)] //~ERROR: this attribute cannot be combined with `#[model]`
 #[model]
+struct Modelled {
+    a: i32,
+}
+
+#[model]
+#[model] //~ERROR: this attribute cannot be combined with `#[model]`
 struct Modelled {
     a: i32,
 }
