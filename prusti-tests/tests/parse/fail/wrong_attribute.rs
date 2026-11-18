@@ -40,19 +40,37 @@ fn invariant_on_function() -> bool { //~ERROR: expected one of: `struct`, `enum`
 struct TrustedWithParameter;
 
 #[trusted]
-#[print_counterexample]
-struct TrustedWithCounterexample; //~ERROR: `trusted!` is incompatible with other Prusti attributes
+#[print_counterexample("a = {}", a)]
+struct TrustedWithCounterexample { //~ERROR: `trusted!` is incompatible with other Prusti attributes
+    a: i32,
+}
 
-#[print_counterexample]
+pub struct Modelled {
+    a: i32,
+}
+
 #[model(x)] //~ERROR: the `#[model]` attribute does not take parameters
-struct ModelWithParameter {
+struct Modelled {
     a: i32,
 }
 
 #[model]
-#[invariant(true)] //~ERROR: this attribute cannot be combined with `#[model]`
-struct ModelWithInvariant {
+#[invariant(self.a > 0)] //~ERROR: this attribute cannot be combined with `#[model]`
+struct Modelled {
     a: i32,
+}
+
+#[invariant(self.a > 0)] //~ERROR: this attribute cannot be combined with `#[model]`
+#[model]
+struct Modelled {
+    a: i32,
+}
+
+pub fn closure_with_parameter() {
+    let _ = closure!(
+        #[pure(x)] //~ERROR: the `#[pure]` attribute does not take parameters
+        |x: i32| -> i32 { x }
+    );
 }
 
 trait Trait {

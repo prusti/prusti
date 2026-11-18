@@ -351,28 +351,64 @@ fn generate_for_pure_refinements(item: &untyped::AnyFnItem) -> GeneratedResult {
 /// Generate spec items and attributes to typecheck and later retrieve "trusted" annotations.
 fn generate_for_trusted_for_types(attr: TokenStream, item: &syn::DeriveInput) -> GeneratedResult {
     reject_parameters("trusted", &attr)?;
-    // TODO: reduce duplication with `invariant`
+    generate_type_spec_item(item, "trusted", |item_name, spec_id_str| {
+        parse_quote_spanned! {item.span()=>
+            #[allow(unused_variables, dead_code, non_snake_case)]
+            #[prusti::spec_only]
+            #[prusti::trusted_type]
+            #[prusti::spec_id = #spec_id_str]
+            fn #item_name(self) {}
+        }
+    })
+}
+
+/// Generate spec items and attributes to typecheck and later retrieve "invariant" annotations.
+fn generate_for_invariant(
+    attr: TokenStream,
+    span: Span,
+    item: &syn::DeriveInput,
+) -> GeneratedResult {
+    if attr.is_empty() {
+        return Err(syn::Error::new(span, "this attribute expects an argument"));
+    }
+    let attr = parse_prusti(attr)?;
+    // TODO: move some of this to AstRewriter?
+    // see AstRewriter::generate_spec_item_fn for explanation of syntax below
+    generate_type_spec_item(item, "invariant", |item_name, spec_id_str| {
+        parse_quote_spanned! {item.span()=>
+            #[allow(unused_must_use, unused_parens, unused_variables, dead_code, non_snake_case)]
+            #[prusti::spec_only]
+            #[prusti::type_invariant_spec]
+            #[prusti::spec_id = #spec_id_str]
+            fn #item_name(self) -> bool {
+                let val: bool = #attr;
+                val
+            }
+        }
+    })
+}
+
+/// Generates the spec function of a type specification, built by `spec_fn`
+/// from its name and spec id, in an inherent impl of the type `item`.
+fn generate_type_spec_item(
+    item: &syn::DeriveInput,
+    kind: &str,
+    spec_fn: impl FnOnce(&syn::Ident, &str) -> syn::ItemFn,
+) -> GeneratedResult {
     let mut rewriter = rewriter::AstRewriter::new();
     let spec_id = rewriter.generate_spec_id();
     let spec_id_str = spec_id.to_string();
 
     let item_span = item.span();
-    let item_ident = item.ident.clone();
+    let item_ident = &item.ident;
     let item_name = syn::Ident::new(
-        &format!("prusti_trusted_item_{item_ident}_{spec_id}"),
+        &format!("prusti_{kind}_item_{item_ident}_{spec_id}"),
         item_span,
     );
-
-    let spec_item: syn::ItemFn = parse_quote_spanned! {item_span=>
-        #[allow(unused_variables, dead_code, non_snake_case)]
-        #[prusti::spec_only]
-        #[prusti::trusted_type]
-        #[prusti::spec_id = #spec_id_str]
-        fn #item_name(self) {}
-    };
+    let spec_item = spec_fn(&item_name, &spec_id_str);
 
     // TODO: similarly to extern_specs, don't generate an actual impl
-    let item_impl = inherent_impl(item_span, &item_ident, &item.generics, spec_item);
+    let item_impl = inherent_impl(item_span, item_ident, &item.generics, spec_item);
 
     Ok((vec![syn::Item::Impl(item_impl)], vec![]))
 }
@@ -611,24 +647,27 @@ pub fn closure(tokens: TokenStream) -> TokenStream {
 
     let mut attrs_ts = TokenStream::new();
     for a in attrs {
-        match a.path.get_ident() {
-            Some(ident) if ident == "pure" => {
-                attrs_ts.extend(quote_spanned! {a.span()=> #[prusti::pure] });
-            }
-            Some(ident) if ident == "trusted" => {
-                attrs_ts.extend(quote_spanned! {a.span()=> #[prusti::trusted] });
-            }
+        let name = match prusti_attribute_kind(&a) {
+            Some(SpecAttributeKind::Pure) => "pure",
+            Some(SpecAttributeKind::Trusted) => "trusted",
             // Reject other specification attributes rather than forwarding
             // them (they would be silently ignored on the `let` binding).
-            Some(ident) if SpecAttributeKind::try_from(ident.to_string()).is_ok() => {
+            Some(_) => {
+                let ident = &a.path.segments.last().unwrap().ident;
                 return syn::Error::new(
                     a.span(),
                     format!("`{ident}` is not supported on `closure!`"),
                 )
                 .to_compile_error();
             }
-            _ => attrs_ts.extend(a.into_token_stream()),
-        }
+            None => {
+                attrs_ts.extend(a.into_token_stream());
+                continue;
+            }
+        };
+        let argument = handle_result!(unwrap_argument(&a));
+        let (_, marker) = handle_result!(generate_marker_attribute(name, argument, a.span()));
+        attrs_ts.extend(quote! { #(#marker)* });
     }
 
     // Each specification with its span, so that the spec closure carries the
@@ -847,40 +886,7 @@ pub fn trusted(attr: TokenStream, tokens: TokenStream) -> TokenStream {
 }
 
 pub fn invariant(attr: TokenStream, tokens: TokenStream) -> TokenStream {
-    let mut rewriter = rewriter::AstRewriter::new();
-    let spec_id = rewriter.generate_spec_id();
-    let spec_id_str = spec_id.to_string();
-
-    let item: syn::DeriveInput = handle_result!(syn::parse2(tokens));
-    let item_span = item.span();
-    let item_ident = item.ident.clone();
-    let item_name = syn::Ident::new(
-        &format!("prusti_invariant_item_{item_ident}_{spec_id}"),
-        item_span,
-    );
-
-    let attr = handle_result!(parse_prusti(attr));
-
-    // TODO: move some of this to AstRewriter?
-    // see AstRewriter::generate_spec_item_fn for explanation of syntax below
-    let spec_item: syn::ItemFn = parse_quote_spanned! {item_span=>
-        #[allow(unused_must_use, unused_parens, unused_variables, dead_code, non_snake_case)]
-        #[prusti::spec_only]
-        #[prusti::type_invariant_spec]
-        #[prusti::spec_id = #spec_id_str]
-        fn #item_name(self) -> bool {
-            let val: bool = #attr;
-            val
-        }
-    };
-
-    // TODO: similarly to extern_specs, don't generate an actual impl
-    let item_impl = inherent_impl(item_span, &item_ident, &item.generics, spec_item);
-    quote_spanned! { item_span =>
-        #[prusti::specs_version = #SPECS_VERSION]
-        #item
-        #item_impl
-    }
+    rewrite_prusti_attributes_for_types(SpecAttributeKind::Invariant, attr, tokens)
 }
 
 pub fn extern_spec(attr: TokenStream, tokens: TokenStream) -> TokenStream {
@@ -940,8 +946,9 @@ pub fn rewrite_prusti_attributes_for_types(
 ) -> TokenStream {
     let mut item: syn::DeriveInput = handle_result!(syn::parse2(item_tokens));
 
-    // Start with the outer attribute
-    let mut prusti_attributes = vec![(outer_attr_kind, outer_attr_tokens)];
+    // Start with the outer attribute. It is the one the compiler ran as the
+    // procedural macro, so its span is the call site.
+    let mut prusti_attributes = vec![(outer_attr_kind, Span::call_site(), outer_attr_tokens)];
 
     // Collect the remaining Prusti attributes, removing them from `item`.
     prusti_attributes.extend(handle_result!(extract_prusti_attributes_for_types(
@@ -951,7 +958,7 @@ pub fn rewrite_prusti_attributes_for_types(
     if prusti_attributes.len() > 1
         && prusti_attributes
             .iter()
-            .any(|(ak, _)| ak == &SpecAttributeKind::Trusted)
+            .any(|(ak, _, _)| ak == &SpecAttributeKind::Trusted)
     {
         return syn::Error::new(
             item.span(),
@@ -960,8 +967,22 @@ pub fn rewrite_prusti_attributes_for_types(
         .to_compile_error();
     }
 
+    // Type invariants of models are not supported.
+    if prusti_attributes
+        .iter()
+        .any(|(ak, _, _)| ak == &SpecAttributeKind::Model)
+    {
+        if let Some((_, span, _)) = prusti_attributes
+            .iter()
+            .find(|(ak, _, _)| ak == &SpecAttributeKind::Invariant)
+        {
+            return syn::Error::new(*span, "this attribute cannot be combined with `#[model]`")
+                .to_compile_error();
+        }
+    }
+
     // we order the attributes to ensure a model attribute is processed first
-    prusti_attributes.sort_by_key(|(ak1, _)| *ak1);
+    prusti_attributes.sort_by_key(|(ak1, _, _)| *ak1);
 
     let (generated_spec_items, generated_attributes) = handle_result!(
         generate_spec_and_assertions_for_types(prusti_attributes, &mut item)
@@ -975,19 +996,18 @@ pub fn rewrite_prusti_attributes_for_types(
     }
 }
 
-/// Removes the attributes `#[trusted]`, `#[model]` and
-/// `#[print_counterexample]` from the type `item`, which are processed
-/// together. The others, including `#[invariant]`, are left for the compiler
-/// to expand, as in [extract_prusti_attributes].
+/// Removes the Prusti attributes that apply to types from `item`. The others
+/// are left for the compiler to expand, as in [extract_prusti_attributes].
 fn extract_prusti_attributes_for_types(
     item: &mut syn::DeriveInput,
-) -> syn::Result<Vec<(SpecAttributeKind, TokenStream)>> {
+) -> syn::Result<Vec<(SpecAttributeKind, Span, TokenStream)>> {
     let mut prusti_attributes = Vec::new();
     let mut regular_attributes = Vec::new();
     for attr in item.attrs.drain(0..) {
         let attr_kind = match prusti_attribute_kind(&attr) {
             Some(
                 attr_kind @ (SpecAttributeKind::Trusted
+                | SpecAttributeKind::Invariant
                 | SpecAttributeKind::Model
                 | SpecAttributeKind::PrintCounterexample),
             ) => attr_kind,
@@ -999,7 +1019,6 @@ fn extract_prusti_attributes_for_types(
                 | SpecAttributeKind::RefineSpec
                 | SpecAttributeKind::Pure
                 | SpecAttributeKind::Verified
-                | SpecAttributeKind::Invariant
                 | SpecAttributeKind::Terminates,
             )
             | None => {
@@ -1007,7 +1026,7 @@ fn extract_prusti_attributes_for_types(
                 continue;
             }
         };
-        prusti_attributes.push((attr_kind, unwrap_argument(&attr)?));
+        prusti_attributes.push((attr_kind, attr.path.span(), unwrap_argument(&attr)?));
     }
     item.attrs = regular_attributes;
     Ok(prusti_attributes)
@@ -1015,13 +1034,13 @@ fn extract_prusti_attributes_for_types(
 
 /// Generate spec items and attributes for `item` from the Prusti attributes
 fn generate_spec_and_assertions_for_types(
-    mut prusti_attributes: Vec<(SpecAttributeKind, TokenStream)>,
+    mut prusti_attributes: Vec<(SpecAttributeKind, Span, TokenStream)>,
     item: &mut syn::DeriveInput,
 ) -> GeneratedResult {
     let mut generated_items = vec![];
     let mut generated_attributes = vec![];
 
-    for (attr_kind, attr_tokens) in prusti_attributes.drain(..) {
+    for (attr_kind, attr_span, attr_tokens) in prusti_attributes.drain(..) {
         let rewriting_result = match attr_kind {
             SpecAttributeKind::Requires => unreachable!(),
             SpecAttributeKind::Ensures => unreachable!(),
@@ -1029,7 +1048,7 @@ fn generate_spec_and_assertions_for_types(
             SpecAttributeKind::AssertOnExpiry => unreachable!(),
             SpecAttributeKind::Pure => unreachable!(),
             SpecAttributeKind::Verified => unreachable!(),
-            SpecAttributeKind::Invariant => unreachable!(),
+            SpecAttributeKind::Invariant => generate_for_invariant(attr_tokens, attr_span, item),
             SpecAttributeKind::RefineSpec => unreachable!(),
             SpecAttributeKind::Terminates => unreachable!(),
             SpecAttributeKind::Trusted => generate_for_trusted_for_types(attr_tokens, item),
