@@ -55,7 +55,8 @@
             };
             overrideMain = _: {
               postInstall = ''
-                # `x.py package` copies the binaries, the contracts and `viper_tools`.
+                # `x.py package` copies the binaries, the contracts and `viper_tools`,
+                # where the binaries find Viper and Z3.
                 ln -s ${packages.viper} viper_tools
                 python3 x.py package release $out/bin
                 rm -rf $out/target
@@ -64,9 +65,7 @@
                   wrapProgram $f \
                     --set RUST_SYSROOT "${rust}" \
                     --set JAVA_HOME "${pkgs.jdk11}/lib/openjdk" \
-                    --set LD_LIBRARY_PATH "${pkgs.jdk11}/lib/openjdk/lib/server" \
-                    --set VIPER_HOME "${packages.viper}/backends" \
-                    --set Z3_EXE "${packages.viper}/z3/bin/z3"
+                    --set LD_LIBRARY_PATH "${pkgs.jdk11}/lib/openjdk/lib/server"
                 done
               '';
             };

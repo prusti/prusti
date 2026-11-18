@@ -9,7 +9,7 @@ pub mod commandline;
 
 use self::commandline::CommandLine;
 use crate::launch::{find_viper_home, get_current_executable_dir};
-use ::config::{Config, Environment, File, Source};
+use ::config::{Config, Environment, File, Source, Value};
 use serde::Deserialize;
 use std::{
     collections::HashSet,
@@ -23,175 +23,97 @@ use std::{
 static SETTINGS: LazyLock<RwLock<Config>> = LazyLock::new(|| RwLock::new(load_settings()));
 
 fn load_settings() -> Config {
-    let mut builder = Config::builder();
-
     // 0. Default values
-    builder = builder.set_default("be_rustc", false).unwrap();
-    builder = builder.set_default("viper_backend", "Silicon").unwrap();
-    builder = builder
-        .set_default::<_, Option<String>>("smt_solver_path", env::var("Z3_EXE").ok())
-        .unwrap();
-    builder = builder
-        .set_default::<_, Option<String>>("smt_solver_wrapper_path", None)
-        .unwrap();
-    builder = builder
-        .set_default::<_, Option<String>>("boogie_path", env::var("BOOGIE_EXE").ok())
-        .unwrap();
-    builder = builder
-        .set_default::<_, Option<String>>("viper_home", None)
-        .unwrap();
-    builder = builder
-        .set_default::<_, Option<String>>("java_home", None)
-        .unwrap();
-
-    builder = builder
-        .set_default::<_, Option<u32>>("check_timeout", None)
-        .unwrap();
-    builder = builder.set_default("check_overflows", true).unwrap();
-    builder = builder.set_default("check_panics", true).unwrap();
-    builder = builder
-        .set_default("encode_unsigned_num_constraint", true)
-        .unwrap();
-    builder = builder.set_default("encode_bitvectors", false).unwrap();
-    builder = builder.set_default("simplify_encoding", true).unwrap();
-    builder = builder.set_default("log", "").unwrap();
-    builder = builder.set_default("log_style", "auto").unwrap();
-    builder = builder.set_default("log_dir", "log").unwrap();
-    builder = builder.set_default("log_tracing", false).unwrap();
-    builder = builder.set_default("cache_path", "").unwrap();
-    builder = builder.set_default("dump_debug_info", false).unwrap();
-    builder = builder.set_default("dump_nll_facts", false).unwrap();
-    builder = builder.set_default("ignore_regions", false).unwrap();
-    builder = builder.set_default("max_log_file_name_length", 60).unwrap();
-    builder = builder.set_default("dump_viper_program", false).unwrap();
-    builder = builder
-        .set_default::<_, Vec<String>>("extra_jvm_args", vec![])
-        .unwrap();
-    builder = builder
-        .set_default::<_, Vec<String>>("extra_verifier_args", vec![])
-        .unwrap();
-    builder = builder.set_default("quiet", false).unwrap();
-    builder = builder.set_default("assert_timeout", 10_000).unwrap();
-    builder = builder.set_default("smt_qi_eager_threshold", 1000).unwrap();
-    builder = builder
-        .set_default::<_, Option<bool>>("smt_qi_profile", None)
-        .unwrap();
-    builder = builder
-        .set_default::<_, Option<u64>>("smt_qi_profile_freq", None)
-        .unwrap();
-    builder = builder.set_default("report_viper_messages", false).unwrap();
-    builder = builder
-        .set_default("use_more_complete_exhale", true)
-        .unwrap();
-    builder = builder
-        .set_default("skip_unsupported_features", false)
-        .unwrap();
-    builder = builder
-        .set_default("internal_errors_as_warnings", false)
-        .unwrap();
-    builder = builder
-        .set_default("allow_unreachable_unsupported_code", false)
-        .unwrap();
-    builder = builder.set_default("verify_mode", "verify").unwrap();
-    builder = builder.set_default("no_verify_deps", false).unwrap();
-    builder = builder.set_default("opt_in_verification", false).unwrap();
-    builder = builder.set_default("full_compilation", false).unwrap();
-    builder = builder.set_default("json_communication", false).unwrap();
-    builder = builder.set_default("verify_core_proof", true).unwrap();
-    builder = builder.set_default("verify_specifications", true).unwrap();
-    builder = builder
-        .set_default("enable_type_invariants", false)
-        .unwrap();
-    builder = builder
-        .set_default::<_, Option<u8>>("number_of_parallel_verifiers", None)
-        .unwrap();
-    builder = builder
-        .set_default::<_, Option<String>>("min_prusti_version", None)
-        .unwrap();
-    builder = builder.set_default("num_errors_per_function", 1).unwrap();
-    builder = builder.set_default("ignore_deps_contracts", false).unwrap();
-
-    builder = builder.set_default("print_desugared_specs", false).unwrap();
-    builder = builder.set_default("print_typeckd_specs", false).unwrap();
-    builder = builder
-        .set_default("print_collected_verification_items", false)
-        .unwrap();
-    builder = builder.set_default("hide_uuids", false).unwrap();
-    builder = builder.set_default("counterexample", false).unwrap();
-    builder = builder
-        .set_default("print_counterexample_if_model_is_present", false)
-        .unwrap();
-    builder = builder
-        .set_default::<_, Option<String>>("save_failing_trace_to_file", None)
-        .unwrap();
-    builder = builder
-        .set_default::<_, Option<String>>("execute_only_failing_trace", None)
-        .unwrap();
-    builder = builder.set_default("enable_cache", true).unwrap();
-
-    builder = builder.set_default("cargo_path", "cargo").unwrap();
-    builder = builder.set_default("cargo_command", "check").unwrap();
-
-    // Flags for testing.
-    builder = builder
-        .set_default::<_, Option<i64>>("verification_deadline", None)
-        .unwrap();
-    builder = builder.set_default("use_smt_wrapper", false).unwrap();
-    builder = builder.set_default("smt_qi_ignore_builtin", true).unwrap();
-    builder = builder
-        .set_default::<_, Option<u64>>("smt_qi_bound_global", None)
-        .unwrap();
-    builder = builder
-        .set_default::<_, Option<u64>>("smt_qi_bound_global_kind", None)
-        .unwrap();
-    builder = builder
-        .set_default::<_, Option<u64>>("smt_qi_bound_trace", None)
-        .unwrap();
-    builder = builder
-        .set_default::<_, Option<u64>>("smt_qi_bound_trace_kind", None)
-        .unwrap();
-    builder = builder
-        .set_default::<_, Option<u64>>("smt_unique_triggers_bound", None)
-        .unwrap();
-    builder = builder
-        .set_default::<_, Option<u64>>("smt_unique_triggers_bound_total", None)
-        .unwrap();
-
-    // Flags for debugging performance.
-    builder = builder
-        .set_default("preserve_smt_trace_files", false)
-        .unwrap();
-    builder = builder.set_default("write_smt_statistics", false).unwrap();
-    builder = builder
-        .set_default("log_smt_wrapper_interaction", false)
-        .unwrap();
-
-    // Flags for debugging Prusti that can change verification results.
-    builder = builder.set_default("short_viper_names", false).unwrap();
-    builder = builder.set_default("verify_only_preamble", false).unwrap();
-    builder = builder
-        .set_default("enable_verify_only_basic_block_path", false)
-        .unwrap();
-    builder = builder
-        .set_default::<_, Vec<String>>("verify_only_basic_block_path", vec![])
-        .unwrap();
-    builder = builder
-        .set_default::<_, Vec<String>>("delete_basic_blocks", vec![])
-        .unwrap();
-
-    // Flags specifically for Prusti-Assistant:
-    builder = builder.set_default("show_ide_info", false).unwrap();
-    builder = builder.set_default("skip_verification", false).unwrap();
-    builder = builder
-        .set_default::<_, Vec<String>>("verify_only_defpaths", vec![])
-        .unwrap();
-    builder = builder
-        .set_default::<_, Option<String>>("query_method_signature", None)
-        .unwrap();
-    builder = builder.set_default("report_block_messages", false).unwrap();
+    let defaults: Vec<(&str, Value)> = vec![
+        ("be_rustc", false.into()),
+        ("viper_backend", "Silicon".into()),
+        ("smt_solver_path", env::var("Z3_EXE").ok().into()),
+        ("smt_solver_wrapper_path", None::<String>.into()),
+        ("boogie_path", env::var("BOOGIE_EXE").ok().into()),
+        ("viper_home", None::<String>.into()),
+        ("java_home", None::<String>.into()),
+        ("check_timeout", None::<u32>.into()),
+        ("check_overflows", true.into()),
+        ("check_panics", true.into()),
+        ("encode_unsigned_num_constraint", true.into()),
+        ("encode_bitvectors", false.into()),
+        ("simplify_encoding", true.into()),
+        ("log", "".into()),
+        ("log_style", "auto".into()),
+        ("log_dir", "log".into()),
+        ("log_tracing", false.into()),
+        ("cache_path", "".into()),
+        ("dump_debug_info", false.into()),
+        ("dump_nll_facts", false.into()),
+        ("ignore_regions", false.into()),
+        ("max_log_file_name_length", 60.into()),
+        ("dump_viper_program", false.into()),
+        ("extra_jvm_args", Vec::<String>::new().into()),
+        ("extra_verifier_args", Vec::<String>::new().into()),
+        ("quiet", false.into()),
+        ("assert_timeout", 10_000.into()),
+        ("smt_qi_eager_threshold", 1000.into()),
+        ("smt_qi_profile", None::<bool>.into()),
+        ("smt_qi_profile_freq", None::<u64>.into()),
+        ("report_viper_messages", false.into()),
+        ("use_more_complete_exhale", true.into()),
+        ("skip_unsupported_features", false.into()),
+        ("internal_errors_as_warnings", false.into()),
+        ("allow_unreachable_unsupported_code", false.into()),
+        ("verify_mode", "verify".into()),
+        ("no_verify_deps", false.into()),
+        ("opt_in_verification", false.into()),
+        ("full_compilation", false.into()),
+        ("json_communication", false.into()),
+        ("verify_core_proof", true.into()),
+        ("verify_specifications", true.into()),
+        ("enable_type_invariants", false.into()),
+        ("number_of_parallel_verifiers", None::<u8>.into()),
+        ("min_prusti_version", None::<String>.into()),
+        ("num_errors_per_function", 1.into()),
+        ("ignore_deps_contracts", false.into()),
+        ("print_desugared_specs", false.into()),
+        ("print_typeckd_specs", false.into()),
+        ("print_collected_verification_items", false.into()),
+        ("hide_uuids", false.into()),
+        ("counterexample", false.into()),
+        ("print_counterexample_if_model_is_present", false.into()),
+        ("save_failing_trace_to_file", None::<String>.into()),
+        ("execute_only_failing_trace", None::<String>.into()),
+        ("enable_cache", true.into()),
+        ("cargo_path", "cargo".into()),
+        ("cargo_command", "check".into()),
+        // Flags for testing.
+        ("verification_deadline", None::<i64>.into()),
+        ("use_smt_wrapper", false.into()),
+        ("smt_qi_ignore_builtin", true.into()),
+        ("smt_qi_bound_global", None::<u64>.into()),
+        ("smt_qi_bound_global_kind", None::<u64>.into()),
+        ("smt_qi_bound_trace", None::<u64>.into()),
+        ("smt_qi_bound_trace_kind", None::<u64>.into()),
+        ("smt_unique_triggers_bound", None::<u64>.into()),
+        ("smt_unique_triggers_bound_total", None::<u64>.into()),
+        // Flags for debugging performance.
+        ("preserve_smt_trace_files", false.into()),
+        ("write_smt_statistics", false.into()),
+        ("log_smt_wrapper_interaction", false.into()),
+        // Flags for debugging Prusti that can change verification results.
+        ("short_viper_names", false.into()),
+        ("verify_only_preamble", false.into()),
+        ("enable_verify_only_basic_block_path", false.into()),
+        ("verify_only_basic_block_path", Vec::<String>::new().into()),
+        ("delete_basic_blocks", Vec::<String>::new().into()),
+        // Flags specifically for Prusti-Assistant:
+        ("show_ide_info", false.into()),
+        ("skip_verification", false.into()),
+        ("verify_only_defpaths", Vec::<String>::new().into()),
+        ("query_method_signature", None::<String>.into()),
+        ("report_block_messages", false.into()),
+    ];
 
     // Get the list of all allowed flags.
-    let mut allowed_keys = get_keys(&builder.build_cloned().unwrap());
+    let mut allowed_keys: HashSet<String> =
+        defaults.iter().map(|(key, _)| key.to_string()).collect();
     allowed_keys.insert("server_max_stored_verifiers".to_string());
     allowed_keys.insert("server_max_concurrency".to_string());
     allowed_keys.insert("server_address".to_string());
@@ -213,6 +135,11 @@ fn load_settings() -> Config {
             .filter(|key| key.len() > MAX_CONFIG_LEN)
             .collect::<Vec<_>>()
     );
+
+    let mut builder = Config::builder();
+    for (key, value) in defaults {
+        builder = builder.set_default(key, value).unwrap();
+    }
 
     // 1. Override with default env variables (e.g. `DEFAULT_PRUSTI_CACHE_PATH`, ...)
     let source = Environment::with_prefix("DEFAULT_PRUSTI").ignore_empty(true);
@@ -257,16 +184,6 @@ fn load_settings() -> Config {
     builder = builder.add_source(source);
 
     builder.build().unwrap()
-}
-
-fn get_keys(settings: &Config) -> HashSet<String> {
-    settings
-        .cache
-        .clone()
-        .into_table()
-        .unwrap()
-        .into_keys()
-        .collect()
 }
 
 fn check_keys(source: &dyn Source, allowed_keys: &HashSet<String>, source_name: &str) {
