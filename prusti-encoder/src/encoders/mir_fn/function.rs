@@ -1,4 +1,3 @@
-use prusti_interface::PrustiError;
 use prusti_rustc_interface::span::def_id::DefId;
 use task_encoder::{EncodeFullResult, OutputRefAny, TaskEncoder, TaskEncoderDependencies};
 use vir::{CastType, FunctionIdn, Reify};
@@ -212,13 +211,11 @@ impl TaskEncoder for FunctionEnc {
                         Some(expr)
                     }
                     Err(err) => {
-                        let (message, span) = super::dep_error(&err);
-                        vcx.emit_early_error(PrustiError::unsupported(
-                            format!(
-                                "cannot encode function body `{}`: {message}",
-                                vcx.tcx().def_path_str(def_id),
-                            ),
-                            span.unwrap_or_else(|| vcx.tcx().def_span(def_id)).into(),
+                        let err = super::dep_error(&err);
+                        let span = err.span.unwrap_or_else(|| vcx.tcx().def_span(def_id));
+                        vcx.emit_early_error(err.report(
+                            format!("function body `{}`", vcx.tcx().def_path_str(def_id)),
+                            span,
                         ));
                         None
                     }

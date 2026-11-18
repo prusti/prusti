@@ -1074,6 +1074,9 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
             mir::Rvalue::Discriminant(place) => {
                 let place_ty = place.ty(self.body, self.vcx.tcx());
                 let ty = self.ty_use(place_ty.ty);
+                if ty.specifics.is_opaque() {
+                    return Err(self.unsupported_opaque(place_ty.ty, span));
+                }
                 let discr = match ty
                     .get_enumlike()
                     .filter(|_| place_ty.variant_index.is_none())
@@ -1200,6 +1203,9 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                 }
             }
             mir::ProjectionElem::Field(field_idx, _) => {
+                if e_ty.specifics.is_opaque() {
+                    return Err(self.unsupported_opaque(place_ty.ty, self.current_span()));
+                }
                 let variant = e_ty.expect_variant_opt(place_ty.variant_index);
                 let proj = variant[field_idx];
                 let proj_app = proj.read(encoded_place.snap.downcast_ty());
@@ -1359,6 +1365,9 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
             let e_ty = self.ty_use(base_ty.ty);
             value = match elem {
                 mir::ProjectionElem::Downcast(..) => value,
+                mir::ProjectionElem::Field(..) if e_ty.specifics.is_opaque() => {
+                    return Err(self.unsupported_opaque(base_ty.ty, span));
+                }
                 mir::ProjectionElem::Field(field_idx, _) => e_ty
                     .expect_variant_opt(base_ty.variant_index)
                     .with_field(base_snap.downcast_ty(), field_idx, value)

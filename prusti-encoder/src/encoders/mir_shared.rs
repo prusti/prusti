@@ -1,5 +1,5 @@
 use pcg::utils::Place;
-use task_encoder::{EncodeFullError, TaskEncoder, TaskEncoderDependencies};
+use task_encoder::{DependencyErrorLink, EncodeFullError, TaskEncoder, TaskEncoderDependencies};
 use vir::CastType;
 
 use crate::encoders::{
@@ -112,11 +112,36 @@ pub(crate) trait PureRvalueEnc<'vir> {
 
     /// Build an error for an unsupported feature at `span`.
     fn unsupported(&self, message: String, span: Span) -> EncodeFullError<'vir, Self::Encoder> {
-        EncodeFullError::DependencyError(vec![(
+        EncodeFullError::DependencyError(vec![DependencyErrorLink::new(
             <Self::Encoder as TaskEncoder>::ENCODER_NAME,
             message,
             vec![span],
         )])
+    }
+
+    /// Build an error for using the fields or variant of `ty`, which its
+    /// opaque encoding does not have.
+    fn unsupported_opaque(
+        &self,
+        ty: ty::Ty<'vir>,
+        span: Span,
+    ) -> EncodeFullError<'vir, Self::Encoder> {
+        EncodeFullError::DependencyError(vec![
+            DependencyErrorLink::new(
+                <Self::Encoder as TaskEncoder>::ENCODER_NAME,
+                format!(
+                    "Prusti does not look inside `{ty}`, as it does not support unions yet \
+                     and keeps the contents of `#[trusted]` types hidden"
+                ),
+                vec![span],
+            )
+            .with_help(
+                "move this code into a `#[trusted]` function (also marked `#[pure]` if \
+                 pure code or specifications call it), and describe what it does with \
+                 pre- and postconditions"
+                    .to_string(),
+            ),
+        ])
     }
 
     /// Encodes the snapshot of an operand. In an impure context this may
@@ -254,11 +279,14 @@ pub(crate) trait PureRvalueEnc<'vir> {
         fields: &IndexVec<abi::FieldIdx, mir::Operand<'vir>>,
         ctxt: &Self::EncodePlaceCtxt,
     ) -> ExprResult<'vir, Self> {
+        let e_rvalue_ty = self.ty_use_pure(rvalue_ty);
+        if e_rvalue_ty.specifics.is_opaque() {
+            return Err(self.unsupported_opaque(rvalue_ty, self.current_span()));
+        }
         let encoded_fields = fields
             .iter()
             .map(|field| self.encode_operand_snap(field, ctxt))
             .collect::<Result<Vec<_>, _>>()?;
-        let e_rvalue_ty = self.ty_use_pure(rvalue_ty);
         let sl = match kind {
             mir::AggregateKind::Adt(_, vidx, _, _, _) => e_rvalue_ty.get_variant_any(*vidx),
             _ => e_rvalue_ty.expect_structlike(),
@@ -336,9 +364,12 @@ pub(crate) trait PureRvalueEnc<'vir> {
                         args[0].span,
                     ));
                 };
+                let e_enum_ty = self.ty_use_pure(enum_ty);
+                if e_enum_ty.specifics.is_opaque() {
+                    return Err(self.unsupported_opaque(enum_ty, args[0].span));
+                }
                 let deref_place = self.vcx().tcx().mk_place_deref(place);
                 let snap = self.encode_place_snap(deref_place.into(), ctxt)?;
-                let e_enum_ty = self.ty_use_pure(enum_ty);
                 match e_enum_ty.get_enumlike() {
                     Some(e_enum_ty) => {
                         Ok(e_enum_ty.snap_to_discr_snap(snap.downcast_ty()).upcast_ty())
