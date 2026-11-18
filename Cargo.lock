@@ -2289,7 +2289,6 @@ version = "0.1.0"
 dependencies = [
  "config",
  "ctrlc",
- "itertools 0.10.5",
  "log",
  "nix 0.26.4",
  "rustc-hash",

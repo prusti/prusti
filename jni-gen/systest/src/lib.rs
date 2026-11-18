@@ -3,13 +3,18 @@ pub mod wrappers {
     include!(concat!(env!("OUT_DIR"), "/gen/mod.rs"));
 }
 
-use jni::{errors::Result, InitArgsBuilder, JNIEnv, JNIVersion, JavaVM};
+use jni::JNIEnv;
+use jni::JavaVM;
+use jni::InitArgsBuilder;
+use jni::JNIVersion;
+use jni::errors::Result;
 use std::sync::LazyLock;
 
 pub fn print_exception(env: &JNIEnv) {
     let exception_occurred = env.exception_check().unwrap_or_else(|e| panic!("{e:?}"));
     if exception_occurred {
-        env.exception_describe().unwrap_or_else(|e| panic!("{e:?}"));
+        env.exception_describe()
+            .unwrap_or_else(|e| panic!("{e:?}"));
     }
 }
 

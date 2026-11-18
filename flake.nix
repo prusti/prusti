@@ -56,11 +56,13 @@
             overrideMain = _: {
               postInstall = ''
                 # `x.py package` copies the binaries, the contracts and `viper_tools`,
-                # where the binaries find Viper and Z3.
+                # from which the binaries take Viper and Z3.
                 ln -s ${packages.viper} viper_tools
                 python3 x.py package release $out/bin
                 rm -rf $out/target
 
+                # Only Prusti's binaries are wrapped: the contracts' proc-macro library and
+                # the executables in `viper_tools` must stay as they are.
                 for f in $out/bin/{prusti-driver,prusti-rustc,cargo-prusti,prusti-server,prusti-server-driver}; do
                   wrapProgram $f \
                     --set RUST_SYSROOT "${rust}" \

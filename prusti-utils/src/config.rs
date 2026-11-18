@@ -118,8 +118,6 @@ fn load_settings() -> Config {
     allowed_keys.insert("server_max_concurrency".to_string());
     allowed_keys.insert("server_address".to_string());
     allowed_keys.insert("config".to_string());
-    allowed_keys.insert("log".to_string());
-    allowed_keys.insert("log_style".to_string());
     allowed_keys.insert("rustc_log_args".to_string());
     allowed_keys.insert("rustc_log_env".to_string());
     allowed_keys.insert("original_smt_solver_path".to_string());
@@ -179,7 +177,7 @@ fn load_settings() -> Config {
     builder = builder.add_source(source);
 
     // 4. Override with command-line arguments -P<arg>=<val>
-    let source = CommandLine::with_prefix("-P").ignore_invalid(true);
+    let source = CommandLine::with_prefix("-P");
     check_keys(&source, &allowed_keys, "the `-P` command line arguments");
     builder = builder.add_source(source);
 
@@ -235,7 +233,7 @@ where
 fn write_setting<T: Into<config::Value>>(key: &'static str, value: T) {
     let mut settings = SETTINGS.write().unwrap();
     *settings = Config::builder()
-        .add_source(settings.clone())
+        .add_source(std::mem::take(&mut *settings))
         .set_override(key, value)
         .and_then(|builder| builder.build())
         .unwrap_or_else(|e| panic!("Failed to write setting {key} due to {e}"));
