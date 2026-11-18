@@ -167,10 +167,15 @@ pub fn encode_all_in_crate<'tcx>(tcx: ty::TyCtxt<'tcx>) {
                 if prusti_interface::specs::is_spec_item(tcx, def_id) {
                     continue;
                 }
-                // A closure inside a trusted function is part of its
-                // (unencoded) body.
-                let root = tcx.typeck_root_def_id(def_id);
-                if root != def_id && crate::encoders::is_function_trusted(root) {
+                // A closure inside a trusted function, including one inside an
+                // anonymous constant in its body (e.g. an array length), is part
+                // of its (unencoded) body.
+                if tcx.is_closure_like(def_id)
+                    && crate::encoders::is_function_trusted(
+                        tcx.hir_get_parent_item(tcx.local_def_id_to_hir_id(def_id.expect_local()))
+                            .to_def_id(),
+                    )
+                {
                     continue;
                 }
                 // Extern-spec stubs are macro-generated forwarding bodies whose

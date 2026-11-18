@@ -61,3 +61,9 @@ fn exhausted_inclusive_subslice_len(a: &[i32], r: core::ops::RangeInclusive<usiz
         assert!(s.len() > 0); //~ERROR: might not hold
     }
 }
+
+// The closure is nested in the anonymous constant of the array length. It is
+// verified like any other closure in the function's body.
+fn closure_in_length() -> usize {
+    [0u8; { let _f = |x: u8| { assert!(false); x }; 3 }].len() //~ERROR: might not hold
+}

@@ -11,7 +11,7 @@ use prusti_rustc_interface::{
     ast::{AttrVec, Crate, Item, ItemKind, Visibility, VisibilityKind, DUMMY_NODE_ID},
     borrowck::consumers,
     driver::Compilation,
-    hir::{def::DefKind, def_id::LocalDefId},
+    hir::def_id::LocalDefId,
     interface::{interface::Compiler, Config},
     middle::{
         queries::{mir_borrowck::ProvidedValue as MirBorrowck, Providers},
@@ -28,12 +28,9 @@ pub struct PrustiCompilerCalls;
 #[allow(clippy::needless_lifetimes)]
 #[tracing::instrument(level = "debug", skip(tcx))]
 fn mir_borrowck<'tcx>(tcx: TyCtxt<'tcx>, def_id: LocalDefId) -> MirBorrowck<'tcx> {
-    let def_kind = tcx.def_kind(def_id.to_def_id());
-    let is_anon_const = matches!(def_kind, DefKind::AnonConst);
-    // Anon Const bodies have already been stolen and so will result in a crash
-    // when calling `get_body_with_borrowck_facts`. TODO: figure out if we need
-    // (anon) const bodies at all, and if so, how to get them?
-    if !is_anon_const {
+    // Like rustc's own `mir_borrowck`, skip trivial consts: they have no `mir_promoted`
+    // body to borrow-check, and no closures whose bodies Prusti would need.
+    if !tcx.is_trivial_const(def_id) {
         // Computing the Polonius input facts can be very slow, so they are computed only where
         // the PCG may need them: not for spec functions, and not in crates that are not verified.
         let consumer_opts =
