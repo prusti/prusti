@@ -7,18 +7,16 @@
 //! This module defines data structures exchanged between a verifier and
 //! its environment.
 
-use prusti_rustc_interface::{hir::def_id::DefId, middle::ty};
+use prusti_rustc_interface::hir::def_id::DefId;
 
 /// A unique identifier of the Rust procedure.
 pub type ProcedureDefId = DefId;
 
 /// A list of items to verify that is passed to a verifier.
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
-pub struct VerificationTask<'tcx> {
+pub struct VerificationTask {
     /// A list of procedures to verify.
     pub procedures: Vec<DefId>,
-    /// A list of types to verify.
-    pub types: Vec<ty::Ty<'tcx>>,
     /// Whether or not the task is selective (see verify_only_defpaths)
     pub selective: bool,
 }

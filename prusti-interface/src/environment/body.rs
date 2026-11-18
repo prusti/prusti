@@ -28,13 +28,6 @@ impl<'tcx> std::ops::Deref for MirBody<'tcx> {
     }
 }
 
-// /// Stores body of functions which we'll need to encode as impure
-// pub struct BodyWithBorrowckFacts<'tcx> {
-//     pub body: MirBody<'tcx>,
-//     ///// Cached borrowck information.
-//     //borrowck_facts: Rc<BorrowckFacts>,
-// }
-
 /// Bodies which need not be synched across crates and so can be
 /// loaded dynamically as needed during encoding.
 type DynamicallyLoadedBodies<T> = RefCell<FxHashMap<LocalDefId, T>>;
@@ -203,21 +196,6 @@ impl<'tcx> EnvBody<'tcx> {
         body.clone()
     }
 
-    /// Get the MIR body of a local impure function, monomorphised
-    /// with the given type substitutions.
-    pub fn get_impure_fn_body(
-        &self,
-        def_id: LocalDefId,
-        substs: GenericArgsRef<'tcx>,
-        caller_def_id: Option<DefId>,
-    ) -> MirBody<'tcx> {
-        if let Some(body) = self.get_monomorphised(def_id.to_def_id(), substs, caller_def_id) {
-            return body;
-        }
-        let body = self.get_impure_fn_body_identity(def_id);
-        self.set_monomorphised(def_id.to_def_id(), substs, caller_def_id, body)
-    }
-
     fn get_closure_body_identity(&self, def_id: DefId) -> MirBody<'tcx> {
         if let Some(body) = self.closures.get(def_id) {
             return body;
@@ -300,22 +278,6 @@ impl<'tcx> EnvBody<'tcx> {
     ) -> MirBody<'tcx> {
         MirBody(Rc::new(self.tcx.promoted_mir(def_id)[promoted].clone()))
     }
-
-    ///// Get Polonius facts of a local procedure.
-    //pub fn local_mir_borrowck_facts(&self, def_id: LocalDefId) -> Rc<BorrowckFacts> {
-    //    self.try_get_local_mir_borrowck_facts(def_id).unwrap()
-    //}
-
-    //#[tracing::instrument(level = "debug", skip(self))]
-    //pub fn try_get_local_mir_borrowck_facts(
-    //    &self,
-    //    def_id: LocalDefId,
-    //) -> Option<Rc<BorrowckFacts>> {
-    //    self.local_impure_fns
-    //        .borrow()
-    //        .get(&def_id)
-    //        .map(|body| body.borrowck_facts.clone())
-    //}
 
     /// Ensures that the MIR body of a local spec is cached. This must be called on all specs,
     /// prior to requesting their bodies with `get_spec_body` or exporting with `CrossCrateBodies::from`!

@@ -13,14 +13,12 @@ use log::trace;
 use prusti_rustc_interface::{
     hir,
     hir::{def_id::DefId, intravisit::Visitor},
-    middle::ty::{self, TyKind},
 };
 
 pub struct CollectPrustiSpecVisitor<'tcx> {
     env_query: EnvQuery<'tcx>,
     env_name: EnvName<'tcx>,
     procedures: Vec<DefId>,
-    types: Vec<ty::Ty<'tcx>>,
 }
 
 impl<'tcx> CollectPrustiSpecVisitor<'tcx> {
@@ -29,12 +27,11 @@ impl<'tcx> CollectPrustiSpecVisitor<'tcx> {
             env_query: env.query,
             env_name: env.name,
             procedures: Vec::new(),
-            types: Vec::new(),
         }
     }
 
-    pub fn into_result(self) -> (Vec<DefId>, Vec<ty::Ty<'tcx>>) {
-        (self.procedures, self.types)
+    pub fn into_result(self) -> Vec<DefId> {
+        self.procedures
     }
 
     pub fn visit_all_item_likes(&mut self) {
@@ -66,18 +63,6 @@ impl<'tcx> Visitor<'tcx> for CollectPrustiSpecVisitor<'tcx> {
             let item_def_path = self.env_name.get_item_def_path(def_id);
             trace!("Add {item_def_path} to procedures");
             self.procedures.push(def_id);
-        }
-        if matches!(
-            item.kind,
-            hir::ItemKind::Enum(..) | hir::ItemKind::Struct(..) | hir::ItemKind::Union(..)
-        ) {
-            let def_id = self.env_query.as_local_def_id(item.hir_id()).to_def_id();
-            let adt_def = self.env_query.tcx().adt_def(def_id);
-            let ty = self
-                .env_query
-                .tcx()
-                .mk_ty_from_kind(TyKind::Adt(adt_def, self.env_query.identity_substs(def_id)));
-            self.types.push(ty);
         }
     }
 

@@ -841,12 +841,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2a2330da5de22e8a3cb63252ce2abb30116bf5265e89c0e01bc17015ce30a476"
 
 [[package]]
-name = "datafrog"
-version = "2.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a0afaad2b26fa326569eb264b1363e8ae3357618c43982b3f285f0774ce76b69"
-
-[[package]]
 name = "derive_more"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2297,10 +2291,6 @@ dependencies = [
 name = "prusti-interface"
 version = "0.1.0"
 dependencies = [
- "config",
- "csv",
- "datafrog",
- "lazy_static",
  "log",
  "pcg",
  "prusti-rustc-interface",
@@ -2308,7 +2298,6 @@ dependencies = [
  "prusti-utils",
  "regex",
  "rustc-hash",
- "serde",
  "tracing 0.1.0",
  "version-compare",
 ]
