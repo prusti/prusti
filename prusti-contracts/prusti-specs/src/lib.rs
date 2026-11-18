@@ -341,7 +341,7 @@ fn generate_for_pure(attr: TokenStream, span: Span, _item: &untyped::AnyFnItem) 
             _ => {
                 return Err(syn::Error::new(
                     attr_span,
-                    "expected the mode `memory`: `#[pure]` takes either no argument or a mode",
+                    "`#[pure]` takes no argument or the mode `memory`",
                 ));
             }
         }

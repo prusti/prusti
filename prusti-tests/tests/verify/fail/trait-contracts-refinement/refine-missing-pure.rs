@@ -1,8 +1,10 @@
 //! A `#[refine_trait_spec]` implementation takes over the specification of the
 //! trait method it refines. If the trait method is `#[pure]` but the refining
 //! implementation omits `#[pure]`, it would refine a pure method into an impure
-//! one, which is rejected. So is an implementation in `#[pure(memory)]` mode,
-//! whose result may depend on addresses the trait method's result must not.
+//! one, which is rejected; the same holds for a `#[pure(memory)]` trait method.
+//! An implementation of a `#[pure]` trait method in `#[pure(memory)]` mode is
+//! rejected too, as its result may depend on addresses the trait method's
+//! result must not.
 
 use prusti_contracts::*;
 

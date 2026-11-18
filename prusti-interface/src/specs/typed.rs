@@ -258,8 +258,9 @@ pub enum ProcedureSpecificationKind {
     Predicate(Option<DefId>),
 }
 
-/// What the result of a pure function may depend on, written as the argument
-/// of `#[pure(..)]`. The modes are ordered from the most to the least
+/// What the result of a pure function may depend on: `#[pure]` without an
+/// argument for `Value`, `#[pure(memory)]` for `Memory`. The modes are ordered
+/// from the most to the least
 /// restrictive: a function in a mode also satisfies every later mode, so an
 /// implementation of a trait method may use the trait method's mode or an
 /// earlier one.

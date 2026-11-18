@@ -280,7 +280,8 @@ impl TaskEncoder for MethodEnc {
                     PureMode::Memory => PrustiError::verification(
                         format!(
                             "the result of pure function `{name}` might depend on the addresses \
-                             of its local variables, which pure functions cannot observe"
+                             of its local variables, which Prusti does not yet support in pure \
+                             functions"
                         ),
                         span.into(),
                     ),

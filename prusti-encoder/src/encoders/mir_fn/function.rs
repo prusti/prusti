@@ -109,8 +109,7 @@ impl TaskEncoder for FunctionCallEnc {
         // Only arguments declared as shared references are dummied, not ones
         // of a type parameter instantiated with a reference: the dummying
         // must agree with the callee's (generic) contract, which ties its
-        // result to `f_` on the same dummied arguments. Nothing is dummied for
-        // a callee in memory mode, whose result may depend on the addresses.
+        // result to `f_` on the same dummied arguments.
         let keeps_addresses =
             crate::encoders::pure_mode(callee_def_id, task_key.gargs) == Some(PureMode::Memory);
         let shared_ref_args = signature

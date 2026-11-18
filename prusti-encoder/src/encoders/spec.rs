@@ -142,8 +142,18 @@ pub fn report_kind_refinement_error(
                     "`{name}` implements a `#[pure]` trait method, so its result must not \
                      depend on memory addresses"
                 ),
-                "use `#[pure]` on the implementation, or declare the trait method \
-                 `#[pure(memory)]`",
+                // The specification of a foreign trait method is fixed.
+                if vcx
+                    .tcx()
+                    .opt_associated_item(def_id)
+                    .and_then(|item| item.trait_item_def_id())
+                    .is_some_and(|trait_item| trait_item.is_local())
+                {
+                    "use `#[pure]` on the implementation, or declare the trait method \
+                     `#[pure(memory)]`"
+                } else {
+                    "use `#[pure]` on the implementation"
+                },
             ),
             _ => {
                 vcx.emit_early_error(prusti_interface::PrustiError::incorrect(

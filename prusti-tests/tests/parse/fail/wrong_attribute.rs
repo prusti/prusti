@@ -6,7 +6,7 @@ fn wrong(x: i32) -> i32 {
     x
 }
 
-#[pure(values)] //~ERROR: expected the mode `memory`
+#[pure(values)] //~ERROR: `#[pure]` takes no argument or the mode `memory`
 fn wrong_pure_mode(x: &i32) -> i32 {
     *x
 }
