@@ -3,8 +3,7 @@
 // drops the `&mut` loan at the closure aggregate (it only creates borrow-flow
 // edges for ADTs, tuples and arrays), and the closure type has no capture
 // regions, so the closure's contract cannot refer to the captured places.
-// Verification of `straight_line` fails with an unbacktranslatable "call.precondition:insufficient.permission".
-// Verification of `map_with_counter` fails with an unsupported "a closure capturing a reference" error.
+// Verification fails with an unbacktranslatable "call.precondition:insufficient.permission".
 
 pub fn straight_line() {
     let mut c = 0;

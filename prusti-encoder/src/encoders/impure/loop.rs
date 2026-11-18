@@ -161,7 +161,7 @@ impl<'vir: 'a, 'a, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         ty: ty::Ty<'vir>,
     ) -> EncodeResult<'vir, IndirectPredicatesEncOutputRef<'vir>, E> {
         let Some(proj) = LifetimeProjection::new(decomp, region, None, PrustiPcgCtxt) else {
-            return Err(self.unsupported_rvalue(
+            return Err(self.unsupported(
                 format!("a closure capturing a reference (`{ty}`)"),
                 self.current_span(),
             ));
