@@ -16,8 +16,8 @@ fn main() {
 
     // Copy the just-built binaries into a directory of our own, and run them
     // from there. Not into `target/{debug,release}`: these binaries are also
-    // workspace members, built there separately (build dependencies use a
-    // different profile), and cargo replacing one of them while
+    // workspace members, built there separately (cargo builds artifact
+    // dependencies on their own), and cargo replacing one of them while
     // `cargo-prusti` spawns it intermittently fails the spawn with "No such
     // file or directory". The directory sits next to `target/debug` because
     // the binaries find the contracts, Viper and Z3 relative to their own
