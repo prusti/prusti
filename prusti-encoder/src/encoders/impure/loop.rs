@@ -61,10 +61,8 @@ impl<'vir: 'a, 'a, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 continue; // No permissions are encoded for places with write capabilities currently
             }
             let place = place.with_inherent_region(ctxt);
-            let (place_res, _snap, _, _) = self.encode_place_with_snap(place)?;
-            let ty = place.ty(self.pcg_ctxt());
+            let (place_res, _snap, ty, ty_out) = self.encode_place_with_snap(place)?;
             let task = RustTyDecomposition::from_ty(ty.ty, self.def_id);
-            let ty_out = self.deps.require_dep::<TyUseImpureEnc>(task).unwrap();
             let pred = ty_out.ref_to_pred(self.vcx, place_res.expr.expect_predicate(), None);
             inv.push(pred);
             // gets all the lifetime projections of the place
