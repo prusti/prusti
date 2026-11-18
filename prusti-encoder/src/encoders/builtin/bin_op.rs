@@ -158,42 +158,48 @@ impl MirBuiltinBinOpEnc {
     fn handle_bin_op_native<'vir>(
         vcx: &'vir vir::VirCtxt<'vir>,
         lhs: vir::ExprPrim<'vir>,
-        mut rhs: vir::ExprPrim<'vir>,
+        rhs: vir::ExprPrim<'vir>,
         res_ty: ty::Ty<'vir>,
         op: mir::BinOp,
         in_ty: ty::Ty<'vir>,
         deps: &mut TaskEncoderDependencies<'vir, Self>,
     ) -> EncodeResult<'vir, (Vec<vir::ExprBool<'vir>>, vir::ExprPrim<'vir>)> {
         use mir::BinOp::*;
-        if matches!(op, BitXor | BitAnd | BitOr | Shl | Shr) && !in_ty.is_bool() {
-            if matches!(op, Shl | Shr) {
-                // RHS must be smaller than the bit width of the LHS, this is
-                // implicit in the `Shl` and `Shr` operators.
-                rhs = vcx.mk_bin_op_expr(
-                    vir::BinOpKind::Mod,
-                    rhs.downcast_ty(),
-                    vcx.get_bit_width_int(in_ty),
-                );
-            }
-
+        if matches!(
+            op,
+            BitXor | BitAnd | BitOr | Shl | ShlUnchecked | Shr | ShrUnchecked
+        ) && !in_ty.is_bool()
+        {
             let (size, is_signed) = vcx.get_int_data(in_ty);
-            let bv_domain = deps.require_dep::<BitVecEnc>(match size {
-                8 => BitVecSize::BitVec8,
-                16 => BitVecSize::BitVec16,
-                32 => BitVecSize::BitVec32,
-                64 => BitVecSize::BitVec64,
-                128 => BitVecSize::BitVec128,
-                _ => unreachable!("Invalid bitvec size"),
-            })?;
-            let lhs_bv = (bv_domain.from_int)(lhs);
-            let rhs_bv = (bv_domain.from_int)(rhs);
+            let bv_domain = deps.require_dep::<BitVecEnc>(BitVecSize::from_bits(size))?;
+            let lhs_bv = (bv_domain.from_int_lazy)(lhs);
+            let mut rhs_bv = (bv_domain.from_int_lazy)(rhs);
+            let mut pres = Vec::new();
+            if matches!(op, ShlUnchecked | ShrUnchecked) {
+                // An unchecked shift by a negative amount or by at least the
+                // bit width of the LHS is undefined behavior.
+                let amount = rhs.downcast_ty::<vir::Int>();
+                pres.push(vir::expr! { ([vcx.mk_int::<0>()]) <= (amount) });
+                pres.push(vir::expr! { (amount) < ([vcx.get_bit_width_int(in_ty)]) });
+            } else if matches!(op, Shl | Shr) {
+                // MIR's `Shl` and `Shr` shift by the amount modulo the bit
+                // width `N` of the LHS. The amount may have another type or be
+                // negative, but its bitvector at width `N` is its value modulo
+                // `2^N`. Since `N` is a power of two, masking that with `N - 1`
+                // gives the amount modulo `N`.
+                let mask = (bv_domain.from_int)(
+                    vcx.mk_const_expr(vir::ConstData::Int((size - 1).into()))
+                        .upcast_ty(),
+                );
+                rhs_bv = (bv_domain.bv_and)(rhs_bv, mask);
+            }
             let res_bv = match op {
                 BitXor => (bv_domain.bv_xor)(lhs_bv, rhs_bv),
                 BitAnd => (bv_domain.bv_and)(lhs_bv, rhs_bv),
                 BitOr => (bv_domain.bv_or)(lhs_bv, rhs_bv),
-                Shl => (bv_domain.bv_shl)(lhs_bv, rhs_bv),
-                Shr if is_signed => (bv_domain.bv_ashr)(lhs_bv, rhs_bv),
-                Shr => (bv_domain.bv_shr)(lhs_bv, rhs_bv),
+                Shl | ShlUnchecked => (bv_domain.bv_shl)(lhs_bv, rhs_bv),
+                Shr | ShrUnchecked if is_signed => (bv_domain.bv_ashr)(lhs_bv, rhs_bv),
+                Shr | ShrUnchecked => (bv_domain.bv_shr)(lhs_bv, rhs_bv),
                 _ => unreachable!(),
             };
             let to_int = if is_signed {
@@ -201,7 +207,7 @@ impl MirBuiltinBinOpEnc {
             } else {
                 bv_domain.ubv_to_int
             };
-            Ok((vec![], (to_int)(res_bv)))
+            Ok((pres, (to_int)(res_bv)))
         } else if matches!(op, Cmp) {
             // Cmp does not have a direct analogue to VIR binary operations,
             // so we treat it specially.
@@ -226,9 +232,8 @@ impl MirBuiltinBinOpEnc {
                 .mk_bin_op_expr_inner(op_kind, lhs.as_dyn(), rhs.as_dyn())
                 .downcast_ty();
             Ok(match op {
-                // Overflow well defined as wrapping (implicit) and for the shifts
-                // the RHS will be masked to the bit width.
-                Add | Sub | Mul | Shl | Shr => (
+                // Overflow well defined as wrapping (implicit).
+                Add | Sub | Mul => (
                     Vec::new(),
                     vcx.get_wrapped_val(viper_val.downcast_ty(), res_ty)
                         .upcast_ty(),
@@ -246,25 +251,6 @@ impl MirBuiltinBinOpEnc {
                         .mk_bin_op_expr(vir::BinOpKind::CmpLe, viper_val.downcast_ty(), max)
                         .downcast_ty::<vir::Bool>();
                     (vec![lower_bound, upper_bound], viper_val)
-                }
-                // Overflow is well defined as wrapping (implicit), but shifting by
-                // more than the bit width (or less than 0) is undefined behavior.
-                ShlUnchecked | ShrUnchecked => {
-                    let min = vcx.mk_int::<0>();
-                    // `arg2 >= 0`
-                    let lower_bound = vcx
-                        .mk_bin_op_expr(vir::BinOpKind::CmpGe, rhs.downcast_ty(), min)
-                        .downcast_ty::<vir::Bool>();
-                    let max = vcx.get_bit_width_int(in_ty);
-                    // `arg2 < bit_width(arg1)`
-                    let upper_bound = vcx
-                        .mk_bin_op_expr(vir::BinOpKind::CmpLt, rhs.downcast_ty(), max)
-                        .downcast_ty::<vir::Bool>();
-                    (
-                        vec![lower_bound, upper_bound],
-                        vcx.get_wrapped_val(viper_val.downcast_ty(), res_ty)
-                            .upcast_ty(),
-                    )
                 }
                 // Could divide by zero or overflow if divisor is `-1`
                 Div | Rem => {
@@ -324,15 +310,20 @@ impl MirBuiltinBinOpEnc {
                 }
                 // Cannot overflow and no undefined behavior (the bitwise
                 // operations are `bool`-only, rejected above for integers)
-                BitXor | BitAnd | BitOr | Eq | Lt | Le | Ne | Ge | Gt | Offset => {
-                    (Vec::new(), viper_val)
-                }
+                BitXor | BitAnd | BitOr | Eq | Lt | Le | Ne | Ge | Gt => (Vec::new(), viper_val),
 
-                // these are handled in `handle_checked_bin_op`
+                // these are handled in `handle_bin_op_overflowing`
                 AddWithOverflow | SubWithOverflow | MulWithOverflow => unreachable!(),
+
+                // pointer offsets have a raw-pointer LHS, handled in
+                // `handle_bin_op_raw`
+                Offset => unreachable!(),
 
                 // this is handled separately, earlier
                 Cmp => unreachable!(),
+
+                // these are encoded on bitvectors, above
+                Shl | Shr | ShlUnchecked | ShrUnchecked => unreachable!(),
             })
         }
     }

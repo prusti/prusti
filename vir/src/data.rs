@@ -82,24 +82,25 @@ impl From<mir::BinOp> for BinOpKind {
             }
             mir::BinOp::Div => BinOpKind::Div,
             mir::BinOp::Rem => BinOpKind::Mod,
-            // TODO: this is a temporary workaround,
-            // we need to fix this for integers and
-            // do non-short-circuiting for booleans.
+            // The logical operations on `bool` operands; integer operands are
+            // encoded on bitvectors instead. The builtin operation functions
+            // apply these to their parameters, where short-circuiting makes
+            // no difference.
             mir::BinOp::BitXor => BinOpKind::CmpNe,
             mir::BinOp::BitAnd => BinOpKind::And,
             mir::BinOp::BitOr => BinOpKind::Or,
-            mir::BinOp::Shl => todo!("bitwise operations"),
-            mir::BinOp::ShlUnchecked => todo!("bitwise operations"),
-            mir::BinOp::Shr => todo!("bitwise operations"),
-            mir::BinOp::ShrUnchecked => todo!("bitwise operations"),
+            mir::BinOp::Shl
+            | mir::BinOp::ShlUnchecked
+            | mir::BinOp::Shr
+            | mir::BinOp::ShrUnchecked => unreachable!("shifts have no integer counterpart"),
             mir::BinOp::Eq => BinOpKind::CmpEq,
             mir::BinOp::Lt => BinOpKind::CmpLt,
             mir::BinOp::Le => BinOpKind::CmpLe,
             mir::BinOp::Ne => BinOpKind::CmpNe,
             mir::BinOp::Ge => BinOpKind::CmpGe,
             mir::BinOp::Gt => BinOpKind::CmpGt,
-            mir::BinOp::Offset => todo!(),
-            mir::BinOp::Cmp => todo!(),
+            mir::BinOp::Offset => unreachable!("pointer offsets have no integer counterpart"),
+            mir::BinOp::Cmp => unreachable!("three-way comparisons have no counterpart"),
         }
     }
 }
