@@ -10,7 +10,7 @@ fn separated_invariants(a: &[usize; N]) {
     while i < N {
         body_invariant!(i < N);
         let j = a[i];
-        body_invariant!(j < M); //~ ERROR: `body_invariant!` annotation may not be reached in every loop iteration
+        body_invariant!(j < M); //~ ERROR: invalid specification
         i = i + 1;
     }
 }

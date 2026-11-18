@@ -1,6 +1,6 @@
 use prusti_contracts::*;
 
-// Regression test for prusti/prusti#738 (positive tests: issue-738-4.rs).
+// Regression test for prusti/prusti#738 (the positive test is verify_overflow/pass/issues/issue-738.rs).
 #[derive(Clone, Copy)]
 pub struct A {
     count: isize,

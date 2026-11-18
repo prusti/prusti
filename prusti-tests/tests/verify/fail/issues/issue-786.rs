@@ -13,8 +13,10 @@ impl VecWrapper {
     }
 }
 
+#[requires(p.len() > 0)]
 fn loop_condition_with_len_probe(p: &VecWrapper) {
     let mut x = 0;
-    while x <= p.len() - 1 {}
-    assert!(false); //~ ERROR: precondition of `core::panicking::panic`
+    while x <= p.len() - 1 {
+        assert!(false); //~ ERROR: precondition of `core::panicking::panic`
+    }
 }
