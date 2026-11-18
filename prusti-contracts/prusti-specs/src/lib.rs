@@ -705,10 +705,13 @@ pub fn closure(tokens: TokenStream) -> TokenStream {
 
     // Each specification with its span, so that the spec closure carries the
     // span of its expression and diagnostics point at that clause.
-    let parse_specs = |exprs: Vec<syn::Expr>| -> syn::Result<Vec<(TokenStream, Span)>> {
-        exprs
+    let parse_specs = |specs: Vec<TokenStream>| -> syn::Result<Vec<(TokenStream, Span)>> {
+        specs
             .into_iter()
-            .map(|expr| Ok((parse_prusti(expr.to_token_stream())?, expr.span())))
+            .map(|spec| {
+                let span = spec.span();
+                Ok((parse_prusti(spec)?, span))
+            })
             .collect()
     };
     let pres = handle_result!(parse_specs(cl_spec.pres));
@@ -843,7 +846,7 @@ pub fn refine_trait_spec(_attr: TokenStream, tokens: TokenStream) -> TokenStream
                 let illegal_attribute_span = prusti_attributes
                     .iter()
                     .filter(|(kind, _, _)| kind == &SpecAttributeKind::RefineSpec)
-                    .map(|(_, _, tokens)| tokens.span())
+                    .map(|(_, span, _)| *span)
                     .next();
                 if let Some(span) = illegal_attribute_span {
                     let err = Err(syn::Error::new(
@@ -1000,21 +1003,27 @@ pub fn rewrite_prusti_attributes_for_types(
         .to_compile_error();
     }
 
-    // A model declaration describes the model of another type, and of the
-    // other type attributes only `#[print_counterexample]` applies to it.
+    // A model declaration describes the model of another type and is replaced
+    // by a generated struct, together with the attributes left on it. Of the
+    // other Prusti attributes, only `#[print_counterexample]` applies to it.
     if let Some(model) = prusti_attributes
         .iter()
         .position(|(ak, _, _)| ak == &SpecAttributeKind::Model)
     {
-        if let Some((_, (_, span, _))) =
-            prusti_attributes
-                .iter()
-                .enumerate()
-                .find(|(index, (ak, _, _))| {
-                    *index != model && ak != &SpecAttributeKind::PrintCounterexample
-                })
-        {
-            return syn::Error::new(*span, "this attribute cannot be combined with `#[model]`")
+        let extracted = prusti_attributes
+            .iter()
+            .enumerate()
+            .filter(|(index, (ak, _, _))| {
+                *index != model && ak != &SpecAttributeKind::PrintCounterexample
+            })
+            .map(|(_, (_, span, _))| *span);
+        let left = item
+            .attrs
+            .iter()
+            .filter(|attr| prusti_attribute_kind(attr).is_some())
+            .map(|attr| attr.span());
+        if let Some(span) = extracted.chain(left).next() {
+            return syn::Error::new(span, "this attribute cannot be combined with `#[model]`")
                 .to_compile_error();
         }
     }
@@ -1070,18 +1079,6 @@ fn generate_spec_and_assertions_for_types(
 /// Generate spec items and attributes to typecheck and later retrieve "model" annotations.
 fn generate_for_model(attr: TokenStream, item: &mut syn::DeriveInput) -> GeneratedResult {
     reject_parameters("model", &attr)?;
-    // The model replaces the declaration together with its attributes, so
-    // a Prusti attribute left on it would be lost.
-    if let Some(attr) = item
-        .attrs
-        .iter()
-        .find(|attr| prusti_attribute_kind(attr).is_some())
-    {
-        return Err(syn::Error::new(
-            attr.span(),
-            "this attribute cannot be combined with `#[model]`",
-        ));
-    }
     match syn::Item::from(item.clone()) {
         syn::Item::Struct(item_struct) => {
             match type_model::rewrite(item_struct) {

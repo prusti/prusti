@@ -19,7 +19,7 @@ fn main() {
 
     let h = closure!(
         #[prusti_contracts::pure]
-        #[prusti_contracts::ensures(result == z)]
+        #[prusti_contracts::ensures(z > 0 ==> result > 0)]
         |z: i32| -> i32 { z }
     );
 }

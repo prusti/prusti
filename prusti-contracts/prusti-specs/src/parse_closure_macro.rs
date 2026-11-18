@@ -1,12 +1,13 @@
 use crate::{prusti_attribute_kind, require_argument, unwrap_argument, SpecAttributeKind};
+use proc_macro2::TokenStream;
 use syn::{
     parse::{Parse, ParseStream},
     spanned::Spanned,
 };
 
 pub(crate) struct ClosureWithSpec {
-    pub pres: Vec<syn::Expr>,
-    pub posts: Vec<syn::Expr>,
+    pub pres: Vec<TokenStream>,
+    pub posts: Vec<TokenStream>,
     pub cl: syn::ExprClosure,
 }
 
@@ -15,8 +16,8 @@ impl Parse for ClosureWithSpec {
         let mut attrs = input.call(syn::Attribute::parse_outer)?;
         let mut cl: syn::ExprClosure = input.parse()?;
 
-        let mut pres: Vec<syn::Result<syn::Expr>> = vec![];
-        let mut posts: Vec<syn::Result<syn::Expr>> = vec![];
+        let mut pres: Vec<syn::Result<TokenStream>> = vec![];
+        let mut posts: Vec<syn::Result<TokenStream>> = vec![];
 
         // collect and remove any specification attributes
         // leave other attributes intact
@@ -38,9 +39,10 @@ impl Parse for ClosureWithSpec {
     }
 }
 
-/// The expression that is the argument of the specification attribute `attr`.
-fn parse_argument(attr: &syn::Attribute) -> syn::Result<syn::Expr> {
+/// The argument of the specification attribute `attr`, which is parsed later
+/// as a Prusti assertion.
+fn parse_argument(attr: &syn::Attribute) -> syn::Result<TokenStream> {
     let argument = unwrap_argument(attr)?;
     require_argument(attr.span(), &argument)?;
-    syn::parse2(argument)
+    Ok(argument)
 }

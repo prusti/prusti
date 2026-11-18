@@ -73,6 +73,12 @@ struct Modelled {
     a: i32,
 }
 
+#[model]
+#[pure] //~ERROR: this attribute cannot be combined with `#[model]`
+struct Modelled {
+    a: i32,
+}
+
 pub fn closure_with_parameter() {
     let _ = closure!(
         #[pure(x)] //~ERROR: the `#[pure]` attribute does not take parameters
