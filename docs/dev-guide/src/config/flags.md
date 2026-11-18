@@ -113,7 +113,7 @@ A path to Boogie.
 
 Path to a cache file, where verification cache will be loaded from and saved to. The default empty string disables saving any cache to disk. A path to a file which does not yet exist will result in using an empty cache, but then creating and saving to that location on exit.
 
-The cache file records a fingerprint of everything its results depend on beyond the programs and settings they are stored for: the Viper jars Prusti was built with, the code Prusti uses to translate programs to Viper, run the verifier and read back its results, and the Z3 binary. A cache file whose fingerprint differs from that of the running Prusti is discarded.
+The cache file records a fingerprint of the Viper jars Prusti was built with, the code Prusti uses to translate programs to Viper, run the verifier and read back its results, and the Z3 binary. A cache file whose fingerprint differs from that of the running Prusti is discarded.
 
 > **Note:** `cargo prusti` sets this flag with `DEFAULT_PRUSTI_CACHE_PATH=$CARGO_TARGET_DIR/cache.bin`.
 
