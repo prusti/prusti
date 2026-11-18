@@ -72,6 +72,11 @@ jobs:
         run: |
           cargo install cargo-hack
           python ./x.py hack build --workspace
+      # Development builds enable more features of dependencies than the release build and its
+      # tests in `deploy.yml` (see `resolver` in `Cargo.toml`). Compiling all targets as those
+      # do catches a test that compiles only with the additional features.
+      - name: Compile all targets with the features of the release build
+        run: python ./x.py build --all --all-targets
 
   # Check that we depend on the compiler only through SMIR.
   smir-check:
