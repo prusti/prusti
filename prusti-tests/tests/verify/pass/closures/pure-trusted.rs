@@ -17,9 +17,11 @@ fn main() {
         |y: i32| -> i32 { y + y }
     );
 
+    // Attributes written with their full path, and a Prusti operator in the
+    // specification.
     let h = closure!(
         #[prusti_contracts::pure]
-        #[prusti_contracts::ensures(result == z)]
+        #[prusti_contracts::ensures(z > 0 ==> result > 0)]
         |z: i32| -> i32 { z }
     );
 }

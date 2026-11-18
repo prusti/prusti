@@ -28,7 +28,7 @@ fn main() {
                         unused_parens)]
                         if false {
                             return ::prusti_contracts::closure_spec_pre((i,),
-                                    #[prusti::spec_only] |i| -> bool { (i >= 0) });
+                                    #[prusti::spec_only] |i| -> bool { i >= 0 });
                         }
                         let prusti_closure_args = ::core::marker::PhantomData;
 
@@ -46,7 +46,7 @@ fn main() {
                             return ::prusti_contracts::closure_spec_post((::core::option::Option::None.unwrap(),
                                         result), prusti_closure_args,
                                     #[prusti::spec_only] |i, result: i32| -> bool
-                                        { (result == i + 1) });
+                                        { result == i + 1 });
                         }
                         result
                     };
@@ -76,7 +76,7 @@ fn main() {
                             return ::prusti_contracts::closure_spec_post((::core::option::Option::None.unwrap(),
                                         result), prusti_closure_args,
                                     #[prusti::spec_only] |i, result: i32| -> bool
-                                        { (result == i + 1) });
+                                        { result == i + 1 });
                         }
                         result
                     };
@@ -95,7 +95,7 @@ fn main() {
                         unused_parens)]
                         if false {
                             return ::prusti_contracts::closure_spec_pre((i,),
-                                    #[prusti::spec_only] |i| -> bool { (i >= 0) });
+                                    #[prusti::spec_only] |i| -> bool { i >= 0 });
                         }
                         { i + 1 }
                     };
