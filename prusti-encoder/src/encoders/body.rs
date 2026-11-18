@@ -41,12 +41,8 @@ pub fn impure_body_with_facts<'vir>(def_id: DefId) -> Option<BodyWithBorrowckFac
 /// across crates); a local function is pure by inheritance from the trait
 /// method it implements, so its body is taken like any other local body.
 pub fn pure_body<'vir>(def_id: DefId) -> MirBody<'vir> {
-    impure_body(def_id).unwrap_or_else(|| {
-        vir::with_vcx(|vcx| {
-            let substs = ty::GenericArgs::identity_for_item(vcx.tcx(), def_id);
-            vcx.body_mut().get_pure_fn_body(def_id, substs, None)
-        })
-    })
+    impure_body(def_id)
+        .unwrap_or_else(|| vir::with_vcx(|vcx| vcx.body_mut().get_pure_fn_body(def_id)))
 }
 
 /// The MIR body of the specification `def_id`, taken generically (i.e. with

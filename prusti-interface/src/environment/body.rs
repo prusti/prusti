@@ -80,7 +80,8 @@ impl<'tcx> PreLoadedBodies<'tcx> {
 ///
 /// - we are encoding an impure function, where the method is encoded only once
 ///   and calls are performed indirectly via contract exhale/inhale; or
-/// - when the caller is unknown, e.g. to check a pure function definition.
+/// - when the caller is unknown, e.g. to encode a closure or specification
+///   body generically.
 type MonomorphKey<'tcx> = (DefId, GenericArgsRef<'tcx>, Option<DefId>);
 
 /// Store for all the `mir::Body` which we've taken out of the compiler
@@ -230,19 +231,11 @@ impl<'tcx> EnvBody<'tcx> {
         self.set_monomorphised(def_id, substs, caller_def_id, body)
     }
 
-    /// Get the MIR body of a local or external pure function,
-    /// monomorphised with the given type substitutions.
-    pub fn get_pure_fn_body(
-        &self,
-        def_id: DefId,
-        substs: GenericArgsRef<'tcx>,
-        caller_def_id: Option<DefId>,
-    ) -> MirBody<'tcx> {
-        if let Some(body) = self.get_monomorphised(def_id, substs, caller_def_id) {
-            return body;
-        }
-        let body = self.pure_fns.expect(def_id);
-        self.set_monomorphised(def_id, substs, caller_def_id, body)
+    /// Get the MIR body of a local or external pure function, as stored: pure
+    /// functions are encoded generically, so their bodies need no
+    /// instantiation.
+    pub fn get_pure_fn_body(&self, def_id: DefId) -> MirBody<'tcx> {
+        self.pure_fns.expect(def_id)
     }
 
     /// Get the MIR body of a local or external expression (e.g. any spec or predicate),
