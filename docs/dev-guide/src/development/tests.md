@@ -6,7 +6,7 @@ Tests for the Prusti project can be executed using the Python wrapper script:
 ./x.py test
 ```
 
-The script sets up environment variables just like in the [build](build.md) phase, then runs `cargo test`. Prusti's test files (in `prusti-tests/tests`) are run with the Prusti binaries that `prusti-contracts-build` builds together with the contracts, so `./x.py test` always tests the current code. The tests of `prusti-launch` run the binaries in `target/debug` instead, which `./x.py test` does not update; build Prusti with `./x.py build` before running them.
+The script sets up environment variables just like in the [build](build.md) phase, then runs `cargo test`. Prusti's test files (in `prusti-tests/tests`) are run with the Prusti binaries that `prusti-contracts-build` builds together with the contracts, so `./x.py test` always tests the current code. The tests of `prusti-launch` run the binaries in `target/debug` instead, and `./x.py test` does not update `target/debug/prusti-driver`; build Prusti with `./x.py build` before running them.
 
 Any additional arguments are added to the `cargo test` command line. For example:
 

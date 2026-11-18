@@ -38,7 +38,11 @@ fn main() {
         let file_from = std::env::var(format!("CARGO_BIN_FILE_{krate}_{file}")).unwrap();
         let file_to = &format!("{file}{}", if cfg!(windows) { ".exe" } else { "" });
         let file_to = bin_dir.join(file_to);
-        std::fs::copy(file_from, file_to).unwrap();
+        // Rename a copy over the old binary instead of overwriting it, which fails while a
+        // process still runs it (e.g. a `prusti-driver` that outlived a test run).
+        let file_tmp = file_to.with_extension("tmp");
+        std::fs::copy(file_from, &file_tmp).unwrap();
+        std::fs::rename(&file_tmp, &file_to).unwrap();
     }
 
     // Run `cargo-prusti`
@@ -117,9 +121,10 @@ fn main() {
     }
 }
 
-/// The target directory of the build that runs this script. The binaries and contracts go there
-/// so that builds in different target directories (e.g. rust-analyzer's) do not replace each
-/// other's. `OUT_DIR` is `<target>/<profile>/build/...`, with one or two directories between
+/// The directory above the `<profile>` directory of the build that runs this script: the target
+/// directory, or cargo's build directory if `build.build-dir` is set. The binaries and contracts
+/// go there so that builds in different target directories (e.g. rust-analyzer's) do not
+/// replace each other's. `OUT_DIR` is `<target>/<profile>/build/...`, with one or two directories between
 /// `build` and `out` depending on cargo's layout.
 fn target_dir() -> PathBuf {
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
