@@ -67,11 +67,11 @@ Declaring that we use the `prusti_contracts` module removes the compiler error b
 leads to a new error. This time it is an error raised by Prusti:
 
 ```markdown
-error: [Prusti: invalid specification] use of impure function "List::len" in pure code is not allowed
+error: [Prusti: invalid specification] use of impure function `List::len` in pure code is not allowed
   --> list.rs:34:15
    |
 34 |     #[ensures(result.len() == 0)]    
-   | 
+   |               ^^^^^^^^^^^^
 ```
 
 Prusti complains about our use of the method `len()` in a postcondition because the
@@ -93,11 +93,11 @@ However, Prusti still won't verify! It produces the same error but now it refers
 to the *body* of `len()`:
 
 ```plain
-error: [Prusti: invalid specification] use of impure function "Link::len" in pure code is not allowed
+error: [Prusti: invalid specification] use of impure function `Link::len` in pure code is not allowed
   --> list.rs:30:9
    |
 30 |         self.head.len() // (5)
-   |         ^^^^
+   |         ^^^^^^^^^^^^^^^
 ```
 
 Whenever we add the attribute `#[pure]` to a function, Prusti will check whether that

@@ -1,4 +1,3 @@
-//@ known-failure
 use prusti_contracts::*;
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]

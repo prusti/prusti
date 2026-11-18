@@ -1,4 +1,3 @@
-//@ known-failure
 use prusti_contracts::*;
 
 pub struct Foo<T>(T);

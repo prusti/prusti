@@ -1,4 +1,3 @@
-//@ known-failure
 use prusti_contracts::*;
 
 fn get_u32() -> u32 {
@@ -6,9 +5,9 @@ fn get_u32() -> u32 {
 }
 
 #[requires(get_u32() == 123)]
-//~^ ERROR: use of impure function "get_u32" in pure code
+//~^ ERROR: use of impure function `get_u32` in pure code
 fn client_1() {}
 
 #[requires(if false { get_u32() == 123 } else { 1 == 1 })]
-//~^ ERROR: use of impure function "get_u32" in pure code
+//~^ ERROR: use of impure function `get_u32` in pure code
 fn client_2() {}
