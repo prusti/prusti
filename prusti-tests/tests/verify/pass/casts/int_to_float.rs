@@ -1,3 +1,5 @@
+use prusti_contracts::*;
+
 fn i32_to_f32() {
     let x = 100;
     let y = x as f32;
@@ -28,11 +30,23 @@ fn i64_to_f64() {
     assert!(y == 0.0);
 }
 
-// These casts are encoded, but their result can currently not be verified
-// using Z3 (see fail/casts/int_to_float.rs).
-fn unverified() {
+fn max_u128() {
     let x = u128::MAX;
-    let _y = x as f32;
+    let y = x as f32;
+    prusti_assert!(y == f32::INFINITY);
+}
 
-    let _x = 9007199254740993i64 as f32;
+fn rounding() {
+    let x = 9007199254740993i64;
+    prusti_assert!(x as f32 == 9007199254740992.0);
+}
+
+fn large_magnitude() {
+    prusti_assert!(i128::MIN as f32 == -170141183460469231731687303715884105728.0);
+}
+
+#[requires(0 < x && x < 1000)]
+fn symbolic(x: i32) {
+    let y = x as f64;
+    prusti_assert!(0.0 < y && y < 1000.0);
 }

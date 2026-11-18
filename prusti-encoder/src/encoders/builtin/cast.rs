@@ -209,7 +209,6 @@ impl TaskEncoder for MirBuiltinCastEnc {
                 }
                 mir::CastKind::IntToFloat => {
                     let e_op_ty = op_ty.expect_primitive();
-                    let e_res_ty = res_ty.expect_float();
                     let (bits, signed) = vcx.get_int_data(*operand_ty.expect_primitive());
                     // Convert at the width of the source type, which keeps `int2bv` cheaper for Z3.
                     let ty::Float(float) = *result_ty.expect_primitive().kind() else {
@@ -217,26 +216,11 @@ impl TaskEncoder for MirBuiltinCastEnc {
                     };
                     let conv = deps
                         .require_dep::<FloatBitVecConvEnc>((float, BitVecSize::from_bits(bits)))?;
-                    let from_nat = |nat| (conv.from_ubv)((conv.bitvec.from_int)(nat));
-
                     let arg_prim = e_op_ty.snap_to_prim(arg_ex);
                     let expr = if signed {
-                        // Convert the magnitude and negate the result for
-                        // negative values: Z3 handles `int2bv` of negative
-                        // integers poorly, and since RNE rounding is symmetric
-                        // `-round(-x) == round(x)`. The magnitude of `iN::MIN`
-                        // still fits into an unsigned `N`-bit vector.
-                        let zero = vcx.mk_int::<0>();
-                        let arg_int = arg_prim.downcast_ty::<vir::Int>();
-                        vcx.mk_ternary_expr(
-                            vir::expr!((arg_int) < (zero)),
-                            (e_res_ty.fp_neg)(from_nat(
-                                vcx.mk_unary_op_expr(vir::UnOpKind::Neg, arg_prim),
-                            )),
-                            from_nat(arg_prim),
-                        )
+                        (conv.from_sint)(arg_prim)
                     } else {
-                        from_nat(arg_prim)
+                        (conv.from_uint)(arg_prim)
                     };
 
                     let fn_idn = FunctionIdn::new(name, op_ty_snap, res_ty_snap);
