@@ -13,7 +13,7 @@ use prusti_rustc_interface::{
 };
 
 use rustc_hash::FxHashMap;
-use task_encoder::{EncodeFullResult, TaskEncoder, TaskEncoderDependencies};
+use task_encoder::{EncodeFullError, EncodeFullResult, TaskEncoder, TaskEncoderDependencies};
 use vir::{CastType, HasType, Reify};
 
 use crate::encoders::{
@@ -355,6 +355,10 @@ impl TaskEncoder for MirSpecEnc {
                     },
                 )
                 .collect::<Vec<_>>();
+            // A spec skipped because of `AlreadyEncoded` is not missing: a
+            // re-entrant run already finished this task, and its result is
+            // used instead of this one.
+            deps.check_cycle()?;
             let data = MirSpecEncOutput {
                 pres,
                 posts,
@@ -389,6 +393,10 @@ impl MirSpecEnc {
             ),
         });
         spec.inspect_err(|err| {
+            // Not a failure of the spec; see `check_cycle` in `do_encode_full`.
+            if matches!(err, EncodeFullError::AlreadyEncoded) {
+                return;
+            }
             let err = crate::encoders::mir_fn::dep_error(err);
             let span = err.span.unwrap_or(span);
             vcx.emit_early_error(err.report(type_.to_string(), span));

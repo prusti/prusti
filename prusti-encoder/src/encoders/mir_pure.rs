@@ -932,14 +932,10 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                             }
                         }
                     } else if is_pure {
-                        let pure_func = self
-                            .deps
-                            .require_dep::<FunctionCallEnc>(CallTaskDescription::new(
-                                self.context,
-                                arg_tys,
-                                def_id,
-                            ))
-                            .unwrap();
+                        let pure_func = self.deps.require_dep_spanned::<FunctionCallEnc>(
+                            CallTaskDescription::new(self.context, arg_tys, def_id),
+                            term.source_info.span,
+                        )?;
                         let snap_args = args
                             .iter()
                             .map(|arg| self.encode_operand_snap(&arg.node, &new_curr_ver))
