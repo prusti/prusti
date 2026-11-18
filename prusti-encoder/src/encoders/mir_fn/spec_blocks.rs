@@ -505,7 +505,9 @@ impl SpecBlocks {
                         spec_blocks,
                     ) {
                         Ok(spec) => return spec,
-                        Err(error) => vir::with_vcx(|vcx| vcx.emit_early_error(error)),
+                        Err(error) => {
+                            vir::with_vcx(|vcx| vcx.emit_early_error(error));
+                        }
                     }
                 }
                 // For any loop that is not specified with a body invariant (or
