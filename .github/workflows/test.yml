@@ -157,10 +157,13 @@ jobs:
           key: ${{ env.VER_CACHE_KEY_UNIQUE }}
           # Restore from the most recent cache that matches a shared prefix of the key
           restore-keys: ${{ env.VER_CACHE_KEY_SHARED }}
+      # Cargo enables the features of shared dependencies that the selected packages need, so
+      # both steps select the whole workspace and build its test targets, and the second step
+      # compiles nothing. `--test main` runs only the `prusti-tests` harness.
       - name: Build with cargo
-        run: python x.py build --all
+        run: python x.py build --all --all-targets
       - name: Run cargo tests
-        run: python x.py test -p prusti-tests -- ${{ matrix.tests.filters }}
+        run: python x.py test --all --test main -- ${{ matrix.tests.filters }}
         #run: python x.py test --all
       - name: Check prusti-contracts
         if: strategy.job-index == 0
