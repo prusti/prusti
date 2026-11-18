@@ -344,9 +344,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 let place_ty = place.ty(self.local_decls, self.vcx.tcx());
                 let ty = self.ty_use_impure(place_ty.ty);
                 if ty.specifics.is_opaque() {
-                    return Err(self
-                        .unsupported_opaque(place_ty.ty, self.current_span())
-                        .into());
+                    return Err(self.unsupported_opaque(place_ty.ty, span));
                 }
                 let place_expr = self.encode_place(Place::from(*place))?.expr;
 

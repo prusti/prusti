@@ -29,5 +29,6 @@ fn write(mut u: U) -> U {
 }
 
 fn construct() -> U {
-    U { a: 1 } //~ERROR: unsupported rvalue U
+    U { a: 1 } //~ERROR: using the contents of `U` is not supported
+    //~^ HELP: move this code into a `#[trusted]` function
 }
