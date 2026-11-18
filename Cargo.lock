@@ -2272,6 +2272,7 @@ version = "0.1.0"
 dependencies = [
  "prusti",
  "prusti-launch",
+ "prusti-smt-solver",
  "prusti-utils",
 ]
 
@@ -2386,8 +2387,7 @@ dependencies = [
  "ctrlc",
  "env_logger",
  "log",
- "prusti",
- "prusti-launch",
+ "prusti-contracts-build",
  "prusti-server",
  "regex",
  "ui_test",

@@ -6,8 +6,8 @@ edition = "2021"
 
 [dev-dependencies]
 prusti-server = { path = "../prusti-server" }
-prusti-launch = { path = "../prusti-launch", artifact = "bin" }
-prusti = { path = "../prusti", artifact = "bin" }
+# Builds the Prusti binaries that the tests run, and the contracts they use.
+prusti-contracts-build = { path = "../prusti-contracts-build" }
 ureq = "2.1"
 log = { version = "0.4", features = ["release_max_level_info"] }
 env_logger = "0.10"

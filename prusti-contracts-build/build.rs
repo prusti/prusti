@@ -11,7 +11,7 @@ fn main() {
         prusti_contracts.to_string_lossy()
     );
 
-    let target: PathBuf = ["..", "target"].iter().collect();
+    let target = target_dir();
     force_reexport_specs(target.join("verify").as_path());
 
     // Copy the just-built binaries into a directory of our own, and run them
@@ -28,10 +28,12 @@ fn main() {
         "prusti-contracts-build-release"
     });
     std::fs::create_dir_all(&bin_dir).unwrap();
+    println!("cargo:rustc-env=PRUSTI_BIN_DIR={}", bin_dir.display());
     for (krate, file) in [
         ("PRUSTI_LAUNCH", "cargo-prusti"),
         ("PRUSTI_LAUNCH", "prusti-rustc"),
         ("PRUSTI", "prusti-driver"),
+        ("PRUSTI_SMT_SOLVER", "prusti-smt-solver"),
     ] {
         let file_from = std::env::var(format!("CARGO_BIN_FILE_{krate}_{file}")).unwrap();
         let file_to = &format!("{file}{}", if cfg!(windows) { ".exe" } else { "" });
@@ -113,6 +115,19 @@ fn main() {
         std::fs::remove_file(temp_dir.join("prusti-rustc.exe")).ok();
         std::fs::remove_file(temp_dir.join("prusti-driver.exe")).ok();
     }
+}
+
+/// The target directory of the build that runs this script. The binaries and contracts go there
+/// so that builds in different target directories (e.g. rust-analyzer's) do not replace each
+/// other's. `OUT_DIR` is `<target>/<profile>/build/...`, with one or two directories between
+/// `build` and `out` depending on cargo's layout.
+fn target_dir() -> PathBuf {
+    let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
+    let build_dir = out_dir
+        .ancestors()
+        .find(|dir| dir.file_name().is_some_and(|name| name == "build"))
+        .unwrap_or_else(|| panic!("no `build` directory above OUT_DIR {}", out_dir.display()));
+    build_dir.parent().unwrap().parent().unwrap().to_path_buf()
 }
 
 /// Cargo will rebuild prusti-contracts if any of those files changed, however we also want to

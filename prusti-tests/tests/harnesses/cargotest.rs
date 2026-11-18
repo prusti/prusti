@@ -4,43 +4,22 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-use std::{fs, path::PathBuf, sync::Mutex};
+use std::{
+    path::{Path, PathBuf},
+    sync::Mutex,
+};
 use ui_test::{
     default_any_file_filter, run_tests_generic, spanned::Spanned, status_emitter::StatusEmitter,
     AbortCheck, Args, Config,
 };
 
 fn find_cargo_prusti_path() -> PathBuf {
-    let target_directory = if cfg!(debug_assertions) {
-        "debug"
-    } else {
-        "release"
-    };
     let executable_name = if cfg!(windows) {
         "cargo-prusti.exe"
     } else {
         "cargo-prusti"
     };
-    let local_prusti_rustc_path: PathBuf = ["target", target_directory, executable_name]
-        .iter()
-        .collect();
-    if local_prusti_rustc_path.exists() {
-        return fs::canonicalize(&local_prusti_rustc_path).unwrap_or_else(|_| {
-            panic!("Failed to canonicalize the path {local_prusti_rustc_path:?}")
-        });
-    }
-    let workspace_prusti_rustc_path: PathBuf = ["..", "target", target_directory, executable_name]
-        .iter()
-        .collect();
-    if workspace_prusti_rustc_path.exists() {
-        return fs::canonicalize(&workspace_prusti_rustc_path).unwrap_or_else(|_| {
-            panic!("Failed to canonicalize the path {workspace_prusti_rustc_path:?}")
-        });
-    }
-    panic!(
-        "Could not find the {target_directory:?} cargo-prusti binary to be used in tests. \
-        It might be that Prusti has not been compiled correctly."
-    );
+    Path::new(prusti_contracts_build::BIN_DIR).join(executable_name)
 }
 
 fn run_cargo_tests(root_dir: &str, cargo_flags: &[&str], cargo_env: &[(&str, &str)]) {
