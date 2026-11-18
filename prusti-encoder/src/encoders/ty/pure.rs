@@ -4,10 +4,7 @@
 
 use std::ops::Deref;
 
-use prusti_rustc_interface::{
-    abi,
-    middle::ty::{self, IntTy, TyKind, UintTy},
-};
+use prusti_rustc_interface::middle::ty;
 use task_encoder::{EncodeFullResult, TaskEncoder, TaskEncoderDependencies};
 use vir::{
     AdtDestructor, Arity, BackendInterpretationPair, CallableIdn, CastType, CompType,
@@ -801,33 +798,12 @@ impl<'vir> TyPurePrimData<'vir> {
             TyPurePrimDataKind::Bool => {
                 vir::with_vcx(|vcx| vcx.mk_const_expr(vir::ConstData::Bool(value != 0)))
             }
-            TyPurePrimDataKind::Int(_) | TyPurePrimDataKind::Float(_) => {
-                let (bit_width, signed) = match ty.kind() {
-                    TyKind::Int(IntTy::Isize) => ((std::mem::size_of::<isize>() * 8) as u64, true),
-                    TyKind::Int(ty) => (ty.bit_width().unwrap(), true),
-                    TyKind::Uint(UintTy::Usize) => {
-                        ((std::mem::size_of::<usize>() * 8) as u64, false)
-                    }
-                    TyKind::Uint(ty) => (ty.bit_width().unwrap(), false),
-                    TyKind::Char => (32, false),
-                    // The float prim_to_snap takes the raw bits as an unsigned integer.
-                    TyKind::Float(..) => (0, false),
-                    kind => unreachable!("{kind:?}"),
-                };
-                let size = abi::Size::from_bits(bit_width);
-                let negative_value = if signed {
-                    let value = size.sign_extend(value);
-                    Some(value).filter(|value| value.is_negative())
-                } else {
-                    None
-                };
-                match negative_value {
-                    Some(value) => vir::with_vcx(|vcx| {
-                        let value = vcx.mk_const_expr(vir::ConstData::Int(value.unsigned_abs()));
-                        vcx.mk_unary_op_expr(vir::UnOpKind::Neg, value)
-                    }),
-                    None => vir::with_vcx(|vcx| vcx.mk_const_expr(vir::ConstData::Int(value))),
-                }
+            TyPurePrimDataKind::Int(_) => {
+                vir::with_vcx(|vcx| vcx.mk_int_from_bits(ty, value).upcast_ty())
+            }
+            // The float prim_to_snap takes the raw bits as an unsigned integer.
+            TyPurePrimDataKind::Float(_) => {
+                vir::with_vcx(|vcx| vcx.mk_const_expr(vir::ConstData::Int(value)))
             }
         }
     }

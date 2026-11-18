@@ -52,7 +52,7 @@ pub(crate) fn ty_pure<'vir>(
                     (vcx.mk_uint::<0>(), vcx.mk_uint::<0xD7FF>()),
                     (vcx.mk_uint::<0xE000>(), vcx.mk_uint::<0x10FFFF>()),
                 ],
-                _ => vec![(vcx.get_min_int(ty_kind), vcx.get_max_int(ty_kind))],
+                _ => vec![(vcx.get_min_int(*ty), vcx.get_max_int(*ty))],
             };
             let in_range = |x: vir::ExprInt<'vir>| {
                 let ranges = ranges

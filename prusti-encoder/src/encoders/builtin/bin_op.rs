@@ -172,11 +172,11 @@ impl MirBuiltinBinOpEnc {
                 rhs = vcx.mk_bin_op_expr(
                     vir::BinOpKind::Mod,
                     rhs.downcast_ty(),
-                    vcx.get_bit_width_int(in_ty.kind()),
+                    vcx.get_bit_width_int(in_ty),
                 );
             }
 
-            let (size, is_signed) = vir::VirCtxt::get_int_data(in_ty.kind());
+            let (size, is_signed) = vcx.get_int_data(in_ty);
             let bv_domain = deps.require_dep::<BitVecEnc>(match size {
                 8 => BitVecSize::BitVec8,
                 16 => BitVecSize::BitVec16,
@@ -230,17 +230,17 @@ impl MirBuiltinBinOpEnc {
                 // the RHS will be masked to the bit width.
                 Add | Sub | Mul | Shl | Shr => (
                     Vec::new(),
-                    vcx.get_wrapped_val(viper_val.downcast_ty(), res_ty.kind())
+                    vcx.get_wrapped_val(viper_val.downcast_ty(), res_ty)
                         .upcast_ty(),
                 ),
                 // Undefined behavior to overflow (need precondition)
                 AddUnchecked | SubUnchecked | MulUnchecked => {
-                    let min = vcx.get_min_int(res_ty.kind());
+                    let min = vcx.get_min_int(res_ty);
                     // `(arg1 op arg2) >= -iN::MIN`
                     let lower_bound = vcx
                         .mk_bin_op_expr(vir::BinOpKind::CmpGe, viper_val.downcast_ty(), min)
                         .downcast_ty::<vir::Bool>();
-                    let max = vcx.get_max_int(res_ty.kind());
+                    let max = vcx.get_max_int(res_ty);
                     // `(arg1 op arg2) <= iN::MAX`
                     let upper_bound = vcx
                         .mk_bin_op_expr(vir::BinOpKind::CmpLe, viper_val.downcast_ty(), max)
@@ -255,14 +255,14 @@ impl MirBuiltinBinOpEnc {
                     let lower_bound = vcx
                         .mk_bin_op_expr(vir::BinOpKind::CmpGe, rhs.downcast_ty(), min)
                         .downcast_ty::<vir::Bool>();
-                    let max = vcx.get_bit_width_int(in_ty.kind());
+                    let max = vcx.get_bit_width_int(in_ty);
                     // `arg2 < bit_width(arg1)`
                     let upper_bound = vcx
                         .mk_bin_op_expr(vir::BinOpKind::CmpLt, rhs.downcast_ty(), max)
                         .downcast_ty::<vir::Bool>();
                     (
                         vec![lower_bound, upper_bound],
-                        vcx.get_wrapped_val(viper_val.downcast_ty(), res_ty.kind())
+                        vcx.get_wrapped_val(viper_val.downcast_ty(), res_ty)
                             .upcast_ty(),
                     )
                 }
@@ -275,7 +275,7 @@ impl MirBuiltinBinOpEnc {
                     let mut pres = vec![pre];
                     let mut val = viper_val;
                     if res_ty.is_signed() {
-                        let min = vcx.get_min_int(res_ty.kind());
+                        let min = vcx.get_min_int(res_ty);
                         // `arg1 != -iN::MIN`
                         let arg1_cond =
                             vcx.mk_bin_op_expr(vir::BinOpKind::CmpNe, lhs.downcast_ty(), min);
@@ -474,7 +474,7 @@ impl MirBuiltinBinOpEnc {
         // must not mention `wrapped_val`, or `mod` is pulled back in; any
         // form that leaves a `mod` term on the in-range path stays fragile.
         let wrapped_val_decl = vcx.mk_local_decl("wrapped_val", prim_type);
-        let wrapped_val_exp = vcx.get_wrapped_val(val, res_ty_int.kind());
+        let wrapped_val_exp = vcx.get_wrapped_val(val, res_ty_int);
         let wrapped_val = vcx.mk_local_ex(wrapped_val_decl);
         let wrapped_val_snap = e_res_ty_int.prim_to_snap(wrapped_val.upcast_ty());
         // Overflowed?
