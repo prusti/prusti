@@ -186,11 +186,10 @@ impl<'tcx> GParams<'tcx> {
                 let (var, _) = originals.insert_full(original);
                 ty::Region::new_anon_bound(tcx, debruijn, ty::BoundVar::from_usize(var))
             });
-            let kinds = tcx.mk_bound_variable_kinds_from_iter(
-                originals
-                    .iter()
-                    .map(|_| ty::BoundVariableKind::Region(ty::BoundRegionKind::Anon)),
-            );
+            let kinds = tcx.mk_bound_variable_kinds_from_iter(std::iter::repeat_n(
+                ty::BoundVariableKind::Region(ty::BoundRegionKind::Anon),
+                originals.len(),
+            ));
             let ty = ty::Binder::bind_with_vars(ty, kinds);
             let ifctxt: InferCtxt = tcx.infer_ctxt().build(ty::TypingMode::PostAnalysis);
             let mut fulfill_cx: FulfillmentEngine<'tcx, FulfillmentError<'tcx>> =

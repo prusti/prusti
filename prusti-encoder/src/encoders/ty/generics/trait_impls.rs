@@ -373,8 +373,8 @@ impl TraitImplEnc {
             return Ok(());
         }
         if matches!(ty.kind(), ty::TyKind::Alias(..)) {
-            // An unresolved associated-type projection whose self-type is
-            // still generic
+            // Nothing can be bound through an alias, e.g. an unresolved
+            // associated-type projection whose self-type is still generic.
             return Ok(());
         }
 
@@ -421,9 +421,10 @@ impl TraitImplEnc {
     /// The where-clauses in force in `ctx`, stated over its parameters.
     ///
     /// With `bind_points`, the projection bounds are processed in an order in
-    /// which each only reads parameters already bound, and any parameter a
-    /// projection determines is added to `bind_points` (the parameters
-    /// initially in `bind_points` count as bound).
+    /// which every generic that a projection's left-hand side mentions is
+    /// already bound; its right-hand side (e.g. `<J as B>::Y`) may mention
+    /// generics bound later. Any parameter a projection determines is added to
+    /// `bind_points` (the parameters initially in `bind_points` count as bound).
     pub(crate) fn context_bounds<'vir, E: TaskEncoder + 'vir + ?Sized>(
         vcx: &'vir vir::VirCtxt<'vir>,
         deps: &mut TaskEncoderDependencies<'vir, E>,
@@ -454,8 +455,6 @@ impl TraitImplEnc {
             .filter_map(ty::Clause::as_projection_clause)
             .map(ty::Binder::skip_binder)
             .collect();
-        // With `bind_points`, a projection is processed once every generic it
-        // reads is bound; processing it may bind further generics.
         while !proj_preds.is_empty() {
             let next = match &bind_points {
                 Some(bound) => proj_preds
@@ -467,7 +466,7 @@ impl TraitImplEnc {
                 return Err(EncodeFullError::DependencyError(vec![(
                     <E as TaskEncoder>::ENCODER_NAME,
                     format!(
-                        "the generics read by these projection bounds cannot be determined: {proj_preds:?}"
+                        "the generics that the left-hand sides of these projection bounds mention cannot be determined: {proj_preds:?}"
                     ),
                     vec![],
                 )]));
