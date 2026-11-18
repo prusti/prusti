@@ -5,7 +5,7 @@ use prusti_rustc_interface::{abi, hir::attrs::LangItem, index, middle::ty, span:
 
 use super::{
     data::*,
-    generics::{GArgs, GParams, identity_params},
+    generics::{GArgs, GParams},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -422,7 +422,7 @@ impl<'tcx> TyData<'tcx, RustTyDatas> {
         let ty = context.normalize(ty);
 
         let name = Self::ty_name(ty);
-        let (params, args) = Self::identity_for_ty(ty, context.is_trait_extern_spec());
+        let (params, args) = Self::identity_for_ty(ty);
         let args = GArgs::new(context, args);
         let specifics = TySpecifics::from_ty(ty);
         let data = RustTyData {
@@ -495,10 +495,7 @@ impl<'tcx> TyData<'tcx, RustTyDatas> {
     /// For the ty `MyStruct<i32>` (with defn
     /// `struct MyStruct<T: Iterator<Item = i32>> { ... }`), returns
     /// `([<T: Iterator<Item = i32>>], [i32])`.
-    pub(super) fn identity_for_ty(
-        ty: ty::Ty<'tcx>,
-        is_trait_extern_spec: bool,
-    ) -> (GParams<'tcx>, ty::GenericArgsRef<'tcx>) {
+    pub(super) fn identity_for_ty(ty: ty::Ty<'tcx>) -> (GParams<'tcx>, ty::GenericArgsRef<'tcx>) {
         let (params, args) = match *ty.kind() {
             _ if ty.is_primitive() => return Self::identity_for_prim_ty(ty),
             ty::TyKind::Adt(adt, args) => (GParams::from(adt.did()), args),
@@ -524,7 +521,7 @@ impl<'tcx> TyData<'tcx, RustTyDatas> {
                 let param_env =
                     ty::ParamEnv::new(vcx.tcx().mk_clauses(&[predicate.expect_clause()]));
                 (
-                    GParams::new(gparams, param_env, false),
+                    GParams::new(gparams, param_env),
                     Self::args_from_generics([cst.into(), ty.into()]),
                 )
             }),
@@ -561,22 +558,11 @@ impl<'tcx> TyData<'tcx, RustTyDatas> {
                 (GParams::empty_env(gty), Self::args_from_tys([ty]))
             }
             ty::TyKind::Closure(did, args) => vir::with_vcx(|vcx| {
-                let identity = ty::List::identity_for_item(vcx.tcx(), did);
-                let gargs = vcx.tcx().mk_args(identity.as_closure().parent_args());
                 let args = vcx.tcx().mk_args(args.as_closure().parent_args());
-                (
-                    GParams::new(gargs, vcx.tcx().param_env(did), is_trait_extern_spec),
-                    args,
-                )
+                (GParams::from(did), args)
             }),
-            ty::TyKind::FnDef(did, args) => vir::with_vcx(|vcx| {
-                let gargs = identity_params(vcx.tcx(), did);
-                (
-                    GParams::new(gargs, vcx.tcx().param_env(did), is_trait_extern_spec),
-                    args.skip_binder(),
-                )
-            }),
-            ty::TyKind::Pat(ty, _) => Self::identity_for_ty(ty, is_trait_extern_spec),
+            ty::TyKind::FnDef(did, args) => (GParams::from(did), args.skip_binder()),
+            ty::TyKind::Pat(ty, _) => Self::identity_for_ty(ty),
             ty::TyKind::Never
             | ty::TyKind::Str
             | ty::TyKind::FnPtr(..)

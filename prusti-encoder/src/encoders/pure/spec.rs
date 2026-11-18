@@ -2,10 +2,7 @@ use std::borrow::Borrow;
 
 use prusti_interface::{
     PrustiError,
-    specs::{
-        specifications::find_trait_method_substs,
-        typed::{ExternSpecKind, Pledge},
-    },
+    specs::{specifications::find_trait_method_substs, typed::Pledge},
 };
 use prusti_rustc_interface::{
     middle::{mir, ty},
@@ -126,7 +123,6 @@ impl<'vir> MirSpecEncOutput<'vir> {
 /// State shared by every spec encoded within one `MirSpecEnc` task.
 #[derive(Clone, Copy)]
 struct SpecEncCtx<'vir> {
-    extern_spec: Option<ExternSpecKind>,
     enc_mode: MirSpecEncMode,
     context_def_id: DefId,
     substs: ty::GenericArgsRef<'vir>,
@@ -215,19 +211,16 @@ impl TaskEncoder for MirSpecEnc {
             let (posts, posts_inherited) = crate::encoders::spec_items(&specs.posts);
             let (pledges, pledges_inherited) = crate::encoders::spec_items(&specs.pledges);
             let pre_ctx = SpecEncCtx {
-                extern_spec: specs.extern_spec,
                 enc_mode,
                 context_def_id,
                 substs: substs_for(pres_inherited),
             };
             let post_ctx = SpecEncCtx {
-                extern_spec: specs.extern_spec,
                 enc_mode,
                 context_def_id,
                 substs: substs_for(posts_inherited),
             };
             let pledge_ctx = SpecEncCtx {
-                extern_spec: specs.extern_spec,
                 enc_mode,
                 context_def_id,
                 substs: substs_for(pledges_inherited),
@@ -387,10 +380,7 @@ impl MirSpecEnc {
                 mode: ctx.enc_mode,
             },
             parent_def_id: def_id,
-            gargs: GArgs::new(
-                GParams::new_maybe_extern(ctx.context_def_id, ctx.extern_spec),
-                ctx.substs,
-            ),
+            gargs: GArgs::new(GParams::from(ctx.context_def_id), ctx.substs),
         });
         spec.inspect_err(|err| {
             // Not a failure of the spec; see `check_cycle` in `do_encode_full`.

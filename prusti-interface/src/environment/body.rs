@@ -76,10 +76,12 @@ impl<'tcx> PreLoadedBodies<'tcx> {
 /// can resolve projection types (e.g. `<T as Foo>::AT` might resolve to `i32`
 /// if the `ParamEnv` of the context has `T: Foo<AT = i32>`).
 ///
-/// Only specification and predicate bodies are instantiated this way. Bodies
-/// that are encoded generically, i.e. at their identity arguments, are taken
-/// as stored: instantiating them would only normalize them, which the
-/// encoding of types already does for the types it encodes.
+/// Only specification and predicate bodies, and the closures of quantifiers
+/// and `spec_block`s, are instantiated this way: they are encoded in the
+/// context they are used in, at its arguments. The other bodies are encoded
+/// generically, i.e. at their identity arguments, and are taken as stored:
+/// instantiating them would only normalize them, which the encoding of types
+/// already does for the types it encodes.
 type MonomorphKey<'tcx> = (DefId, GenericArgsRef<'tcx>, DefId);
 
 /// Store for all the `mir::Body` which we've taken out of the compiler
@@ -98,8 +100,8 @@ pub struct EnvBody<'tcx> {
     /// Quantifiers and triggers in predicates and specs
     closures: PreLoadedBodies<'tcx>,
 
-    /// Specification and predicate bodies instantiated for an encoding (see
-    /// `MonomorphKey`).
+    /// Specification, predicate and quantifier closure bodies instantiated for
+    /// an encoding (see `MonomorphKey`).
     monomorphised_bodies: RefCell<FxHashMap<MonomorphKey<'tcx>, MirBody<'tcx>>>,
 }
 
@@ -201,10 +203,9 @@ impl<'tcx> EnvBody<'tcx> {
         self.local_body(def_id).clone()
     }
 
-    /// Get the MIR body of a closure (e.g. loop invariant or trigger), as
-    /// stored: closures are encoded generically, so their bodies need no
-    /// instantiation.
-    pub fn get_closure_body_identity(&self, def_id: DefId) -> MirBody<'tcx> {
+    /// Get the MIR body of a closure (e.g. loop invariant, quantifier or
+    /// trigger), as stored.
+    fn get_closure_body_identity(&self, def_id: DefId) -> MirBody<'tcx> {
         if let Some(body) = self.closures.get(def_id) {
             return body;
         }
@@ -214,6 +215,23 @@ impl<'tcx> EnvBody<'tcx> {
             .entry(local_def_id)
             .or_insert_with(|| self.load_local_mir(local_def_id))
             .clone()
+    }
+
+    /// Get the MIR body of a closure of a quantifier or `spec_block`,
+    /// monomorphised with the given type substitutions. Such a closure is
+    /// encoded as part of the expression that contains it, in the context of
+    /// `caller_def_id`.
+    pub fn get_closure_body(
+        &self,
+        def_id: DefId,
+        substs: GenericArgsRef<'tcx>,
+        caller_def_id: DefId,
+    ) -> MirBody<'tcx> {
+        if let Some(body) = self.get_monomorphised(def_id, substs, caller_def_id) {
+            return body;
+        }
+        let body = self.get_closure_body_identity(def_id);
+        self.set_monomorphised(def_id, substs, caller_def_id, body)
     }
 
     /// Get the MIR body of a local or external pure function, as stored: pure
