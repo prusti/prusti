@@ -10,8 +10,7 @@ trait Get { fn ok(&self) -> bool; }
 
 struct W<I>(I);
 
-// `J` is only bound via `K: D<W = J>`, but `I: A<X = <J as B>::Y>` mentions
-// `J` inside an alias, which `order_projections` counts as producing `J`.
+// `J` appears only inside an alias in I: A<X = <J as B>::Y>, so it must be bound by K: D<W = J> first.
 impl<I, J, K, M> Get for W<I>
 where
     K: D<W = J>,

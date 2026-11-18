@@ -3,8 +3,8 @@
 // drops the `&mut` loan at the closure aggregate (it only creates borrow-flow
 // edges for ADTs, tuples and arrays), and the closure type has no capture
 // regions, so the closure's contract cannot refer to the captured places.
-// Verification fails with an unbacktranslatable
-// `call.precondition:insufficient.permission`.
+// Verification of `straight_line` fails with an unbacktranslatable "call.precondition:insufficient.permission".
+// Verification of `map_with_counter` fails with an unsupported "a closure capturing a reference" error.
 
 pub fn straight_line() {
     let mut c = 0;
@@ -13,8 +13,7 @@ pub fn straight_line() {
     f();
 }
 
-// Previously, the closure's lifetime projection being live across the loop
-// also made the encoder panic with an index out of bounds.
+// Closure capturing by &mut that is live across a loop
 pub fn map_with_counter() {
     let mut c = 0;
     for pair in [1, 2, 3].into_iter().map(|x| {

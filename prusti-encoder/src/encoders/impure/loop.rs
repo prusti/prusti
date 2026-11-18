@@ -1,8 +1,11 @@
 use rustc_hash::FxHashMap;
 
 use pcg::{
-    borrow_pcg::region_projection::{
-        HasTy, LifetimeProjection, PcgLifetimeProjectionBase, PcgLifetimeProjectionBaseLike,
+    borrow_pcg::{
+        GeneralizedLifetime,
+        region_projection::{
+            HasTy, LifetimeProjection, PcgLifetimeProjectionBase, PcgLifetimeProjectionBaseLike,
+        },
     },
     r#loop::PlaceUsages,
     pcg::{CapabilityKind, EvalStmtPhase, PcgNode},
@@ -12,7 +15,7 @@ use pcg::{
         maybe_remote::MaybeRemotePlace,
     },
 };
-use prusti_rustc_interface::middle::mir;
+use prusti_rustc_interface::middle::{mir, ty};
 
 use task_encoder::TaskEncoder;
 use vir::Reify;
@@ -22,7 +25,7 @@ use crate::encoders::{
     mir_shared::PureRvalueEnc,
     ty::{
         RustTyDecomposition,
-        indirect::{IndirectPredicatesEnc, PrustiPcgCtxt},
+        indirect::{IndirectPredicatesEnc, IndirectPredicatesEncOutputRef, PrustiPcgCtxt},
         use_impure::TyUseImpure,
     },
 };
@@ -70,16 +73,7 @@ impl<'vir: 'a, 'a, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             let projs = place.generalized_lifetime_projections(ctxt);
             for proj in projs {
                 let region = proj.region(ctxt);
-                let Some(proj) = LifetimeProjection::new(task, region, None, PrustiPcgCtxt) else {
-                    return Err(self.unsupported_rvalue(
-                        format!("a closure capturing a reference (`{}`)", ty.ty),
-                        self.current_span(),
-                    ));
-                };
-                let indirect = self
-                    .deps
-                    .require_dep::<IndirectPredicatesEnc>(proj)
-                    .unwrap();
+                let indirect = self.indirect_predicates(task, region, ty.ty)?;
                 inv.extend(indirect.predicate_applications.iter().map(|p| {
                     p.reify(
                         self.vcx,
@@ -148,21 +142,34 @@ impl<'vir: 'a, 'a, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         };
         let decomp = RustTyDecomposition::from_ty(ty.ty, self.def_id);
         let region = r.with_base(place).region(self.pcg_ctxt());
-        let Some(proj) = LifetimeProjection::new(decomp, region, None, PrustiPcgCtxt) else {
-            return Err(self.unsupported_rvalue(
-                format!("a closure capturing a reference (`{}`)", ty.ty),
-                self.current_span(),
-            ));
-        };
-        let indirect = self
-            .deps
-            .require_dep::<IndirectPredicatesEnc>(proj)
-            .unwrap();
+        let indirect = self.indirect_predicates(decomp, region, ty.ty)?;
         Ok(indirect
             .predicate_applications
             .into_iter()
             .map(|expr| expr.reify(self.vcx, place_snap))
             .collect::<Vec<_>>())
+    }
+
+    /// Encodes the indirect predicates of the lifetime projection of `decomp`, the
+    /// decomposition of `ty`, at `region`. Reports an unsupported feature if `region` is
+    /// not among the lifetimes of `decomp`, which happens for a closure capturing a
+    /// reference.
+    fn indirect_predicates(
+        &mut self,
+        decomp: RustTyDecomposition<'vir>,
+        region: GeneralizedLifetime<'vir>,
+        ty: ty::Ty<'vir>,
+    ) -> EncodeResult<'vir, IndirectPredicatesEncOutputRef<'vir>, E> {
+        let Some(proj) = LifetimeProjection::new(decomp, region, None, PrustiPcgCtxt) else {
+            return Err(self.unsupported_rvalue(
+                format!("a closure capturing a reference (`{ty}`)"),
+                self.current_span(),
+            ));
+        };
+        Ok(self
+            .deps
+            .require_dep::<IndirectPredicatesEnc>(proj)
+            .unwrap())
     }
 
     fn get_place(place: MaybeRemotePlace<'vir>) -> Place<'vir> {
