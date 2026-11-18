@@ -4,7 +4,9 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-use prusti_server::{save_verification_cache, spawn_server_thread};
+use prusti_server::{
+    save_verification_cache, spawn_server_thread, verification_cache_hits_and_misses,
+};
 use std::{
     env, fs,
     io::Write,
@@ -185,15 +187,24 @@ pub(crate) fn run() -> TestsResult {
         }
     }
 
-    save_verification_cache();
+    let cache_usage = save_verification_cache().then(|| {
+        let (hits, misses) = verification_cache_hits_and_misses();
+        format!("Verification cache: {hits} hits, {misses} misses")
+    });
 
     let known_failures = format!(
         "Test files still marked `//@ known-failure`: {}",
         KNOWN_FAILURES.load(Ordering::Relaxed)
     );
     println!("{known_failures}");
+    if let Some(cache_usage) = &cache_usage {
+        println!("{cache_usage}");
+    }
     if let Some(mut summary) = ui_test::github_actions::summary() {
         writeln!(summary, "\n{known_failures}")?;
+        if let Some(cache_usage) = &cache_usage {
+            writeln!(summary, "\n{cache_usage}")?;
+        }
         if !fixed.is_empty() {
             writeln!(summary, "### `//@ known-failure` tests that now pass")?;
             for path in &fixed {
