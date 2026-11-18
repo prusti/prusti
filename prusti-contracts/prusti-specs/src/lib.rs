@@ -174,7 +174,10 @@ pub fn rewrite_prusti_attributes(
     outer_attr_tokens: TokenStream,
     item_tokens: TokenStream,
 ) -> TokenStream {
-    let mut item: untyped::AnyFnItem = handle_result!(syn::parse2(item_tokens));
+    let mut item: untyped::AnyFnItem = match syn::parse2(item_tokens) {
+        Ok(item) => item,
+        Err(err) => return not_parsable(outer_attr_kind, err).to_compile_error(),
+    };
 
     // Start with the outer attribute. It is the one the compiler ran as the
     // procedural macro, so its span is the call site.
@@ -205,7 +208,8 @@ fn generate_spec_and_assertions(
     let mut generated_attributes = vec![];
 
     for (attr_kind, attr_span, attr_tokens) in prusti_attributes.drain(..) {
-        // The argument of `terminates` is optional.
+        // These attributes need an argument; the argument of `terminates` is
+        // optional.
         let needs_argument = matches!(
             attr_kind,
             SpecAttributeKind::Requires
@@ -384,8 +388,7 @@ fn generate_for_pure_refinements(item: &untyped::AnyFnItem) -> GeneratedResult {
 }
 
 /// Generate spec items and attributes to typecheck and later retrieve "trusted" annotations.
-fn generate_for_trusted_for_types(attr: TokenStream, item: &syn::DeriveInput) -> GeneratedResult {
-    reject_parameters("trusted", &attr)?;
+fn generate_for_trusted_for_types(item: &syn::DeriveInput) -> GeneratedResult {
     generate_type_spec_item(item, "trusted", |item_name, spec_id_str| {
         parse_quote_spanned! {item.span()=>
             #[allow(unused_variables, dead_code, non_snake_case)]
@@ -422,7 +425,8 @@ fn generate_for_invariant(
 }
 
 /// Generates the spec function of a type specification, built by `spec_fn`
-/// from its name and spec id, in an inherent impl of the type `item`.
+/// from its name and spec id, in an inherent impl of the type `item`. The
+/// name is `prusti_<kind>_item_<type>_<spec id>`.
 fn generate_type_spec_item(
     item: &syn::DeriveInput,
     kind: &str,
@@ -922,7 +926,60 @@ pub fn trusted(attr: TokenStream, tokens: TokenStream) -> TokenStream {
 }
 
 pub fn invariant(attr: TokenStream, tokens: TokenStream) -> TokenStream {
-    rewrite_prusti_attributes_for_types(SpecAttributeKind::Invariant, attr, tokens)
+    rewrite_type_attribute(SpecAttributeKind::Invariant, attr, tokens)
+}
+
+/// Rewrites a type for its outer type attribute of kind `kind`, or rejects
+/// an item that is not a type.
+fn rewrite_type_attribute(
+    kind: SpecAttributeKind,
+    attr: TokenStream,
+    tokens: TokenStream,
+) -> TokenStream {
+    match syn::parse2::<syn::DeriveInput>(tokens.clone()) {
+        Ok(_) => rewrite_prusti_attributes_for_types(kind, attr, tokens),
+        Err(err) => not_parsable(kind, err).to_compile_error(),
+    }
+}
+
+/// The error for the Prusti attribute of kind `kind`, written at `span`, on
+/// an item it does not apply to.
+fn not_applicable(kind: SpecAttributeKind, span: Span) -> syn::Error {
+    syn::Error::new(span, applicable_items(kind))
+}
+
+/// The error for the Prusti attribute of kind `kind` on an item that syn,
+/// whose error is `err`, cannot parse as one it applies to. Either the item
+/// is of another kind or it uses syntax that syn does not support, so the
+/// error says both and keeps syn's own error and its position.
+fn not_parsable(kind: SpecAttributeKind, err: syn::Error) -> syn::Error {
+    syn::Error::new(
+        err.span(),
+        format!(
+            "{}, and this item could not be parsed as one: {err}",
+            applicable_items(kind)
+        ),
+    )
+}
+
+/// The sentence saying which items the Prusti attribute of kind `kind`
+/// applies to.
+fn applicable_items(kind: SpecAttributeKind) -> String {
+    let (name, items) = match kind {
+        SpecAttributeKind::Requires => ("requires", "functions"),
+        SpecAttributeKind::Ensures => ("ensures", "functions"),
+        SpecAttributeKind::AfterExpiry => ("after_expiry", "functions"),
+        SpecAttributeKind::AssertOnExpiry => ("assert_on_expiry", "functions"),
+        SpecAttributeKind::RefineSpec => ("refine_spec", "functions"),
+        SpecAttributeKind::Pure => ("pure", "functions"),
+        SpecAttributeKind::Verified => ("verified", "functions"),
+        SpecAttributeKind::Terminates => ("terminates", "functions"),
+        SpecAttributeKind::Trusted => ("trusted", "functions, structs, enums and unions"),
+        SpecAttributeKind::Invariant => ("invariant", "structs, enums and unions"),
+        SpecAttributeKind::Model => ("model", "structs"),
+        SpecAttributeKind::PrintCounterexample => ("print_counterexample", "structs and enums"),
+    };
+    format!("the `#[{name}]` attribute can only be applied to {items}")
 }
 
 pub fn extern_spec(attr: TokenStream, tokens: TokenStream) -> TokenStream {
@@ -991,40 +1048,84 @@ pub fn rewrite_prusti_attributes_for_types(
         &mut item
     )));
 
-    if prusti_attributes.len() > 1
-        && prusti_attributes
-            .iter()
-            .any(|(ak, _, _)| ak == &SpecAttributeKind::Trusted)
-    {
-        return syn::Error::new(
-            item.span(),
-            "`trusted!` is incompatible with other Prusti attributes",
-        )
-        .to_compile_error();
+    // Each attribute's own kind of item is checked before any conflicts
+    // between attributes.
+    for (kind, span, _) in &prusti_attributes {
+        let applies = match kind {
+            SpecAttributeKind::Trusted | SpecAttributeKind::Invariant => true,
+            SpecAttributeKind::Model => matches!(item.data, syn::Data::Struct(_)),
+            SpecAttributeKind::PrintCounterexample => !matches!(item.data, syn::Data::Union(_)),
+            SpecAttributeKind::Requires
+            | SpecAttributeKind::Ensures
+            | SpecAttributeKind::AfterExpiry
+            | SpecAttributeKind::AssertOnExpiry
+            | SpecAttributeKind::RefineSpec
+            | SpecAttributeKind::Pure
+            | SpecAttributeKind::Verified
+            | SpecAttributeKind::Terminates => unreachable!("not a type attribute: {kind:?}"),
+        };
+        if !applies {
+            return not_applicable(*kind, *span).to_compile_error();
+        }
     }
 
     // A model declaration describes the model of another type and is replaced
-    // by a generated struct, together with the attributes left on it. Of the
-    // other Prusti attributes, only `#[print_counterexample]` applies to it.
+    // by a generated struct; attributes left on the declaration are lost. Of
+    // the other type attributes, only `#[print_counterexample]` applies to it.
+    // This is checked before the `#[trusted]` rule, the declaration itself
+    // before its other attributes: on a model declaration, `#[model]` is the
+    // attribute that the others conflict with.
     if let Some(model) = prusti_attributes
         .iter()
         .position(|(ak, _, _)| ak == &SpecAttributeKind::Model)
     {
-        let extracted = prusti_attributes
-            .iter()
-            .enumerate()
-            .filter(|(index, (ak, _, _))| {
-                *index != model && ak != &SpecAttributeKind::PrintCounterexample
-            })
-            .map(|(_, (_, span, _))| *span);
-        let left = item
+        let (_, _, model_tokens) = &prusti_attributes[model];
+        handle_result!(reject_parameters("model", model_tokens));
+        if let Some((_, (kind, span, _))) =
+            prusti_attributes
+                .iter()
+                .enumerate()
+                .find(|(index, (ak, _, _))| {
+                    *index != model && ak != &SpecAttributeKind::PrintCounterexample
+                })
+        {
+            let message = if kind == &SpecAttributeKind::Model {
+                "duplicate `#[model]` attribute"
+            } else {
+                "this attribute cannot be combined with `#[model]`"
+            };
+            return syn::Error::new(*span, message).to_compile_error();
+        }
+        // The attributes left on the declaration apply to functions only.
+        if let Some((kind, span)) = item
             .attrs
             .iter()
-            .filter(|attr| prusti_attribute_kind(attr).is_some())
-            .map(|attr| attr.span());
-        if let Some(span) = extracted.chain(left).next() {
-            return syn::Error::new(span, "this attribute cannot be combined with `#[model]`")
-                .to_compile_error();
+            .find_map(|attr| Some((prusti_attribute_kind(attr)?, attr.span())))
+        {
+            return not_applicable(kind, span).to_compile_error();
+        }
+    }
+
+    // A trusted type is opaque to the encoder, so no other type attribute
+    // has an effect on it. As for `#[model]`, the attribute's own problems
+    // are reported first.
+    if let Some(trusted) = prusti_attributes
+        .iter()
+        .position(|(ak, _, _)| ak == &SpecAttributeKind::Trusted)
+    {
+        let (_, _, trusted_tokens) = &prusti_attributes[trusted];
+        handle_result!(reject_parameters("trusted", trusted_tokens));
+        if let Some((_, (kind, span, _))) = prusti_attributes
+            .iter()
+            .enumerate()
+            .find(|(index, _)| *index != trusted)
+        {
+            let message = if kind == &SpecAttributeKind::Trusted {
+                "duplicate `#[trusted]` attribute"
+            } else {
+                "this attribute has no effect on a `#[trusted]` type"
+            };
+            return syn::Error::new(*span, message).to_compile_error();
         }
     }
 
@@ -1062,8 +1163,8 @@ fn generate_spec_and_assertions_for_types(
             SpecAttributeKind::Invariant => generate_for_invariant(attr_tokens, attr_span, item),
             SpecAttributeKind::RefineSpec => unreachable!(),
             SpecAttributeKind::Terminates => unreachable!(),
-            SpecAttributeKind::Trusted => generate_for_trusted_for_types(attr_tokens, item),
-            SpecAttributeKind::Model => generate_for_model(attr_tokens, item),
+            SpecAttributeKind::Trusted => generate_for_trusted_for_types(item),
+            SpecAttributeKind::Model => generate_for_model(item),
             SpecAttributeKind::PrintCounterexample => {
                 generate_for_print_counterexample(attr_tokens, item)
             }
@@ -1077,8 +1178,7 @@ fn generate_spec_and_assertions_for_types(
 }
 
 /// Generate spec items and attributes to typecheck and later retrieve "model" annotations.
-fn generate_for_model(attr: TokenStream, item: &mut syn::DeriveInput) -> GeneratedResult {
-    reject_parameters("model", &attr)?;
+fn generate_for_model(item: &mut syn::DeriveInput) -> GeneratedResult {
     match syn::Item::from(item.clone()) {
         syn::Item::Struct(item_struct) => {
             match type_model::rewrite(item_struct) {
@@ -1094,10 +1194,7 @@ fn generate_for_model(attr: TokenStream, item: &mut syn::DeriveInput) -> Generat
                 Err(err) => Err(err),
             }
         }
-        _ => Err(syn::Error::new(
-            attr.span(),
-            "Only structs can be attributed with a type model",
-        )),
+        _ => unreachable!("`rewrite_prusti_attributes_for_types` rejects models of other items"),
     }
 }
 
@@ -1127,35 +1224,18 @@ fn generate_for_print_counterexample(
                 Err(err) => Err(err),
             }
         }
-        _ => Err(syn::Error::new(
-            attr.span(),
-            "Only structs and enums can be attributed with a custom counterexample print",
-        )),
+        _ => unreachable!(
+            "`rewrite_prusti_attributes_for_types` rejects counterexample formats of unions"
+        ),
     }
 }
 
 pub fn type_model(attr: TokenStream, tokens: TokenStream) -> TokenStream {
-    if syn::parse2::<syn::DeriveInput>(tokens.clone()).is_ok() {
-        rewrite_prusti_attributes_for_types(SpecAttributeKind::Model, attr, tokens)
-    } else {
-        syn::Error::new(
-            attr.span(),
-            "Only structs can be attributed with a type model",
-        )
-        .to_compile_error()
-    }
+    rewrite_type_attribute(SpecAttributeKind::Model, attr, tokens)
 }
 
 pub fn print_counterexample(attr: TokenStream, tokens: TokenStream) -> TokenStream {
-    if syn::parse2::<syn::DeriveInput>(tokens.clone()).is_ok() {
-        rewrite_prusti_attributes_for_types(SpecAttributeKind::PrintCounterexample, attr, tokens)
-    } else {
-        syn::Error::new(
-            attr.span(),
-            "Only structs and enums can be attributed with print_counterexample",
-        )
-        .to_compile_error()
-    }
+    rewrite_type_attribute(SpecAttributeKind::PrintCounterexample, attr, tokens)
 }
 pub fn ghost(tokens: TokenStream) -> TokenStream {
     let mut rewriter = rewriter::AstRewriter::new();
