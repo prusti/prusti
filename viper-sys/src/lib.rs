@@ -7,9 +7,10 @@
 #![deny(unused_must_use)]
 #![warn(clippy::disallowed_types)]
 
-#[rustfmt::skip]
-#[path = "../gen/mod.rs"]
-pub mod wrappers;
+#[allow(non_snake_case)]
+pub mod wrappers {
+    include!(concat!(env!("OUT_DIR"), "/gen/mod.rs"));
+}
 
 use jni::{errors::Result, objects::JObject, JNIEnv};
 

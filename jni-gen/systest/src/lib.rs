@@ -1,5 +1,7 @@
-#[path = "../gen/mod.rs"]
-pub mod wrappers;
+#[allow(non_snake_case)]
+pub mod wrappers {
+    include!(concat!(env!("OUT_DIR"), "/gen/mod.rs"));
+}
 
 use jni::JNIEnv;
 use jni::JavaVM;
