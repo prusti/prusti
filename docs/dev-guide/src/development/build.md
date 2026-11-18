@@ -22,7 +22,7 @@ Any additional arguments are added to the `cargo build` command line. For exampl
 $ ./x.py build --all --verbose
 ```
 
-All development builds enable the same features of dependencies, including those that only the tests need, so that `./x.py build` and `./x.py test` share one build (see `resolver` in `Cargo.toml`). This also holds for `./x.py build --release`. The published release binaries are built by `.github/workflows/deploy.yml`, which switches to resolver 2 so that they contain only the features they use.
+All development builds enable the same features of dependencies, including those that only the tests need, so that `./x.py build` and `./x.py test` share one build (see `resolver` in `Cargo.toml`). This also holds for `./x.py build --release`. The published release binaries are built by `.github/workflows/deploy.yml`, which switches to resolver 3 so that they contain only the features they use.
 
 ## Verbose mode
 

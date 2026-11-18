@@ -33,7 +33,7 @@ exclude = [
 # so `cargo build` and `cargo test` share one build of the workspace. Together with
 # `resolver.feature-unification` in `.cargo/config.toml`, the features do not depend on the
 # command or the selected packages. The release build and the CI job that builds each package
-# on its own switch to resolver 2 (`.github/actions/resolve-features-separately`).
+# on its own switch to resolver 3 (`.github/actions/resolve-features-separately`).
 resolver = "1"
 
 [profile.dev]
