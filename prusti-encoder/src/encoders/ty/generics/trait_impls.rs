@@ -5,7 +5,9 @@ use prusti_rustc_interface::{
     middle::{mir, traits::specialization_graph, ty},
     span::def_id::DefId,
 };
-use task_encoder::{EncodeFullError, EncodeFullResult, TaskEncoder, TaskEncoderDependencies};
+use task_encoder::{
+    DependencyErrorLink, EncodeFullError, EncodeFullResult, TaskEncoder, TaskEncoderDependencies,
+};
 use vir::{CastType, Domain, Method, MethodIdn, ViperIdent, vir_format_identifier};
 
 use crate::{
@@ -463,13 +465,15 @@ impl TraitImplEnc {
                 None => Some(0),
             };
             let Some(next) = next else {
-                return Err(EncodeFullError::DependencyError(vec![(
-                    <E as TaskEncoder>::ENCODER_NAME,
-                    format!(
-                        "the generics that the left-hand sides of these projection bounds mention cannot be determined: {proj_preds:?}"
+                return Err(EncodeFullError::DependencyError(vec![
+                    DependencyErrorLink::new(
+                        <E as TaskEncoder>::ENCODER_NAME,
+                        format!(
+                            "the generics that the left-hand sides of these projection bounds mention cannot be determined: {proj_preds:?}"
+                        ),
+                        vec![],
                     ),
-                    vec![],
-                )]));
+                ]));
             };
             let proj_pred = proj_preds.remove(next);
             let trait_did = proj_pred.trait_def_id(tcx);
