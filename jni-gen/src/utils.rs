@@ -5,7 +5,11 @@
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 use crate::errors::*;
-use jni::strings::JavaStr;
+use jni::{
+    objects::{JObject, JValue},
+    strings::JavaStr,
+    JNIEnv,
+};
 use std::ffi::CStr;
 
 pub fn get_return_signature(signature: &str) -> String {
@@ -76,6 +80,70 @@ pub fn java_str_to_valid_rust_argument_name(string: &JavaStr) -> Result<String> 
         "arg_{}",
         java_identifier_to_rust(&java_str_to_string(string)?)
     ))
+}
+
+/// Returns the JNI type descriptor of the `java.lang.Class` `class`, e.g. `I` or
+/// `Ljava/lang/String;`.
+pub fn class_descriptor<'a>(env: &JNIEnv<'a>, class: JObject<'a>) -> Result<String> {
+    let method_type = env
+        .call_static_method(
+            "java/lang/invoke/MethodType",
+            "methodType",
+            "(Ljava/lang/Class;)Ljava/lang/invoke/MethodType;",
+            &[JValue::Object(class)],
+        )?
+        .l()?;
+    // The descriptor of a method without parameters that returns `class`.
+    let method_descriptor = method_type_descriptor(env, method_type)?;
+    Ok(method_descriptor["()".len()..].to_string())
+}
+
+/// Returns the JNI descriptor of the `java.lang.reflect.Method` `method`.
+pub fn method_descriptor<'a>(env: &JNIEnv<'a>, method: JObject<'a>) -> Result<String> {
+    let return_type = env
+        .call_method(method, "getReturnType", "()Ljava/lang/Class;", &[])?
+        .l()?;
+    executable_descriptor(env, method, return_type)
+}
+
+/// Returns the JNI descriptor of the `java.lang.reflect.Constructor` `constructor`.
+pub fn constructor_descriptor<'a>(env: &JNIEnv<'a>, constructor: JObject<'a>) -> Result<String> {
+    let void = env
+        .get_static_field("java/lang/Void", "TYPE", "Ljava/lang/Class;")?
+        .l()?;
+    executable_descriptor(env, constructor, void)
+}
+
+/// Returns the JNI descriptor of the method or constructor `executable`, given its return type.
+fn executable_descriptor<'a>(
+    env: &JNIEnv<'a>,
+    executable: JObject<'a>,
+    return_type: JObject<'a>,
+) -> Result<String> {
+    let parameter_types = env
+        .call_method(executable, "getParameterTypes", "()[Ljava/lang/Class;", &[])?
+        .l()?;
+    let method_type = env
+        .call_static_method(
+            "java/lang/invoke/MethodType",
+            "methodType",
+            "(Ljava/lang/Class;[Ljava/lang/Class;)Ljava/lang/invoke/MethodType;",
+            &[JValue::Object(return_type), JValue::Object(parameter_types)],
+        )?
+        .l()?;
+    method_type_descriptor(env, method_type)
+}
+
+fn method_type_descriptor<'a>(env: &JNIEnv<'a>, method_type: JObject<'a>) -> Result<String> {
+    let descriptor = env
+        .call_method(
+            method_type,
+            "toMethodDescriptorString",
+            "()Ljava/lang/String;",
+            &[],
+        )?
+        .l()?;
+    java_str_to_string(&env.get_string(descriptor.into())?)
 }
 
 pub fn java_identifier_to_rust(name: &str) -> String {

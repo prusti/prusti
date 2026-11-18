@@ -6,29 +6,11 @@
 
 use error_chain::ChainedError;
 use jni_gen::*;
-use std::{env, fs, fs::File, io::copy, path::Path};
-use tempfile::Builder;
+use std::{env, fs, path::Path};
 
 fn main() {
     env_logger::init();
     let generated_dir = Path::new(&env::var("CARGO_MANIFEST_DIR").unwrap()).join("gen");
-
-    let deps_dir = Builder::new().prefix("deps").tempdir().unwrap_or_else(|e| {
-        panic!("{}", e);
-    });
-
-    // If ASM_JAR is set, use it. Otherwise, download asm.jar to a temporary location.
-    let asm_jar = match env::var("ASM_JAR").ok() {
-        Some(location) => location,
-        None => {
-            let target = "https://repo.maven.apache.org/maven2/asm/asm/3.3.1/asm-3.3.1.jar";
-            let response = ureq::get(target).call().unwrap();
-            let fname = deps_dir.path().join("asm.jar");
-            let mut dest = File::create(fname.clone()).unwrap();
-            copy(&mut response.into_reader(), &mut dest).unwrap();
-            fname.to_str().unwrap().to_string()
-        }
-    };
 
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-env-changed=VIPER_HOME");
@@ -45,7 +27,6 @@ fn main() {
     }
 
     WrapperGenerator::new()
-        .use_jar(&asm_jar)
         .use_jars(&mut viper_jars)
         .wrap_all(vec![
             // Java
@@ -933,7 +914,4 @@ fn main() {
         .unwrap_or_else(|e| {
             panic!("{}", e.display_chain());
         });
-
-    // Remove the temporary directory
-    drop(deps_dir);
 }

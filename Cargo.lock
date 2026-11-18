@@ -3682,8 +3682,6 @@ dependencies = [
  "jni-gen",
  "log",
  "once_cell",
- "tempfile",
- "ureq",
 ]
 
 [[package]]

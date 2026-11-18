@@ -47,19 +47,10 @@ pub fn generate_method(
         let parameter_type = env
             .call_method(parameter, "getType", "()Ljava/lang/Class;", &[])?
             .l()?;
-        let parameter_signature = env.get_string(
-            env.call_static_method(
-                "org/objectweb/asm/Type",
-                "getDescriptor",
-                "(Ljava/lang/Class;)Ljava/lang/String;",
-                &[JValue::Object(parameter_type)],
-            )?
-            .l()?
-            .into(),
-        )?;
+        let parameter_signature = class_descriptor(env, parameter_type)?;
 
         parameter_names.push(java_str_to_valid_rust_argument_name(&parameter_name)?);
-        parameter_signatures.push(java_str_to_string(&parameter_signature)?);
+        parameter_signatures.push(parameter_signature);
     }
 
     let rust_method_name = match suffix {
@@ -391,18 +382,7 @@ pub fn find_method<'a>(
             )?,
         )?;
 
-        let method_signature = java_str_to_string(
-            &env.get_string(
-                env.call_static_method(
-                    "org/objectweb/asm/Type",
-                    "getMethodDescriptor",
-                    "(Ljava/lang/reflect/Method;)Ljava/lang/String;",
-                    &[JValue::Object(method)],
-                )?
-                .l()?
-                .into(),
-            )?,
-        )?;
+        let method_signature = method_descriptor(env, method)?;
 
         match indexed_methods.remove(&method_name) {
             None => {

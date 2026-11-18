@@ -6,7 +6,7 @@
 
 use crate::{class_name::*, errors::*, utils::*};
 use jni::{
-    objects::{JClass, JObject, JValue},
+    objects::{JClass, JObject},
     JNIEnv,
 };
 
@@ -188,18 +188,7 @@ pub fn generate_field_getter_setter_for_class(
                 .call_method(field, "getType", "()Ljava/lang/Class;", &[])?
                 .l()?;
 
-            java_str_to_string(
-                &env.get_string(
-                    env.call_static_method(
-                        "org/objectweb/asm/Type",
-                        "getDescriptor",
-                        "(Ljava/lang/Class;)Ljava/lang/String;",
-                        &[JValue::Object(field_type)],
-                    )?
-                    .l()?
-                    .into(),
-                )?,
-            )?
+            class_descriptor(env, field_type)?
         }
         _ => return Err(ErrorKind::NoField(class.full_name(), field_name.into()).into()),
     };
