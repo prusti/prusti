@@ -8,3 +8,4 @@ edition = "2021"
 prusti-utils = { path = "../prusti-utils" }
 prusti = { path = "../prusti", artifact = "bin" }
 prusti-launch = { path = "../prusti-launch", artifact = "bin" }
+prusti-smt-solver = { path = "../prusti-smt-solver", artifact = "bin" }

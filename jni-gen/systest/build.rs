@@ -4,7 +4,7 @@ use std::{env, path::Path};
 
 fn main() {
     env_logger::init();
-    let generated_dir = Path::new(&env::var("CARGO_MANIFEST_DIR").unwrap()).join("gen");
+    let generated_dir = Path::new(&env::var("OUT_DIR").unwrap()).join("gen");
 
     WrapperGenerator::new()
         .wrap(java_class!("java.lang.Object"))

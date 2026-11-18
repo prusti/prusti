@@ -1,5 +1,12 @@
 [unstable]
 bindeps = true
+feature-unification = true
+
+# Enable the features that any workspace member needs, also when a command selects only some
+# members (e.g. `cargo test -p prusti-tests`), so that such commands share the build of the
+# whole workspace.
+[resolver]
+feature-unification = "workspace"
 
 [registries.crates-io]
 protocol = "sparse"

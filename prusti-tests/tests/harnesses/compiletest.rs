@@ -9,7 +9,7 @@ use std::{
     env, fs,
     io::Write,
     num::NonZeroUsize,
-    path::{Path, PathBuf},
+    path::Path,
     sync::{
         atomic::{AtomicUsize, Ordering},
         Mutex,
@@ -52,34 +52,11 @@ type TestsResult = ui_test::color_eyre::Result<()>;
 /// The number of tests marked `//@ known-failure` that were run.
 static KNOWN_FAILURES: AtomicUsize = AtomicUsize::new(0);
 
-fn find_prusti_rustc_path() -> PathBuf {
-    let target_directory = if cfg!(debug_assertions) {
-        "debug"
-    } else {
-        "release"
-    };
-    let executable_name = if cfg!(windows) {
-        "prusti-rustc.exe"
-    } else {
-        "prusti-rustc"
-    };
-    let local_prusti_rustc_path: PathBuf = ["target", target_directory, executable_name]
-        .iter()
-        .collect();
-    if local_prusti_rustc_path.exists() {
-        return local_prusti_rustc_path;
-    }
-    panic!(
-        "Could not find the {target_directory:?} prusti-rustc binary to be used in tests. \
-        It might be that Prusti has not been compiled correctly."
-    );
-}
-
 fn prusti_config(path: String, env: &[(&str, &str)], abort_check: &AbortCheck) -> Config {
     let mut config = Config::rustc(path);
     config.out_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/ui");
     config.abort_check = abort_check.clone();
-    config.program.program = find_prusti_rustc_path();
+    config.program.program = super::tested_bin("prusti-rustc");
     config.program.args.push("-Awarnings".into());
     config
         .program

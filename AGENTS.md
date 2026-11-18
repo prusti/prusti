@@ -8,10 +8,12 @@ flags; this file collects working norms and pitfalls.
 
 - Run every cargo command through `./x.py` (`./x.py build`, `./x.py test`, ...) from the
   repository root. It sets up the Java, Viper and Z3 environment that plain `cargo` lacks.
-- Rebuild with `./x.py build` before running Prusti or the tests after a change.
-  `./x.py run --bin prusti-rustc` and `./x.py test` do not update
+- Run test files with `./x.py test --test main -- <paths>` (e.g. `tests/verify/pass/`). It
+  builds the Prusti binaries it runs and the contracts, so it always tests the current code.
+- For anything else that runs Prusti after a change, rebuild with `./x.py build` first.
+  `./x.py run --bin prusti-rustc`, `./x.py verify-test` and the tests of `prusti-launch` use
   `target/debug/prusti-driver`, the binary that `prusti-rustc` runs and that contains the
-  encoder, so they silently use the old encoder.
+  encoder, but do not update it, so they silently use the old encoder.
 - Do not rebuild while tests or verification runs are in progress: processes started while
   the binaries are being replaced can fail in confusing ways.
 - If results change inexplicably after switching branches, delete `target/verify`, which

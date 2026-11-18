@@ -11,32 +11,38 @@ fn main() {
         prusti_contracts.to_string_lossy()
     );
 
-    let target: PathBuf = ["..", "target"].iter().collect();
+    let target = target_dir();
     force_reexport_specs(target.join("verify").as_path());
 
     // Copy the just-built binaries into a directory of our own, and run them
     // from there. Not into `target/{debug,release}`: these binaries are also
-    // workspace members, built there separately (build dependencies use a
-    // different profile), and cargo replacing one of them while
+    // workspace members, built there separately (cargo builds artifact
+    // dependencies on their own), and cargo replacing one of them while
     // `cargo-prusti` spawns it intermittently fails the spawn with "No such
-    // file or directory". The directory sits next to `target/debug` because
-    // the binaries find the contracts, Viper and Z3 relative to their own
-    // location.
+    // file or directory". The directory sits next to the profile directory
+    // (e.g. `target/debug`) because the binaries find the contracts, Viper
+    // and Z3 relative to their own location.
     let bin_dir = target.join(if cfg!(debug_assertions) {
         "prusti-contracts-build-debug"
     } else {
         "prusti-contracts-build-release"
     });
     std::fs::create_dir_all(&bin_dir).unwrap();
+    println!("cargo:rustc-env=PRUSTI_BIN_DIR={}", bin_dir.display());
     for (krate, file) in [
         ("PRUSTI_LAUNCH", "cargo-prusti"),
         ("PRUSTI_LAUNCH", "prusti-rustc"),
         ("PRUSTI", "prusti-driver"),
+        ("PRUSTI_SMT_SOLVER", "prusti-smt-solver"),
     ] {
         let file_from = std::env::var(format!("CARGO_BIN_FILE_{krate}_{file}")).unwrap();
         let file_to = &format!("{file}{}", if cfg!(windows) { ".exe" } else { "" });
         let file_to = bin_dir.join(file_to);
-        std::fs::copy(file_from, file_to).unwrap();
+        // Rename a copy over the old binary instead of overwriting it, which fails while a
+        // process still runs it (e.g. a `prusti-driver` that outlived a test run).
+        let file_tmp = file_to.with_extension("tmp");
+        std::fs::copy(file_from, &file_tmp).unwrap();
+        std::fs::rename(&file_tmp, &file_to).unwrap();
     }
 
     // Run `cargo-prusti`
@@ -113,6 +119,20 @@ fn main() {
         std::fs::remove_file(temp_dir.join("prusti-rustc.exe")).ok();
         std::fs::remove_file(temp_dir.join("prusti-driver.exe")).ok();
     }
+}
+
+/// The directory above the `<profile>` directory of the build that runs this script: the target
+/// directory, or cargo's build directory if `build.build-dir` is set. The binaries and contracts
+/// go there so that builds in different target directories (e.g. rust-analyzer's) do not
+/// replace each other's. `OUT_DIR` is `<target>/<profile>/build/...`, with one or two
+/// directories between `build` and `out` depending on cargo's layout.
+fn target_dir() -> PathBuf {
+    let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
+    let build_subdir = out_dir
+        .ancestors()
+        .find(|dir| dir.file_name().is_some_and(|name| name == "build"))
+        .unwrap_or_else(|| panic!("no `build` directory above OUT_DIR {}", out_dir.display()));
+    build_subdir.ancestors().nth(2).unwrap().to_path_buf()
 }
 
 /// Cargo will rebuild prusti-contracts if any of those files changed, however we also want to

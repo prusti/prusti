@@ -44,10 +44,19 @@ jobs:
           # Not the `build` cache of the debug builds in test.yml.
           cache-shared-key: "release"
 
+      # So that the release build resolves the features of dependencies per selected package and
+      # separately for normal, build and dev-dependencies, not as the development builds do.
+      - name: Resolve the features of each build separately
+        uses: ./.github/actions/resolve-features-separately
+
       - name: Build with cargo --release
         run: python x.py build --release --all
 
       - name: Run cargo tests --release
+        env:
+          # Run the test files with the binaries that are published, not with the separately
+          # built ones that they use by default (see `prusti-tests/tests/harnesses/mod.rs`).
+          TESTED_PRUSTI_BIN_DIR: ${{ github.workspace }}/target/release
         run: python x.py test --release --all
 
       - name: Package Prusti artifact

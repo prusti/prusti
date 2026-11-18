@@ -10,7 +10,7 @@ use std::{env, fs, path::Path};
 
 fn main() {
     env_logger::init();
-    let generated_dir = Path::new(&env::var("CARGO_MANIFEST_DIR").unwrap()).join("gen");
+    let generated_dir = Path::new(&env::var("OUT_DIR").unwrap()).join("gen");
 
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-env-changed=VIPER_HOME");

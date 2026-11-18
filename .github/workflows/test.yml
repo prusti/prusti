@@ -65,10 +65,18 @@ jobs:
         uses: ./.github/actions/setup
         with:
           cache-save-if: ${{ github.ref == 'refs/heads/main' }}
+      # So that a package's build does not get the features that other packages enable.
+      - name: Resolve the features of each build separately
+        uses: ./.github/actions/resolve-features-separately
       - name: Compile each workspace package individually
         run: |
           cargo install cargo-hack
           python ./x.py hack build --workspace
+      # Development builds enable more features of dependencies than the release build and its
+      # tests in `deploy.yml` (see `resolver` in `Cargo.toml`). Compiling all targets as those
+      # do catches a test that compiles only with the additional features.
+      - name: Compile all targets with the features of the release build
+        run: python ./x.py build --all --all-targets
 
   # Check that we depend on the compiler only through SMIR.
   smir-check:
@@ -157,9 +165,11 @@ jobs:
           key: ${{ env.VER_CACHE_KEY_UNIQUE }}
           # Restore from the most recent cache that matches a shared prefix of the key
           restore-keys: ${{ env.VER_CACHE_KEY_SHARED }}
-      # Cargo enables the features of shared dependencies that the selected packages need, so
-      # both steps select the whole workspace and build its test targets, and the second step
-      # compiles nothing. `--test main` runs only the `prusti-tests` harness.
+      # The test step reuses what the build step compiled and compiles nothing new: all
+      # development builds enable the same features of shared dependencies (see `resolver` in
+      # `Cargo.toml`), and `[profile.dev.build-override]` in `Cargo.toml` makes proc macros
+      # build the same way in both. The test step runs only the `prusti-tests` harness
+      # (`--test main`); building the other test targets checks that they still compile.
       - name: Build with cargo
         run: python x.py build --all --all-targets
       - name: Run cargo tests
