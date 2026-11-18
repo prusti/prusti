@@ -85,7 +85,7 @@ fn prusti_attribute_kind(attr: &syn::Attribute) -> Option<SpecAttributeKind> {
 
 /// Removes the Prusti attributes that apply to functions from `item`. The
 /// others, such as `#[invariant]`, are left for the compiler to expand: a
-/// Prusti attribute then reports that it does not apply to the item, and an
+/// Prusti attribute then rejects the item it does not apply to, and an
 /// attribute of another crate that has the same name keeps its meaning.
 fn extract_prusti_attributes(
     item: &mut untyped::AnyFnItem,
@@ -223,15 +223,23 @@ fn generate_spec_item(
     ))
 }
 
+/// Rejects the argument `attr` of the Prusti attribute `#[<name>]`, which
+/// takes no parameters, unless it is empty.
+fn reject_parameters(name: &str, attr: &TokenStream) -> syn::Result<()> {
+    if attr.is_empty() {
+        Ok(())
+    } else {
+        Err(syn::Error::new(
+            attr.span(),
+            format!("the `#[{name}]` attribute does not take parameters"),
+        ))
+    }
+}
+
 /// Generates the attribute `#[prusti::<name>]` for the Prusti attribute
 /// `#[<name>]`, which takes no parameters.
 fn generate_marker_attribute(name: &str, attr: TokenStream, span: Span) -> GeneratedResult {
-    if !attr.is_empty() {
-        return Err(syn::Error::new(
-            attr.span(),
-            format!("the `#[{name}]` attribute does not take parameters"),
-        ));
-    }
+    reject_parameters(name, &attr)?;
     let name = syn::Ident::new(name, span);
     Ok((
         vec![],
@@ -332,12 +340,7 @@ fn generate_for_pure_refinements(item: &untyped::AnyFnItem) -> GeneratedResult {
 
 /// Generate spec items and attributes to typecheck and later retrieve "trusted" annotations.
 fn generate_for_trusted_for_types(attr: TokenStream, item: &syn::DeriveInput) -> GeneratedResult {
-    if !attr.is_empty() {
-        return Err(syn::Error::new(
-            attr.span(),
-            "the `#[trusted]` attribute does not take parameters",
-        ));
-    }
+    reject_parameters("trusted", &attr)?;
     // TODO: reduce duplication with `invariant`
     let mut rewriter = rewriter::AstRewriter::new();
     let spec_id = rewriter.generate_spec_id();
@@ -1042,12 +1045,7 @@ fn generate_spec_and_assertions_for_types(
 
 /// Generate spec items and attributes to typecheck and later retrieve "model" annotations.
 fn generate_for_model(attr: TokenStream, item: &mut syn::DeriveInput) -> GeneratedResult {
-    if !attr.is_empty() {
-        return Err(syn::Error::new(
-            attr.span(),
-            "the `#[model]` attribute does not take parameters",
-        ));
-    }
+    reject_parameters("model", &attr)?;
     match syn::Item::from(item.clone()) {
         syn::Item::Struct(item_struct) => {
             match type_model::rewrite(item_struct) {
