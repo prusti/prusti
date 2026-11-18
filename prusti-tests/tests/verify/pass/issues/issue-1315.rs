@@ -8,6 +8,14 @@ pub struct Bar<'a> {
     bar: &'a (),
 }
 
+pub struct WithDrop<'a> {
+    foo: &'a (),
+}
+
+impl<'a> Drop for WithDrop<'a> {
+    fn drop(&mut self) {}
+}
+
 pub struct Baz;
 
 impl Baz {
@@ -20,17 +28,7 @@ impl Baz {
         let foobar = self.foobar();
         drop(foobar);
     }
-}
 
-pub struct WithDrop<'a> {
-    foo: &'a (),
-}
-
-impl<'a> Drop for WithDrop<'a> {
-    fn drop(&mut self) {}
-}
-
-impl Baz {
     #[trusted]
     pub fn with_drop(&self) -> WithDrop<'_> {
         unimplemented!()

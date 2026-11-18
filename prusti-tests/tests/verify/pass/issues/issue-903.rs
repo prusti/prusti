@@ -16,7 +16,7 @@ impl T {
 
 pub fn call_in_loop(m: &T) {
     loop {
-        let r = m.get();
+        let _r = m.get();
     }
 }
 

@@ -1,6 +1,7 @@
+// Regression test for prusti/prusti#1518: several shared borrows of the same local must not make
+// the state inconsistent.
 use prusti_contracts::*;
 
-// Regression test for prusti/prusti#1518.
 fn foo(a: &u8, b: &u8) {}
 
 fn two_shared_refs() {

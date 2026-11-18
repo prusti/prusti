@@ -1,6 +1,6 @@
+// Regression test for prusti/prusti#1513: casting a `#[repr(u32)]` enum to an integer.
 use prusti_contracts::*;
 
-// Regression test for prusti/prusti#1513: casting a `#[repr(u32)]` enum to an integer.
 #[derive(Copy, Clone)]
 #[repr(u32)]
 enum T {

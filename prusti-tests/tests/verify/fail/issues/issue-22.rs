@@ -1,6 +1,7 @@
+// Regression test for prusti/prusti#22: returning a shared reborrow of a field of a `&mut`
+// argument.
 use prusti_contracts::*;
 
-// Regression test for prusti/prusti#22.
 struct Point {
     x: u32,
     y: u32,
@@ -20,6 +21,6 @@ fn reborrow_x<'a>(p: &'a mut Point) -> &'a u32 {
 #[requires(p.x == 5 && p.y == 6)]
 fn wrong_claim_after_reborrow(p: &mut Point) {
     let r = reborrow_x(p);
-    let v = *r;
+    let _v = *r;
     prusti_assert!(p.y == 7); //~ERROR: the asserted expression might not hold
 }

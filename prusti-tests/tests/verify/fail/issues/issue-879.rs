@@ -12,6 +12,6 @@ fn tpl() -> (usize, usize) {
 }
 
 fn wrong_component() {
-    let (a, b) = tpl();
+    let (_, b) = tpl();
     prusti_assert!(b == 1); //~ ERROR: the asserted expression might not hold
 }

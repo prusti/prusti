@@ -1,6 +1,6 @@
+// Regression test for prusti/prusti#1391: snapshot (in)equality of enum variants.
 use prusti_contracts::*;
 
-// Regression test for prusti/prusti#1391.
 enum MyEnum {
     A,
     B,

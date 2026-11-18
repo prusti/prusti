@@ -1,6 +1,6 @@
+// Regression test for prusti/prusti#1409: derived comparison traits of a wrapper in specs.
 use prusti_contracts::*;
 
-// Regression test for prusti/prusti#1409.
 #[derive(Clone, Copy, Eq, PartialEq, PartialOrd, Ord)]
 pub struct Frame(usize);
 

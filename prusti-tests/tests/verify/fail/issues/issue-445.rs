@@ -1,6 +1,6 @@
+// Regression test for prusti/prusti#445: a `&mut self` method returning a `&mut` reference.
 use prusti_contracts::*;
 
-// Regression test for prusti/prusti#445.
 pub struct A {
     pub x: i32,
 }

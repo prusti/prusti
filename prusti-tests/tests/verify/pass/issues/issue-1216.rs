@@ -1,6 +1,7 @@
+// Regression test for prusti/prusti#1216: returning a `&mut` argument after assigning to it an
+// expression of itself.
 use prusti_contracts::*;
 
-// Regression test for prusti/prusti#1216.
 #[ensures(*result == old(*x))]
 #[after_expiry(*x == before_expiry(*result))]
 pub fn add_zero(x: &mut i32) -> &mut i32 {

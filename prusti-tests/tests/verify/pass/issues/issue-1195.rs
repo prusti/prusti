@@ -1,6 +1,6 @@
+// Regression test for prusti/prusti#1195: a constant as the argument of a const generic type.
 use prusti_contracts::*;
 
-// Regression test for prusti/prusti#1195: a constant as the argument of a const generic type.
 const ARR_SIZE: usize = 50;
 
 struct Array<const SIZE: usize>([i32; SIZE]);

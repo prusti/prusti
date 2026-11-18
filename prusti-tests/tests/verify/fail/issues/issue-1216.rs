@@ -1,6 +1,7 @@
+// Regression test for prusti/prusti#1216: returning a `&mut` argument after assigning to it an
+// expression of itself.
 use prusti_contracts::*;
 
-// Regression test for prusti/prusti#1216.
 #[ensures(*result == !old(*x))] //~ERROR: postcondition might not hold
 pub fn assign_self_wrong(x: &mut bool) -> &mut bool {
     *x = *x;

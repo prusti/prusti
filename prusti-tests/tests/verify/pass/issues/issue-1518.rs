@@ -1,6 +1,6 @@
+// Regression test for prusti/prusti#1518: several shared borrows of the same local.
 use prusti_contracts::*;
 
-// Regression test for prusti/prusti#1518.
 fn reborrows_equal() {
     let x: u8 = 5;
     let r = &x;

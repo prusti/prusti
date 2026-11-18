@@ -1,6 +1,7 @@
+// Regression test for prusti/prusti#1544: moving a `&mut` returned by a method with a pledge
+// inside nested loops.
 use prusti_contracts::*;
 
-// Regression test for prusti/prusti#1544.
 pub struct VecWrapper<T> {
     v: Vec<T>,
 }

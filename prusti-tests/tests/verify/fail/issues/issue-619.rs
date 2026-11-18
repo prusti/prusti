@@ -1,10 +1,5 @@
+// Regression test for prusti/prusti#619: derived trait impls.
 use prusti_contracts::*;
-
-// Regression test for prusti/prusti#619.
-#[derive(Debug)]
-pub struct Foo {
-    pub bar: i32,
-}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct P {

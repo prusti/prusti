@@ -1,6 +1,6 @@
+// Regression test for prusti/prusti#776: match on a tuple of shared references to enums.
 use prusti_contracts::*;
 
-// Regression test for prusti/prusti#776.
 #[pure]
 fn is_some(o: &Option<i32>) -> bool {
     match o {
@@ -11,6 +11,7 @@ fn is_some(o: &Option<i32>) -> bool {
 
 #[ensures(result == 1 ==> is_some(l) && is_some(r))]
 #[ensures(result == 2 ==> !is_some(l) && !is_some(r))]
+#[ensures(result == 3 ==> is_some(l) != is_some(r))]
 #[ensures(result == 1 || result == 2 || result == 3)]
 fn kind(l: &Option<i32>, r: &Option<i32>) -> u8 {
     match (l, r) {

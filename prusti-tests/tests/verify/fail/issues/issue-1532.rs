@@ -1,6 +1,6 @@
+// Regression test for prusti/prusti#1532: array indexing and mutual recursion in pure functions.
 use prusti_contracts::*;
 
-// Regression test for prusti/prusti#1532.
 #[pure]
 fn negate_i32(x: i32) -> i32 {
     [0 - x, x][0]

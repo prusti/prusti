@@ -1,4 +1,4 @@
-// Regression test for prusti/prusti#749.
+// Regression test for prusti/prusti#749: derived PartialEq on enums with multi-field variants.
 #[derive(PartialEq)]
 pub enum Binop {
     Add(u32, u32),

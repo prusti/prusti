@@ -1,7 +1,6 @@
+// Regression test for prusti/prusti#1552: a pure unsigned subtraction with overflow checks off.
 use prusti_contracts::*;
 
-// Regression test for prusti/prusti#1552: no internal error for a pure unsigned subtraction
-// when overflow checks are off.
 #[pure]
 fn decrease(value: usize) -> usize {
     value - 1

@@ -1,6 +1,6 @@
+// Regression test for prusti/prusti#1549: references to constants as arguments.
 use prusti_contracts::*;
 
-// Regression test for prusti/prusti#1549.
 fn test(x: u64, y: &u64) -> u64 {
     let y = *y;
     x / y //~ ERROR: attempt to divide by zero

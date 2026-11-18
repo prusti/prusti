@@ -1,6 +1,7 @@
+// Regression test for prusti/prusti#1519: a `&mut` result that may borrow from either of two
+// arguments, with overflow checks on as in the issue.
 use prusti_contracts::*;
 
-// Regression test for prusti/prusti#1519.
 fn external<'a>(t: &'a mut u32, r: &'a mut u32) -> &'a mut u32 {
     if *t == *r {
         t

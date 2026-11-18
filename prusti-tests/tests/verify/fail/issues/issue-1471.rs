@@ -1,6 +1,6 @@
+// Regression test for prusti/prusti#1471: assigning one `&mut` argument to another.
 use prusti_contracts::*;
 
-// Regression test for prusti/prusti#1471.
 fn wrong_value<'a>(mut x: &'a mut i32, y: &'a mut i32) {
     x = y;
     *x = 7;

@@ -1,6 +1,6 @@
+// Regression test for prusti/prusti#1512: every value of a fieldless enum is one of its variants.
 use prusti_contracts::*;
 
-// Regression test for prusti/prusti#1512.
 #[derive(PartialEq, Eq, Copy, Clone)]
 #[repr(u16)]
 enum T {

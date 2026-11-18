@@ -1,4 +1,5 @@
-// Regression test for prusti/prusti#183: chains of pure functions are encoded with their meaning.
+// Regression test for prusti/prusti#183: nested pure calls are encoded through their bodies, so
+// wrong claims about them are rejected.
 use prusti_contracts::*;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -22,7 +23,7 @@ fn nested_id(x: A) -> A {
     x
 }
 
-fn id_chain_is_not_changed(x: A, y: A) {
+fn nested_id_is_not_arbitrary(x: A, y: A) {
     prusti_assert!(nested_id(x) == x);
     prusti_assert!(nested_id(x) == y); //~ ERROR: the asserted expression might not hold
 }

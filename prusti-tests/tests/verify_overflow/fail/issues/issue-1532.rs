@@ -1,6 +1,7 @@
+// Regression test for prusti/prusti#1532: overflow in these pure functions is reported as an
+// ordinary verification error.
 use prusti_contracts::*;
 
-// Regression test for prusti/prusti#1532: ordinary overflow errors, no internal errors.
 #[pure]
 fn negate_i32(x: i32) -> i32 {
     [0 - x, x][0] //~ ERROR: attempt to subtract with overflow

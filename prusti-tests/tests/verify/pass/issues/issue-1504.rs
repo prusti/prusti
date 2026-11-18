@@ -1,6 +1,6 @@
+// Regression test for prusti/prusti#1504: string constants passed to println.
 use prusti_contracts::*;
 
-// Regression test for prusti/prusti#1504: string constants passed to println.
 const MAX_FIBONACCI: u32 = 2_971_215_073;
 
 pub fn play_game(n: u32) {

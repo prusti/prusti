@@ -1,6 +1,7 @@
+// Regression test for prusti/prusti#400: a recursive call passing two shared borrows that expire
+// together.
 use prusti_contracts::*;
 
-// Regression test for prusti/prusti#400.
 pub struct Tree {
     right: Option<Box<Tree>>,
 }

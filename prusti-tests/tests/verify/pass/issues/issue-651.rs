@@ -1,6 +1,6 @@
+// Regression test for prusti/prusti#651: a moved parameter in a postcondition without `old`.
 use prusti_contracts::*;
 
-// Regression test for prusti/prusti#651: a moved parameter in a postcondition without `old`.
 #[derive(PartialEq, Eq, Clone, Copy)]
 pub enum BasicEnum {
     Variant1(u32),

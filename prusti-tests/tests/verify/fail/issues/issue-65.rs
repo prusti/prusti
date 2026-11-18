@@ -1,6 +1,6 @@
+// Regression test for prusti/prusti#65: passing a conditionally reborrowed `&mut` to a call.
 use prusti_contracts::*;
 
-// Regression test for prusti/prusti#65.
 #[trusted]
 #[requires(*x < 100)]
 #[ensures(*x == 5)]

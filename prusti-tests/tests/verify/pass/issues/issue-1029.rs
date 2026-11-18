@@ -11,5 +11,5 @@ fn btree_map_get_binding() {
             let _b = *a;
         }
         None => {}
-    };
+    }
 }

@@ -1,6 +1,6 @@
+// Regression test for prusti/prusti#619: derived trait impls.
 use prusti_contracts::*;
 
-// Regression test for prusti/prusti#619: derived impls must be accepted.
 #[derive(Debug)]
 pub struct Foo {
     pub bar: i32,

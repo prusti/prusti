@@ -1,6 +1,7 @@
+// Regression test for prusti/prusti#1077: writing through a reborrow of a field of a `&mut`
+// argument.
 use prusti_contracts::*;
 
-// Regression test for prusti/prusti#1077.
 #[ensures(x.0 == 3)] //~ERROR: postcondition might not hold
 fn wrong_value(x: &mut (usize, usize)) {
     let f = &mut x.0;

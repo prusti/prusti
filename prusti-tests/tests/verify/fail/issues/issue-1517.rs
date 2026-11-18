@@ -1,6 +1,6 @@
+// Regression test for prusti/prusti#1517: pure trait methods called on concrete types in specs.
 use prusti_contracts::*;
 
-// Regression test for prusti/prusti#1517.
 struct S;
 
 trait SFind {
