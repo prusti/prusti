@@ -60,6 +60,18 @@ fn main() {
     let x: i8 = -3;
     let y: i8 = 1;
     prusti_assert!(x << y == -6);
+    prusti_assert!(x >> y == -2);
+
+    let x: i8 = -4;
+    prusti_assert!(x >> 1 == -2);
+    let x: i8 = -16;
+    prusti_assert!(x >> 3 == -2);
+    let x: i8 = -128;
+    prusti_assert!(x >> 7 == -1);
+    let x: i8 = -1;
+    prusti_assert!(x >> 5 == -1);
+    let x: u8 = 252;
+    prusti_assert!(x >> 1 == 126);
 
     let x = 0;
     let y = 1;
@@ -76,6 +88,17 @@ fn mul2(x: i16) -> i16 {
 #[requires(x <= 127)]
 #[ensures(result == x / 2)]
 fn div2(x: u16) -> u16 {
+    x >> 1
+}
+
+#[requires(x < 0)]
+#[ensures(result < 0)]
+fn neg_stays_neg(x: i8) -> i8 {
+    x >> 1
+}
+
+#[ensures(x - result * 2 == 0 || x - result * 2 == 1)]
+fn shr_is_floor_div(x: i8) -> i8 {
     x >> 1
 }
 
