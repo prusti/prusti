@@ -160,9 +160,9 @@ jobs:
           key: ${{ env.VER_CACHE_KEY_UNIQUE }}
           # Restore from the most recent cache that matches a shared prefix of the key
           restore-keys: ${{ env.VER_CACHE_KEY_SHARED }}
-      # The test step reuses what the build step compiled and compiles nothing new: both select
-      # the whole workspace with its test targets, so cargo enables the same features of shared
-      # dependencies, and `[profile.dev.build-override]` in `Cargo.toml` makes proc macros
+      # The test step reuses what the build step compiled and compiles nothing new: all
+      # development builds enable the same features of shared dependencies (see `resolver` in
+      # `Cargo.toml`), and `[profile.dev.build-override]` in `Cargo.toml` makes proc macros
       # build the same way in both. The test step runs only the `prusti-tests` harness
       # (`--test main`); building the other test targets checks that they still compile.
       - name: Build with cargo

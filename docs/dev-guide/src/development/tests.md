@@ -6,7 +6,7 @@ Tests for the Prusti project can be executed using the Python wrapper script:
 ./x.py test
 ```
 
-The script sets up environment variables just like in the [build](build.md) phase, then runs `cargo test`.
+The script sets up environment variables just like in the [build](build.md) phase, then runs `cargo test`. Build Prusti with `./x.py build` first: Prusti's test files are run with the binaries in `target/debug`, which `./x.py test` does not update.
 
 Any additional arguments are added to the `cargo test` command line. For example:
 
@@ -22,14 +22,14 @@ The [options available](https://doc.rust-lang.org/book/ch11-02-running-tests.htm
 $ ./x.py test mod
 ```
 
-To run only Prusti's test files (in `prusti-tests/tests`), build Prusti together with the test targets, then run `main`, the test target of `prusti-tests` that runs these files, with the paths to run:
+To run only Prusti's test files (in `prusti-tests/tests`), build Prusti, then run `main`, the test target of `prusti-tests` that runs these files, with the paths to run:
 
 ```bash
-$ ./x.py build --all-targets
+$ ./x.py build
 $ ./x.py test --test main -- tests/verify/pass/arrays/
 ```
 
-The test files are run with the binaries in `target/debug`, which `./x.py test` does not update, so build first after every change. The second command then compiles nothing new. A plain `./x.py build`, like `./x.py test -p prusti-tests`, enables different features of shared dependencies from those the tests need, so the next test run or build compiles most of the workspace again.
+`./x.py build` and `./x.py test` share one build, so the second command compiles only what the tests add, such as the test harness.
 
 ## Additional flags
 
