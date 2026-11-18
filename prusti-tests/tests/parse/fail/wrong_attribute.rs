@@ -19,7 +19,7 @@ fn ensures_without_argument() -> bool {
 }
 
 #[pure]
-#[ensures = "true"] //~ERROR: the argument of the `#[ensures]` attribute must be in parentheses
+#[ensures = "true"] //~ERROR: `#[ensures = ...]` is not supported
 fn ensures_with_value() -> bool {
     true
 }
@@ -42,6 +42,12 @@ struct TrustedWithParameter;
 #[print_counterexample]
 #[model(x)] //~ERROR: the `#[model]` attribute does not take parameters
 struct ModelWithParameter {
+    a: i32,
+}
+
+#[model]
+#[invariant(true)] //~ERROR: this attribute cannot be combined with `#[model]`
+struct ModelWithInvariant {
     a: i32,
 }
 

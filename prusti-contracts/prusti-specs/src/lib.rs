@@ -67,7 +67,7 @@ fn unwrap_argument(attr: &syn::Attribute) -> syn::Result<TokenStream> {
             let name = &attr.path.segments.last().unwrap().ident;
             Err(syn::Error::new(
                 attr.span(),
-                format!("the argument of the `#[{name}]` attribute must be in parentheses"),
+                format!("`#[{name} = ...]` is not supported"),
             ))
         }
     }
@@ -918,7 +918,7 @@ pub fn extern_spec(attr: TokenStream, tokens: TokenStream) -> TokenStream {
             }
             // we're expecting function stubs, so they aren't represented as Item::Fn
             syn::Item::Verbatim(stub_tokens) => {
-                extern_spec_rewriter::functions::rewrite_stub(&stub_tokens, &mod_path, false)
+                extern_spec_rewriter::functions::rewrite_stub(&stub_tokens, &mod_path)
             }
             _ => Err(syn::Error::new(
                 Span::call_site(), // this covers the entire macro invocation, unlike attr.span() which changes to only cover arguments if possible
@@ -1048,6 +1048,18 @@ fn generate_spec_and_assertions_for_types(
 /// Generate spec items and attributes to typecheck and later retrieve "model" annotations.
 fn generate_for_model(attr: TokenStream, item: &mut syn::DeriveInput) -> GeneratedResult {
     reject_parameters("model", &attr)?;
+    // The model replaces the declaration together with its attributes, so
+    // a Prusti attribute left on it would be lost.
+    if let Some(attr) = item
+        .attrs
+        .iter()
+        .find(|attr| prusti_attribute_kind(attr).is_some())
+    {
+        return Err(syn::Error::new(
+            attr.span(),
+            "this attribute cannot be combined with `#[model]`",
+        ));
+    }
     match syn::Item::from(item.clone()) {
         syn::Item::Struct(item_struct) => {
             match type_model::rewrite(item_struct) {

@@ -11,11 +11,7 @@ use proc_macro2::{Group, TokenStream, TokenTree};
 use quote::ToTokens;
 use syn::{parse_quote_spanned, spanned::Spanned};
 
-pub fn rewrite_stub(
-    stub_tokens: &TokenStream,
-    path: &syn::Path,
-    is_unsafe: bool,
-) -> syn::Result<TokenStream> {
+pub fn rewrite_stub(stub_tokens: &TokenStream, path: &syn::Path) -> syn::Result<TokenStream> {
     // Transforms function stubs (functions with a `;` after the
     // signature instead of the body) into functions, then
     // processes them.
@@ -41,7 +37,7 @@ pub fn rewrite_stub(
 
     let mut item = res.unwrap();
     if let syn::Item::Fn(item_fn) = &mut item {
-        Ok(rewrite_fn(item_fn, path, is_unsafe))
+        Ok(rewrite_fn(item_fn, path, false))
     } else {
         Err(syn::Error::new(
             stub_tokens.span(),
