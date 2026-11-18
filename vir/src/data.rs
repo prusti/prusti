@@ -64,6 +64,8 @@ pub enum BinOpKind {
     PermSub,
     PermMul,
     PermPermDiv,
+    /// `Int / Int` as a `Perm`, i.e. a rational number.
+    IntIntPermDiv,
     Mod,
 }
 impl From<mir::BinOp> for BinOpKind {

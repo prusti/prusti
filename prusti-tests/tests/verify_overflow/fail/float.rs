@@ -35,3 +35,26 @@ fn test_floats64_zero() -> f64 {
 fn test_float_with_params(a: f32) -> f32{
     return -a;
 }
+
+// Float constants and preconditions on floats must not make the program
+// inconsistent.
+
+fn const_f32_consistent() {
+    let _a = 0.1f32;
+    prusti_assert!(false); //~ ERROR: the asserted expression might not hold
+}
+
+fn const_f64_consistent() {
+    let _a = 0.5f64;
+    prusti_assert!(false); //~ ERROR: the asserted expression might not hold
+}
+
+#[requires(a == 0.1)]
+fn param_f32_consistent(a: f32) {
+    prusti_assert!(false); //~ ERROR: the asserted expression might not hold
+}
+
+#[requires(a == 0.1)]
+fn param_f64_consistent(a: f64) {
+    prusti_assert!(false); //~ ERROR: the asserted expression might not hold
+}
