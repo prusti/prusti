@@ -398,8 +398,11 @@ impl TaskEncoder for MethodEnc {
                     Err(err) => {
                         let err = super::dep_error(&err);
                         let span = err.span.unwrap_or_else(|| vcx.tcx().def_span(def_id));
+                        // Worded like `FunctionEnc`'s error, so that when both
+                        // encodings of a pure function's body fail in the same
+                        // way, rustc reports the identical error only once.
                         vcx.emit_early_error(err.report(
-                            format!("method body `{}`", vcx.tcx().def_path_str(def_id)),
+                            format!("function body `{}`", vcx.tcx().def_path_str(def_id)),
                             span,
                         ));
                         None

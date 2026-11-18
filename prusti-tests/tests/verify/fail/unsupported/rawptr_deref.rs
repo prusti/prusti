@@ -27,7 +27,6 @@ fn switch_pure(p: *const u32) -> u32 {
     unsafe {
         match *p {
             //~^ ERROR: dereference of the raw pointer `*const u32`
-            //~| ERROR: dereference of the raw pointer `*const u32`
             0 => 1,
             _ => 2,
         }

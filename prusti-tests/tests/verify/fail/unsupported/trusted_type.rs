@@ -4,9 +4,6 @@ use prusti_contracts::*;
 // A `#[trusted]` type is encoded as an opaque value, so its fields cannot be
 // read or written, its values cannot be built from fields, and its
 // discriminant cannot be read.
-//
-// A pure function is encoded both as a Viper function and as a method, so it
-// gets an error from each.
 
 #[trusted]
 #[derive(Clone, Copy)]
@@ -17,7 +14,6 @@ struct T {
 #[pure]
 fn read_pure(t: T) -> u32 {
     t.x //~ERROR: cannot encode function body `read_pure`: using the contents of `T` is not supported
-    //~^ ERROR: cannot encode method body `read_pure`: using the contents of `T` is not supported
 }
 
 fn read(t: T) -> u32 {
@@ -41,14 +37,12 @@ fn write_mut_ref(t: &mut T) {
 fn write_pure(t: T) -> T {
     let mut t = t;
     t.x = 5; //~ERROR: cannot encode function body `write_pure`: using the contents of `T` is not supported
-    //~^ ERROR: cannot encode method body `write_pure`: using the contents of `T` is not supported
     t
 }
 
 #[pure]
 fn construct_pure() -> T {
     T { x: 1 } //~ERROR: cannot encode function body `construct_pure`: using the contents of `T` is not supported
-    //~^ ERROR: cannot encode method body `construct_pure`: using the contents of `T` is not supported
 }
 
 fn construct() -> T {
@@ -65,7 +59,6 @@ enum E {
 #[pure]
 fn is_b(e: E) -> bool {
     matches!(e, E::B) //~ERROR: cannot encode function body `is_b`: using the contents of `E` is not supported
-    //~^ ERROR: cannot encode method body `is_b`: using the contents of `E` is not supported
 }
 
 // `is_b` cannot be encoded, so `is_b(e)` is not known to be false and the
@@ -85,7 +78,6 @@ fn match_impure(e: E) -> u32 {
 // The derived `eq` reads the discriminant through `discriminant_value`.
 #[trusted]
 #[derive(PartialEq)] //~ERROR: cannot encode function body `<P as std::cmp::PartialEq>::eq`: using the contents of `P` is not supported
-//~^ ERROR: cannot encode method body `<P as std::cmp::PartialEq>::eq`: using the contents of `P` is not supported
 enum P {
     A(u32),
     B,
@@ -94,7 +86,6 @@ enum P {
 #[pure]
 fn get_pure(p: P) -> u32 {
     match p { //~ERROR: cannot encode function body `get_pure`: using the contents of `P` is not supported
-        //~^ ERROR: cannot encode method body `get_pure`: using the contents of `P` is not supported
         P::A(x) => x,
         P::B => 0,
     }
@@ -111,11 +102,9 @@ fn construct_variant() -> P {
 #[pure]
 fn construct_unit_variant_pure() -> P {
     P::B //~ERROR: cannot encode function body `construct_unit_variant_pure`: using the contents of `P` is not supported
-    //~^ ERROR: cannot encode method body `construct_unit_variant_pure`: using the contents of `P` is not supported
 }
 
 #[pure]
 fn discriminant_pure(p: &P) -> isize {
     core::intrinsics::discriminant_value(p) //~ERROR: cannot encode function body `discriminant_pure`: using the contents of `P` is not supported
-    //~^ ERROR: cannot encode method body `discriminant_pure`: using the contents of `P` is not supported
 }
