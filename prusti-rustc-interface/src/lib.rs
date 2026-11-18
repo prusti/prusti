@@ -21,7 +21,7 @@ pub extern crate rustc_span as span;
 pub extern crate rustc_target as target;
 
 // TODO: switch over to `rustc_public` once RA knows about the crate
-// pub use rustc_public::very_unstable::{borrowck, dataflow, hir, middle, trait_selection};
+// pub use rustc_public::very_unstable::{borrowck, hir, middle, trait_selection};
 pub extern crate rustc_borrowck as borrowck;
 pub extern crate rustc_hir as hir;
 pub extern crate rustc_middle as middle;
