@@ -88,6 +88,9 @@ impl prusti_rustc_interface::ast_pretty::pprust::PpAnn for NoAnn {}
 
 impl prusti_rustc_interface::driver::Callbacks for PrustiCompilerCalls {
     fn config(&mut self, config: &mut Config) {
+        // With incremental compilation, rustc does not run the providers below for a body that
+        // has not changed since the last session, so they would not store its MIR.
+        config.opts.incremental = None;
         assert!(config.override_queries.is_none());
         config.override_queries = Some(|_session: &Session, providers| {
             providers.queries.mir_borrowck = mir_borrowck;
