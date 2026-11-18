@@ -1019,7 +1019,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                 // Reading a mutable reference's referent needs an address
                 // holding a predicate, which pure-created mutrefs don't have.
                 if kind.mutability().is_mut() {
-                    return Err(self.unsupported_rvalue(
+                    return Err(self.unsupported(
                         format!(
                             "mutable borrow of `{}` in a specification: take a shared \
                              reference (`&`) instead",
@@ -1114,8 +1114,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                     .prim_to_snap(place_ref, metadata)
                     .upcast_ty())
             }
-            _ => Err(self
-                .unsupported_rvalue(format!("unsupported rvalue {rvalue:?} in pure code"), span)),
+            _ => Err(self.unsupported(format!("unsupported rvalue {rvalue:?} in pure code"), span)),
         }
     }
 
@@ -1158,7 +1157,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                             // The value field of a mutable reference's snapshot
                             // is never constrained to the referent (see
                             // `p_Ref_mutable_arbitrary_value`).
-                            return Err(self.unsupported_rvalue(
+                            return Err(self.unsupported(
                                 format!(
                                     "dereference of the mutable reference `{}` in pure code",
                                     place_ty.ty
@@ -1192,7 +1191,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                         EncodedPlace::new(val_expr, Some(ref_expr)).with_metadata(metadata)
                     }
                     TyKind::RawPtr(..) => {
-                        return Err(self.unsupported_rvalue(
+                        return Err(self.unsupported(
                             format!("dereference of the raw pointer `{}`", place_ty.ty),
                             self.current_span(),
                         ));
@@ -1372,7 +1371,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                 // that replaces one element; writes through a `&mut` need its
                 // referent's value, which pure code does not have.
                 _ => {
-                    return Err(self.unsupported_rvalue(
+                    return Err(self.unsupported(
                         format!(
                             "assignment to a part of a `{}` in pure code: only fields and \
                              boxed values can be assigned to",
