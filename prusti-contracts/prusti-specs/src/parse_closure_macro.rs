@@ -1,4 +1,4 @@
-use crate::{prusti_attribute_kind, unwrap_argument, SpecAttributeKind};
+use crate::{prusti_attribute_kind, require_argument, unwrap_argument, SpecAttributeKind};
 use syn::{
     parse::{Parse, ParseStream},
     spanned::Spanned,
@@ -41,11 +41,6 @@ impl Parse for ClosureWithSpec {
 /// The expression that is the argument of the specification attribute `attr`.
 fn parse_argument(attr: &syn::Attribute) -> syn::Result<syn::Expr> {
     let argument = unwrap_argument(attr)?;
-    if argument.is_empty() {
-        return Err(syn::Error::new(
-            attr.span(),
-            "this attribute expects an argument",
-        ));
-    }
+    require_argument(attr.span(), &argument)?;
     syn::parse2(argument)
 }
