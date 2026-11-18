@@ -3,7 +3,10 @@
 //! e.g. `#[extern_spec(core::mem)] fn swap`
 
 use super::common::generate_extern_spec_function_stub;
-use crate::ExternSpecKind;
+use crate::{
+    common::{HasAttributes, HasSignature},
+    ExternSpecKind,
+};
 use proc_macro2::{Group, TokenStream, TokenTree};
 use quote::ToTokens;
 use syn::{parse_quote_spanned, spanned::Spanned};
@@ -49,9 +52,13 @@ pub fn rewrite_stub(
 
 /// Rewrite a specification function to a call to the specified function.
 /// The result of this rewriting is then parsed in `ExternSpecResolver`.
-pub fn rewrite_fn(item_fn: &syn::ItemFn, path: &syn::Path, is_unsafe: bool) -> TokenStream {
-    let ident = &item_fn.sig.ident;
-    let path_span = item_fn.sig.ident.span();
+pub fn rewrite_fn<T: HasSignature + HasAttributes + Spanned>(
+    item_fn: &T,
+    path: &syn::Path,
+    is_unsafe: bool,
+) -> TokenStream {
+    let ident = &item_fn.sig().ident;
+    let path_span = item_fn.sig().ident.span();
     let path = parse_quote_spanned!(path_span=> #path :: #ident);
 
     generate_extern_spec_function_stub(item_fn, &path, ExternSpecKind::Method, true, is_unsafe)

@@ -55,17 +55,19 @@ macro_rules! result_to_tokens {
 }
 
 /// The argument of an attribute in inner position, i.e. its tokens with the
-/// surrounding parenthesis dropped. This makes them identical to the ones
-/// passed by the native procedural macro call.
+/// surrounding delimiters dropped, or no tokens if it has no argument. This
+/// makes them identical to the ones passed by the native procedural macro
+/// call, so the generators see the same tokens wherever the attribute is.
 fn unwrap_argument(attr: &syn::Attribute) -> syn::Result<TokenStream> {
     let mut iter = attr.tokens.clone().into_iter();
     match (iter.next(), iter.next()) {
+        (None, _) => Ok(TokenStream::new()),
         (Some(TokenTree::Group(group)), None) => Ok(group.stream()),
         _ => {
             let name = &attr.path.segments.last().unwrap().ident;
             Err(syn::Error::new(
                 attr.span(),
-                format!("the `#[{name}]` attribute expects an argument in parentheses"),
+                format!("the argument of the `#[{name}]` attribute must be in parentheses"),
             ))
         }
     }
@@ -96,26 +98,18 @@ fn extract_prusti_attributes(
         // The span of the annotation itself, so diagnostics can point
         // at the specific attribute rather than the whole item.
         let attr_span = attr.path.span();
-        let (attr_kind, tokens) = match prusti_attribute_kind(&attr) {
+        let attr_kind = match prusti_attribute_kind(&attr) {
             Some(
                 attr_kind @ (SpecAttributeKind::Requires
                 | SpecAttributeKind::Ensures
                 | SpecAttributeKind::AfterExpiry
                 | SpecAttributeKind::AssertOnExpiry
-                | SpecAttributeKind::RefineSpec),
-            ) => (attr_kind, unwrap_argument(&attr)?),
-            // The argument of `terminates` is optional.
-            Some(SpecAttributeKind::Terminates) if !attr.tokens.is_empty() => {
-                (SpecAttributeKind::Terminates, unwrap_argument(&attr)?)
-            }
-            // The generators of attributes without arguments reject any
-            // tokens that are present.
-            Some(
-                attr_kind @ (SpecAttributeKind::Pure
+                | SpecAttributeKind::RefineSpec
                 | SpecAttributeKind::Terminates
+                | SpecAttributeKind::Pure
                 | SpecAttributeKind::Trusted
                 | SpecAttributeKind::Verified),
-            ) => (attr_kind, attr.tokens),
+            ) => attr_kind,
             Some(
                 SpecAttributeKind::Invariant
                 | SpecAttributeKind::Model
@@ -126,7 +120,7 @@ fn extract_prusti_attributes(
                 continue;
             }
         };
-        prusti_attributes.push((attr_kind, attr_span, tokens));
+        prusti_attributes.push((attr_kind, attr_span, unwrap_argument(&attr)?));
     }
     *item.attrs_mut() = regular_attributes;
     Ok(prusti_attributes)
@@ -172,6 +166,22 @@ fn generate_spec_and_assertions(
     let mut generated_attributes = vec![];
 
     for (attr_kind, attr_span, attr_tokens) in prusti_attributes.drain(..) {
+        // Without this check, a missing argument would be reported as an
+        // unexpected end of input at the outermost attribute.
+        let needs_argument = matches!(
+            attr_kind,
+            SpecAttributeKind::Requires
+                | SpecAttributeKind::Ensures
+                | SpecAttributeKind::AfterExpiry
+                | SpecAttributeKind::AssertOnExpiry
+                | SpecAttributeKind::RefineSpec
+        );
+        if needs_argument && attr_tokens.is_empty() {
+            return Err(syn::Error::new(
+                attr_span,
+                "this attribute expects an argument",
+            ));
+        }
         let rewriting_result = match attr_kind {
             SpecAttributeKind::Requires => generate_for_requires(attr_tokens, attr_span, item),
             SpecAttributeKind::Ensures => generate_for_ensures(attr_tokens, attr_span, item),
@@ -974,20 +984,12 @@ fn extract_prusti_attributes_for_types(
     let mut prusti_attributes = Vec::new();
     let mut regular_attributes = Vec::new();
     for attr in item.attrs.drain(0..) {
-        let (attr_kind, tokens) = match prusti_attribute_kind(&attr) {
-            // The generators of attributes without arguments reject any
-            // tokens that are present.
-            Some(attr_kind @ (SpecAttributeKind::Trusted | SpecAttributeKind::Model)) => {
-                (attr_kind, attr.tokens)
-            }
-            // The argument of `print_counterexample` is optional.
-            Some(SpecAttributeKind::PrintCounterexample) if !attr.tokens.is_empty() => (
-                SpecAttributeKind::PrintCounterexample,
-                unwrap_argument(&attr)?,
-            ),
-            Some(SpecAttributeKind::PrintCounterexample) => {
-                (SpecAttributeKind::PrintCounterexample, attr.tokens)
-            }
+        let attr_kind = match prusti_attribute_kind(&attr) {
+            Some(
+                attr_kind @ (SpecAttributeKind::Trusted
+                | SpecAttributeKind::Model
+                | SpecAttributeKind::PrintCounterexample),
+            ) => attr_kind,
             Some(
                 SpecAttributeKind::Requires
                 | SpecAttributeKind::Ensures
@@ -1004,7 +1006,7 @@ fn extract_prusti_attributes_for_types(
                 continue;
             }
         };
-        prusti_attributes.push((attr_kind, tokens));
+        prusti_attributes.push((attr_kind, unwrap_argument(&attr)?));
     }
     item.attrs = regular_attributes;
     Ok(prusti_attributes)

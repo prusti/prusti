@@ -7,13 +7,19 @@ fn wrong(x: i32) -> i32 {
 }
 
 #[pure]
-#[requires] //~ERROR: the `#[requires]` attribute expects an argument in parentheses
+#[requires] //~ERROR: this attribute expects an argument
 fn requires_without_argument() -> bool {
     true
 }
 
+#[ensures] //~ERROR: this attribute expects an argument
 #[pure]
-#[ensures = "true"] //~ERROR: the `#[ensures]` attribute expects an argument in parentheses
+fn ensures_without_argument() -> bool {
+    true
+}
+
+#[pure]
+#[ensures = "true"] //~ERROR: the argument of the `#[ensures]` attribute must be in parentheses
 fn ensures_with_value() -> bool {
     true
 }
