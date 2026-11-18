@@ -58,7 +58,7 @@ fn find_prusti_rustc_path() -> PathBuf {
     } else {
         "prusti-rustc"
     };
-    Path::new(prusti_contracts_build::BIN_DIR).join(executable_name)
+    super::tested_bin_dir().join(executable_name)
 }
 
 fn prusti_config(path: String, env: &[(&str, &str)], abort_check: &AbortCheck) -> Config {

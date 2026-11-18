@@ -4,10 +4,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-use std::{
-    path::{Path, PathBuf},
-    sync::Mutex,
-};
+use std::{path::PathBuf, sync::Mutex};
 use ui_test::{
     default_any_file_filter, run_tests_generic, spanned::Spanned, status_emitter::StatusEmitter,
     AbortCheck, Args, Config,
@@ -19,7 +16,7 @@ fn find_cargo_prusti_path() -> PathBuf {
     } else {
         "cargo-prusti"
     };
-    Path::new(prusti_contracts_build::BIN_DIR).join(executable_name)
+    super::tested_bin_dir().join(executable_name)
 }
 
 fn run_cargo_tests(root_dir: &str, cargo_flags: &[&str], cargo_env: &[(&str, &str)]) {
