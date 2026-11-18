@@ -31,6 +31,11 @@ pub struct FunctionCallEncOutput<'vir> {
 }
 
 impl<'vir> FunctionCallEncOutput<'vir> {
+    /// Whether calls dummy the address of some argument.
+    pub fn dummies_addresses(&self) -> bool {
+        self.shared_ref_args.iter().any(Option::is_some)
+    }
+
     /// Calls the definitional function `f_`. In impure code a pure function
     /// is called as a method (its `MethodEnc`), whose postcondition ties the
     /// result to this application.

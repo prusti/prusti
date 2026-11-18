@@ -249,93 +249,55 @@ impl TaskEncoder for MethodEnc {
             // memory mode, exactly as a call `f(args)` in a specification is
             // encoded. So an impure call learns the same value; the body
             // proves it like any other postcondition.
-            let tie =
-                if let Some(mode) =
-                    crate::encoders::pure_mode(def_id, GArgs::new(params, params.rust_params()))
-                {
-                    let pure_func = deps.require_dep_spanned::<FunctionCallEnc>(
-                        CallTaskDescription::new(def_id, params.rust_params(), def_id)
-                            .resolve_trait_calls(false),
-                        span,
-                    )?;
-                    let arg_snaps = (1..arg_count)
-                        .map(mir::Local::from)
-                        .map(|arg_idx| vcx.mk_old_expr(arg_defs[arg_idx].impure_snap))
-                        .collect::<Vec<_>>();
-                    let name = vcx.tcx().def_path_str(def_id);
-                    // An implementation of a trait method may only be in memory
-                    // mode if the trait method is.
-                    let value_mode_trait_method = vcx
-                        .tcx()
-                        .opt_associated_item(def_id)
-                        .and_then(|item| item.trait_item_def_id())
-                        .filter(|&trait_item| {
-                            let trait_params = GParams::from(trait_item);
-                            crate::encoders::pure_mode(
-                                trait_item,
-                                GArgs::new(trait_params, trait_params.rust_params()),
-                            ) == Some(PureMode::Value)
-                        });
-                    let to_declare = match value_mode_trait_method {
-                        None => Some("the function `#[pure(memory)]`"),
-                        Some(trait_item) if trait_item.is_local() => Some(
-                            "the trait method it implements `#[pure(memory)]` (and this function \
-                         too, if it is annotated `#[pure]`)",
+            let mode = crate::encoders::pure_mode(def_id, GArgs::new(params, params.rust_params()));
+            let tie = if let Some(mode) = mode {
+                let pure_func = deps.require_dep_spanned::<FunctionCallEnc>(
+                    CallTaskDescription::new(def_id, params.rust_params(), def_id)
+                        .resolve_trait_calls(false),
+                    span,
+                )?;
+                let arg_snaps = (1..arg_count)
+                    .map(mir::Local::from)
+                    .map(|arg_idx| vcx.mk_old_expr(arg_defs[arg_idx].impure_snap))
+                    .collect::<Vec<_>>();
+                let name = vcx.tcx().def_path_str(def_id);
+                let error = match mode {
+                    PureMode::Value => {
+                        let error = PrustiError::verification(
+                            format!(
+                                "the result of pure function `{name}` might depend on memory \
+                                 addresses, which the result of a `#[pure]` function must not"
+                            ),
+                            span.into(),
+                        );
+                        match memory_mode_help(def_id, pure_func.dummies_addresses()) {
+                            Some(help) => error.set_help(help),
+                            None => error,
+                        }
+                    }
+                    // The arguments keep their addresses, but a borrow of a
+                    // local in pure code has no address.
+                    PureMode::Memory => PrustiError::verification(
+                        format!(
+                            "the result of pure function `{name}` might depend on the addresses \
+                             of its local variables, which pure functions cannot observe"
                         ),
-                        // The specification of a foreign trait method is fixed.
-                        Some(_) => None,
-                    };
-                    // Memory mode only helps with the addresses of arguments.
-                    let has_shared_ref_args = RustSignature::new(def_id)
-                        .inputs
-                        .iter()
-                        .any(|ty| ty.is_immref());
-                    let help = to_declare.filter(|_| has_shared_ref_args).map(|to_declare| {
-                    format!(
-                        "if the result is meant to depend on the addresses of shared-reference \
-                         arguments (e.g. it is a reference into an argument), declare \
-                         {to_declare}"
-                    )
-                });
-                    Some(vcx.with_span(span, |vcx| {
-                        vcx.add_error_taint(pure_func.body_taint());
-                        vcx.handle_error("postcondition.violated:assertion.false", move |_| {
-                            let error = match mode {
-                                PureMode::Value => {
-                                    let error = PrustiError::verification(
-                                        format!(
-                                            "the result of pure function `{name}` might depend on \
-                                         memory addresses, which the result of a `#[pure]` \
-                                         function must not"
-                                        ),
-                                        span.into(),
-                                    );
-                                    match &help {
-                                        Some(help) => error.set_help(help),
-                                        None => error,
-                                    }
-                                }
-                                // The arguments keep their addresses, but a borrow
-                                // of a local in pure code has no address.
-                                PureMode::Memory => PrustiError::verification(
-                                    format!(
-                                        "the result of pure function `{name}` might depend on the \
-                                     addresses of its local variables, which pure functions \
-                                     cannot observe"
-                                    ),
-                                    span.into(),
-                                ),
-                            };
-                            Some(vec![error])
-                        });
-                        vcx.mk_eq_expr(
-                            arg_defs[mir::RETURN_PLACE].impure_snap,
-                            pure_func.call_pure(arg_snaps),
-                        )
-                    }))
-                } else {
-                    None
+                        span.into(),
+                    ),
                 };
+                Some(vcx.with_span(span, |vcx| {
+                    vcx.add_error_taint(pure_func.body_taint());
+                    vcx.handle_error("postcondition.violated:assertion.false", move |_| {
+                        Some(vec![error.clone()])
+                    });
+                    vcx.mk_eq_expr(
+                        arg_defs[mir::RETURN_PLACE].impure_snap,
+                        pure_func.call_pure(arg_snaps),
+                    )
+                }))
+            } else {
+                None
+            };
 
             // Trusted functions, call stubs, external functions and trait
             // functions without a default implementation have no body to
@@ -498,4 +460,36 @@ impl TaskEncoder for MethodEnc {
             program.add_method(output.method);
         }
     }
+}
+
+/// The help for a `#[pure]` function `def_id` whose result might depend on
+/// memory addresses: declaring it `#[pure(memory)]` only helps if its calls
+/// dummy the address of some argument, and an implementation of a trait method
+/// may only be in memory mode if the trait method is.
+fn memory_mode_help(def_id: DefId, dummies_addresses: bool) -> Option<String> {
+    if !dummies_addresses {
+        return None;
+    }
+    let value_mode_trait_method = vir::with_vcx(|vcx| vcx.tcx().opt_associated_item(def_id))
+        .and_then(|item| item.trait_item_def_id())
+        .filter(|&trait_item| {
+            let trait_params = GParams::from(trait_item);
+            crate::encoders::pure_mode(
+                trait_item,
+                GArgs::new(trait_params, trait_params.rust_params()),
+            ) == Some(PureMode::Value)
+        });
+    let to_declare = match value_mode_trait_method {
+        None => "the function `#[pure(memory)]`",
+        Some(trait_item) if trait_item.is_local() => {
+            "the trait method it implements `#[pure(memory)]` (and this function too, if it is \
+             annotated `#[pure]`)"
+        }
+        // The specification of a foreign trait method is fixed.
+        Some(_) => return None,
+    };
+    Some(format!(
+        "if the result is meant to depend on the addresses of shared-reference arguments (e.g. \
+         it is a reference into an argument), declare {to_declare}"
+    ))
 }
