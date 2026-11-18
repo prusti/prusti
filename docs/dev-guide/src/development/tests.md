@@ -22,6 +22,15 @@ The [options available](https://doc.rust-lang.org/book/ch11-02-running-tests.htm
 $ ./x.py test mod
 ```
 
+To run only Prusti's test files (in `prusti-tests/tests`), build Prusti together with the test targets, then run `main`, the test target of `prusti-tests` that runs these files, with the paths to run:
+
+```bash
+$ ./x.py build --all-targets
+$ ./x.py test --test main -- tests/verify/pass/arrays/
+```
+
+The test files are run with the binaries in `target/debug`, which `./x.py test` does not update, so build first after every change. The second command then compiles nothing new. A plain `./x.py build`, like `./x.py test -p prusti-tests`, enables different features of shared dependencies from those the tests need, so the next test run or build compiles most of the workspace again.
+
 ## Additional flags
 
 Some tests require setting additional flags, for example, to ensure that the number of quantifier instantiations is below a certain bound. This can be achieved by adding at the top of the test file `// compile-flags:` followed by the [list of arguments](../config/flags.md) to Prusti. For example, the following comment would bound the number of unique triggers used to instantiate a quantifier to 20:
