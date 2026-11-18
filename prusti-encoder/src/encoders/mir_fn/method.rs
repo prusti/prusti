@@ -264,6 +264,7 @@ impl TaskEncoder for MethodEnc {
                     .collect::<Vec<_>>();
                 let name = vcx.tcx().def_path_str(def_id);
                 Some(vcx.with_span(span, |vcx| {
+                    vcx.add_error_taint(pure_func.body_taint());
                     vcx.handle_error("postcondition.violated:assertion.false", move |_| {
                         Some(vec![PrustiError::verification(
                             format!(

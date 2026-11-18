@@ -51,6 +51,13 @@ impl<'vir> FunctionCallEncOutput<'vir> {
         let call = function.call()(&args, self.ty_args.get_ty(), self.ty_args.get_const());
         self.output.cast_to_caller_ctx(call)
     }
+
+    /// The taint that is marked when the callee's body cannot be encoded and
+    /// `f_` is emitted without it; errors that follow from the missing body
+    /// can be dropped by adding it to their span (see [vir::ErrorTaint]).
+    pub fn body_taint(&self) -> &'vir vir::ErrorTaint {
+        self.function.body_taint
+    }
 }
 
 impl TaskEncoder for FunctionCallEnc {
@@ -72,6 +79,8 @@ impl TaskEncoder for FunctionCallEnc {
         let function_ref = if let Some(assoc_enc) = assoc_enc {
             FunctionEncOutputRef {
                 function_ref: assoc_enc.call_stub_pure_function.unwrap(),
+                // A call stub has no body, so its taint is never marked.
+                body_taint: vir::with_vcx(|vcx| vcx.alloc(vir::ErrorTaint::default())),
             }
         } else {
             deps.require_ref::<FunctionEnc>(task_key.callee)?
@@ -130,6 +139,8 @@ struct FunctionEnc;
 #[derive(Debug, Clone)]
 struct FunctionEncOutputRef<'vir> {
     function_ref: FunctionIdn<'vir, (vir::ManySnap, vir::ManyTyVal, vir::ManyCSnap), vir::Snap>,
+    /// Marked if the body could not be encoded and `f_` is emitted without it.
+    body_taint: &'vir vir::ErrorTaint,
 }
 
 impl<'vir> OutputRefAny for FunctionEncOutputRef<'vir> {}
@@ -180,7 +191,14 @@ impl TaskEncoder for FunctionEnc {
                 (arg_types, generics.ty_args(), generics.const_args()),
                 return_type,
             );
-            deps.emit_output_ref(def_id, FunctionEncOutputRef { function_ref })?;
+            let body_taint = vcx.alloc(vir::ErrorTaint::default());
+            deps.emit_output_ref(
+                def_id,
+                FunctionEncOutputRef {
+                    function_ref,
+                    body_taint,
+                },
+            )?;
 
             let spec =
                 deps.require_dep::<MirSpecEnc>((def_id, def_id, MirSpecEncMode::PureWithResult))?;
@@ -213,10 +231,13 @@ impl TaskEncoder for FunctionEnc {
                     Err(err) => {
                         let err = super::dep_error(&err);
                         let span = err.span.unwrap_or_else(|| vcx.tcx().def_span(def_id));
-                        vcx.emit_early_error(err.report(
+                        let error = vcx.emit_early_error(err.report(
                             format!("function body `{}`", vcx.tcx().def_path_str(def_id)),
                             span,
                         ));
+                        if let Some(error) = error {
+                            body_taint.mark(error);
+                        }
                         None
                     }
                 }

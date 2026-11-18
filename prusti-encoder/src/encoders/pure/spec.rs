@@ -391,7 +391,7 @@ impl MirSpecEnc {
         spec.inspect_err(|err| {
             let err = crate::encoders::mir_fn::dep_error(err);
             let span = err.span.unwrap_or(span);
-            vcx.emit_early_error(err.report(type_.to_string(), span))
+            vcx.emit_early_error(err.report(type_.to_string(), span));
         })
         .ok()
     }

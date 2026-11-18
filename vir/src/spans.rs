@@ -10,6 +10,33 @@ use prusti_rustc_interface::{
     },
 };
 
+/// Proof that an error, which fails the verification, has been reported to
+/// the user: only [VirCtxt::emit_early_error] creates one.
+#[derive(Clone, Copy, Debug)]
+pub struct ErrorGuaranteed(());
+
+/// Belongs to a part of the encoding that may stand in for one that could not
+/// be encoded, and is marked once that failure has been reported as an error.
+/// A verification error handled at a span that depends on a marked taint (see
+/// [VirCtxt::add_error_taint]) follows from the reported error, so it is not
+/// reported as well; leaving it out is safe because the reported error
+/// already fails the verification. A taint may be marked after the part it
+/// belongs to has been used, so it is only read when backtranslating, once
+/// the encoding has finished.
+#[derive(Debug, Default)]
+pub struct ErrorTaint(std::cell::OnceCell<ErrorGuaranteed>);
+
+impl ErrorTaint {
+    pub fn mark(&self, error: ErrorGuaranteed) {
+        // Marking it once is enough to prove that an error was reported.
+        let _ = self.0.set(error);
+    }
+
+    fn is_marked(&self) -> bool {
+        self.0.get().is_some()
+    }
+}
+
 pub struct VirSpanHandler<'vir> {
     error_kind: &'static str,
     handler: Box<dyn Fn(Option<Span>) -> Option<Vec<PrustiError>> + 'vir>,
@@ -72,6 +99,9 @@ pub struct VirSpanManager<'vir> {
     stack: Vec<&'vir crate::spans::VirSpan<'vir>>,
 
     handlers: FxHashMap<usize, VirSpanHandler<'vir>>,
+
+    /// The taints of each span (by `id`); see [VirCtxt::add_error_taint].
+    error_taints: FxHashMap<usize, Vec<&'vir ErrorTaint>>,
 
     early_errors: Vec<PrustiError>,
     /// Vector of objects holding for each method call the spans of any
@@ -158,9 +188,29 @@ impl<'tcx> VirCtxt<'tcx> {
         );
     }
 
-    pub fn emit_early_error(&self, error: PrustiError) {
+    /// Make the errors handled at the span currently on top of the stack
+    /// depend on `taint`: if it is marked, they are not reported.
+    pub fn add_error_taint(&self, taint: &'tcx ErrorTaint) {
+        let top_span_id = self
+            .top_span()
+            .expect("an error taint must be added under a span")
+            .id;
+        let mut manager = self.spans.borrow_mut();
+        manager
+            .error_taints
+            .entry(top_span_id)
+            .or_default()
+            .push(taint);
+    }
+
+    /// Report `error` before verification. Returns a token if it is reported
+    /// as an error, which fails the verification, rather than as a warning
+    /// (e.g. an unsupported feature when those are skipped).
+    pub fn emit_early_error(&self, error: PrustiError) -> Option<ErrorGuaranteed> {
+        let guarantee = error.is_error().then_some(ErrorGuaranteed(()));
         let mut manager = self.spans.borrow_mut();
         manager.early_errors.push(error);
+        guarantee
     }
 
     // TODO: eventually, this should not be an Option
@@ -197,6 +247,13 @@ impl<'tcx> VirCtxt<'tcx> {
                 while let Some(handler) = handler_opt {
                     if handler.error_kind == error_kind {
                         if let Some(errors) = (handler.handler)(reason_span_opt) {
+                            if manager
+                                .error_taints
+                                .get(&span.id)
+                                .is_some_and(|taints| taints.iter().any(|taint| taint.is_marked()))
+                            {
+                                return Vec::new();
+                            }
                             return errors;
                         }
                     }
