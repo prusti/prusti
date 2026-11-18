@@ -696,8 +696,21 @@ impl<'tcx> TySpecifics<'tcx, RustTyDatas> {
             ty::TyKind::Alias(..) | ty::TyKind::Param(_) => {
                 TySpecifics::mk_param(RustParamData::Generic)
             }
-            ty::TyKind::Closure(_, args) => {
-                let captured = args.as_closure().upvar_tys();
+            ty::TyKind::Closure(did, _) => {
+                // Like the fields of an ADT, the captures are taken from the
+                // definition, in terms of the closure's own parameters. The
+                // args of `ty` can be an instantiation of them, e.g. once an
+                // opaque type returning the closure is revealed.
+                let identity = vir::with_vcx(|vcx| {
+                    vcx.tcx()
+                        .type_of(*did)
+                        .instantiate_identity()
+                        .skip_normalization()
+                });
+                let ty::TyKind::Closure(_, identity_args) = identity.kind() else {
+                    unreachable!("the type of a closure is {identity:?}")
+                };
+                let captured = identity_args.as_closure().upvar_tys();
                 let fields = vir::with_vcx(|vcx| {
                     captured
                         .iter()
