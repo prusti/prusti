@@ -803,11 +803,49 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 //   function call; instead we should figure out which
                 //   wand it is based on the edge info.
                 // TODO: closures
-                for wand in self.call_wands_at(call.location().block)? {
-                    if let Some(footprint) = &mut footprint {
-                        footprint.parts.push(self.vcx.mk_wand_expr(wand));
+                let wands = self.deps.require_dep::<WandEnc>(WandEncTask {
+                    data: call.function_data().unwrap(),
+                })?;
+                let bb = &self.body[call.location().block];
+                let terminator = bb.terminator.as_ref().unwrap();
+                match &terminator.kind {
+                    mir::TerminatorKind::Call { func, args, .. } => {
+                        // Calls not encoded as impure method calls create no
+                        // wands (e.g., a Viper function application).
+                        if self.wandless_calls.contains(&call.location().block) {
+                            return Ok(());
+                        }
+                        let (_, caller_substs) = self.get_call_data(func);
+
+                        // The wands refer to the result through the snapshot
+                        // the call returned (see `panic`), which is also
+                        // defined if the call unwound.
+                        let result_snap = self
+                            .vcx
+                            .mk_local_ex(self.call_results[&call.location().block]);
+                        let wand_args =
+                            std::iter::once(Ok(result_snap))
+                                .chain(args.iter().map(|operand| {
+                                    self.encode_operand_snap_immediate(&operand.node)
+                                }))
+                                .collect::<EncodeResult<'vir, Vec<_>, E>>()?;
+                        let (label_pre, label_post) = self.call_labels[&call.location().block];
+                        let call_ctx = self.gargs(caller_substs);
+                        let panicked = self
+                            .vcx
+                            .mk_local_ex(self.call_panicked(call.location().block));
+                        let returned = panic::returned(self.vcx, panicked);
+                        let wands = wands.call_wands(
+                            &wand_args, label_pre, label_post, call_ctx, returned, self,
+                        );
+                        for wand in wands {
+                            if let Some(footprint) = &mut footprint {
+                                footprint.parts.push(self.vcx.mk_wand_expr(wand));
+                            }
+                            self.stmt(self.vcx.mk_apply_stmt(wand));
+                        }
                     }
-                    self.stmt(self.vcx.mk_apply_stmt(wand));
+                    _ => unreachable!(),
                 }
             }
             BorrowPcgEdgeKind::Abstraction(at @ AbstractionEdge::Loop(_)) => {
@@ -1200,28 +1238,13 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         location: mir::Location,
         unwind: mir::UnwindAction,
     ) -> EncodeResult<'vir, Option<PanicEdge<'vir>>, E> {
-        let end = self.vcx.alloc(vir::CfgBlockLabelData::End);
-        let is_call = matches!(
+        let phase = if matches!(
             self.body[location.block].terminator().kind,
             mir::TerminatorKind::Call { .. }
-        );
-        let phase = if is_call {
+        ) {
             EvalStmtPhase::PreMain
         } else {
             EvalStmtPhase::PostMain
-        };
-        // An unwinding call ends the borrows passed to it: its wands, whose
-        // left-hand sides then hold trivially, give back what they blocked.
-        // On this edge the PCG has no abstraction edge for the call (removing
-        // one is what applies the wands on the call's other edge), so they
-        // are applied here.
-        let apply_call_wands = |this: &mut Self| -> EncodeResult<'vir, (), E> {
-            if is_call {
-                for wand in this.call_wands_at(location.block)? {
-                    this.stmt(this.vcx.mk_apply_stmt(wand));
-                }
-            }
-            Ok(())
         };
         let current_fpcs = self.current_fpcs.take().unwrap();
         let state = &current_fpcs.statements.last().unwrap().states[phase];
@@ -1234,8 +1257,10 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                     .find(|succ| succ.block() == cleanup)
                     .unwrap();
                 let edge_to_loop = self.loop_head_of(cleanup).is_some();
+                // For a call, the actions start with the effect of the
+                // unwinding call, whose wands then give back the borrows
+                // passed to it.
                 self.block(|this| {
-                    apply_call_wands(this)?;
                     this.pcg_actions(state, succ.actions(), edge_to_loop)?;
                     let set_flag = this.set_from_to_flag(location.block, cleanup);
                     this.stmt(set_flag);
@@ -1243,17 +1268,15 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 })
                 .map(|stmts| Some((stmts, self.current_block_succs.as_ref().unwrap()[&cleanup])))
             }
-            // The panic propagates to the caller.
-            mir::UnwindAction::Continue => self
-                .block(|this| {
-                    apply_call_wands(this)?;
-                    this.unwind_from_method(state.borrow_pcg())
-                })
-                .map(|stmts| Some((stmts, end))),
+            // MIR building routes every unwind through a cleanup block, which
+            // ends in `UnwindResume`. Only `RemoveNoopLandingPads`, which runs
+            // after borrow checking, replaces an unwind into a cleanup block
+            // that just resumes by `Continue`.
+            mir::UnwindAction::Continue => unreachable!("unwind to caller in borrowck MIR"),
             // The program aborts.
             mir::UnwindAction::Terminate(_) => Ok(Some((
                 vec![self.vcx.mk_inhale_stmt(self.vcx.mk_bool::<false>())],
-                end,
+                self.vcx.alloc(vir::CfgBlockLabelData::End),
             ))),
             mir::UnwindAction::Unreachable => Ok(None),
         };
@@ -1626,40 +1649,6 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         self.tmp_ctr += 1;
         self.stmt(self.vcx.mk_local_decl_stmt(local, None));
         self.vcx.mk_local_ex(local)
-    }
-
-    /// The wands of the postcondition of the call terminating `block`; none
-    /// if it was not encoded as a method call (e.g., a Viper function
-    /// application).
-    fn call_wands_at(
-        &mut self,
-        block: mir::BasicBlock,
-    ) -> EncodeResult<'vir, Vec<vir::Wand<'vir>>, E> {
-        if self.wandless_calls.contains(&block) {
-            return Ok(Vec::new());
-        }
-        let mir::TerminatorKind::Call { func, args, .. } = &self.body[block].terminator().kind
-        else {
-            unreachable!()
-        };
-        let (def_id, caller_substs) = self.get_call_data(func);
-        let wands = self.deps.require_dep::<WandEnc>(WandEncTask {
-            data: pcg::borrow_pcg::FunctionData::new(def_id),
-        })?;
-        // The wands refer to the result through the snapshot the call
-        // returned (see `panic`).
-        let result_snap = self.vcx.mk_local_ex(self.call_results[&block]);
-        let wand_args = std::iter::once(Ok(result_snap))
-            .chain(
-                args.iter()
-                    .map(|operand| self.encode_operand_snap_immediate(&operand.node)),
-            )
-            .collect::<EncodeResult<'vir, Vec<_>, E>>()?;
-        let (label_pre, label_post) = self.call_labels[&block];
-        let call_ctx = self.gargs(caller_substs);
-        let panicked = self.vcx.mk_local_ex(self.call_panicked(block));
-        let returned = panic::returned(self.vcx, panicked);
-        Ok(wands.call_wands(&wand_args, label_pre, label_post, call_ctx, returned, self))
     }
 
     /// The local recording whether the method call terminating `block`
