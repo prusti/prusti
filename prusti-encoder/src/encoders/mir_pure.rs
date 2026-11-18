@@ -173,7 +173,8 @@ impl TaskEncoder for MirPureEnc {
                     enc.encode_body()
                 }
             })?;
-            let inputs = std::mem::take(&mut enc.versions_used)
+            let inputs = std::mem::take(&mut enc.uses)
+                .read
                 .into_iter()
                 .filter(|(l, v)| *l != mir::RETURN_PLACE && *v == 0)
                 .map(|(l, _v)| l)
@@ -285,6 +286,58 @@ impl<'vir> Update<'vir> {
     }
 }
 
+/// The versions of locals that the encoded expression reads, directly or
+/// through the value of a version it reads. Only the bindings of these
+/// versions are emitted, so that a binding nothing reads emits nothing its
+/// value reads either.
+#[derive(Default)]
+struct Uses {
+    /// The versions read. Closed under `pending`: once a version is read, so
+    /// are the versions its value reads.
+    read: FxHashSet<(mir::Local, usize)>,
+    /// For each assigned version not read yet, the versions its value reads.
+    pending: FxHashMap<(mir::Local, usize), Vec<(mir::Local, usize)>>,
+    /// While an assignment is encoded, the versions its value reads so far.
+    assignment: Option<Vec<(mir::Local, usize)>>,
+}
+
+impl Uses {
+    /// Records a read of version `index` of `local`: by the value of the
+    /// assignment being encoded, if any, or else by the expression itself.
+    fn read(&mut self, local: mir::Local, index: usize) {
+        if let Some(reads) = &mut self.assignment {
+            reads.push((local, index));
+        } else if self.read.insert((local, index))
+            && let Some(reads) = self.pending.remove(&(local, index))
+        {
+            for (local, index) in reads {
+                self.read(local, index);
+            }
+        }
+    }
+
+    /// Starts recording the reads of an assignment's value.
+    fn start_assignment(&mut self) {
+        debug_assert!(self.assignment.is_none(), "assignments do not nest");
+        self.assignment = Some(Vec::new());
+    }
+
+    /// Stops recording the reads of an assignment's value, returning them.
+    fn end_assignment(&mut self) -> Vec<(mir::Local, usize)> {
+        self.assignment.take().unwrap()
+    }
+
+    /// Records that version `index` of `local` is assigned a value that
+    /// reads `reads`; they count as read once that version is.
+    fn assigned(&mut self, local: mir::Local, index: usize, reads: Vec<(mir::Local, usize)>) {
+        self.pending.insert((local, index), reads);
+    }
+
+    fn is_read(&self, local: mir::Local, index: usize) -> bool {
+        self.read.contains(&(local, index))
+    }
+}
+
 struct Enc<'vir: 'enc, 'enc> {
     vcx: &'vir vir::VirCtxt<'vir>,
     encoding_depth: usize,
@@ -300,7 +353,7 @@ struct Enc<'vir: 'enc, 'enc> {
     deps: &'enc mut TaskEncoderDependencies<'vir, MirPureEnc>,
     /// Always holds the next version to be used for a local.
     version_ctr: IndexVec<mir::Local, usize>,
-    versions_used: FxHashSet<(mir::Local, usize)>, // TODO: mode indicators?
+    uses: Uses, // TODO: mode indicators?
     phi_ctr: usize,
     old_mode: bool,
     rel0_mode: bool,
@@ -405,7 +458,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
             deps,
             // visited: IndexVec::from_elem_n(false, body.basic_blocks.len()),
             version_ctr: IndexVec::from_elem_n(0, body.local_decls.len()),
-            versions_used: Default::default(),
+            uses: Default::default(),
             phi_ctr: 0,
             old_mode: false,
             rel0_mode: false,
@@ -525,7 +578,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                 // skip bindings which were not used
                 // TODO: this might optimise away some function calls which
                 //   can act as triggers for quantifiers
-                if !self.versions_used.contains(&(*local, version.index)) {
+                if !self.uses.is_read(*local, version.index) {
                     expr
                 } else {
                     let decl = version.initialised.unwrap();
@@ -563,6 +616,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                             curr_ver[local]
                         });
 
+                        self.uses.read(*local, version.index);
                         self.mk_local_ex(*local, version)
                     })
                     .collect::<Vec<_>>();
@@ -601,7 +655,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
             return Ok(self.ty_use(result_ty).unreachable_to_snap());
         };
         let ret_version = res.versions.get(&result_local).copied().unwrap_or(v0);
-        self.versions_used.insert((result_local, ret_version.index));
+        self.uses.read(result_local, ret_version.index);
 
         let ex = self.mk_local_ex(result_local, ret_version);
         Ok(self.reify_binds(res, ex))
@@ -730,20 +784,6 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                     .map(|l| self.body.local_decls[*l].ty)
                     .collect();
 
-                // for each branch, mark the updated versions as "used"
-                // TODO: this is an over-estimation: the variable after the
-                //   join point may not actually be used
-                for update in &updates {
-                    let Some(update) = update else {
-                        continue;
-                    };
-                    for local in &mod_locals {
-                        if let Some(version) = update.versions.get(local) {
-                            self.versions_used.insert((*local, version.index));
-                        }
-                    }
-                }
-
                 // for each branch, create a Viper tuple of the updated locals
                 let tuple_ref = self
                     .deps
@@ -835,17 +875,6 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                     .iter()
                     .map(|l| self.body.local_decls[*l].ty)
                     .collect();
-
-                // for each branch, mark the updated versions as "used"
-                // TODO: this is an over-estimation: the variable after the
-                //   join point may not actually be used
-                if let Some(update) = &ok_update {
-                    for local in &mod_locals {
-                        if let Some(version) = update.versions.get(local) {
-                            self.versions_used.insert((*local, version.index));
-                        }
-                    }
-                }
 
                 // create a Viper tuple of the updated locals
                 let tuple_ref = self
@@ -1019,9 +1048,14 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                 | mir::StatementKind::BackwardIncompatibleDropHint { .. } => {} // nop
                 mir::StatementKind::Assign(box (dest, rvalue)) => {
                     let span = stmt.source_info.span;
-                    let expr = self.encode_rvalue(curr_ver, rvalue, span)?;
-                    let expr = self.encode_place_update(curr_ver, *dest, expr, span)?;
-                    self.bump_version(&mut update, dest.local, expr, location);
+                    self.uses.start_assignment();
+                    let expr = self
+                        .encode_rvalue(curr_ver, rvalue, span)
+                        .and_then(|expr| self.encode_place_update(curr_ver, *dest, expr, span));
+                    let reads = self.uses.end_assignment();
+                    self.bump_version(&mut update, dest.local, expr?, location);
+                    let version = update.versions[&dest.local].index;
+                    self.uses.assigned(dest.local, version, reads);
                 }
                 k => todo!("statement kind {k:?}"),
             }
@@ -1293,8 +1327,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
     ) -> EncodeResult<'vir, EncodedPlace<'vir>, MirPureEnc> {
         // TODO: remove (debug)
         assert!(curr_ver.contains_key(&place.local));
-        self.versions_used
-            .insert((place.local, curr_ver[&place.local].index));
+        self.uses.read(place.local, curr_ver[&place.local].index);
 
         let mut place_ty = mir::PlaceTy::from_ty(self.body.local_decls[place.local].ty);
 
