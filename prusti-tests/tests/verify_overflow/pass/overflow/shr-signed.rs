@@ -1,4 +1,3 @@
-//@ compile-flags: -Pcheck_overflows=true
 use prusti_contracts::*;
 
 fn main() {
@@ -20,7 +19,7 @@ fn neg_stays_neg(x: i8) -> i8 {
     x >> 1
 }
 
-#[ensures(result == x / 2 || result == x / 2 - 1)]
+#[ensures(x - result * 2 == 0 || x - result * 2 == 1)]
 fn shr_is_floor_div(x: i8) -> i8 {
     x >> 1
 }
