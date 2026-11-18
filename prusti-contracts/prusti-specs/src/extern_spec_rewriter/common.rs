@@ -150,7 +150,7 @@ pub(crate) fn generate_extern_spec_method_stub<T: HasSignature + HasAttributes +
 
     // Eagerly extract and process specifications
     let mut stub_method = AnyFnItem::ImplMethod(stub_method);
-    let prusti_attributes = extract_prusti_attributes(&mut stub_method);
+    let prusti_attributes = extract_prusti_attributes(&mut stub_method)?;
     let (spec_items, generated_attributes) =
         generate_spec_and_assertions(prusti_attributes, &stub_method)?;
 

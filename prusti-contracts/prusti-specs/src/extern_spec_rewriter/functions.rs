@@ -5,7 +5,7 @@
 use super::common::generate_extern_spec_function_stub;
 use crate::ExternSpecKind;
 use proc_macro2::{Group, TokenStream, TokenTree};
-use quote::{quote, ToTokens};
+use quote::ToTokens;
 use syn::{parse_quote_spanned, spanned::Spanned};
 
 pub fn rewrite_stub(
@@ -40,7 +40,10 @@ pub fn rewrite_stub(
     if let syn::Item::Fn(item_fn) = &mut item {
         Ok(rewrite_fn(item_fn, path, is_unsafe))
     } else {
-        Ok(quote!(#item))
+        Err(syn::Error::new(
+            stub_tokens.span(),
+            "Extern specs cannot be attached to this item",
+        ))
     }
 }
 
