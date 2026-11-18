@@ -9,7 +9,7 @@ use std::{
     env, fs,
     io::Write,
     num::NonZeroUsize,
-    path::{Path, PathBuf},
+    path::Path,
     sync::{
         atomic::{AtomicUsize, Ordering},
         Mutex,
@@ -52,20 +52,11 @@ type TestsResult = ui_test::color_eyre::Result<()>;
 /// The number of tests marked `//@ known-failure` that were run.
 static KNOWN_FAILURES: AtomicUsize = AtomicUsize::new(0);
 
-fn find_prusti_rustc_path() -> PathBuf {
-    let executable_name = if cfg!(windows) {
-        "prusti-rustc.exe"
-    } else {
-        "prusti-rustc"
-    };
-    super::tested_bin_dir().join(executable_name)
-}
-
 fn prusti_config(path: String, env: &[(&str, &str)], abort_check: &AbortCheck) -> Config {
     let mut config = Config::rustc(path);
     config.out_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/ui");
     config.abort_check = abort_check.clone();
-    config.program.program = find_prusti_rustc_path();
+    config.program.program = super::tested_bin("prusti-rustc");
     config.program.args.push("-Awarnings".into());
     config
         .program
