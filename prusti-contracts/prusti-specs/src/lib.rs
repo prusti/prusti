@@ -55,9 +55,8 @@ macro_rules! result_to_tokens {
 }
 
 /// The argument of an attribute in inner position, i.e. its tokens with the
-/// surrounding delimiters dropped, or no tokens if it has no argument. This
-/// makes them identical to the ones passed by the native procedural macro
-/// call, so the generators see the same tokens wherever the attribute is.
+/// surrounding delimiters dropped, or no tokens if it has no argument. These
+/// are the tokens rustc passes to an attribute macro in outer position.
 fn unwrap_argument(attr: &syn::Attribute) -> syn::Result<TokenStream> {
     let mut iter = attr.tokens.clone().into_iter();
     match (iter.next(), iter.next()) {
@@ -95,9 +94,6 @@ fn extract_prusti_attributes(
     let mut prusti_attributes = Vec::new();
     let mut regular_attributes = Vec::new();
     for attr in item.attrs_mut().drain(0..) {
-        // The span of the annotation itself, so diagnostics can point
-        // at the specific attribute rather than the whole item.
-        let attr_span = attr.path.span();
         let attr_kind = match prusti_attribute_kind(&attr) {
             Some(
                 attr_kind @ (SpecAttributeKind::Requires
@@ -120,6 +116,9 @@ fn extract_prusti_attributes(
                 continue;
             }
         };
+        // The span of the annotation itself, so diagnostics can point
+        // at the specific attribute rather than the whole item.
+        let attr_span = attr.path.span();
         prusti_attributes.push((attr_kind, attr_span, unwrap_argument(&attr)?));
     }
     *item.attrs_mut() = regular_attributes;
@@ -167,7 +166,8 @@ fn generate_spec_and_assertions(
 
     for (attr_kind, attr_span, attr_tokens) in prusti_attributes.drain(..) {
         // Without this check, a missing argument would be reported as an
-        // unexpected end of input at the outermost attribute.
+        // unexpected end of input at the outermost attribute. The argument
+        // of `terminates` is optional.
         let needs_argument = matches!(
             attr_kind,
             SpecAttributeKind::Requires
@@ -214,7 +214,7 @@ fn generate_spec_and_assertions(
 
 /// Generates the spec item built by `process`, which typechecks a
 /// specification, and the attribute `#[prusti::<ref_attr> = "<spec id>"]`,
-/// with which the encoder later retrieves the spec item.
+/// with which the spec collection of `prusti-interface` later finds it.
 fn generate_spec_item(
     ref_attr: &str,
     span: Span,
@@ -975,9 +975,10 @@ pub fn rewrite_prusti_attributes_for_types(
     }
 }
 
-/// Removes the Prusti attributes that this function processes from the type
-/// `item`. The others, such as `#[invariant]`, are left for the compiler to
-/// expand, as in [extract_prusti_attributes].
+/// Removes the attributes `#[trusted]`, `#[model]` and
+/// `#[print_counterexample]` from the type `item`, which are processed
+/// together. The others, including `#[invariant]`, are left for the compiler
+/// to expand, as in [extract_prusti_attributes].
 fn extract_prusti_attributes_for_types(
     item: &mut syn::DeriveInput,
 ) -> syn::Result<Vec<(SpecAttributeKind, TokenStream)>> {

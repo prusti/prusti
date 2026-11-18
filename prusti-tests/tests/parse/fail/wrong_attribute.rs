@@ -39,6 +39,10 @@ fn invariant_on_function() -> bool { //~ERROR: expected one of: `struct`, `enum`
 #[trusted(x)] //~ERROR: the `#[trusted]` attribute does not take parameters
 struct TrustedWithParameter;
 
+#[trusted]
+#[print_counterexample]
+struct TrustedWithCounterexample; //~ERROR: `trusted!` is incompatible with other Prusti attributes
+
 #[print_counterexample]
 #[model(x)] //~ERROR: the `#[model]` attribute does not take parameters
 struct ModelWithParameter {
