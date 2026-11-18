@@ -40,6 +40,7 @@
             ];
             nativeBuildInputs = [
               pkgs.makeWrapper
+              pkgs.python3
             ];
 
             copyTarget = true;
@@ -54,9 +55,12 @@
             };
             overrideMain = _: {
               postInstall = ''
-                rm $out/bin/test-crates
+                # `x.py package` copies the binaries, the contracts and `viper_tools`.
+                ln -s ${packages.viper} viper_tools
+                python3 x.py package release $out/bin
+                rm -rf $out/target
 
-                for f in $(find $out/bin/ $out/libexec/ -type f -executable); do
+                for f in $out/bin/{prusti-driver,prusti-rustc,cargo-prusti,prusti-server,prusti-server-driver}; do
                   wrapProgram $f \
                     --set RUST_SYSROOT "${rust}" \
                     --set JAVA_HOME "${pkgs.jdk11}/lib/openjdk" \
@@ -64,12 +68,6 @@
                     --set VIPER_HOME "${packages.viper}/backends" \
                     --set Z3_EXE "${packages.viper}/z3/bin/z3"
                 done
-
-                mkdir $out/bin/deps
-                cp $out/target/release/libprusti_contracts.rlib $out/bin
-                cp $out/target/release/deps/libprusti_contracts_internal-* $out/bin/deps
-                rm -rf $out/target
-                rm $out/bin/deps/*.{rlib,rmeta}
               '';
             };
           };

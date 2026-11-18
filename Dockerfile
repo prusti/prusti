@@ -1,4 +1,4 @@
-FROM ubuntu:18.04
+FROM ubuntu:24.04
 MAINTAINER Federico Poli "federico.poli@inf.ethz.ch"
 
 ENV DEBIAN_FRONTEND noninteractive
@@ -51,16 +51,7 @@ RUN cd /opt/prusti-dev && \
 # Build and install Prusti
 RUN cd /opt/prusti-dev && \
     ./x.py build --release && \
-    mkdir -p /usr/local/prusti/deps/ && \
-	cp -r viper_tools/ /usr/local/prusti/ && \
-    cp rust-toolchain /usr/local/prusti/ && \
-    cp target/release/prusti-driver /usr/local/prusti/ && \
-    cp target/release/prusti-server-driver /usr/local/prusti/ && \
-    cp target/release/prusti-server /usr/local/prusti/ && \
-    cp target/release/prusti-rustc /usr/local/prusti/ && \
-    cp target/release/cargo-prusti /usr/local/prusti/ && \
-    cp target/release/libprusti_contracts.rlib /usr/local/prusti/ && \
-    cp target/release/deps/libprusti_contracts_internal-* /usr/local/prusti/deps/ && \
+    ./x.py package release /usr/local/prusti && \
     rm -rf target
 ENV PATH "/usr/local/prusti/:${PATH}"
 
@@ -69,12 +60,12 @@ WORKDIR /root
 RUN cargo new good-example && \
     cd good-example && \
     sed -i '1s/^/use prusti_contracts::*;\n/;s/println.*$/assert!(true);/' src/main.rs && \
-    echo 'prusti-contracts = { path = "/opt/prusti-dev/prusti-contracts" }' >> Cargo.toml && \
+    echo 'prusti-contracts = { path = "/opt/prusti-dev/prusti-contracts/prusti-contracts" }' >> Cargo.toml && \
     cargo build && cargo clean && \
     cargo prusti && cargo clean
 RUN cargo new bad-example && \
     cd bad-example && \
     sed -i '1s/^/use prusti_contracts::*;\n/;s/println.*$/assert!(false);/' src/main.rs && \
-    echo 'prusti-contracts = { path = "/opt/prusti-dev/prusti-contracts" }' >> Cargo.toml && \
+    echo 'prusti-contracts = { path = "/opt/prusti-dev/prusti-contracts/prusti-contracts" }' >> Cargo.toml && \
     cargo build && cargo clean && \
     ! cargo prusti && cargo clean

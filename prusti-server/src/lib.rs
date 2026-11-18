@@ -12,7 +12,6 @@ use crate::{
 };
 use ::log::{debug, error, info};
 use ide::IdeVerificationResult;
-use once_cell::sync::Lazy;
 use prusti_interface::{data::VerificationResult, environment::EnvDiagnostic, PrustiError};
 use prusti_rustc_interface::{data_structures::fx::FxHashMap, span::DUMMY_SP};
 use prusti_utils::{config, Stopwatch};
@@ -39,7 +38,7 @@ pub(crate) use verification_request::*;
 use async_stream::stream;
 use futures_util::{pin_mut, Stream, StreamExt};
 use serde_json::json;
-use std::sync::{self, Arc};
+use std::sync::{self, Arc, LazyLock};
 pub use tokio;
 use tokio::runtime::Builder;
 
@@ -79,13 +78,13 @@ pub fn verify_programs(
                 verify_requests_server(verification_requests, server_address);
             handle_stream(env_diagnostic, verification_messages).await
         } else {
-            let cache = Lazy::new(move || {
+            let cache = LazyLock::new(move || {
                 Arc::new(sync::Mutex::new(PersistentCache::load_cache(
                     config::cache_path(),
                     env!("BACKEND_FINGERPRINT"),
                 )))
             });
-            let vrp = Lazy::new(VerificationRequestProcessing::new);
+            let vrp = LazyLock::new(VerificationRequestProcessing::new);
             let verification_messages = verify_requests_local(verification_requests, &cache, &vrp);
             handle_stream(env_diagnostic, verification_messages).await
         }
@@ -482,11 +481,11 @@ fn verify_requests_server(
 
 fn verify_requests_local<'a>(
     verification_requests: Vec<VerificationRequest>,
-    cache: &'a Lazy<
+    cache: &'a LazyLock<
         Arc<sync::Mutex<PersistentCache>>,
         impl FnOnce() -> Arc<sync::Mutex<PersistentCache>>,
     >,
-    vrp: &'a Lazy<
+    vrp: &'a LazyLock<
         VerificationRequestProcessing,
         impl FnMut() -> VerificationRequestProcessing + 'a,
     >,
@@ -495,7 +494,7 @@ fn verify_requests_local<'a>(
         for request in verification_requests {
             let request_hash = request.get_hash();
             if config::enable_cache() {
-                if let Some(mut result) = Lazy::force(cache).get(request_hash) {
+                if let Some(mut result) = LazyLock::force(cache).get(request_hash) {
                     info!(
                         "Using cached result {:?}",
                         result,

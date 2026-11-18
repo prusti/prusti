@@ -1,7 +1,7 @@
 [workspace]
 members = [
-    #"analysis",
     "jni-gen",
+    "jni-gen/systest",
     "prusti",
     "prusti-contracts-build",
     "prusti-encoder",
@@ -9,7 +9,6 @@ members = [
     "prusti-utils",
     "prusti-viper",
     "tracing",
-    #"mir-ssa-analysis",
     "pcg",
     "prusti-interface",
     "prusti-server",
@@ -20,7 +19,6 @@ members = [
     "task-encoder",
     # "test-crates",
     "viper",
-    # "viper-defs",
     "viper-sys",
     "vir",
     "vir-proc-macro",

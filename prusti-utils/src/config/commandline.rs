@@ -3,20 +3,12 @@ use itertools::Itertools;
 // Cannot use rustc_hash::FxHashMap here, due to type requirement in config::Source
 use std::{collections::HashMap, env};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct CommandLine {
     /// Optional prefix that will limit args to those that begin with the defined prefix.
     ///
     /// Example: The arg -Zdebug=true would become debug=true with a prefix of -Z
     prefix: Option<String>,
-
-    /// Character sequence that separates key, value pairs. The default separator is '=',
-    /// the separator pattern must only occur once in the flag or it will be ignored.
-    ///
-    /// Example: debug=true is a valid key,val pair with separator of '='
-    ///          debug= would be invalid because there is no value.
-    ///          debug+true would be valid with a separator of '+'
-    separator: String,
 
     /// Boolean indicating whether invalid flags should be ignored or result in a ConfigError
     ///
@@ -26,27 +18,11 @@ pub struct CommandLine {
 }
 
 impl CommandLine {
-    pub fn new() -> Self {
-        CommandLine::default()
-    }
-
     pub fn with_prefix(s: &str) -> Self {
         CommandLine {
             prefix: Some(s.to_owned()),
             ..CommandLine::default()
         }
-    }
-
-    #[must_use]
-    pub fn prefix(mut self, s: &str) -> Self {
-        self.prefix = Some(s.into());
-        self
-    }
-
-    #[must_use]
-    pub fn separator(mut self, s: &str) -> Self {
-        self.separator = s.into();
-        self
     }
 
     #[must_use]
@@ -68,12 +44,12 @@ impl CommandLine {
     }
 
     fn split_arg<'a>(&'a self, arg: &'a str) -> impl Iterator<Item = String> + 'a {
-        arg.splitn(2, &self.separator).map(|s| s.to_owned())
+        arg.splitn(2, '=').map(|s| s.to_owned())
     }
 
     // An argument is valid if it begins with the optional
-    // prefix, the first occurrence of the separator pattern
-    // separates two non-empty strings.
+    // prefix, the first occurrence of '=' separates two
+    // non-empty strings.
     fn is_valid_arg(&self, arg: &str) -> bool {
         let prefix = self.get_prefix();
         if arg.starts_with(&prefix) {
@@ -84,16 +60,6 @@ impl CommandLine {
                 == 2;
         }
         false
-    }
-}
-
-impl Default for CommandLine {
-    fn default() -> CommandLine {
-        CommandLine {
-            prefix: None,
-            separator: String::from("="),
-            ignore_invalid: false,
-        }
     }
 }
 

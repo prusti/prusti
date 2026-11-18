@@ -88,16 +88,3 @@ pub fn report<S1: ToString, S2: ToString>(namespace: &str, name: S1, data: S2) {
         .unwrap();
     writer.flush().map_err(|e| panic!("{}", e)).ok().unwrap();
 }
-
-pub fn report_with_writer<S: ToString, F: FnOnce(&mut Box<dyn Write>)>(
-    namespace: &str,
-    name: S,
-    func: F,
-) {
-    let mut writer = build_writer(namespace, name)
-        .map_err(|e| panic!("{}", e))
-        .ok()
-        .unwrap();
-    func(&mut writer);
-    writer.flush().map_err(|e| panic!("{}", e)).ok().unwrap();
-}

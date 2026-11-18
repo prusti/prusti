@@ -3,30 +3,19 @@ pub mod wrappers {
     include!(concat!(env!("OUT_DIR"), "/gen/mod.rs"));
 }
 
-use jni::JNIEnv;
-use jni::JavaVM;
-use jni::InitArgsBuilder;
-use jni::JNIVersion;
-use jni::errors::Result;
-use std::sync::Once;
+use jni::{errors::Result, InitArgsBuilder, JNIEnv, JNIVersion, JavaVM};
+use std::sync::LazyLock;
 
 pub fn print_exception(env: &JNIEnv) {
     let exception_occurred = env.exception_check().unwrap_or_else(|e| panic!("{e:?}"));
     if exception_occurred {
-        env.exception_describe()
-            .unwrap_or_else(|e| panic!("{e:?}"));
+        env.exception_describe().unwrap_or_else(|e| panic!("{e:?}"));
     }
 }
 
-// TODO: Refactor using a LazyLock<JavaVM>
-// see https://github.com/prusti/prusti/pull/1364#issuecomment-1471597370
-// for further details
-static INIT_JVM: Once = Once::new();
-static mut JVM: Option<JavaVM> = None;
-
-fn init_jvm() -> Result<()> {
-    INIT_JVM.call_once(|| {
-        let jvm_args = InitArgsBuilder::new()
+/// The JVM shared by all tests. A process can create only one JVM.
+static JVM: LazyLock<JavaVM> = LazyLock::new(|| {
+    let jvm_args = InitArgsBuilder::new()
         .version(JNIVersion::V8)
         .option("-Xcheck:jni")
         .option("-Xdebug")
@@ -36,24 +25,11 @@ fn init_jvm() -> Result<()> {
             panic!("{} source: {:?}", e, std::error::Error::source(&e));
         });
 
-        let jvm = JavaVM::new(jvm_args).unwrap_or_else(|e| {
-            panic!("{} source: {:?}", e, std::error::Error::source(&e));
-        });
-        
-        unsafe {
-            JVM = Some(jvm);
-        }
-    });
-    Ok(())
-}
+    JavaVM::new(jvm_args).unwrap_or_else(|e| {
+        panic!("{} source: {:?}", e, std::error::Error::source(&e));
+    })
+});
 
 pub fn get_jvm() -> Result<&'static JavaVM> {
-    init_jvm()?;
-    unsafe {
-        if let Some(res) = JVM.as_ref() {
-            Ok(res)
-        } else {
-            panic!("Failed to get JVM reference")
-        }
-    }
+    Ok(&JVM)
 }

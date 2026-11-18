@@ -35,8 +35,6 @@ dry_run = False
 RUSTFMT_EXCLUDED_CRATES = [
     'tracing',
     'pcg',
-    'analysis',
-    'mir-ssa-analysis',
     'test-crates',
     'prusti-contracts/prusti-contracts-test'
 ]

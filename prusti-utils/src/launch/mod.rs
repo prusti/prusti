@@ -328,8 +328,7 @@ pub struct PrustiPaths {
     current_executable_dir: PathBuf,
     java_home: PathBuf,
     libjvm_path: PathBuf,
-    compiler_bin: PathBuf,
-    compiler_lib: PathBuf,
+    sysroot: PathBuf,
 }
 
 impl Default for PrustiPaths {
@@ -353,22 +352,23 @@ impl PrustiPaths {
         let libjvm_path =
             find_libjvm(&java_home).expect("Failed to find JVM library. Check JAVA_HOME");
 
-        let prusti_sysroot = prusti_sysroot().expect("Failed to find Rust's sysroot");
-
-        let compiler_bin = prusti_sysroot.join("bin");
-        let compiler_lib = prusti_sysroot.join("lib");
+        let sysroot = prusti_sysroot().expect("Failed to find Rust's sysroot");
 
         Self {
             current_executable_dir,
             java_home,
             libjvm_path,
-            compiler_bin,
-            compiler_lib,
+            sysroot,
         }
     }
 
     pub fn java_home(&self) -> &Path {
         &self.java_home
+    }
+
+    /// The sysroot of the Rust toolchain that Prusti is built with.
+    pub fn sysroot(&self) -> &Path {
+        &self.sysroot
     }
 
     pub fn current_executable_dir(&self) -> &Path {
@@ -404,8 +404,8 @@ impl PrustiPaths {
         add_to_loader_path(
             vec![
                 self.libjvm_path.clone(),
-                self.compiler_bin.clone(),
-                self.compiler_lib.clone(),
+                self.sysroot.join("bin"),
+                self.sysroot.join("lib"),
             ],
             cmd,
         );

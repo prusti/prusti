@@ -1,11 +1,12 @@
-use std::{sync::Once, vec};
+use std::{
+    sync::{LazyLock, Once},
+    vec,
+};
 use viper::*;
 
 static INIT: Once = Once::new();
 
-lazy_static::lazy_static! {
-    static ref VIPER: Viper = Viper::new_for_tests();
-}
+static VIPER: LazyLock<Viper> = LazyLock::new(Viper::new_for_tests);
 
 /// Setup function that is only run once, even if called multiple times.
 fn setup() {

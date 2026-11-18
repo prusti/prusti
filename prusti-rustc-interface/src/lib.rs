@@ -4,9 +4,6 @@
 
 #![feature(rustc_private)]
 
-extern crate rustc_public;
-
-pub extern crate polonius_engine as polonius_engine;
 pub extern crate rustc_abi as abi;
 pub extern crate rustc_ast as ast;
 pub extern crate rustc_ast_pretty as ast_pretty;
@@ -22,14 +19,12 @@ pub extern crate rustc_serialize as serialize;
 pub extern crate rustc_session as session;
 pub extern crate rustc_span as span;
 pub extern crate rustc_target as target;
-pub extern crate rustc_type_ir as type_ir;
 
 // TODO: switch over to `rustc_public` once RA knows about the crate
 // pub use rustc_public::very_unstable::{borrowck, dataflow, hir, middle, trait_selection};
 pub extern crate rustc_borrowck as borrowck;
 pub extern crate rustc_hir as hir;
 pub extern crate rustc_middle as middle;
-pub extern crate rustc_mir_dataflow as dataflow;
 pub extern crate rustc_trait_selection as trait_selection;
 
 pub extern crate rustc_const_eval as const_eval;
