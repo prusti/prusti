@@ -1,4 +1,8 @@
-use syn::parse::{Parse, ParseStream};
+use crate::{prusti_attribute_kind, unwrap_argument, SpecAttributeKind};
+use syn::{
+    parse::{Parse, ParseStream},
+    spanned::Spanned,
+};
 
 pub(crate) struct ClosureWithSpec {
     pub pres: Vec<syn::Expr>,
@@ -17,16 +21,12 @@ impl Parse for ClosureWithSpec {
         // collect and remove any specification attributes
         // leave other attributes intact
         attrs.retain(|attr| {
-            if let Some(id) = attr.path.get_ident() {
-                match id.to_string().as_ref() {
-                    "requires" => pres.push(syn::parse2(attr.tokens.clone())),
-                    "ensures" => posts.push(syn::parse2(attr.tokens.clone())),
-                    _ => return true,
-                }
-                false
-            } else {
-                true
+            match prusti_attribute_kind(attr) {
+                Some(SpecAttributeKind::Requires) => pres.push(parse_argument(attr)),
+                Some(SpecAttributeKind::Ensures) => posts.push(parse_argument(attr)),
+                _ => return true,
             }
+            false
         });
         cl.attrs = attrs;
 
@@ -36,4 +36,16 @@ impl Parse for ClosureWithSpec {
             cl,
         })
     }
+}
+
+/// The expression that is the argument of the specification attribute `attr`.
+fn parse_argument(attr: &syn::Attribute) -> syn::Result<syn::Expr> {
+    let argument = unwrap_argument(attr)?;
+    if argument.is_empty() {
+        return Err(syn::Error::new(
+            attr.span(),
+            "this attribute expects an argument",
+        ));
+    }
+    syn::parse2(argument)
 }

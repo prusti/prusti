@@ -52,6 +52,7 @@ struct CounterexampleRef<'a> {
 }
 
 #[print_counterexample("a = {}", a)]
+#[prusti_contracts::invariant(N > 0)]
 struct CounterexampleArray<const N: usize> {
     a: [i32; N],
 }
@@ -63,5 +64,6 @@ where
 {
     #[print_counterexample("t = {}", t)]
     A { t: T },
+    #[prusti_contracts::print_counterexample("B")]
     B,
 }

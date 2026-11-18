@@ -16,6 +16,12 @@ fn main() {
         #[ensures(result == y + y)]
         |y: i32| -> i32 { y + y }
     );
+
+    let h = closure!(
+        #[prusti_contracts::pure]
+        #[prusti_contracts::ensures(result == z)]
+        |z: i32| -> i32 { z }
+    );
 }
 
 // The body reads the capture `n` (the condition is there only for that): a

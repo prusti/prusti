@@ -1,4 +1,6 @@
-use super::{common::inherent_impl, rewriter::AstRewriter};
+use super::{
+    common::inherent_impl, prusti_attribute_kind, rewriter::AstRewriter, SpecAttributeKind,
+};
 use itertools::Itertools;
 use proc_macro2::{Span, TokenStream};
 use quote::{quote_spanned, ToTokens};
@@ -191,7 +193,7 @@ fn rewrite_internal_enum(
 
     for variant in &item_enum.variants {
         if let Some(custom_print) = variant.attrs.iter().find(|attr| {
-            attr.path.get_ident().map(|x| x.to_string()) == Some("print_counterexample".to_string())
+            prusti_attribute_kind(attr) == Some(SpecAttributeKind::PrintCounterexample)
         }) {
             let variant_name = variant.ident.clone();
             let item_span = variant.ident.span();
@@ -300,7 +302,7 @@ fn rewrite_internal_enum(
     for variant in &mut item_enum_new.variants {
         //remove all macros inside the enum
         variant.attrs.retain(|attr| {
-            attr.path.get_ident().map(|x| x.to_string()) != Some("print_counterexample".to_string())
+            prusti_attribute_kind(attr) != Some(SpecAttributeKind::PrintCounterexample)
         });
     }
     Ok(vec![
