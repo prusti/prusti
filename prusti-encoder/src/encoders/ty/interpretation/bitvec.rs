@@ -68,7 +68,20 @@ impl BitVecSize {
 #[derive(Debug, Clone, Copy)]
 pub struct BitVecDomain<'vir> {
     pub domain: vir::DomainIdn<'vir, vir::CSnap>,
+    /// The SMT-LIB `int2bv` conversion, for arguments that are numerals when
+    /// the term is created, e.g. in a quantifier instantiated with literals.
+    /// Z3 then folds it, and interpreted functions applied to the result, into
+    /// a constant; the `prim_to_snap` axiom of the float domains relies on
+    /// this.
     pub from_int: FunctionIdn<'vir, vir::Prim, vir::CSnap>,
+    /// An uninterpreted function equal to `from_int`, for arguments that are
+    /// not numerals. Z3 instantiates its defining axiom with the
+    /// representative of the argument's class of equal terms, which is a
+    /// numeral if the value is known at that point, so the conversion folds
+    /// to a constant. `int2bv` of any other term makes Z3 relate its bits to
+    /// integer arithmetic, which for 64 bits often does not finish even when
+    /// the value is known.
+    pub from_int_lazy: FunctionIdn<'vir, vir::Prim, vir::CSnap>,
     pub ubv_to_int: FunctionIdn<'vir, vir::CSnap, vir::Prim>,
     pub sbv_to_int: FunctionIdn<'vir, vir::CSnap, vir::Prim>,
     pub bv_xor: FunctionIdn<'vir, (vir::CSnap, vir::CSnap), vir::CSnap>,
@@ -145,6 +158,21 @@ impl TaskEncoder for BitVecEnc {
             let from_int_data =
                 vcx.mk_domain_function(from_int, false, Some(task_key.int_to_bv_interpretation()));
 
+            let from_int_lazy = FunctionIdn::new(
+                ViperIdent::new(vir::vir_format!(vcx, "{}_from_int_lazy", domain_name)),
+                vir::TYPE_INT.upcast_ty(),
+                self_type,
+            );
+            let from_int_lazy_data = vcx.mk_domain_function(from_int_lazy, false, None);
+            let n_decl = vcx.mk_local_decl("n", vir::TYPE_INT);
+            let n = vcx.mk_local_ex(n_decl).upcast_ty();
+            let from_int_lazy_def = vcx.mk_domain_axiom(
+                ViperIdent::new(vir::vir_format!(vcx, "{}_from_int_lazy_def", domain_name)),
+                vir::expr! {
+                    forall [n_decl] :: {[from_int_lazy](n)} ([from_int_lazy](n)) == ([from_int](n))
+                },
+            );
+
             let ubv_to_int_name = vir::vir_format!(vcx, "{}_ubv_to_int", domain_name);
             let ubv_to_int = FunctionIdn::new(
                 ViperIdent::new(ubv_to_int_name),
@@ -175,6 +203,7 @@ impl TaskEncoder for BitVecEnc {
 
             let functions = &[
                 from_int_data,
+                from_int_lazy_data,
                 ubv_to_int_data,
                 sbv_to_int_data,
                 bv_and_data,
@@ -190,7 +219,7 @@ impl TaskEncoder for BitVecEnc {
             let domain_data = vcx.mk_domain::<(), !>(
                 domain_ident.name(),
                 &[],
-                &[],
+                vcx.alloc_slice(&[from_int_lazy_def]),
                 vcx.alloc_slice(functions),
                 Some(vcx.alloc_slice(&[
                     vcx.alloc(BackendInterpretationPair {
@@ -210,6 +239,7 @@ impl TaskEncoder for BitVecEnc {
                 BitVecDomain {
                     domain: domain_ident,
                     from_int,
+                    from_int_lazy,
                     ubv_to_int,
                     sbv_to_int,
                     bv_xor,

@@ -79,6 +79,21 @@ fn main() {
     prusti_assert!(x >> 1 == 0);
 }
 
+fn wide_constants() {
+    let x: u64 = 0xdead_beef_1234;
+    let y: u64 = 0xff00;
+    prusti_assert!(x & y == 0x1200);
+    prusti_assert!(x | y == 0xdead_beef_ff34);
+    prusti_assert!(x ^ y == 0xdead_beef_ed34);
+    prusti_assert!(x << 4 == 0xd_eadb_eef1_2340);
+
+    let x: u128 = 0xdead_beef_1234_5678_9abc;
+    prusti_assert!(x >> 64 == 0xdead);
+
+    let x: i64 = -1234567;
+    prusti_assert!(x >> 3 == -154321);
+}
+
 #[requires(x >= -127 && x <= 127)]
 #[ensures(result == x * 2)]
 fn mul2(x: i16) -> i16 {

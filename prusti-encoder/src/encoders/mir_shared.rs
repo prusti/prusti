@@ -14,6 +14,7 @@ use crate::encoders::{
         use_pure::TyUsePure,
     },
 };
+use prusti_interface::PrustiError;
 use prusti_rustc_interface::{
     abi,
     index::IndexVec,
@@ -194,6 +195,19 @@ pub(crate) trait PureRvalueEnc<'vir> {
         let l_ty = RustTyDecomposition::from_ty(l_ty, self.context());
         let r_ty = RustTyDecomposition::from_ty(r_ty, self.context());
         let rvalue_ty = RustTyDecomposition::from_ty(rvalue_ty, self.context());
+        // The unchecked operations have preconditions that no MIR assertion
+        // establishes beforehand, so a violation is reported here. (The
+        // preconditions of division and remainder follow from the assertions
+        // that rustc always emits before them.)
+        let message = match op {
+            mir::BinOp::AddUnchecked | mir::BinOp::SubUnchecked | mir::BinOp::MulUnchecked => {
+                Some("the unchecked arithmetic operation might overflow")
+            }
+            mir::BinOp::ShlUnchecked | mir::BinOp::ShrUnchecked => {
+                Some("the shift amount might be negative or not less than the bit width")
+            }
+            _ => None,
+        };
         let task = MirBuiltinBinOpTask::new(rvalue_ty, op, l_ty, r_ty);
         let op = self
             .deps()
@@ -201,7 +215,16 @@ pub(crate) trait PureRvalueEnc<'vir> {
 
         let encoded_l = self.encode_operand_snap(l, ctxt)?;
         let encoded_r = self.encode_operand_snap(r, ctxt)?;
-        Ok(op.call()(encoded_l.downcast_ty(), encoded_r.downcast_ty()).upcast_ty())
+        let apply = || op.call()(encoded_l.downcast_ty(), encoded_r.downcast_ty()).upcast_ty();
+        let Some(message) = message else {
+            return Ok(apply());
+        };
+        Ok(self.vcx().with_span(span, |vcx| {
+            vcx.handle_error("application.precondition:assertion.false", move |_| {
+                Some(vec![PrustiError::verification(message, span.into())])
+            });
+            apply()
+        }))
     }
 
     fn encode_constant_snap(
