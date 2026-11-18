@@ -37,7 +37,6 @@
               pkgs.openssl
               pkgs.jdk11
               packages.viper
-              packages.ow2_asm
             ];
             nativeBuildInputs = [
               pkgs.makeWrapper
@@ -51,7 +50,6 @@
                 export LD_LIBRARY_PATH="${pkgs.jdk11}/lib/openjdk/lib/server"
                 export VIPER_HOME="${packages.viper}/backends"
                 export Z3_EXE="${packages.viper}/z3/bin/z3"
-                export ASM_JAR="${packages.ow2_asm}/asm.jar"
               '';
             };
             overrideMain = _: {
@@ -82,21 +80,6 @@
             stripRoot = false;
             hash = "sha256-82vnyO7QWaLzehnBzPJxuEmdqK0MnWWwQnmdLq28sQc=";
           };
-
-          ow2_asm = pkgs.stdenv.mkDerivation rec {
-            name = "asm";
-            version = "3.3.1";
-            src = pkgs.fetchurl {
-              url = "https://repo.maven.apache.org/maven2/${name}/${name}/${version}/${name}-${version}.jar";
-              hash = "sha256-wrOSdfjpUbx0dQCAoSZs2rw5OZvF4T1kK/LTRkSd9/M=";
-            };
-            dontUnpack = true;
-            dontBuild = true;
-            installPhase = ''
-              mkdir $out
-              cp ${src} $out/asm.jar
-            '';
-          };
         };
 
         checks = {
@@ -111,7 +94,6 @@
           #     pkgs.openssl
           #     pkgs.jdk11
           #     packages.viper
-          #     packages.ow2_asm
           #   ];
 
           #   doCheck = true;
@@ -121,7 +103,6 @@
           #       export LD_LIBRARY_PATH="${pkgs.jdk11}/lib/openjdk/lib/server"
           #       export VIPER_HOME="${packages.viper}/backends"
           #       export Z3_EXE="${packages.viper}/z3/bin/z3"
-          #       export ASM_JAR="${packages.ow2_asm}/asm.jar"
           #     '';
           #     preCheck = ''
           #       export RUST_SYSROOT="${rust}"
