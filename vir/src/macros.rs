@@ -258,6 +258,63 @@ impl<'vir, Ty: CompType> ExprQuote<'vir, Ty> for crate::LocalDecl<'vir, Ty> {
     }
 }
 
+/// The operand types of `+`, `-`, `*` and unary `-` in [`expr!`]: `Int`, or
+/// `Perm` for arithmetic on reals.
+pub trait Arith: CompType {
+    const ADD: crate::BinOpKind;
+    const SUB: crate::BinOpKind;
+    const MUL: crate::BinOpKind;
+    const NEG: crate::UnOpKind;
+}
+impl Arith for crate::Int {
+    const ADD: crate::BinOpKind = crate::BinOpKind::Add;
+    const SUB: crate::BinOpKind = crate::BinOpKind::Sub;
+    const MUL: crate::BinOpKind = crate::BinOpKind::Mul;
+    const NEG: crate::UnOpKind = crate::UnOpKind::Neg;
+}
+impl Arith for crate::Perm {
+    const ADD: crate::BinOpKind = crate::BinOpKind::PermAdd;
+    const SUB: crate::BinOpKind = crate::BinOpKind::PermSub;
+    const MUL: crate::BinOpKind = crate::BinOpKind::PermMul;
+    const NEG: crate::UnOpKind = crate::UnOpKind::PermNeg;
+}
+
+/// A binary arithmetic operator of [`expr!`].
+pub enum ArithOp {
+    Add,
+    Sub,
+    Mul,
+}
+
+/// `lhs op rhs`, as built by the binary arithmetic operators of [`expr!`].
+pub fn arith<'vir, T: Arith>(
+    vcx: &'vir crate::VirCtxt,
+    op: ArithOp,
+    lhs: crate::Expr<'vir, T>,
+    rhs: crate::Expr<'vir, T>,
+) -> crate::Expr<'vir, T>
+where
+    crate::Prim: crate::TransmuteFrom<T>,
+{
+    let kind = match op {
+        ArithOp::Add => T::ADD,
+        ArithOp::Sub => T::SUB,
+        ArithOp::Mul => T::MUL,
+    };
+    crate::CastType::downcast_ty(vcx.mk_bin_op_expr(kind, lhs, rhs))
+}
+
+/// `-e`, as built by the unary `-` of [`expr!`].
+pub fn neg<'vir, T: Arith>(
+    vcx: &'vir crate::VirCtxt,
+    e: crate::Expr<'vir, T>,
+) -> crate::Expr<'vir, T>
+where
+    crate::Prim: crate::TransmuteFrom<T>,
+{
+    crate::CastType::downcast_ty(vcx.mk_unary_op_expr(T::NEG, crate::CastType::upcast_ty(e)))
+}
+
 #[macro_export]
 macro_rules! expr {
     ($vcx:tt; $($tokens:tt)*) => { {
@@ -327,10 +384,37 @@ macro_rules! expr_inner {
         $crate::expr_inner!(@expr_one; $($lhs)*),
         $crate::expr_inner!(@expr_one; $($rhs)*),
     )) };
-    (@expr_one; ( $($lhs:tt)+ ) + ( $($rhs:tt)+ )) => { vcx!().mk_bin_op_expr(
-        $crate::BinOpKind::Add,
+    (@expr_one; ( $($lhs:tt)+ ) >= ( $($rhs:tt)+ )) => { $crate::CastType::downcast_ty::<$crate::Bool>(vcx!().mk_bin_op_expr(
+        $crate::BinOpKind::CmpGe,
         $crate::expr_inner!(@expr_one; $($lhs)*),
         $crate::expr_inner!(@expr_one; $($rhs)*),
+    )) };
+    (@expr_one; ( $($lhs:tt)+ ) > ( $($rhs:tt)+ )) => { $crate::CastType::downcast_ty::<$crate::Bool>(vcx!().mk_bin_op_expr(
+        $crate::BinOpKind::CmpGt,
+        $crate::expr_inner!(@expr_one; $($lhs)*),
+        $crate::expr_inner!(@expr_one; $($rhs)*),
+    )) };
+    (@expr_one; ( $($lhs:tt)+ ) + ( $($rhs:tt)+ )) => { $crate::macros::arith(
+        vcx!(),
+        $crate::macros::ArithOp::Add,
+        $crate::expr_inner!(@expr_one; $($lhs)*),
+        $crate::expr_inner!(@expr_one; $($rhs)*),
+    ) };
+    (@expr_one; ( $($lhs:tt)+ ) - ( $($rhs:tt)+ )) => { $crate::macros::arith(
+        vcx!(),
+        $crate::macros::ArithOp::Sub,
+        $crate::expr_inner!(@expr_one; $($lhs)*),
+        $crate::expr_inner!(@expr_one; $($rhs)*),
+    ) };
+    (@expr_one; ( $($lhs:tt)+ ) * ( $($rhs:tt)+ )) => { $crate::macros::arith(
+        vcx!(),
+        $crate::macros::ArithOp::Mul,
+        $crate::expr_inner!(@expr_one; $($lhs)*),
+        $crate::expr_inner!(@expr_one; $($rhs)*),
+    ) };
+    (@expr_one; - ( $($inner:tt)+ )) => { $crate::macros::neg(
+        vcx!(),
+        $crate::expr_inner!(@expr_one; $($inner)*),
     ) };
     (@expr_one; ( $($lhs:tt)+ ) in ( $($rhs:tt)+ )) => { vcx!().mk_contains_expr(
         $crate::expr_inner!(@expr_one; $($lhs)*),
@@ -364,6 +448,7 @@ macro_rules! expr_inner {
     (@expr_one; null) => { vcx!().mk_null() };
     (@expr_one; true) => { vcx!().mk_bool::<true>() };
     (@expr_one; false) => { vcx!().mk_bool::<false>() };
+    (@expr_one; $value:literal) => { vcx!().mk_int::<$value>() };
     (@expr_one; result: $t:tt) => { vcx!().mk_result($crate::vir_type!(vcx!(); $t)) };
     (@expr_one; forall $($tokens:tt)+) => { {
         let mut qvars = Vec::<$crate::LocalDeclDyn>::new();
