@@ -183,12 +183,14 @@ pub fn encode_all_in_crate<'tcx>(tcx: ty::TyCtxt<'tcx>) {
     // To iterate over all _visible_ impl blocks,
     // use tcx.visible_traits and tcx.all_impls(trait_id)
     for def_id in tcx.hir_crate_items(()).definitions() {
+        // A failed encoding stays in the encoder's cache, from which its
+        // `emit_outputs` reports it at the span of the item's first request.
         match tcx.def_kind(def_id) {
             hir::def::DefKind::Trait => {
-                TraitEnc::encode(def_id.to_def_id(), false, DUMMY_SP).unwrap();
+                let _ = TraitEnc::encode(def_id.to_def_id(), false, tcx.def_span(def_id));
             }
             hir::def::DefKind::Impl { of_trait: true } => {
-                TraitImplEnc::encode(def_id.to_def_id(), false, DUMMY_SP).unwrap();
+                let _ = TraitImplEnc::encode(def_id.to_def_id(), false, tcx.def_span(def_id));
             }
             _ => (),
         }

@@ -2414,8 +2414,8 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
 
                         let method_in = args
                             .iter()
-                            .map(|arg| self.encode_operand(&arg.node).unwrap())
-                            .collect::<Vec<_>>();
+                            .map(|arg| self.encode_operand(&arg.node))
+                            .collect::<Result<Vec<_>, _>>()?;
 
                         let call = func_out.call(method_in, dest);
 
