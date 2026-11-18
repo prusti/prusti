@@ -12,11 +12,11 @@ pub enum SpecAttributeKind {
     AssertOnExpiry = 4,
     Pure = 5,
     Trusted = 6,
-    Invariant = 8,
-    RefineSpec = 9,
-    Terminates = 10,
-    PrintCounterexample = 11,
-    Verified = 12,
+    Invariant = 7,
+    RefineSpec = 8,
+    Terminates = 9,
+    PrintCounterexample = 10,
+    Verified = 11,
 }
 
 impl TryFrom<String> for SpecAttributeKind {
