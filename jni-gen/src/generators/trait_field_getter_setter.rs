@@ -5,7 +5,7 @@
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 use crate::{class_name::*, errors::*, utils::*};
-use jni::{objects::JValue, JNIEnv};
+use jni::JNIEnv;
 
 use super::method;
 
@@ -91,18 +91,7 @@ pub fn generate_field_getter_setter_for_trait(
     let setter_parameter_type = env
         .call_method(setter_parameter, "getType", "()Ljava/lang/Class;", &[])?
         .l()?;
-    let setter_parameter_signature = java_str_to_string(
-        &env.get_string(
-            env.call_static_method(
-                "org/objectweb/asm/Type",
-                "getDescriptor",
-                "(Ljava/lang/Class;)Ljava/lang/String;",
-                &[JValue::Object(setter_parameter_type)],
-            )?
-            .l()?
-            .into(),
-        )?,
-    )?;
+    let setter_parameter_signature = class_descriptor(env, setter_parameter_type)?;
 
     let getter_return_signature = get_return_signature(&getter_method_signature);
 

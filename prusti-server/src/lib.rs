@@ -28,7 +28,7 @@ mod backend;
 pub(crate) use backend::*;
 pub(crate) use client::*;
 pub(crate) use process_verification::*;
-pub use server::{spawn_server_thread, start_server_on_port};
+pub use server::{save_verification_cache, spawn_server_thread, start_server_on_port};
 pub(crate) use server_message::*;
 pub(crate) use verification_request::*;
 
@@ -79,6 +79,7 @@ pub fn verify_programs(
             let cache = Lazy::new(move || {
                 Arc::new(sync::Mutex::new(PersistentCache::load_cache(
                     config::cache_path(),
+                    env!("BACKEND_FINGERPRINT"),
                 )))
             });
             let vrp = Lazy::new(VerificationRequestProcessing::new);

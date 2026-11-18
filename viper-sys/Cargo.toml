@@ -12,8 +12,6 @@ build = "build.rs"
 jni-gen = { path = "../jni-gen" }
 error-chain = "0.12.0"
 env_logger = "0.10"
-ureq = "2.1"
-tempfile = "3.3"
 
 [dependencies]
 error-chain = "0.12.0"

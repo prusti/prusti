@@ -5,7 +5,7 @@
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 use crate::{class_name::*, errors::*, utils::*};
-use jni::{objects::JValue, JNIEnv};
+use jni::JNIEnv;
 use std::collections::BTreeMap;
 
 pub fn generate_constructor(
@@ -31,18 +31,7 @@ pub fn generate_constructor(
     for constructor_index in 0..num_constructors {
         let constructor = env.get_object_array_element(*constructors, constructor_index)?;
 
-        let constructor_signature = java_str_to_string(
-            &env.get_string(
-                env.call_static_method(
-                    "org/objectweb/asm/Type",
-                    "getConstructorDescriptor",
-                    "(Ljava/lang/reflect/Constructor;)Ljava/lang/String;",
-                    &[JValue::Object(constructor)],
-                )?
-                .l()?
-                .into(),
-            )?,
-        )?;
+        let constructor_signature = constructor_descriptor(env, constructor)?;
 
         indexed_constructors.insert(constructor_signature, constructor);
     }
@@ -90,19 +79,10 @@ pub fn generate_constructor(
         let parameter_type = env
             .call_method(parameter, "getType", "()Ljava/lang/Class;", &[])?
             .l()?;
-        let parameter_signature = env.get_string(
-            env.call_static_method(
-                "org/objectweb/asm/Type",
-                "getDescriptor",
-                "(Ljava/lang/Class;)Ljava/lang/String;",
-                &[JValue::Object(parameter_type)],
-            )?
-            .l()?
-            .into(),
-        )?;
+        let parameter_signature = class_descriptor(env, parameter_type)?;
 
         parameter_names.push(java_str_to_valid_rust_argument_name(&parameter_name)?);
-        parameter_signatures.push(java_str_to_string(&parameter_signature)?);
+        parameter_signatures.push(parameter_signature);
     }
 
     let constructor_name = match suffix {

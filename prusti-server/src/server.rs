@@ -51,8 +51,20 @@ static VERIFICATION_REQUEST_PROCESSING: Lazy<VerificationRequestProcessing> =
 static CACHE: Lazy<Arc<sync::Mutex<PersistentCache>>> = Lazy::new(|| {
     Arc::new(sync::Mutex::new(PersistentCache::load_cache(
         config::cache_path(),
+        env!("BACKEND_FINGERPRINT"),
     )))
 });
+
+/// Writes the server's verification cache to its configured path. `CACHE` is never dropped,
+/// so this is the only way its results reach later runs. Returns whether the cache was in use.
+pub fn save_verification_cache() -> bool {
+    if let Some(cache) = Lazy::get(&CACHE) {
+        cache.lock().unwrap().save();
+        true
+    } else {
+        false
+    }
+}
 
 fn listen_on_port_with_address_callback<F>(port: u16, address_callback: F) -> !
 where
@@ -107,8 +119,7 @@ where
         .and(warp::path("save"))
         .and(warp::path::end())
         .map(move || {
-            if let Some(cache) = Lazy::get(&CACHE) {
-                cache.lock().unwrap().save();
+            if save_verification_cache() {
                 warp::reply::html("Saved")
             } else {
                 warp::reply::html("Nothing to save")

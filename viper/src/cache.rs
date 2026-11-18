@@ -4,12 +4,16 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-use log::{error, info, warn};
+use log::{error, info};
 
 use crate::verification_result::VerificationResult;
+use prusti_utils::config;
 use rustc_hash::FxHashMap;
 use std::{
-    fs, io,
+    collections::hash_map::DefaultHasher,
+    fs,
+    hash::{Hash, Hasher},
+    io,
     ops::DerefMut,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
@@ -24,15 +28,17 @@ pub trait Cache {
 pub struct PersistentCache {
     updated: bool,
     load_loc: PathBuf,
+    fingerprint: u64,
     data: FxHashMap<u64, VerificationResult>,
 }
 
-const RESULT_CACHE_VERSION: u64 = 3;
+const RESULT_CACHE_VERSION: u64 = 4;
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct ResultCache {
     data: FxHashMap<u64, VerificationResult>,
     version: u64,
+    fingerprint: u64,
 }
 
 impl From<(PathBuf, ResultCache)> for PersistentCache {
@@ -43,6 +49,7 @@ impl From<(PathBuf, ResultCache)> for PersistentCache {
         PersistentCache {
             updated: false,
             load_loc,
+            fingerprint: rc.fingerprint,
             data,
         }
     }
@@ -53,22 +60,24 @@ impl From<&PersistentCache> for ResultCache {
         ResultCache {
             data: cache.data.clone(),
             version: RESULT_CACHE_VERSION,
+            fingerprint: cache.fingerprint,
         }
     }
 }
 
 impl PersistentCache {
+    /// Loads the cache stored at `cache_loc`, or starts an empty one. A stored cache is only
+    /// used if its results were produced by the same Prusti backend, which `backend_fingerprint`
+    /// identifies, running the same Z3 binary.
     #[tracing::instrument(level = "debug")]
-    pub fn load_cache(cache_loc: PathBuf) -> Self {
+    pub fn load_cache(cache_loc: PathBuf, backend_fingerprint: &str) -> Self {
+        let fingerprint = Self::fingerprint(&cache_loc, backend_fingerprint);
         let mut data_res: Option<ResultCache> = None;
         if !cache_loc.as_os_str().is_empty() {
             if let Ok(f) = fs::File::open(&cache_loc) {
                 match bincode::deserialize_from::<_, ResultCache>(&mut io::BufReader::new(f)) {
                     Ok(data) => {
-                        if data.version == RESULT_CACHE_VERSION {
-                            info!("Loaded cache from \"{}\"", cache_loc.display());
-                            data_res = Some(data);
-                        } else {
+                        if data.version != RESULT_CACHE_VERSION {
                             error!(
                                 "Cache version mismatch when reading from \"{}\": \
                                     expected={} actual={}",
@@ -76,6 +85,15 @@ impl PersistentCache {
                                 RESULT_CACHE_VERSION,
                                 data.version
                             )
+                        } else if data.fingerprint != fingerprint {
+                            info!(
+                                "Discarding the cache in \"{}\", whose results were produced by \
+                                    a different verifier or Prusti backend",
+                                cache_loc.display()
+                            )
+                        } else {
+                            info!("Loaded cache from \"{}\"", cache_loc.display());
+                            data_res = Some(data);
                         }
                     }
                     Err(e) => error!("Failed to read cache from \"{}\": {e}", cache_loc.display()),
@@ -89,10 +107,24 @@ impl PersistentCache {
                 ResultCache {
                     data: FxHashMap::default(),
                     version: RESULT_CACHE_VERSION,
+                    fingerprint,
                 }
             }),
         ))
     }
+    /// Identifies what the results of a cache stored at `cache_loc` depend on beyond their keys.
+    /// A cache without a path is never stored, so it needs no fingerprint. A Z3 binary that
+    /// cannot be read is hashed as missing: the verifier reports the problem when it runs Z3.
+    fn fingerprint(cache_loc: &Path, backend_fingerprint: &str) -> u64 {
+        if cache_loc.as_os_str().is_empty() {
+            return 0;
+        }
+        let mut hasher = DefaultHasher::new();
+        backend_fingerprint.hash(&mut hasher);
+        fs::read(config::smt_solver_path()).ok().hash(&mut hasher);
+        hasher.finish()
+    }
+
     #[tracing::instrument(level = "debug")]
     pub fn save_cache(&self, cache_loc: &Path) {
         match fs::File::create(cache_loc) {
@@ -105,17 +137,13 @@ impl PersistentCache {
         }
     }
     pub fn save(&mut self) {
-        // Save cache to disk, if changed and save path is valid
-        if self.updated {
-            if self.load_loc.as_os_str().is_empty() {
-                warn!("Cannot save cache, because the cache path is empty.")
-            } else {
-                let mut save_dir = self.load_loc.clone();
-                save_dir.pop();
-                match fs::create_dir_all(&save_dir) {
-                    Ok(()) => self.save_cache(&self.load_loc),
-                    Err(e) => error!("Failed to create cache dir: {e}"),
-                }
+        // Save cache to disk, if changed; an empty path disables saving.
+        if self.updated && !self.load_loc.as_os_str().is_empty() {
+            let mut save_dir = self.load_loc.clone();
+            save_dir.pop();
+            match fs::create_dir_all(&save_dir) {
+                Ok(()) => self.save_cache(&self.load_loc),
+                Err(e) => error!("Failed to create cache dir: {e}"),
             }
         }
     }

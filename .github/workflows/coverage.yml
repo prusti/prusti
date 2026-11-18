@@ -20,17 +20,8 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Set up Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'temurin'
-          java-version: '16'
-
-      - name: Set up the environment
-        run: python x.py setup
-
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+      - name: Set up the build environment
+        uses: ./.github/actions/setup
 
       - name: Enable collection of source-based coverage
         run: |
