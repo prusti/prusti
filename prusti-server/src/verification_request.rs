@@ -97,6 +97,8 @@ pub struct VerificationRequest {
 }
 
 impl VerificationRequest {
+    // TODO: The stability of this hash across compilations and edits of the verified code needs
+    // work, for the verification cache to be effective.
     pub(crate) fn get_hash(&self) -> u64 {
         use std::hash::{Hash, Hasher};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
