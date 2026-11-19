@@ -1,15 +1,20 @@
-error: [Prusti: verification error] the method's postcondition may not be a valid strengthening of the trait's postcondition.
-  --> $DIR/invalid-trait-refinement-2.rs:16:31
+error: [Prusti: verification error] the implementation's postcondition may be weaker than the trait method's
+  --> $DIR/invalid-trait-refinement-2.rs:25:15
    |
-16 |       #[refine_spec(where Self: HasContract, [
-   |  _______________________________^
-17 | |         requires(self.pre()), ensures(self.post())
-   | |_________________________________________________^
-...
-28 |       #[ensures(self.x >= 15)]
-   |                 ^^^^^^^^^^^^
+25 |     #[ensures(self.x >= 15)]
+   |               ^^^^^^^^^^^^
    |
-   = help: The implemented method's postcondition should imply the trait's postcondition.
+note: the trait method's (stronger) postcondition is declared here
+  --> $DIR/invalid-trait-refinement-2.rs:14:39
+   |
+14 |         requires(self.pre()), ensures(self.post())
+   |                                       ^^^^^^^^^^^
 
-error: aborting due to previous error
+error: [Prusti: verification error] postcondition might not hold.
+  --> $DIR/invalid-trait-refinement-2.rs:25:15
+   |
+25 |     #[ensures(self.x >= 15)]
+   |               ^^^^^^^^^^^^
+
+error: aborting due to 2 previous errors
 

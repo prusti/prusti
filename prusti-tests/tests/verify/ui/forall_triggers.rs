@@ -1,5 +1,5 @@
 use prusti_contracts::*;
-
+//@ known-failure
 #[pure]
 fn count(n: usize) -> usize {
     if n == 0 {

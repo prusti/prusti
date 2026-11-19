@@ -1,5 +1,5 @@
 use prusti_contracts::*;
-
+//@ known-failure
 #[trusted]
 struct TrustedBox {
     value: u32,

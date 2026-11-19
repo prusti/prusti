@@ -1,22 +1,23 @@
 error: [Prusti: verification error] postcondition might not hold.
-  --> $DIR/false.rs:9:11
+  --> $DIR/false.rs:10:11
    |
-9  | #[ensures(false)]
+10 | #[ensures(false)]
    |           ^^^^^
    |
 note: the error originates here
-  --> $DIR/false.rs:10:1
+  --> $DIR/false.rs:11:1
    |
-10 | fn test1() {}
-   | ^^^^^^^^^^^^^
+11 | fn test1() {}
+   | ^^^^^^^^^^
 
-error: [Prusti: verification error] the asserted expression might not hold
-  --> $DIR/false.rs:13:5
+error: [Prusti: verification error] precondition of `core::panicking::panic` (called by this macro expansion) might not hold
+  --> $DIR/false.rs:14:5
    |
-13 |     assert!(false);
+14 |     assert!(false);
    |     ^^^^^^^^^^^^^^
    |
-   = note: this error originates in the macro `assert` (in Nightly builds, run with -Z macro-backtrace for more info)
+note: the failing precondition is here
+  --> prusti-contracts/src/core_spec/panicking.rs:LL:COL
 
 error: aborting due to 2 previous errors
 
