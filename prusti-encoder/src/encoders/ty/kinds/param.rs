@@ -1,10 +1,12 @@
 use crate::encoders::ty::{
-    RustParam, RustParamData,
+    RustParam, RustParamData, RustTy,
     generics::ParamTypEnc,
     impure::{PredicateBuilder, TyImpureEnc, TyImpureParam},
+    indirect_pred::IndirectPredEnc,
     pure::{TyPureBuilder, TyPureEnc, TyPureParam},
 };
 use task_encoder::{EncodeFullError, TaskEncoderDependencies};
+use vir::CastType;
 
 pub(crate) fn ty_pure<'vir>(
     data: &RustParam<'vir>,
@@ -20,6 +22,7 @@ pub(crate) fn ty_pure<'vir>(
 }
 
 pub(crate) fn ty_impure<'vir>(
+    ty: RustTy<'vir>,
     data: &(&RustParam<'vir>, &TyPureParam<'vir>),
     deps: &mut TaskEncoderDependencies<'vir, TyImpureEnc>,
     builder: &mut PredicateBuilder<'vir>,
@@ -29,6 +32,7 @@ pub(crate) fn ty_impure<'vir>(
         return Ok(());
     }
     let typ = deps.require_dep::<ParamTypEnc>(())?.typ;
+    let shallow = deps.require_ref::<IndirectPredEnc>(ty)?.shallow;
     builder.mk_predicate("", None);
     // The intended invariant of the predicate: its snapshot is a value of the
     // type the predicate is instantiated at. Everywhere a param is read out
@@ -38,12 +42,17 @@ pub(crate) fn ty_impure<'vir>(
     // This is assumed rather than checked: a param nested in a struct, enum
     // or reference has its snapshot set by that type's assign method, so
     // constraining `p_Param_assign` alone would not cover the producers.
+    let vcx = builder.vcx;
+    let result = vcx.mk_result(vir::TYPE_PSNAP);
+    let ty_expr = builder.params.ty_exprs()[0];
+    // A direct snapshot holds no extensions, so making it shallow changes nothing.
+    let shallow = shallow.call()(result.upcast_ty(), &[ty_expr], &[]);
     builder.mk_snap_function(
         None,
-        &[builder.vcx.mk_eq_expr(
-            typ(builder.vcx.mk_result(vir::TYPE_PSNAP)),
-            builder.params.ty_exprs()[0],
-        )],
+        &[
+            vcx.mk_eq_expr(typ(result), ty_expr),
+            vcx.mk_eq_expr(shallow, result.upcast_ty()),
+        ],
     );
     Ok(())
 }
