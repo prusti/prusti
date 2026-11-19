@@ -1982,7 +1982,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                         let (label_pre, label_post) = self.call_labels[&call.location().block];
                         let call_ctx = self.gargs(caller_substs);
                         let wands =
-                            wands.call_wands(&wand_args, label_pre, label_post, call_ctx, self);
+                            wands.call_wands(&wand_args, label_pre, label_post, call_ctx, self)?;
                         for wand in wands {
                             if let Some(footprint) = &mut footprint {
                                 footprint.parts.push(self.vcx.mk_wand_expr(wand));
