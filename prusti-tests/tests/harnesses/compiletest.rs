@@ -82,18 +82,16 @@ fn prusti_config(path: String, env: &[(&str, &str)], abort_check: &AbortCheck) -
 
 fn per_file_config(config: &mut Config, file_contents: &Spanned<Vec<u8>>) {
     default_per_file_config(config, file_contents);
-    // Expected outputs refer to the directory of the test file as `$DIR`. The default filters of
-    // `Config::rustc` (`Match::PathBackslash`) write paths in the outputs with `/` on every
-    // platform, so the directory is written so too.
+    // Expected outputs refer to the directory of the test file as `$DIR`. Not
+    // `Config::path_filter`, which canonicalizes the path, while the outputs show it relative.
     if let Some(dir) = file_contents.span.file.parent() {
-        let dir = format!("{}/", dir.display()).replace('\\', "/");
-        let dir = ui_test::Match::Exact(dir.into());
+        let dir = ui_test::Match::from(dir);
         let comments = config.comment_defaults.base();
         for normalize in [
             &mut comments.normalize_stderr,
             &mut comments.normalize_stdout,
         ] {
-            normalize.push((dir.clone(), b"$DIR/".into()));
+            normalize.push((dir.clone(), b"$DIR".into()));
         }
     }
 }

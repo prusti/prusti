@@ -1,27 +1,27 @@
 error: [Prusti: invalid specification] cannot access the fields of `TrustedBox`, as it is marked `#[trusted]`
-  --> $DIR/trusted.rs:19:14
+  --> $DIR/trusted.rs:20:14
    |
-19 |     let _b = a.value;
+20 |     let _b = a.value;
    |              ^^^^^^^
    |
    = help: move this code into a `#[trusted]` function (also marked `#[pure]` if pure code or specifications call it), and describe what it does with pre- and postconditions
 note: `TrustedBox` is marked `#[trusted]` here
-  --> $DIR/trusted.rs:4:1
+  --> $DIR/trusted.rs:5:1
    |
- 4 | struct TrustedBox {
+ 5 | struct TrustedBox {
    | ^^^^^^^^^^^^^^^^^
 
 error: [Prusti: invalid specification] cannot access the fields of `GenericTrustedBox<i32>`, as it is marked `#[trusted]`
-  --> $DIR/trusted.rs:38:14
+  --> $DIR/trusted.rs:39:14
    |
-38 |     let _b = a.value;
+39 |     let _b = a.value;
    |              ^^^^^^^
    |
    = help: move this code into a `#[trusted]` function (also marked `#[pure]` if pure code or specifications call it), and describe what it does with pre- and postconditions
 note: `GenericTrustedBox` is marked `#[trusted]` here
-  --> $DIR/trusted.rs:23:1
+  --> $DIR/trusted.rs:24:1
    |
-23 | struct GenericTrustedBox<T: Clone> {
+24 | struct GenericTrustedBox<T: Clone> {
    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 error: aborting due to 2 previous errors
