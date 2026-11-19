@@ -10,20 +10,8 @@ from reporting import (
     report, error
 )
 from helper_functions import (
-    get_env, run_command, extract_test_compile_flags
+    get_env, run_command
 )
-
-
-def select_newest_file(paths):
-    """Select a file that exists and has the newest modification timestamp."""
-    existing_paths = [
-        (os.path.getmtime(path), path)
-        for path in paths if os.path.exists(path)
-    ]
-    try:
-        return next(reversed(sorted(existing_paths)))[1]
-    except:
-        error("Could not select the newest file from {}", paths)
 
 
 def generate_launch_json(args_file, env_file):
@@ -115,15 +103,10 @@ def parse_args(args):
     return parser.parse_args(args)
 
 def verify_test(args):
-    """Runs prusti on the specified files."""
+    """Runs the specified test file through the test harness, which runs Prusti
+    on it with the flags and the environment of the test's group."""
     args = parse_args(args)
     current_path = os.path.abspath(os.path.curdir)
-    candidate_prusti_paths = [
-        os.path.join(current_path, 'target', 'release', 'prusti-rustc'),
-        os.path.join(current_path, 'target', 'debug', 'prusti-rustc')
-    ]
-    prusti_path = select_newest_file(candidate_prusti_paths)
-    report("Selected Prusti: {}", prusti_path)
     if args.test_file.startswith('prusti-tests/'):
         test_path = args.test_file
     else:
@@ -138,17 +121,10 @@ def verify_test(args):
                 args.test_file,
                 candidate_test_paths[:5]
             )
-        test_path = candidate_test_paths[0]
+        test_path = os.path.relpath(candidate_test_paths[0], current_path)
     report("Found test: {}", test_path)
-    compile_flags = extract_test_compile_flags(test_path)
     env = get_env()
-    if 'prusti-tests/tests/verify_overflow/' in test_path:
-        env['PRUSTI_CHECK_OVERFLOWS'] = 'true'
-    else:
-        env['PRUSTI_CHECK_OVERFLOWS'] = 'false'
-    report("env: PRUSTI_CHECK_OVERFLOWS={}", env['PRUSTI_CHECK_OVERFLOWS'])
     os.makedirs('log/config', exist_ok=True)
-    env['PRUSTI_ENCODE_UNSIGNED_NUM_CONSTRAINT'] = 'true'
     env['PRUSTI_RUSTC_LOG_ARGS'] = 'log/config/prusti-rustc-args'
     env['PRUSTI_RUSTC_LOG_ENV'] = 'log/config/prusti-rustc-env'
     if args.analyze_quantifiers:
@@ -164,8 +140,10 @@ def verify_test(args):
         )
         if args.analyze_quantifiers:
             analyze_quantifier_logs(test_path)
+    # The harness passes on the variables set here, and reports the test by its
+    # path relative to the repository root, which `--exact` matches.
     run_command(
-        [prusti_path, '--edition=2018', test_path] + compile_flags,
+        ['cargo', 'test', '--test', 'main', '--', '--exact', test_path],
         env,
         on_exit=verify_test_on_exit,
         report_time=True,

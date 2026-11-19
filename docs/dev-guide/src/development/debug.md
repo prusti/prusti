@@ -17,16 +17,14 @@ See the list of [flags](../config/flags.md) for way to configure Prusti. Of part
 A proposed way of fixing Prusti limitations is to add a regression test by creating a new file in `prusti-tests/tests` and then use the following command to get Prusti output:
 
 ```bash
-./x.py build --all && \
 RUST_BACKTRACE=1 PRUSTI_DUMP_VIPER_PROGRAM=true PRUSTI_DUMP_DEBUG_INFO=true \
 ./x.py ++verbose verify-test <path-to-the-test-file>
 ```
 
 This command does the following:
 
-1. Ensures that Prusti is compiled.
-2. Runs the specified test taking into account the configuration flags specified in the test file.
-3. Dumps the information that is most commonly needed for debugging Prusti into the `log` directory.
+1. Runs the specified test through the test harness, like `./x.py test --test main` does. So Prusti is built and run as for the test suite: with the compiler options and the environment of the test's group and the flags specified in the test file. The harness prints Prusti's output only if the test fails, and never for a test marked `//@ known-failure`.
+2. Dumps the information that is most commonly needed for debugging Prusti into the `log` directory.
 
 Tip: to see the expanded Prusti specification macros, add the following comment at the beginning of the test file:
 
