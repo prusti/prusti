@@ -25,9 +25,6 @@ use ui_test::{
     AbortCheck, Args, Config,
 };
 
-/// Silicon's time limit (in seconds) per test file, so that a slow test cannot hold up the suite.
-const EXTRA_VERIFIER_ARGS: &str = "--timeout=90";
-
 /// The test groups, each with `fail`, `pass` and `ui` tests in `prusti-tests/tests/<group>/`, and
 /// the environment that Prusti runs them in.
 const GROUPS: [(&str, &[(&str, &str)]); 4] = [
@@ -36,18 +33,9 @@ const GROUPS: [(&str, &[(&str, &str)]); 4] = [
     // Test the type-checking of specifications. This doesn't run the verifier.
     ("typecheck", &[("PRUSTI_VERIFY_MODE", "compile-only")]),
     // Test the verifier.
-    (
-        "verify",
-        &[
-            ("PRUSTI_CHECK_OVERFLOWS", "false"),
-            ("PRUSTI_EXTRA_VERIFIER_ARGS", EXTRA_VERIFIER_ARGS),
-        ],
-    ),
+    ("verify", &[("PRUSTI_CHECK_OVERFLOWS", "false")]),
     // Test the verifier with overflow checks enabled.
-    (
-        "verify_overflow",
-        &[("PRUSTI_EXTRA_VERIFIER_ARGS", EXTRA_VERIFIER_ARGS)],
-    ),
+    ("verify_overflow", &[]),
 ];
 
 type TestsResult = ui_test::color_eyre::Result<()>;

@@ -8,6 +8,8 @@ on:
 env:
   RUST_BACKTRACE: 1
   PRUSTI_ASSERT_TIMEOUT: 60000
+  # Silicon's time limit (in seconds) per test file, so that a slow test cannot hold up the suite.
+  PRUSTI_EXTRA_VERIFIER_ARGS: --timeout=90
   # The /mnt disk has 66 GB of free space; more than the working directory
   COVERAGE_PATH: /mnt/prusti-coverage
 

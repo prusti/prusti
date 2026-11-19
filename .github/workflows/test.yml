@@ -20,6 +20,8 @@ concurrency:
 env:
   RUST_BACKTRACE: 1
   PRUSTI_ASSERT_TIMEOUT: 30000
+  # Silicon's time limit (in seconds) per test file, so that a slow test cannot hold up the suite.
+  PRUSTI_EXTRA_VERIFIER_ARGS: --timeout=90
 
 jobs:
   # Check formatting
