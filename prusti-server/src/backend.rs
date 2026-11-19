@@ -4,7 +4,7 @@ use std::{
     sync::mpsc::{self, RecvTimeoutError},
     thread, time,
 };
-use viper::{jni_utils::JniUtils, VerificationContext, VerificationResultKind};
+use viper::{jni_utils::JniUtils, VerificationContext, VerificationResultKind, VerifierWarning};
 use viper_sys::wrappers::{java, viper::*};
 
 pub enum Backend<'a> {
@@ -16,11 +16,13 @@ pub enum Backend<'a> {
 }
 
 impl<'a> Backend<'a> {
+    /// Verifies the program, and returns the result together with the
+    /// warnings the verifier reported.
     pub fn verify(
         &mut self,
         procedures: prusti_rustc_interface::data_structures::fx::FxHashSet<String>,
         sender: mpsc::Sender<ServerMessage>,
-    ) -> VerificationResultKind {
+    ) -> (VerificationResultKind, Vec<VerifierWarning>) {
         // Convert FxHashSet to std HashSet for viper compatibility
         #[allow(clippy::disallowed_types)]
         let procedures_hashset: std::collections::HashSet<String> =
@@ -44,7 +46,8 @@ impl<'a> Backend<'a> {
                             sender,
                         )
                     } else {
-                        verifier.verify(viper_program, None)
+                        let kind = verifier.verify(viper_program, None);
+                        (kind, verifier.take_warnings())
                     }
                 })
             }
@@ -59,8 +62,9 @@ fn verify_and_poll_msgs(
     viper_program: viper::Program,
     procedures: std::collections::HashSet<String>,
     sender: mpsc::Sender<ServerMessage>,
-) -> VerificationResultKind {
+) -> (VerificationResultKind, Vec<VerifierWarning>) {
     let mut kind = VerificationResultKind::Success;
+    let mut warnings = vec![];
 
     // get the reporter global reference outside of the thread scope because it needs to
     // be dropped by thread attached to the jvm. This is also why we pass it as reference
@@ -76,13 +80,16 @@ fn verify_and_poll_msgs(
     // start thread for polling messages
     let (stop, stopped) = mpsc::channel::<()>();
     thread::scope(|scope| {
-        let polling_thread =
-            scope.spawn(|| polling_function(&rep_glob_ref, procedures, sender, stopped));
+        let polling_thread = scope
+            .spawn(|| polling_function(&rep_glob_ref, procedures, sender, stopped, &mut warnings));
         kind = verifier.verify(viper_program, Some(polling_thread));
         drop(stop);
     });
     debug!("Viper message polling thread terminated");
-    kind
+    // A run that times out stops the polling thread without waiting for the
+    // termination message, so warnings can still be queued.
+    warnings.extend(verifier.take_warnings());
+    (kind, warnings)
 }
 
 #[allow(clippy::disallowed_types)]
@@ -91,6 +98,7 @@ fn polling_function(
     procedures: std::collections::HashSet<String>,
     sender: mpsc::Sender<ServerMessage>,
     stopped: mpsc::Receiver<()>,
+    warnings: &mut Vec<VerifierWarning>,
 ) -> std::collections::HashSet<u64> {
     debug!("attach polling thread to JVM.");
     let verification_context = VIPER
@@ -174,6 +182,9 @@ fn polling_function(
                     } else {
                         debug!("quantifier chosen trigger for {viper_quant_str} had no position.");
                     }
+                }
+                "viper.silver.reporter.WarningsDuringVerification" => {
+                    warnings.extend(viper::extract_warnings(&jni, env, msg))
                 }
                 "viper.silver.reporter.VerificationTerminationMessage" => return error_hashes,
                 "viper.silver.reporter.EntitySuccessMessage" => {

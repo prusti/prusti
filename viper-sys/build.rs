@@ -187,6 +187,13 @@ fn main() {
                 method!("verificationTime"),
                 // method!("cached"),
             ]),
+            java_class!("viper.silver.reporter.WarningsDuringVerification", vec![
+                method!("warnings"),
+            ]),
+            java_class!("viper.silver.verifier.VerifierWarning", vec![
+                method!("message"),
+                method!("pos"),
+            ]),
             java_class!("viper.silver.verifier.Verifier", vec![
                 method!("name"),
                 method!("buildVersion"),
