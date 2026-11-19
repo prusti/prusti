@@ -110,9 +110,7 @@ pub fn read_prusti_attrs<'a, T: Borrow<hir::Attribute>>(
 /// The value of a single Prusti attribute, if it stores one.
 pub fn read_prusti_attr_value(item: &hir::AttrItem) -> Option<String> {
     match &item.args {
-        hir::AttrArgs::Eq { expr, .. } => {
-            Some(expr.as_token_lit().symbol.as_str().replace("\\\"", "\""))
-        }
+        hir::AttrArgs::Eq { expr, .. } => expr.kind.str().map(|value| value.to_string()),
         _ => None,
     }
 }

@@ -10,13 +10,10 @@ use prusti_interface::{
 use prusti_rustc_interface::{
     ast::{AttrVec, Crate, Item, ItemKind, Visibility, VisibilityKind, DUMMY_NODE_ID},
     borrowck::consumers,
-    data_structures::steal::Steal,
     driver::Compilation,
     hir::{def::DefKind, def_id::LocalDefId},
-    index::IndexVec,
     interface::{interface::Compiler, Config},
     middle::{
-        mir,
         queries::{mir_borrowck::ProvidedValue as MirBorrowck, Providers},
         ty::TyCtxt,
     },
@@ -28,9 +25,6 @@ use prusti_utils::config;
 #[derive(Default)]
 pub struct PrustiCompilerCalls;
 
-// Running `get_body_with_borrowck_facts` can be very slow, therefore we avoid it when not
-// necessary; for crates which won't be verified or spec_fns it suffices to load just the fn body
-
 #[allow(clippy::needless_lifetimes)]
 #[tracing::instrument(level = "debug", skip(tcx))]
 fn mir_borrowck<'tcx>(tcx: TyCtxt<'tcx>, def_id: LocalDefId) -> MirBorrowck<'tcx> {
@@ -40,6 +34,8 @@ fn mir_borrowck<'tcx>(tcx: TyCtxt<'tcx>, def_id: LocalDefId) -> MirBorrowck<'tcx
     // when calling `get_body_with_borrowck_facts`. TODO: figure out if we need
     // (anon) const bodies at all, and if so, how to get them?
     if !is_anon_const {
+        // Computing the Polonius input facts can be very slow, so they are computed only where
+        // the PCG may need them: not for spec functions, and not in crates that are not verified.
         let consumer_opts =
             if is_spec_fn(tcx, def_id.to_def_id()) || config::verify_mode().is_compile_only() {
                 consumers::ConsumerOptions::RegionInferenceContext
@@ -61,37 +57,18 @@ fn mir_borrowck<'tcx>(tcx: TyCtxt<'tcx>, def_id: LocalDefId) -> MirBorrowck<'tcx
     original_mir_borrowck(tcx, def_id)
 }
 
-#[allow(clippy::needless_lifetimes)]
-#[tracing::instrument(level = "debug", skip(tcx))]
-fn mir_promoted<'tcx>(
-    tcx: TyCtxt<'tcx>,
-    def_id: LocalDefId,
-) -> (
-    &'tcx Steal<mir::Body<'tcx>>,
-    &'tcx Steal<IndexVec<mir::Promoted, mir::Body<'tcx>>>,
-) {
-    let original_mir_promoted = prusti_rustc_interface::interface::DEFAULT_QUERY_PROVIDERS
-        .queries
-        .mir_promoted;
-    let result = original_mir_promoted(tcx, def_id);
-    // SAFETY: This is safe because we are feeding in the same `tcx` that is
-    // going to be used as a witness when pulling out the data.
-    unsafe {
-        mir_storage::store_promoted_mir_body(tcx, def_id, result.0.borrow().clone());
-    }
-    result
-}
-
 struct NoAnn;
 
 impl prusti_rustc_interface::ast_pretty::pprust::PpAnn for NoAnn {}
 
 impl prusti_rustc_interface::driver::Callbacks for PrustiCompilerCalls {
     fn config(&mut self, config: &mut Config) {
+        // With incremental compilation, rustc does not run the `mir_borrowck` provider below for
+        // a body that has not changed since the last session, so it would not store its MIR.
+        config.opts.incremental = None;
         assert!(config.override_queries.is_none());
         config.override_queries = Some(|_session: &Session, providers| {
             providers.queries.mir_borrowck = mir_borrowck;
-            providers.queries.mir_promoted = mir_promoted;
         });
     }
 

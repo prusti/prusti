@@ -119,23 +119,7 @@ fn main() {
         config::set_verify_mode(VerifyMode::CompileOnly);
     }
 
-    // Disable incremental compilation because it causes mir_borrowck not to be called.
-    let mut rustc_args = Vec::new();
-    let mut is_codegen = false;
-    for arg in original_rustc_args {
-        if arg == "--codegen" || arg == "-C" {
-            is_codegen = true;
-        } else if is_codegen && arg.starts_with("incremental=") {
-            // Just drop the argument.
-            is_codegen = false;
-        } else {
-            if is_codegen {
-                rustc_args.push("-C".to_owned());
-                is_codegen = false;
-            }
-            rustc_args.push(arg);
-        }
-    }
+    let mut rustc_args = original_rustc_args;
 
     // TODO: is this necessary, after compiler update there will never be an error?
     let exit_code = driver::catch_with_exit_code(move || {
