@@ -32,13 +32,13 @@ $ ./x.py test --test main -- tests/verify/pass/arrays/
 
 ## UI tests
 
-The tests in the `ui` directory of each test group check Prusti's output: the harness compares what a test prints with the `.stderr` and `.stdout` files next to it, in which the test's directory is written as `$DIR` and locations in the sources of `prusti-contracts` are written without line and column (`:LL:COL`), so that editing the contracts does not change these files. To write the current output to these files, pass `--bless`:
+The tests in the `ui` directory of each test group check Prusti's output: the harness compares what a test prints with the `.stderr` and `.stdout` files next to it, in which the test's directory is written as `$DIR` and locations in the sources of `prusti-contracts` have `LL:COL` in place of their line and column, so that editing the contracts does not change these files. To write the current output to these files, pass `--bless`:
 
 ```bash
 $ ./x.py test --test main -- --bless tests/verify/ui/warnings.rs
 ```
 
-A test marked `//@ known-failure` shows a bug or a missing feature: it succeeds as long as it fails and fails once it passes, so that the marker gets removed. For a `ui` test, failing means that its output differs from its files, which `--bless` then leaves unchanged. Removing the marker line shifts the line numbers in the output, so bless the test again afterwards.
+A test marked `//@ known-failure` shows a bug or a missing feature: it succeeds as long as it fails and fails once it passes, so that the marker gets removed. For a `ui` test, failing means that its output differs from its files, which `--bless` then leaves unchanged. Removing the marker line shifts the line numbers in the output, so bless the test again afterwards. Some known failures test features that do not exist yet; their files keep the output of an older Prusti, which the test can never match, so once the feature works they have to be blessed by hand.
 
 ## Additional flags
 

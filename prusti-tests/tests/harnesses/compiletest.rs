@@ -153,9 +153,9 @@ pub(crate) fn run() -> TestsResult {
             .base()
             .set_custom("rustfix", RustfixMode::Disabled);
         // Locations in the sources of the contracts, e.g. of the specification of a panicking
-        // function, move whenever the contracts are edited, so the outputs omit their line and
-        // column.
-        ui.stderr_filter(
+        // function, move whenever the contracts are edited, so the outputs show `LL:COL` in place
+        // of their line and column.
+        ui.filter(
             r"(prusti-contracts/src/\S+\.rs):[0-9]+:[0-9]+",
             "${1}:LL:COL",
         );
