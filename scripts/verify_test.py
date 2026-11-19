@@ -145,7 +145,9 @@ def verify_test(args):
         if not os.path.exists(args_file):
             return False
         with open(args_file) as fp:
-            return test_path in fp.read().splitlines()
+            # On Windows, the path ends in `\<file name>`.
+            args = [arg.replace('\\', '/') for arg in fp.read().splitlines()]
+        return test_path in args
     env['PRUSTI_RUSTC_LOG_ARGS'] = args_file
     env['PRUSTI_RUSTC_LOG_ENV'] = env_file
     if args.analyze_quantifiers:
@@ -160,8 +162,7 @@ def verify_test(args):
         if args.analyze_quantifiers:
             analyze_quantifier_logs(test_path)
     # The harness passes the variables set here on to Prusti, except those it
-    # sets itself (`prusti_config`, `GROUPS` and `PRUSTI_SERVER_ADDRESS` in
-    # `compiletest.rs`).
+    # sets itself in `compiletest.rs`.
     run_command(
         ['cargo', 'test', '--test', 'main', '--', '--exact', test_path],
         env,
