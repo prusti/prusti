@@ -150,7 +150,6 @@ impl<'vir> WandEncOutput<'vir> {
             None => GParams::new(
                 self.function_data.identity_substs(vcx.tcx()),
                 self.function_data.param_env(vcx.tcx()),
-                false,
             ),
         }
     }

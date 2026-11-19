@@ -58,7 +58,12 @@ pub struct MirPureEncOutput<'vir> {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum PureKind {
-    Closure,
+    /// The closure passed to a quantifier or to `spec_block`, encoded as part
+    /// of the expression that contains it, in the generic context of the item
+    /// `context`.
+    Closure {
+        context: DefId,
+    },
     /// A specification, attached to the item `context` specifies. That is
     /// not the specified item itself when an `impl` refines the
     /// specification of a trait: there the trait's parameters (notably
@@ -126,10 +131,15 @@ impl TaskEncoder for MirPureEnc {
         let (inputs, expr) = vir::with_vcx(move |vcx| {
             // A specification is instantiated with the arguments of the
             // encoding, which differ from its own when a trait's specification
-            // is encoded for an `impl` of that trait. The other bodies are
-            // encoded generically, so they are taken as stored.
+            // is encoded for an `impl` of that trait. So is the closure of a
+            // quantifier or `spec_block`, which is encoded in the context of
+            // the expression it is part of. The other bodies are encoded
+            // generically, so they are taken as stored.
             let body = match kind {
-                PureKind::Closure => vcx.body_mut().get_closure_body_identity(def_id),
+                PureKind::Closure { context } => {
+                    let substs = vcx.tcx().mk_args(gargs.args());
+                    vcx.body_mut().get_closure_body(def_id, substs, context)
+                }
                 PureKind::Spec { context, .. } => {
                     let substs = vcx.tcx().mk_args(gargs.args());
                     vcx.body_mut().get_spec_body(def_id, substs, context)
@@ -279,6 +289,8 @@ struct Enc<'vir: 'enc, 'enc> {
     encoding_depth: usize,
     def_id: DefId,
     context: GParams<'vir>,
+    /// The item that `context` holds the generic parameters of.
+    context_def_id: DefId,
     body: &'enc mir::Body<'vir>,
     rev_doms: rev_doms::ReverseDominators,
     /// The `ghost!` and `closure!` arms of the body (the same detection the
@@ -382,6 +394,10 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
             encoding_depth,
             def_id,
             context: gargs.context(),
+            context_def_id: match kind {
+                PureKind::Closure { context } | PureKind::Spec { context, .. } => context,
+                PureKind::Pure | PureKind::Constant(_) | PureKind::SpecBlock(_) => def_id,
+            },
             body,
             rev_doms,
             spec_arms: SpecArms::for_body(def_id, body),
@@ -1405,7 +1421,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
         closure_ty: ty::Ty<'vir>,
         closure_snap: ExprRet<'vir>,
     ) -> EncodeResult<'vir, SpecClosure<'vir>, MirPureEnc> {
-        let (qvar_tys, cl_kind, cl_def_id) = match closure_ty.kind() {
+        let (qvar_tys, cl_kind, cl_def_id, cl_args) = match closure_ty.kind() {
             TyKind::Closure(cl_def_id, cl_args) => (
                 match cl_args.as_closure().sig().skip_binder().inputs()[0].kind() {
                     TyKind::Tuple(list) => list,
@@ -1413,6 +1429,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                 },
                 cl_args.as_closure().kind(),
                 *cl_def_id,
+                *cl_args,
             ),
             other => panic!("illegal prusti::{name}: expected closure, got {other:?}"),
         };
@@ -1463,9 +1480,13 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
             .deps
             .require_dep::<MirPureEnc>(MirPureEncTask {
                 encoding_depth: self.encoding_depth + 1,
-                kind: PureKind::Closure,
+                kind: PureKind::Closure {
+                    context: self.context_def_id,
+                },
                 parent_def_id: cl_def_id,
-                gargs: GParams::from(cl_def_id).identity_args(),
+                // The body becomes part of this expression, so it is encoded
+                // in this context, in which `cl_args` are expressed.
+                gargs: GArgs::new(self.context, cl_args),
             })?
             .expr;
         let reify_args = self.vcx.alloc(reify_args);
