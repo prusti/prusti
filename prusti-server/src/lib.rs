@@ -202,6 +202,14 @@ fn handle_result(
     prusti_errors: &mut Vec<PrustiError>,
     overall_result: &mut VerificationResult,
 ) {
+    for warning in &result.warnings {
+        let prusti_warning = verifier_warning(warning);
+        if config::show_ide_info() {
+            prusti_warning.emit(env_diagnostic);
+        } else {
+            prusti_errors.push(prusti_warning);
+        }
+    }
     match result.kind {
         // nothing to do
         viper::VerificationResultKind::Success => (),
@@ -267,6 +275,20 @@ fn handle_result(
     }
 }
 
+/// A warning of the verifier, at the Rust span of its position if it has one.
+fn verifier_warning(warning: &viper::VerifierWarning) -> PrustiError {
+    let span = warning
+        .pos_id
+        .as_ref()
+        .and_then(|id| id.parse::<usize>().ok())
+        .and_then(|id| vir::with_vcx(|vcx| vcx.get_span_from_id(id)))
+        .unwrap_or(DUMMY_SP);
+    PrustiError::warning(
+        format!("the verifier reports: {}", warning.message),
+        span.into(),
+    )
+}
+
 fn handle_method_termination_message(
     env_diagnostic: &EnvDiagnostic<'_>,
     viper_method_name: String,
@@ -280,6 +302,7 @@ fn handle_method_termination_message(
         let result = viper::VerificationResult {
             item_name: rust_method,
             kind: result_kind,
+            warnings: vec![],
             cached: false,
             time_ms: verification_time,
         };

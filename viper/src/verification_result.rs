@@ -10,6 +10,8 @@ use crate::{silicon_counterexample::SiliconCounterexample, JavaException};
 pub struct VerificationResult {
     pub item_name: String,
     pub kind: VerificationResultKind,
+    /// The warnings the verifier reported while verifying, whatever the result.
+    pub warnings: Vec<VerifierWarning>,
     pub cached: bool,
     pub time_ms: u128,
 }
@@ -23,10 +25,20 @@ impl VerificationResult {
         VerificationResult {
             item_name: "".to_string(),
             kind: VerificationResultKind::Success,
+            warnings: vec![],
             cached: false,
             time_ms: 0,
         }
     }
+}
+
+/// A warning that the verifier reported, e.g. that it found no trigger for a
+/// quantifier. `pos_id` identifies its position in the Viper program, if it
+/// has one.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct VerifierWarning {
+    pub message: String,
+    pub pos_id: Option<String>,
 }
 
 /// The result of a verification request on a Viper program.
