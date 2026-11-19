@@ -158,6 +158,9 @@ impl TaskEncoder for ValueCastAxiomEnc {
         );
 
         let value_cast = deps.require_dep::<ValueCastEnc>(())?;
+        let usize_use = deps.require_dep::<TyUsePureEnc>(RustTyDecomposition::from_prim_ty(
+            vir::with_vcx(|vcx| vcx.tcx().types.usize),
+        ))?;
         let array_use = deps.require_dep::<TyUsePureEnc>(array_inner)?;
         let slice_use = deps.require_dep::<TyUsePureEnc>(slice_inner)?;
         let array_ctor = deps.require_ref::<TyConstructorEnc>(array_ty)?;
@@ -193,7 +196,7 @@ impl TaskEncoder for ValueCastAxiomEnc {
                 .cast_to_caller_ctx(arr_vc.upcast_ty())
                 .downcast_ty::<vir::CSnap>();
 
-            let idx_decl = vcx.mk_local_decl("idx", vir::TYPE_INT);
+            let idx_decl = vcx.mk_local_decl("idx", usize_use.snapshot.downcast_ty());
             let idx = vcx.mk_local_ex(idx_decl);
             // Compare the elements in their generic (`p_Param`) form: the array and
             // slice share the same element type, so the concrete element conversion

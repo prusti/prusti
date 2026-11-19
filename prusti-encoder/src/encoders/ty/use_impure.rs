@@ -437,7 +437,7 @@ impl<'vir> TyData<'vir, UseImpureTyDatas> {
         &self,
         variant: Option<abi::VariantIdx>,
         self_ref: vir::ExprRef<'vir>,
-        index: Option<vir::ExprInt<'vir>>,
+        index: Option<vir::ExprCSnap<'vir>>,
     ) -> Vec<vir::ExprBool<'vir>> {
         if variant.is_some() {
             return Vec::new();
@@ -471,7 +471,7 @@ impl<'vir> TyData<'vir, UseImpureTyDatas> {
         &self,
         variant: Option<abi::VariantIdx>,
         self_ref: vir::ExprRef<'vir>,
-        index: Option<vir::ExprInt<'vir>>,
+        index: Option<vir::ExprCSnap<'vir>>,
         perm: Option<vir::ExprPerm<'vir>>,
         label: Option<vir::OldLabel<'vir>>,
     ) -> Vec<vir::Stmt<'vir>> {
@@ -520,7 +520,7 @@ impl<'vir> TyData<'vir, UseImpureTyDatas> {
         &self,
         variant: Option<abi::VariantIdx>,
         self_ref: vir::ExprRef<'vir>,
-        index: Option<vir::ExprInt<'vir>>,
+        index: Option<vir::ExprCSnap<'vir>>,
         perm: Option<vir::ExprPerm<'vir>>,
         old: Option<vir::OldLabel<'vir>>,
     ) -> Vec<vir::Stmt<'vir>> {
@@ -593,7 +593,7 @@ impl<'vir> TyUseImpureArray<'vir> {
     pub fn ref_to_index_ref<Curr, Next>(
         &self,
         self_ref: vir::ExprGenRef<'vir, Curr, Next>,
-        index: vir::ExprGenInt<'vir, Curr, Next>,
+        index: vir::ExprGenCSnap<'vir, Curr, Next>,
     ) -> vir::ExprGenRef<'vir, Curr, Next> {
         self.data.impure.ref_to_index_ref.call()(self_ref, index, self.args.get_ty())
     }
@@ -602,7 +602,7 @@ impl<'vir> TyUseImpureArray<'vir> {
     fn ref_to_index_frame_pred(
         &self,
         self_ref: vir::ExprRef<'vir>,
-        index: vir::ExprInt<'vir>,
+        index: vir::ExprCSnap<'vir>,
     ) -> vir::ExprBool<'vir> {
         let pred_app = (self.data.impure.index_predicate)(
             self_ref,

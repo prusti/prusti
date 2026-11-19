@@ -20,6 +20,28 @@ fn wrong_literal_element() {}
 #[ensures(repeated()[2] == 8)] //~ERROR: postcondition might not hold
 fn wrong_repeated_element() {}
 
+#[trusted]
+#[ensures(forall(|k: usize| k < 4 ==> result[k] == 7))]
+fn sevens() -> [u32; 4] {
+    [7; 4]
+}
+
+fn wrong_pattern_element() {
+    let [_, b, _, _] = sevens();
+    assert!(b == 8); //~ERROR: might not hold
+}
+
+#[pure]
+fn second(a: [u32; 4]) -> u32 {
+    let [_, b, _, _] = a;
+    b
+}
+
+#[requires(forall(|k: usize| k < 4 ==> a[k] == 7))]
+fn wrong_pure_pattern_element(a: [u32; 4]) {
+    assert!(second(a) == 8); //~ERROR: might not hold
+}
+
 #[requires(a.len() > 5)]
 fn wrong_subslice_len(a: &[i32]) {
     let s = &a[1..4];

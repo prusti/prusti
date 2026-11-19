@@ -1231,11 +1231,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                 let proj = e_ty.expect_array();
                 let idx = self
                     .encode_place_with_ref(curr_ver, mir::Place::from(idx).into())?
-                    .snap;
-                let usize_ty = self.ty_use(self.vcx.tcx().types.usize);
-                let idx = usize_ty
-                    .expect_primitive()
-                    .snap_to_prim(idx.downcast_ty())
+                    .snap
                     .downcast_ty();
                 let proj_app = proj.index(encoded_place.snap.downcast_ty(), idx);
                 let place_ref = encoded_place
@@ -1254,10 +1250,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                 ..
             } => {
                 let proj = e_ty.expect_array();
-                let idx = self
-                    .vcx
-                    .mk_const_expr(vir::ConstData::Int(offset as u128))
-                    .downcast_ty();
+                let idx = self.usize_const_snap(offset);
                 let proj_app = proj.index(encoded_place.snap.downcast_ty(), idx);
                 let place_ref = encoded_place
                     .place_ref
