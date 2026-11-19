@@ -82,9 +82,11 @@ fn prusti_config(path: String, env: &[(&str, &str)], abort_check: &AbortCheck) -
 
 fn per_file_config(config: &mut Config, file_contents: &Spanned<Vec<u8>>) {
     default_per_file_config(config, file_contents);
-    // Expected outputs refer to the directory of the test file as `$DIR`.
+    // Expected outputs refer to the directory of the test file as `$DIR`. Earlier filters write
+    // paths in the outputs with `/` on every platform, so the directory is written so too.
     if let Some(dir) = file_contents.span.file.parent() {
-        let dir = ui_test::Match::Exact(format!("{}/", dir.display()).into());
+        let dir = format!("{}/", dir.display()).replace('\\', "/");
+        let dir = ui_test::Match::Exact(dir.into());
         let comments = config.comment_defaults.base();
         for normalize in [
             &mut comments.normalize_stderr,
