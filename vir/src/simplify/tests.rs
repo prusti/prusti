@@ -522,9 +522,27 @@ fn trigger_term_shape() {
         assert!(s.valid_head && !s.forbidden && !s.locals.contains("q"));
         // A variable is not a valid trigger term, also behind a `let`.
         assert!(!shape(c.let_("a", c.i("q"), c.i("a"))).valid_head);
-        // A `let` at the top of a term is not a valid head.
-        assert!(
-            !crate::trigger_term_shape(c.let_("a", c.i("q"), c.app("f", &[c.i("a")]))).valid_head
+        // A `let` that the inlining keeps is looked through, like `old`.
+        let s = shape(c.let_("a", c.app("g", &[c.i("q")]), c.old(c.app("f", &[c.i("a")]))));
+        assert!(s.valid_head && !s.forbidden && s.locals.contains("q"));
+    });
+}
+
+#[test]
+fn inline_lets_under_old() {
+    with_ctx(|_, c| {
+        let inline = |e| format!("{:?}", crate::inline_lets(c.vcx, e));
+        // A local keeps its value under `old(..)`, so it is inlined there.
+        let e = c.let_("a", c.i("q"), c.old(c.app("f", &[c.i("a")])));
+        assert_eq!(inline(e), "old(f(q))");
+        // Another value is not, and keeps its `let`; it is still inlined
+        // outside the `old(..)`.
+        let in_old = c.old(c.app("f", &[c.i("a")]));
+        let e = c.let_(
+            "a",
+            c.app("h", &[c.i("q")]),
+            c.app("g", &[c.i("a"), in_old]),
         );
+        assert_eq!(inline(e), "(let a == (h(q)) in\n  g(h(q), old(f(a))))");
     });
 }

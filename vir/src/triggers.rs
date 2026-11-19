@@ -26,8 +26,10 @@ pub fn inline_trigger_lets<'vir, T: Foldable<'vir, (), !> + Copy>(
 }
 
 /// `e` with the values of its `let`s in place of their locals, and without
-/// the `let`s. The encoder gives every local it binds a fresh name, so a
-/// value never ends up under a `let` that rebinds one of its own locals.
+/// the `let`s. Under an `old(..)`, only values that are locals or constants
+/// are inlined, and the `let` of a local still used there stays. The encoder
+/// gives every local it binds a fresh name, so a value never ends up under a
+/// `let` that rebinds one of its own locals.
 pub fn inline_lets<'vir>(vcx: &'vir VirCtxt<'_>, e: ExprDyn<'vir>) -> ExprDyn<'vir> {
     let mut inline = Inline {
         vcx,
@@ -66,15 +68,44 @@ impl<'vir> Folder<'vir, (), !> for Inline<'vir, '_> {
                 self.bindings.push((l.name, val));
                 let body = l.expr.fold_with(self).unwrap_or(l.expr);
                 self.bindings.pop();
-                // The body takes the place of the `let` and keeps the `let`'s
-                // span: the verifier's warnings about a trigger point at the
-                // span of its root.
-                Some(self.vcx.alloc(ExprGenData::new_inner(
-                    body.kind,
-                    body.debug_info,
-                    e.span,
-                    body.ty(),
-                )))
+                let mut locals = FxHashSet::default();
+                collect_locals(body, &mut locals);
+                // The `let` stays if its local is still used, under an
+                // `old(..)`; Silicon then evaluates the trigger on its own
+                // instead of finding it in the body. Otherwise the body takes
+                // its place, and keeps
+                // the `let`'s span: the verifier's warnings about a trigger
+                // point at the span of its root.
+                let (kind, debug_info) = if locals.contains(l.name) {
+                    let l = LetGenData {
+                        name: l.name,
+                        val,
+                        expr: body,
+                    };
+                    let kind = ExprKindGenData::Let(self.vcx.alloc(l));
+                    (self.vcx.alloc(kind), e.debug_info)
+                } else {
+                    (body.kind, body.debug_info)
+                };
+                Some(
+                    self.vcx
+                        .alloc(ExprGenData::new_inner(kind, debug_info, e.span, body.ty())),
+                )
+            }
+            // A local keeps its value under `old(..)`, but a heap read in the
+            // value would read the old heap there. As in the simplifier, only
+            // the values that are locals or constants are inlined under it.
+            ExprKindGenData::Old(_) => {
+                let outer = self.bindings.clone();
+                self.bindings.retain(|b| {
+                    matches!(
+                        b.1.kind,
+                        ExprKindGenData::Local(_) | ExprKindGenData::Const(_)
+                    )
+                });
+                let folded = e.super_fold_with(self);
+                self.bindings = outer;
+                folded
             }
             ExprKindGenData::Local(local) => self
                 .bindings
@@ -87,10 +118,11 @@ impl<'vir> Folder<'vir, (), !> for Inline<'vir, '_> {
     }
 }
 
-/// A trigger term without `let`s (see [`inline_lets`]), as the rules see it.
+/// A trigger term with its `let`s inlined (see [`inline_lets`]), as the rules
+/// see it.
 pub struct TriggerTermShape<'vir> {
-    /// Whether the term is an application or an access, possibly in an
-    /// `old(..)`, at its top.
+    /// Whether the term is an application or an access at its top, possibly
+    /// in `old(..)`s and in the `let`s that the inlining keeps.
     pub valid_head: bool,
     /// Whether the term contains a Viper operator, an ADT discriminator, a
     /// conditional or a quantifier, none of which a trigger term may contain
@@ -143,12 +175,15 @@ pub fn check_trigger_set(
 }
 
 /// The shape of the trigger term `e` (see [`TriggerTermShape`]), whose `let`s
-/// are expected to be inlined (see [`inline_lets`]): a `let` left at its top
-/// counts as an invalid head.
+/// are expected to be inlined (see [`inline_lets`]).
 pub fn trigger_term_shape<'vir>(e: ExprDyn<'vir>) -> TriggerTermShape<'vir> {
     let mut head = e;
-    while let ExprKindGenData::Old(old) = head.kind {
-        head = old.expr;
+    loop {
+        head = match head.kind {
+            ExprKindGenData::Old(old) => old.expr,
+            ExprKindGenData::Let(l) => l.expr,
+            _ => break,
+        };
     }
     let valid_head = matches!(
         head.kind,
