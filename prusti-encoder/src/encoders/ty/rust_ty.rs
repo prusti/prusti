@@ -560,10 +560,24 @@ impl<'tcx> TyData<'tcx, RustTyDatas> {
                 let gty = Self::args_from_tys([TySpecifics::new_param_ty(0)]);
                 (GParams::empty_env(gty), Self::args_from_tys([ty]))
             }
+            // The captures are parameters of the closure type (like the
+            // fields of a tuple), so that the regions they carry are visible
+            // in its arguments.
             ty::TyKind::Closure(did, args) => vir::with_vcx(|vcx| {
                 let identity = ty::List::identity_for_item(vcx.tcx(), did);
-                let gargs = vcx.tcx().mk_args(identity.as_closure().parent_args());
-                let args = vcx.tcx().mk_args(args.as_closure().parent_args());
+                let parent = identity.as_closure().parent_args();
+                let closure = args.as_closure();
+                let upvar_tys = closure.upvar_tys();
+                let captures = (0..upvar_tys.len())
+                    .map(|idx| TySpecifics::new_param_ty((parent.len() + idx) as u32).into());
+                let gargs = Self::args_from_generics(parent.iter().copied().chain(captures));
+                let args = Self::args_from_generics(
+                    closure
+                        .parent_args()
+                        .iter()
+                        .copied()
+                        .chain(upvar_tys.iter().map(Into::into)),
+                );
                 (
                     GParams::new(gargs, vcx.tcx().param_env(did), is_trait_extern_spec),
                     args,
@@ -697,19 +711,15 @@ impl<'tcx> TySpecifics<'tcx, RustTyDatas> {
                 TySpecifics::mk_param(RustParamData::Generic)
             }
             ty::TyKind::Closure(_, args) => {
-                let captured = args.as_closure().upvar_tys();
-                let fields = vir::with_vcx(|vcx| {
-                    captured
-                        .iter()
-                        .enumerate()
-                        .map(|(i, ty)| RustFieldData {
-                            name: symbol::Symbol::intern(&format!("c{i}")),
-                            fid: abi::FieldIdx::from_usize(i),
-                            ty: LazyRustTy(vcx.tcx().erase_and_anonymize_regions(ty)),
-                            address: RustFieldAddress::Constant,
-                        })
-                        .collect::<Vec<_>>()
-                });
+                let parent = args.as_closure().parent_args().len();
+                let fields = (0..args.as_closure().upvar_tys().len())
+                    .map(|i| RustFieldData {
+                        name: symbol::Symbol::intern(&format!("c{i}")),
+                        fid: abi::FieldIdx::from_usize(i),
+                        ty: LazyRustTy(Self::new_param_ty((parent + i) as u32)),
+                        address: RustFieldAddress::Constant,
+                    })
+                    .collect::<Vec<_>>();
                 TySpecifics::mk_structlike((), fields)
             }
             ty::TyKind::Never => {
