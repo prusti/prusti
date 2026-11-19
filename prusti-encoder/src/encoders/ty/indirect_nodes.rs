@@ -4,6 +4,7 @@ use prusti_rustc_interface::{
     middle::ty,
 };
 use task_encoder::{EncodeFullError, TaskEncoder, TaskEncoderDependencies};
+use vir::CastType;
 
 use super::{
     RustTyDecomposition,
@@ -147,6 +148,26 @@ impl<'vir> NodePredicates<'vir> {
     ) -> vir::PredicateApp<'vir> {
         let (lo, hi) = self.graph.interval(p);
         (self.ind.predicate)(key, self.tys, self.consts, lo, hi)(None)
+    }
+
+    /// For an array, the predicate of position `p` of the element `value` at
+    /// `index`, which the array's predicate of `p` holds.
+    pub fn element_predicate(
+        &self,
+        p: LifetimePosition,
+        index: vir::ExprCSnap<'vir>,
+        value: vir::ExprSnap<'vir>,
+    ) -> Option<vir::PredicateApp<'vir>> {
+        let (lo, hi) = self.graph.interval(p);
+        let element = self.ind.element?;
+        Some(element(
+            index,
+            value.downcast_ty(),
+            self.tys,
+            self.consts,
+            lo,
+            hi,
+        )(None))
     }
 
     /// The positions of the generic argument `arg`, in the order of the

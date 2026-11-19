@@ -61,7 +61,23 @@ pub struct IndirectPredRef<'vir> {
     >,
     /// `shallow_X(s, T..)`: `s` with every reference collapsed, the shallow snapshot.
     pub shallow: FunctionIdn<'vir, (vir::Snap, vir::ManyTyVal, vir::ManyCSnap), vir::Snap>,
+    /// For an array, `p_X_elem_ind(i, v, T.., lo, hi)`: the predicates of the
+    /// element `v` at index `i`. The array's predicate holds one per element;
+    /// the index makes them distinct even where elements are equal.
+    pub element: Option<ElementPredIdn<'vir>>,
 }
+
+pub type ElementPredIdn<'vir> = PredicateIdn<
+    'vir,
+    (
+        vir::CSnap,
+        vir::PSnap,
+        vir::ManyTyVal,
+        vir::ManyCSnap,
+        vir::Int,
+        vir::Int,
+    ),
+>;
 
 impl<'vir> task_encoder::OutputRefAny for IndirectPredRef<'vir> {}
 
@@ -537,6 +553,7 @@ impl TaskEncoder for IndirectPredEnc {
         vir::Function<'vir>,
         vir::Function<'vir>,
         vir::Function<'vir>,
+        Option<vir::Predicate<'vir>>,
     );
 
     fn task_to_key<'vir>(task: &Self::TaskDescription<'vir>) -> Self::TaskKey<'vir> {
@@ -590,6 +607,24 @@ impl TaskEncoder for IndirectPredEnc {
                 (snapshot, params.ty_args(), params.const_args()),
                 snapshot,
             );
+            // Array elements are indexed by `usize` snapshots.
+            let usize_ty = RustTyDecomposition::from_prim_ty(vcx.tcx().types.usize).ty;
+            let usize_enc = deps.require_dep::<TyPureEnc>(usize_ty)?;
+            let usize_snap = usize_enc.snapshot.downcast_ty();
+            let element = match &ty.specifics {
+                TySpecifics::ArrayLike(data) if !data.slice => Some(PredicateIdn::new(
+                    vir::ViperIdent::new(vir::vir_format!(vcx, "p_{}_elem_ind", task_key.name())),
+                    (
+                        usize_snap,
+                        vir::TYPE_PSNAP,
+                        params.ty_args(),
+                        params.const_args(),
+                        vir::TYPE_INT,
+                        vir::TYPE_INT,
+                    ),
+                )),
+                _ => None,
+            };
             deps.emit_output_ref(
                 *task_key,
                 IndirectPredRef {
@@ -597,6 +632,7 @@ impl TaskEncoder for IndirectPredEnc {
                     extend,
                     graft,
                     shallow,
+                    element,
                 },
             )?;
 
@@ -611,6 +647,10 @@ impl TaskEncoder for IndirectPredEnc {
             let t_decl = vcx.mk_local_decl("t", snapshot);
             let s: vir::ExprSnap<'vir> = vcx.mk_local_ex(s_decl);
             let t: vir::ExprSnap<'vir> = vcx.mk_local_ex(t_decl);
+            // The postconditions of `extend`, `graft` and `shallow` of an
+            // array, which state their results element by element.
+            let mut array_posts = (Vec::new(), Vec::new(), Vec::new());
+            let mut element_decl = None;
 
             let (body, extend_body, graft_body, shallow_body) = match &ty.specifics {
                 TySpecifics::StructLike(data) => {
@@ -825,6 +865,122 @@ impl TaskEncoder for IndirectPredEnc {
                         Some(shallow_body.upcast_ty()),
                     )
                 }
+                // An array is like a struct with one field per element, all of
+                // the element type, which has all of the array's positions.
+                // Its length is a parameter, so its predicate holds those of the
+                // elements by a quantifier, and `extend`, `graft` and `shallow`
+                // are abstract, with their results given element by element.
+                TySpecifics::ArrayLike(data) if !data.slice => {
+                    let element = element.unwrap();
+                    let index_access = data.data.1.index_access;
+                    let index =
+                        |a: vir::ExprSnap<'vir>, i: vir::ExprCSnap<'vir>| -> vir::ExprSnap<'vir> {
+                            index_access.call()(a.downcast_ty(), i).upcast_ty()
+                        };
+                    let element_ty = data.data.0.decompose(task_key.params);
+                    let usize_prim = usize_enc.expect_primitive();
+                    let len: vir::ExprInt<'vir> = usize_prim
+                        .snap_to_prim(params.const_exprs()[0])
+                        .downcast_ty();
+                    let subqueries = Self::subqueries(task_key, lo, hi, deps)?;
+                    let i_decl = vcx.mk_local_decl("i", usize_snap);
+                    let i: vir::ExprCSnap<'vir> = vcx.mk_local_ex(i_decl);
+                    let i_value: vir::ExprInt<'vir> = usize_prim.snap_to_prim(i).downcast_ty();
+                    let in_range = vir::expr! { vcx; (i_value) < (len) };
+                    let element_pred = |v: vir::ExprSnap<'vir>| {
+                        vcx.mk_predicate_app_expr(element(
+                            i,
+                            v.downcast_ty(),
+                            params.ty_exprs(),
+                            params.const_exprs(),
+                            lo,
+                            hi,
+                        )(None))
+                    };
+                    let forall = |trigger: vir::ExprSnap<'vir>, body: vir::ExprBool<'vir>| {
+                        vcx.mk_forall_expr(
+                            vcx.alloc_slice(&[i_decl]),
+                            vcx.alloc_slice(&[vcx.mk_trigger(&[trigger])]),
+                            vir::expr! { vcx; (in_range) ==> (body) },
+                        )
+                    };
+
+                    // The element predicate.
+                    let v_decl = vcx.mk_local_decl("v", vir::TYPE_PSNAP);
+                    let v: vir::ExprSnap<'vir> = vcx.mk_local_ex(v_decl).upcast_ty();
+                    let mut conjuncts = Vec::new();
+                    for &subquery in &subqueries {
+                        let preds = Self::field_preds(&subqueries, subquery, element_ty, v, deps)?;
+                        if !preds.is_empty() {
+                            let guard = subquery.guard;
+                            let preds = vcx.mk_conj(&preds);
+                            conjuncts.push(vir::expr! { vcx; (guard) ==> (preds) });
+                        }
+                    }
+                    element_decl = Some(vcx.mk_predicate(
+                        element,
+                        (
+                            i_decl,
+                            v_decl,
+                            params.ty_decls(),
+                            params.const_decls(),
+                            lo_decl,
+                            hi_decl,
+                        ),
+                        Some(vcx.mk_conj(&conjuncts)),
+                    ));
+                    let k_i = index(k, i);
+                    let body = forall(k_i, element_pred(k_i));
+
+                    let result = vcx.mk_result(snapshot);
+                    let result_i = index(result, i);
+                    let mut extended = k_i;
+                    for &subquery in &subqueries {
+                        extended = Self::field_extend(
+                            &subqueries,
+                            subquery,
+                            element_ty,
+                            extended,
+                            k_i,
+                            deps,
+                        )?;
+                    }
+                    // What `extend` reads at element `i`, through its predicate.
+                    let array_pred =
+                        predicate(k, params.ty_exprs(), params.const_exprs(), lo, hi)(None);
+                    let element_pred = element(
+                        i,
+                        k_i.downcast_ty(),
+                        params.ty_exprs(),
+                        params.const_exprs(),
+                        lo,
+                        hi,
+                    )(None);
+                    let extended = vcx.mk_unfolding_expr(
+                        array_pred,
+                        vcx.mk_unfolding_expr(element_pred, extended),
+                    );
+                    let extended =
+                        vcx.mk_ternary_expr(vir::expr! { vcx; (lo) < (hi) }, extended, k_i);
+                    array_posts
+                        .0
+                        .push(forall(result_i, vcx.mk_eq_expr(result_i, extended)));
+
+                    let (s_i, t_i) = (index(s, i), index(t, i));
+                    let mut grafted = s_i;
+                    for &subquery in &subqueries {
+                        grafted = Self::field_graft(subquery, element_ty, grafted, t_i, deps)?;
+                    }
+                    array_posts
+                        .1
+                        .push(forall(result_i, vcx.mk_eq_expr(result_i, grafted)));
+
+                    let collapsed = Self::field_shallow(element_ty, s_i, deps)?;
+                    array_posts
+                        .2
+                        .push(forall(result_i, vcx.mk_eq_expr(result_i, collapsed)));
+                    (Some(body), None, None, None)
+                }
                 // A shared reference has no lifetime positions.
                 TySpecifics::ImmRef(_) => (Some(vcx.mk_bool::<true>()), Some(k), Some(s), Some(s)),
                 // TODO: the remaining types.
@@ -871,7 +1027,7 @@ impl TaskEncoder for IndirectPredEnc {
             // grafting it back in gives it again, and making it shallow gives the
             // shallow key; field
             // snapshots of types containing the parameter have these forms.
-            let mut extend_posts = Vec::new();
+            let mut extend_posts = array_posts.0;
             if ty.specifics.is_param() {
                 let result = vcx.mk_result(snapshot);
                 let grafted =
@@ -884,7 +1040,7 @@ impl TaskEncoder for IndirectPredEnc {
             }
             // Grafting an empty interval changes nothing, as for every type whose `graft`
             // has a body.
-            let mut graft_posts = Vec::new();
+            let mut graft_posts = array_posts.1;
             if ty.specifics.is_param() {
                 let result = vcx.mk_result(snapshot);
                 let unchanged = vcx.mk_eq_expr(result, s);
@@ -925,18 +1081,32 @@ impl TaskEncoder for IndirectPredEnc {
                 shallow,
                 (s_decl, params.ty_decls(), params.const_decls()),
                 &[],
-                &[],
+                vcx.alloc_slice(&array_posts.2),
                 None,
                 shallow_body,
             );
 
-            Ok(((predicate_decl, extend_decl, graft_decl, shallow_decl), ()))
+            Ok((
+                (
+                    predicate_decl,
+                    extend_decl,
+                    graft_decl,
+                    shallow_decl,
+                    element_decl,
+                ),
+                (),
+            ))
         })
     }
 
     fn emit_outputs<'vir>(program: &mut task_encoder::Program<'vir>) {
-        for (predicate, extend, graft, shallow) in Self::all_outputs_local_no_errors(program) {
+        for (predicate, extend, graft, shallow, element) in
+            Self::all_outputs_local_no_errors(program)
+        {
             program.add_predicate(predicate);
+            if let Some(element) = element {
+                program.add_predicate(element);
+            }
             program.add_function(extend);
             program.add_function(graft);
             program.add_function(shallow);

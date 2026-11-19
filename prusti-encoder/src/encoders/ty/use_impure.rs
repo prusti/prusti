@@ -139,6 +139,9 @@ pub struct TyUseImpureArrayData<'vir> {
     #[allow(dead_code)]
     impure: <ImpureTyDatas as TyDatas<'vir>>::ArrayData,
     element_caster: FieldCaster<'vir>,
+    /// The casts of the elements' predicates, if the element type is a
+    /// concrete type with positions.
+    element_indirect: Option<IndirectCasts<'vir>>,
 }
 
 /// Use-side data for the hardcoded extras of a `Box`.
@@ -379,11 +382,13 @@ impl<'a, 'vir> TyUseImpureWalker<'a, 'vir> {
         params: GParams<'vir>,
     ) -> EncResult<'vir, ArrayData<'vir, UseImpureTyDatas>> {
         let caster = self.encode_normalized(*data.0, params)?;
+        let element_indirect = self.indirect_casts(*data.0, params)?;
         let slice = data.slice;
         let data = TyUseImpureArrayData {
             args: self.args_t,
             impure: *data.data.1,
             element_caster: caster,
+            element_indirect,
         };
         Ok(ArrayData::new(data, slice))
     }
@@ -683,6 +688,12 @@ impl<'vir> TyData<'vir, UseImpureTyDatas> {
 }
 
 impl<'vir> TyUseImpureArray<'vir> {
+    /// The casts of the elements' predicates, if the element type is a
+    /// concrete type with positions.
+    pub fn element_indirect(&self) -> Option<IndirectCasts<'vir>> {
+        self.data.element_indirect
+    }
+
     /// Get the (Ref) address of an index. Identical to the function one would
     /// call in `use_pure`.
     pub fn ref_to_index_ref<Curr, Next>(

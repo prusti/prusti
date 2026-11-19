@@ -42,3 +42,11 @@ fn array_mut(mut a: [i32; 3]) {
     // b expires here
     assert!(a[0] == 42);
 }
+
+// The other element keeps its reference after one is replaced.
+#[ensures(*result[0] == 4)]
+fn write_element<'a>(mut y: [&'a mut i32; 2], r: &'a mut i32) -> [&'a mut i32; 2] {
+    y[1] = r;
+    *y[0] = 4;
+    y
+}

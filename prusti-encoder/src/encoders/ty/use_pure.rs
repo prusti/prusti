@@ -554,6 +554,17 @@ impl<'vir> TyUsePureArray<'vir> {
         self.pure.index_access.call()(snap, index).upcast_ty()
     }
 
+    /// `snap` with the element at `index` replaced by `elem`.
+    pub fn with_index<Curr, Next>(
+        &self,
+        snap: vir::ExprGenCSnap<'vir, Curr, Next>,
+        index: vir::ExprGenCSnap<'vir, Curr, Next>,
+        elem: vir::ExprGenSnap<'vir, Curr, Next>,
+    ) -> vir::ExprGenCSnap<'vir, Curr, Next> {
+        let elem = self.caster.cast_to_callee_ctx(elem).downcast_ty();
+        self.pure.update.call()(snap, index, elem)
+    }
+
     /// The array-like with the given elements (`[a, b, c]`).
     pub fn elems_to_snap<Curr, Next>(
         &self,
