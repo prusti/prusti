@@ -21,7 +21,7 @@ fn wrong_literal_element() {}
 fn wrong_repeated_element() {}
 
 #[trusted]
-#[ensures(forall(|k: usize| k < 4 ==> result[k] == 7))]
+#[ensures(forall(|k: usize| k < 4 ==> result[k] == 7, triggers=[(result[k],)]))]
 fn sevens() -> [u32; 4] {
     [7; 4]
 }
@@ -37,7 +37,7 @@ fn second(a: [u32; 4]) -> u32 {
     b
 }
 
-#[requires(forall(|k: usize| k < 4 ==> a[k] == 7))]
+#[requires(forall(|k: usize| k < 4 ==> a[k] == 7, triggers=[(a[k],)]))]
 fn wrong_pure_pattern_element(a: [u32; 4]) {
     assert!(second(a) == 8); //~ERROR: might not hold
 }
