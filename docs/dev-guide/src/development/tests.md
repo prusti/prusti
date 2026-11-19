@@ -38,7 +38,7 @@ The tests in the `ui` directory of each test group check Prusti's output: the ha
 $ ./x.py test --test main -- --bless tests/verify/ui/warnings.rs
 ```
 
-A test marked `//@ known-failure` shows a bug or a missing feature: it succeeds as long as it fails and fails once it passes, so that the marker gets removed. For a `ui` test, failing means that its output differs from its files, which `--bless` then leaves unchanged. Removing the marker line shifts the line numbers in the output, so bless the test again afterwards. Some known failures test features that do not exist yet; their files keep the output of an older Prusti, which the test can never match, so once the feature works they have to be blessed by hand.
+A test marked `//@ known-failure` shows a bug or a missing feature: it succeeds as long as it fails and fails once it passes, so that the marker gets removed. For a `ui` test, failing means that its output differs from its files, which `--bless` then leaves unchanged. Removing the marker line shifts the line numbers in the output, so bless the test again afterwards. Some known failures are tests of features that do not exist yet; their files keep the output of an older Prusti, which the test can never match, so once the feature works, remove the marker and bless the test.
 
 ## Additional flags
 
