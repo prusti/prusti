@@ -1,22 +1,16 @@
-error: [Prusti: invalid specification] Invalid specification kind for procedure '<MyStruct as MyTrait>::foo'
+error: [Prusti: invalid specification] `<MyStruct as MyTrait>::foo` implements a `#[pure]` trait method and so must itself be `#[pure]`
   --> $DIR/refine-impure-with-pure.rs:13:5
    |
 13 |     fn foo(&self) -> i32 {
    |     ^^^^^^^^^^^^^^^^^^^^
    |
-   = note: Procedures can be predicates, pure or impure
-   = note: This procedure is of kind 'Impure'
-note: This procedure refines a function declared on 'MyTrait'
-  --> $DIR/refine-impure-with-pure.rs:3:1
+   = help: add `#[pure]` to the implementation
+note: the trait method is declared `#[pure]` here
+  --> $DIR/refine-impure-with-pure.rs:4:5
    |
-3  | trait MyTrait {
-   | ^^^^^^^^^^^^^
-   = note: However, 'MyTrait::foo' is of kind 'Pure'
-note: Try to convert '<MyStruct as MyTrait>::foo' into a procedure of kind 'Pure'
-  --> $DIR/refine-impure-with-pure.rs:13:5
-   |
-13 |     fn foo(&self) -> i32 {
-   |     ^^^^^^^^^^^^^^^^^^^^
+ 4 |     #[pure]
+   |     ^^^^^^^
+   = note: this error originates in the attribute macro `pure` (in Nightly builds, run with -Z macro-backtrace for more info)
 
-error: aborting due to previous error
+error: aborting due to 1 previous error
 

@@ -1,16 +1,10 @@
-error: [Prusti: unsupported feature] failed to obtain the required capability because a conflicting capability is present
-  --> $DIR/unions.rs:11:23
-   |
-11 |     let _y = unsafe { a.f2 };
-   |                       ^^^^
-   |
-   = help: try manually packaging the union capability
-   = note: this typically happens when trying to read from different union fields because Prusti does not yet support reinterpreting memory
-note: the conflicting capability
-  --> $DIR/unions.rs:10:23
-   |
-10 |     let _x = unsafe { a.f1 };
-   |                       ^^^^
+error: [Prusti: unsupported feature] cannot encode function body `test1`: Prusti does not look inside `MyUnion`, as it does not support unions yet and keeps the contents of `#[trusted]` types hidden
+ --> $DIR/unions.rs:9:13
+  |
+9 |     let a = MyUnion { f1: 1 };
+  |             ^^^^^^^^^^^^^^^^^
+  |
+  = help: move this code into a `#[trusted]` function (also marked `#[pure]` if pure code or specifications call it), and describe what it does with pre- and postconditions
 
-error: aborting due to previous error
+error: aborting due to 1 previous error
 

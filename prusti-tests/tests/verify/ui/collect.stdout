@@ -1,8 +1,8 @@
-// compile-flags: -Pprint_desugared_specs=true -Pprint_collected_verification_items=true -Phide_uuids=true
-// normalize-stdout-test: "[a-z0-9]{32}" -> "$(NUM_UUID)"
-// normalize-stdout-test: "[a-z0-9]{8}-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{12}" -> "$(UUID)"
-// normalize-stdout-test: "/[[a-z0-9]{4}/]::" -> "[$(CRATE_ID)]::"
-// normalize-stdout-test: "#/[prusti::specs_version = /x22.+/x22/]" -> "#[prusti::specs_version = $(SPECS_VERSION)]"
+//@ compile-flags: -Pprint_desugared_specs=true -Pprint_collected_verification_items=true -Phide_uuids=true
+//@ normalize-stdout-test: "[a-z0-9]{32}" -> "$(NUM_UUID)"
+//@ normalize-stdout-test: "[a-z0-9]{8}-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{12}" -> "$(UUID)"
+//@ normalize-stdout-test: "\[[a-z0-9]{4}\]::" -> "[$(CRATE_ID)]::"
+//@ normalize-stdout-test: "#\[prusti::specs_version = \x22.+\x22\]" -> "#[prusti::specs_version = $(SPECS_VERSION)]"
 
 
 
@@ -12,10 +12,9 @@
 #![feature(stmt_expr_attributes)]
 #![feature(register_tool)]
 #![register_tool(prusti)]
-#[prelude_import]
-use std::prelude::rust_2018::*;
-#[macro_use]
 extern crate std;
+#[prelude_import]
+use std::prelude::rust_2021::*;
 use prusti_contracts::*;
 #[allow(unused_must_use, unused_parens, unused_variables, dead_code,
 non_snake_case)]
@@ -48,14 +47,11 @@ fn test3() {
         unused_parens)]
         #[prusti::specs_version = $(SPECS_VERSION)]
         if false {
-                {
-
-                    #[prusti::spec_only]
-                    #[prusti::loop_body_invariant_spec]
-                    #[prusti::spec_id = "$(NUM_UUID)"]
-                    || -> bool { true };
-                }
-            };
+            {
+                ::prusti_contracts::spec_block(&(#[prusti::spec_only] #[prusti::loop_body_invariant_spec] #[prusti::spec_id
+                            = "$(NUM_UUID)"] || -> bool { true }));
+            }
+        };
         curr += 1;
     }
 }
@@ -87,18 +83,16 @@ fn test4() {
         unused_parens)]
         #[prusti::specs_version = $(SPECS_VERSION)]
         if false {
-                {
-
-                    #[prusti::spec_only]
-                    #[prusti::loop_body_invariant_spec]
-                    #[prusti::spec_id = "$(NUM_UUID)"]
-                    || -> bool { true };
-                }
-            };
+            {
+                ::prusti_contracts::spec_block(&(#[prusti::spec_only] #[prusti::loop_body_invariant_spec] #[prusti::spec_id
+                            = "$(NUM_UUID)"] || -> bool { true }));
+            }
+        };
         curr += 1;
     }
 }
 fn main() {}
+pub extern crate prusti_contracts;
 Collected verification items 5:
 procedure: collect::test1 at $DIR/collect.rs:10:1: 10:11 (#0)
 procedure: collect::test2 at $DIR/collect.rs:13:1: 13:11 (#0)

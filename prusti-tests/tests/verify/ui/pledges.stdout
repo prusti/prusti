@@ -1,8 +1,8 @@
-// compile-flags: -Pprint_desugared_specs=true -Pprint_typeckd_specs=true -Phide_uuids=true
-// normalize-stdout-test: "[a-z0-9]{32}" -> "$(NUM_UUID)"
-// normalize-stdout-test: "[a-z0-9]{8}-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{12}" -> "$(UUID)"
-// normalize-stdout-test: "/[[a-z0-9]{4}/]::" -> "[$(CRATE_ID)]::"
-// normalize-stdout-test: "#/[prusti::specs_version = /x22.+/x22/]" -> "#[prusti::specs_version = $(SPECS_VERSION)]"
+//@ compile-flags: -Pprint_desugared_specs=true -Pprint_typeckd_specs=true -Phide_uuids=true
+//@ normalize-stdout-test: "[a-z0-9]{32}" -> "$(NUM_UUID)"
+//@ normalize-stdout-test: "[a-z0-9]{8}-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{12}" -> "$(UUID)"
+//@ normalize-stdout-test: "\[[a-z0-9]{4}\]::" -> "[$(CRATE_ID)]::"
+//@ normalize-stdout-test: "#\[prusti::specs_version = \x22.+\x22\]" -> "#[prusti::specs_version = $(SPECS_VERSION)]"
 
 
 
@@ -14,10 +14,9 @@
 #![feature(stmt_expr_attributes)]
 #![feature(register_tool)]
 #![register_tool(prusti)]
-#[prelude_import]
-use std::prelude::rust_2018::*;
-#[macro_use]
 extern crate std;
+#[prelude_import]
+use std::prelude::rust_2021::*;
 use prusti_contracts::*;
 struct T {
     f: u32,
@@ -51,7 +50,13 @@ non_snake_case)]
 #[prusti::spec_id = "$(NUM_UUID)"]
 fn prusti_pledge_item_reborrow_$(NUM_UUID)<'a>(x:
         &'a mut T, result: &'a mut u32) -> bool {
-    let prusti_result: bool = before_expiry(*result) == x.f;
+    let prusti_result: bool =
+        ({
+                    ::prusti_contracts::before_expiry_start();
+                    let r = { *result };
+                    ::prusti_contracts::before_expiry_end();
+                    r
+                }) == x.f;
     prusti_result
 }
 #[prusti::pledge_spec_id_ref = "$(NUM_UUID)"]
@@ -66,4 +71,5 @@ fn reborrow_caller(a: T) {
     if !(a.f == 5) { ::core::panicking::panic("assertion failed: a.f == 5") };
 }
 fn main() {}
-ProcedureSpecification { source: DefId(0:14 ~ pledges[$(CRATE_ID)]::reborrow), kind: Inherent(Impure), pres: Empty, posts: Empty, pledges: Inherent([Pledge { reference: None, lhs: None, rhs: DefId(0:12 ~ pledges[$(CRATE_ID)]::prusti_pledge_item_reborrow_$(NUM_UUID)) }]), trusted: Inherent(false), terminates: Inherent(None), purity: Inherent(None) }
+pub extern crate prusti_contracts;
+ProcedureSpecification { source: DefId(0:15 ~ pledges[$(CRATE_ID)]::reborrow), extern_spec: None, kind: Inherent(Impure), pres: Empty, posts: Empty, pledges: Inherent([Pledge { reference: None, lhs: None, rhs: DefId(0:13 ~ pledges[$(CRATE_ID)]::prusti_pledge_item_reborrow_$(NUM_UUID)) }]), trusted: Inherent(false), terminates: Inherent(None), purity: Inherent(None) }
