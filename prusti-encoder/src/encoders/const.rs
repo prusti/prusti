@@ -20,7 +20,10 @@ use crate::encoders::{
     addr::RefDataEnc,
     ty::{
         RustTyDecomposition,
-        generics::{GParams, GenericParamsEnc},
+        generics::{
+            GParams, GenericParamsEnc, fn_trait_impls::fn_items_with_fn_impls,
+            trait_impls::TraitImplEnc,
+        },
         use_pure::{TyUsePure, TyUsePureEnc},
     },
 };
@@ -345,6 +348,18 @@ impl TaskEncoder for ConstEnc {
         deps: &mut TaskEncoderDependencies<'vir, Self>,
     ) -> EncodeFullResult<'vir, Self> {
         deps.emit_output_ref(*task_key, ())?;
+        // A fn item in a constant operand, such as `f` in `app(f)` or
+        // `app(&f)`, can be called through its built-in `Fn*` impls, so
+        // `TraitImplEnc` checks it. The check is queued rather than required:
+        // it needs the function's specification, which may contain this very
+        // constant and is then still being encoded.
+        if let ConstEncTask::Mir { const_, .. } = *task_key {
+            for fn_item in fn_items_with_fn_impls(const_.ty()) {
+                TraitImplEnc::on_all_requested(Vec::new(), move || {
+                    let _ = TraitImplEnc::encode(fn_item, false, DUMMY_SP);
+                });
+            }
+        }
         Ok(match *task_key {
             ConstEncTask::Ty {
                 const_,

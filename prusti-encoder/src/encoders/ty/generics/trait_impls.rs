@@ -21,7 +21,7 @@ use crate::{
         ty::{
             RustTy, RustTyDecomposition,
             generics::{
-                GArgs, GArgsCastEnc, GArgsTyEnc, GParams, GenericParamsEnc, closure_impls,
+                GArgs, GArgsCastEnc, GArgsTyEnc, GParams, GenericParamsEnc, fn_trait_impls,
                 r#trait::TraitEnc, trait_fn::TraitFnEnc,
             },
             lifted::TyConstructorEnc,
@@ -35,8 +35,8 @@ use crate::{
 /// strengthens its postcondition, and needs no more resources and gives back
 /// no fewer than a call of the trait fn. Only run on local impls (foreign
 /// impls are trusted to conform, their conditions and axioms are encoded by
-/// [`TraitImplConditionEnc`]) and on local closures, for their built-in `Fn*`
-/// impls (see [`closure_impls`]).
+/// [`TraitImplConditionEnc`]) and on local closures and fn items, for their
+/// built-in `Fn*` impls (see [`fn_trait_impls`]).
 pub struct TraitImplEnc;
 
 impl TaskEncoder for TraitImplEnc {
@@ -59,17 +59,20 @@ impl TaskEncoder for TraitImplEnc {
         vir::with_vcx(|vcx| {
             let tcx = vcx.tcx();
 
-            // A local closure's built-in `Fn*` impls are checked like the
-            // methods of a trait impl.
-            let is_closure = tcx.is_closure_like(*task_key);
+            // The built-in `Fn*` impls of a local closure or fn item are
+            // checked like the methods of a trait impl.
+            let builtin = fn_trait_impls::fn_trait_impl(vcx, *task_key);
+            let is_builtin = builtin.is_some();
             // How errors name the implementation.
-            let implementation = if is_closure {
+            let implementation = if tcx.is_closure_like(*task_key) {
                 "the closure"
+            } else if is_builtin {
+                "the function"
             } else {
                 "the implementation"
             };
-            let (check_prefix, impl_fns) = if is_closure {
-                closure_impls::closure_impl_fn(vcx, *task_key)
+            let (check_prefix, impl_fns) = if let Some(builtin) = builtin {
+                builtin
             } else {
                 let all_impls = tcx.trait_impls_in_crate(task_key.krate);
                 let idx = all_impls.iter().position(|did| did == task_key).unwrap();
@@ -136,8 +139,8 @@ impl TaskEncoder for TraitImplEnc {
                 let impl_item_has_body = is_function_with_body(vcx.tcx(), impl_item_def_id);
 
                 // A trait method without specifications, like the `Fn*` methods
-                // that closures implement, has none to encode in the context of
-                // the implementation.
+                // that closures and fn items implement, has none to encode in
+                // the context of the implementation.
                 let trait_specs = deps.require_dep::<SpecEnc>(SpecEncTask {
                     def_id: trait_item_def_id,
                 })?;
@@ -373,7 +376,7 @@ impl TaskEncoder for TraitImplEnc {
             }
 
             // Make the impl visible to the trait's `impl_fun`.
-            if !is_closure && implements_trait(tcx, *task_key) {
+            if !is_builtin && implements_trait(tcx, *task_key) {
                 deps.require_dep::<TraitImplConditionEnc>(*task_key)?;
             }
 
@@ -453,7 +456,8 @@ impl<'vir> IndirectResources<'vir> {
     /// The indirect resources of `impl_fn` and of `trait_fn` at `trait_args`,
     /// both reified at the arguments of `impl_fn` in `local_defs`. Only the
     /// arguments with regions in the trait method's signature are read, which
-    /// are arguments of `impl_fn` at the same positions.
+    /// are arguments of `impl_fn` at the same positions (for a fn item, see
+    /// `fn_trait_impls`).
     fn new<E: TaskEncoder>(
         vcx: &'vir vir::VirCtxt<'vir>,
         deps: &mut TaskEncoderDependencies<'vir, E>,
