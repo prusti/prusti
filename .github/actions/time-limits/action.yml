@@ -1,0 +1,35 @@
+name: Set the time limits of the tests
+description: >
+  Sets Prusti's time limits for verifying the tests, so that a slow test cannot hold up the
+  suite. The limits for the runners of `test.yml` are set below, in `env` of the step;
+  slower runners scale them by `factor`.
+
+inputs:
+  factor:
+    description: >
+      How much slower than the runners of `test.yml` this runner verifies, with a margin for
+      the runners' variance, so that the tests that pass in `test.yml` pass here too.
+    default: '1'
+
+runs:
+  using: composite
+  steps:
+    - name: Set the time limits
+      shell: python
+      env:
+        # The time limits for the runners of `test.yml`.
+        # Silicon's time limit for proving one assertion, in milliseconds
+        # (`PRUSTI_ASSERT_TIMEOUT`).
+        ASSERT_TIMEOUT_MS: 30000
+        # Silicon's time limit for verifying one test file, in seconds
+        # (`--timeout` in `PRUSTI_EXTRA_VERIFIER_ARGS`).
+        VERIFIER_TIMEOUT_S: 60
+        FACTOR: ${{ inputs.factor }}
+      run: |
+        import os
+        factor = float(os.environ["FACTOR"])
+        assert_timeout_ms = round(int(os.environ["ASSERT_TIMEOUT_MS"]) * factor)
+        verifier_timeout_s = round(int(os.environ["VERIFIER_TIMEOUT_S"]) * factor)
+        with open(os.environ["GITHUB_ENV"], "a") as env:
+            env.write(f"PRUSTI_ASSERT_TIMEOUT={assert_timeout_ms}\n")
+            env.write(f"PRUSTI_EXTRA_VERIFIER_ARGS=--timeout={verifier_timeout_s}\n")

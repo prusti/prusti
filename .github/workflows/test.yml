@@ -19,11 +19,6 @@ concurrency:
 
 env:
   RUST_BACKTRACE: 1
-  PRUSTI_ASSERT_TIMEOUT: 30000
-  # Silicon's time limit (in seconds) per test file, so that a slow test cannot hold up the suite.
-  # `deploy.yml` and `coverage.yml`, which run only on `main`, scale both limits up for their
-  # slower runners.
-  PRUSTI_EXTRA_VERIFIER_ARGS: --timeout=60
 
 jobs:
   # Check formatting
@@ -153,6 +148,8 @@ jobs:
           cache-save-if: ${{ github.ref == 'refs/heads/main' }}
           # Failing tests do not invalidate the build artifacts.
           cache-on-failure: true
+      - name: Set the time limits of the tests
+        uses: ./.github/actions/time-limits
       - name: Prepare verification cache keys
         shell: bash
         run: |

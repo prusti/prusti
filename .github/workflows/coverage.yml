@@ -7,10 +7,6 @@ on:
 
 env:
   RUST_BACKTRACE: 1
-  # The time limits of `test.yml`, doubled for the instrumented build and the runners'
-  # variance, so that the tests that pass in `test.yml` pass here too.
-  PRUSTI_ASSERT_TIMEOUT: 60000
-  PRUSTI_EXTRA_VERIFIER_ARGS: --timeout=120
   # The /mnt disk has 66 GB of free space; more than the working directory
   COVERAGE_PATH: /mnt/prusti-coverage
 
@@ -25,6 +21,12 @@ jobs:
 
       - name: Set up the build environment
         uses: ./.github/actions/setup
+
+      - name: Set the time limits of the tests
+        uses: ./.github/actions/time-limits
+        with:
+          # The instrumented build verifies more slowly.
+          factor: 2
 
       - name: Enable collection of source-based coverage
         run: |

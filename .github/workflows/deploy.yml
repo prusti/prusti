@@ -13,36 +13,26 @@ jobs:
   build:
     strategy:
       matrix:
-        # The time limits (`assert-timeout` in milliseconds per assertion, `verifier-timeout`
-        # in seconds per test file) are those of `test.yml` scaled by how much slower each runner
-        # verifies, with a margin for the runners' variance, so that the tests that pass in
-        # `test.yml` pass here too.
+        # `time-factor`: how much slower than the runners of `test.yml` each runner verifies the
+        # tests (see `.github/actions/time-limits`).
         include:
           - os: ubuntu-latest
             label: ubuntu-latest-x64
-            assert-timeout: 45000
-            verifier-timeout: 90
+            time-factor: 1.5
           - os: windows-latest
             label: windows-latest-x64
-            assert-timeout: 60000
-            verifier-timeout: 120
+            time-factor: 2
           - os: windows-11-arm
             label: windows-latest-arm64
-            assert-timeout: 180000
-            verifier-timeout: 360
+            time-factor: 6
           - os: macos-latest
             label: macos-latest-arm64
-            assert-timeout: 60000
-            verifier-timeout: 120
+            time-factor: 2
           - os: macos-15-intel
             label: macos-15-x64
-            assert-timeout: 120000
-            verifier-timeout: 240
+            time-factor: 4
       fail-fast: false
     runs-on: ${{ matrix.os }}
-    env:
-      PRUSTI_ASSERT_TIMEOUT: ${{ matrix.assert-timeout }}
-      PRUSTI_EXTRA_VERIFIER_ARGS: --timeout=${{ matrix.verifier-timeout }}
     steps:
       - name: Check out the repo
         uses: actions/checkout@v4
@@ -59,6 +49,11 @@ jobs:
         with:
           # Not the `build` cache of the debug builds in test.yml.
           cache-shared-key: "release"
+
+      - name: Set the time limits of the tests
+        uses: ./.github/actions/time-limits
+        with:
+          factor: ${{ matrix.time-factor }}
 
       # So that the release build resolves the features of dependencies per selected package and
       # separately for normal, build and dev-dependencies, not as the development builds do.
