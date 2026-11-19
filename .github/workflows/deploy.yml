@@ -7,28 +7,42 @@ on:
 
 env:
   RUST_BACKTRACE: 1
-  PRUSTI_ASSERT_TIMEOUT: 60000
-  # Silicon's time limit (in seconds) per test file, so that a slow test cannot hold up the suite.
-  PRUSTI_EXTRA_VERIFIER_ARGS: --timeout=90
 
 jobs:
   # Build and test in release mode
   build:
     strategy:
       matrix:
+        # The time limits (`assert-timeout` in milliseconds per assertion, `verifier-timeout`
+        # in seconds per test file) are those of `test.yml` scaled by how much slower each runner
+        # verifies, with a margin for the runners' variance, so that the tests that pass in
+        # `test.yml` pass here too.
         include:
           - os: ubuntu-latest
             label: ubuntu-latest-x64
+            assert-timeout: 45000
+            verifier-timeout: 90
           - os: windows-latest
             label: windows-latest-x64
+            assert-timeout: 60000
+            verifier-timeout: 120
           - os: windows-11-arm
             label: windows-latest-arm64
+            assert-timeout: 180000
+            verifier-timeout: 360
           - os: macos-latest
             label: macos-latest-arm64
+            assert-timeout: 60000
+            verifier-timeout: 120
           - os: macos-15-intel
             label: macos-15-x64
+            assert-timeout: 120000
+            verifier-timeout: 240
       fail-fast: false
     runs-on: ${{ matrix.os }}
+    env:
+      PRUSTI_ASSERT_TIMEOUT: ${{ matrix.assert-timeout }}
+      PRUSTI_EXTRA_VERIFIER_ARGS: --timeout=${{ matrix.verifier-timeout }}
     steps:
       - name: Check out the repo
         uses: actions/checkout@v4

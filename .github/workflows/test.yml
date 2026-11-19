@@ -21,7 +21,9 @@ env:
   RUST_BACKTRACE: 1
   PRUSTI_ASSERT_TIMEOUT: 30000
   # Silicon's time limit (in seconds) per test file, so that a slow test cannot hold up the suite.
-  PRUSTI_EXTRA_VERIFIER_ARGS: --timeout=90
+  # `deploy.yml` and `coverage.yml`, which run only on `main`, scale both limits up for their
+  # slower runners.
+  PRUSTI_EXTRA_VERIFIER_ARGS: --timeout=60
 
 jobs:
   # Check formatting
