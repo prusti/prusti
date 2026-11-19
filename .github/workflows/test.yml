@@ -123,8 +123,8 @@ jobs:
         os: [ubuntu-latest] # , windows-latest, macos-latest]
         # Test groups run in parallel jobs, selected by path filters.
         tests:
-          - name: parse, typecheck, verify/fail
-            filters: tests/parse/ tests/typecheck/ tests/verify/fail/
+          - name: parse, typecheck, verify/fail, verify/ui
+            filters: tests/parse/ tests/typecheck/ tests/verify/fail/ tests/verify/ui/
           - name: verify/pass
             filters: tests/verify/pass/
           - name: verify_overflow
