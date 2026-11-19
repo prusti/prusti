@@ -101,6 +101,18 @@ pub(crate) trait PureRvalueEnc<'vir> {
             .upcast_ty()
     }
 
+    /// The snapshot of the `usize` constant `value`, e.g. the index of a
+    /// `ConstantIndex` projection.
+    fn usize_const_snap(
+        &mut self,
+        value: u64,
+    ) -> vir::ExprGenCSnap<'vir, Self::ExprCurr, Self::ExprNext> {
+        let usize_ty = self.ty_use_pure(self.vcx().tcx().types.usize);
+        usize_ty
+            .expect_primitive()
+            .prim_to_snap(self.vcx().mk_const_expr(vir::ConstData::Int(value as u128)))
+    }
+
     /// The source position currently being encoded under: the MIR statement
     /// or terminator (or, in a pure body, the expression) whose encoding is
     /// in progress. Falls back to the body when no span is on the stack.

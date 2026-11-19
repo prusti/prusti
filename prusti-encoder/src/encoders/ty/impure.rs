@@ -70,14 +70,14 @@ pub struct TyImpureBoxData<'vir> {
 #[derive(Debug, Clone, Copy)]
 pub struct TyImpureArrayData<'vir> {
     /// Function to access the ref at the given index.
-    pub ref_to_index_ref: vir::FunctionIdn<'vir, (vir::Ref, vir::Int, vir::ManyTyVal), vir::Ref>,
+    pub ref_to_index_ref: vir::FunctionIdn<'vir, (vir::Ref, vir::CSnap, vir::ManyTyVal), vir::Ref>,
     #[allow(dead_code)]
     pub index_frame:
-        vir::FunctionIdn<'vir, (vir::Ref, vir::Int, vir::ManyTyVal, vir::ManyCSnap), vir::CSnap>,
+        vir::FunctionIdn<'vir, (vir::Ref, vir::CSnap, vir::ManyTyVal, vir::ManyCSnap), vir::CSnap>,
     #[allow(dead_code)]
-    pub index_predicate: PredicateIdn<'vir, (vir::Ref, vir::Int, vir::ManyTyVal, vir::ManyCSnap)>,
-    pub method_fold: vir::MethodIdn<'vir, (vir::Int, vir::Ref, vir::ManyTyVal, vir::ManyCSnap)>,
-    pub method_unfold: vir::MethodIdn<'vir, (vir::Int, vir::Ref, vir::ManyTyVal, vir::ManyCSnap)>,
+    pub index_predicate: PredicateIdn<'vir, (vir::Ref, vir::CSnap, vir::ManyTyVal, vir::ManyCSnap)>,
+    pub method_fold: vir::MethodIdn<'vir, (vir::CSnap, vir::Ref, vir::ManyTyVal, vir::ManyCSnap)>,
+    pub method_unfold: vir::MethodIdn<'vir, (vir::CSnap, vir::Ref, vir::ManyTyVal, vir::ManyCSnap)>,
 }
 
 #[derive(Debug, Clone, Copy)]

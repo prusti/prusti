@@ -130,6 +130,10 @@ impl<'enc, 'vir: 'enc> Enc<'enc, 'vir> {
                     let ty_array = ty.ty.expect_array();
                     let elem_ty = ty_array.data.decompose_normalize(ty.args);
                     let elem_len = val.len(self.ecx).unwrap();
+                    let usize_use = self.deps.require_dep::<TyUsePureEnc>(
+                        RustTyDecomposition::from_prim_ty(vcx.tcx().types.usize),
+                    )?;
+                    let usize_prim = usize_use.expect_primitive();
                     let mut posts = Vec::new();
                     let result = vcx.mk_result(ty_enc.snapshot.downcast_ty());
                     for idx in 0..elem_len {
@@ -137,9 +141,8 @@ impl<'enc, 'vir: 'enc> Enc<'enc, 'vir> {
                             self.ecx.project_index(&val, idx).unwrap(),
                             elem_ty,
                         )?;
-                        let index = vcx
-                            .mk_const_expr(vir::ConstData::Int(idx as u128))
-                            .downcast_ty();
+                        let index = usize_prim
+                            .prim_to_snap(vcx.mk_const_expr(vir::ConstData::Int(idx as u128)));
                         let index_ex = array_data.index(result, index);
                         posts.push(vcx.mk_eq_expr(snap.upcast_ty(), index_ex));
                     }
