@@ -118,7 +118,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                 let place_ref = encoded_place
                     .place_ref
                     .map(|pr| proj.ref_to_index_ref(pr, idx));
-                EncodedPlace::new(proj_app, place_ref)
+                EncodedPlace::new(proj_app, place_ref).with_in_deep_snap(encoded_place.in_deep_snap)
             }
             // `from_end` indexes from the runtime length of a slice; it is
             // always false for an array, whose statically known length lets
@@ -136,7 +136,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                 let place_ref = encoded_place
                     .place_ref
                     .map(|pr| proj.ref_to_index_ref(pr, idx));
-                EncodedPlace::new(proj_app, place_ref)
+                EncodedPlace::new(proj_app, place_ref).with_in_deep_snap(encoded_place.in_deep_snap)
             }
             mir::ProjectionElem::Downcast(..) => encoded_place,
             _ => {

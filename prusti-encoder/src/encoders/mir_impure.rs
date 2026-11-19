@@ -207,6 +207,9 @@ where
     /// The statements that start the block being encoded: the copies of key
     /// variables at a join (see `IndirectPredicateState::enter_block`).
     pub block_entry_stmts: Vec<vir::Stmt<'vir>>,
+    /// While a package script is encoded, the label of the state before the
+    /// package, in which the script reads current places.
+    pub package_label: Option<&'vir str>,
 
     pub encoded_blocks: Vec<vir::CfgBlock<'vir>>, // TODO: use IndexVec ?
 }
@@ -490,10 +493,21 @@ pub(crate) enum Part {
     Field(abi::FieldIdx),
     Variant,
     Referent,
+    Index(ArrayIndex),
+    /// The node's earlier contents, which hold the parts of its place that
+    /// the other children, e.g. a single element of an array, do not.
+    Rest,
+}
+
+/// The index of an array element in a place.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ArrayIndex {
+    Local(mir::Local),
+    Constant(u64),
 }
 
 impl<'vir> Child<'vir> {
-    /// A node of a field, variant or referent of `base`'s place.
+    /// A node of a field, variant, referent or element of `base`'s place.
     fn of_place(base: NodeLp<'vir>, node: NodeLp<'vir>) -> Option<Self> {
         let base_place = base.base().place();
         let place = node.base().place();
@@ -506,9 +520,27 @@ impl<'vir> Child<'vir> {
             mir::ProjectionElem::Field(field, _) => Part::Field(*field),
             mir::ProjectionElem::Downcast(..) => Part::Variant,
             mir::ProjectionElem::Deref => Part::Referent,
+            mir::ProjectionElem::Index(local) => Part::Index(ArrayIndex::Local(*local)),
+            mir::ProjectionElem::ConstantIndex {
+                offset,
+                from_end: false,
+                ..
+            } => Part::Index(ArrayIndex::Constant(*offset)),
             _ => return None,
         };
         Some(Self { node, part })
+    }
+
+    /// An earlier node of `base`'s lifetime projection, which holds the parts
+    /// of the place that an aggregate edge's other sources do not.
+    fn rest_of(base: NodeLp<'vir>, node: NodeLp<'vir>) -> Option<Self> {
+        (node != base
+            && node.base().place() == base.base().place()
+            && node.region_idx() == base.region_idx())
+        .then_some(Self {
+            node,
+            part: Part::Rest,
+        })
     }
 }
 
@@ -1329,7 +1361,14 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 Ok(pure.expect_variant_opt(variant).fields[field.index()]
                     .read(base_vars.snap.downcast_ty()))
             }
-            Part::Variant => Ok(base_vars.snap),
+            Part::Variant | Part::Rest => Ok(base_vars.snap),
+            Part::Index(index) => {
+                let index = self.encode_array_index(index, child.node)?;
+                Ok(self
+                    .ty_use_pure(base_ty)
+                    .expect_array()
+                    .index(base_vars.snap.downcast_ty(), index))
+            }
             // The node of a referent's lifetime is one of the reference's
             // nested lifetimes, whose predicates hold the referent's.
             Part::Referent => {
@@ -1350,6 +1389,56 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         }
     }
 
+    /// The snapshot and keys of `child`: its parts of `base`'s snapshot and
+    /// keys.
+    fn child_keys(
+        &mut self,
+        base: NodeLp<'vir>,
+        ty: ty::Ty<'vir>,
+        vars: &NodeKeys<'vir>,
+        keys: &[(LifetimePosition, vir::ExprSnap<'vir>)],
+        child: Child<'vir>,
+    ) -> EncodeResult<
+        'vir,
+        (
+            vir::ExprSnap<'vir>,
+            Vec<(LifetimePosition, vir::ExprSnap<'vir>)>,
+        ),
+        E,
+    > {
+        let child_snap = self.child_snapshot(base, ty, vars, keys, child)?;
+        // A child's predicate is keyed by its part of the base's
+        // key, as in the body of the base's predicate. The child's
+        // positions of the lifetime correspond to the base's, in
+        // order.
+        let child_keys = if child.part == Part::Variant {
+            keys.to_vec()
+        } else {
+            let (_, _, child_positions) = self.node_positions(child.node)?;
+            if child_positions.len() != keys.len() {
+                return Err(self.unsupported(
+                    format!(
+                        "INTERNAL ERROR: the positions of {} do not match those of {}",
+                        child.node.to_short_string(self.pcg_ctxt()),
+                        base.to_short_string(self.pcg_ctxt())
+                    ),
+                    self.current_span(),
+                ));
+            }
+            let mut child_keys = Vec::new();
+            for (&q, &(p, key)) in child_positions.iter().zip(keys) {
+                let part = NodeKeys {
+                    snap: key,
+                    keys: FxHashMap::default(),
+                };
+                let child_key = self.child_snapshot(base, ty, &part, &[(p, key)], child)?;
+                child_keys.push((q, child_key));
+            }
+            child_keys
+        };
+        Ok((child_snap, child_keys))
+    }
+
     /// `whole` with `child`'s part replaced by `part`: the inverse of
     /// `child_snapshot`.
     fn with_child_part(
@@ -1359,8 +1448,8 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         whole: vir::ExprSnap<'vir>,
         child: Child<'vir>,
         part: vir::ExprSnap<'vir>,
-    ) -> vir::ExprSnap<'vir> {
-        match child.part {
+    ) -> EncodeResult<'vir, vir::ExprSnap<'vir>, E> {
+        Ok(match child.part {
             Part::Field(field) => {
                 let variant = match base.base().place().projection.last() {
                     Some(mir::ProjectionElem::Downcast(_, variant)) => Some(*variant),
@@ -1371,13 +1460,92 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                     .with_field(whole.downcast_ty(), field, part)
                     .upcast_ty()
             }
-            Part::Variant => part,
+            Part::Variant | Part::Rest => part,
             Part::Referent => self
                 .ty_use_pure(base_ty)
                 .expect_mutref()
                 .with_value(whole.downcast_ty(), part)
                 .upcast_ty(),
+            Part::Index(index) => {
+                let index = self.encode_array_index(index, child.node)?;
+                self.ty_use_pure(base_ty)
+                    .expect_array()
+                    .with_index(whole.downcast_ty(), index, part)
+                    .upcast_ty()
+            }
+        })
+    }
+
+    /// The `usize` snapshot of the array index of `node`'s place: read in the
+    /// state of its label, or, if it is current, in the current state.
+    fn encode_array_index(
+        &mut self,
+        index: ArrayIndex,
+        node: NodeLp<'vir>,
+    ) -> EncodeResult<'vir, vir::ExprCSnap<'vir>, E> {
+        Ok(match index {
+            ArrayIndex::Local(local) => {
+                let idx = self.encode_place_with_snap(mir::Place::from(local).into())?;
+                let label = match node.base() {
+                    MaybeLabelledPlace::Labelled(place) => {
+                        Some(self.get_location_label(place.at()))
+                    }
+                    MaybeLabelledPlace::Current(_) => self.package_label.map(vir::OldLabel::Label),
+                };
+                self.vcx.maybe_apply_label(idx.1, label).downcast_ty()
+            }
+            ArrayIndex::Constant(offset) => self.usize_const_snap(offset),
+        })
+    }
+
+    /// The elements of an array of type `ty` whose predicates an edge
+    /// between the array's node and the `children`'s moves out of or into the
+    /// array's: those of the children, or all of them if there are none and
+    /// the length is known. Other elements' predicates stay in the array's.
+    fn array_elements(
+        &mut self,
+        ty: ty::Ty<'vir>,
+        children: &[Child<'vir>],
+    ) -> EncodeResult<'vir, Vec<(vir::ExprCSnap<'vir>, Option<Child<'vir>>)>, E> {
+        let ty::Array(_, len) = ty.kind() else {
+            return Ok(Vec::new());
+        };
+        let mut elements = Vec::new();
+        for &child in children {
+            if let Part::Index(index) = child.part {
+                elements.push((self.encode_array_index(index, child.node)?, Some(child)));
+            }
         }
+        if children.is_empty()
+            && let Some(len) = len.try_to_target_usize(self.vcx.tcx())
+        {
+            for index in 0..len {
+                elements.push((self.usize_const_snap(index), None));
+            }
+        }
+        Ok(elements)
+    }
+
+    /// The predicates of the `elements` of an array of type `ty` with the
+    /// `keys`, which the array's predicates hold.
+    fn element_predicates(
+        &mut self,
+        ty: ty::Ty<'vir>,
+        nodes: &NodePredicates<'vir>,
+        keys: &[(LifetimePosition, vir::ExprSnap<'vir>)],
+        elements: &[(vir::ExprCSnap<'vir>, Option<Child<'vir>>)],
+    ) -> Vec<vir::PredicateApp<'vir>> {
+        let mut preds = Vec::new();
+        for &(index, _) in elements {
+            for &(p, key) in keys {
+                let value = self
+                    .ty_use_pure(ty)
+                    .expect_array()
+                    .index_generic(key.downcast_ty(), index);
+                preds.extend(nodes.element_predicate(p, index, value));
+            }
+        }
+        preds
     }
 
     /// The snapshot and keys of `base` with each child's part replaced by the
@@ -1398,23 +1566,44 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         ),
         E,
     > {
-        for &child in children {
-            let Some(child_keys) = self.indirect_predicate_state.get(child.node).cloned() else {
-                continue;
+        // The rest is the whole, into which the other children's parts go. A
+        // part without keys, e.g. an element whose contents were moved in,
+        // then has its part of the current state, which `snap` and `keys`
+        // are.
+        let current = NodeKeys {
+            snap,
+            keys: FxHashMap::default(),
+        };
+        let current_keys = keys.clone();
+        let has_rest = children.iter().any(|child| child.part == Part::Rest);
+        let rest = children.iter().filter(|child| child.part == Part::Rest);
+        let parts = children.iter().filter(|child| child.part != Part::Rest);
+        for &child in rest.chain(parts) {
+            let child_keys = match self.indirect_predicate_state.get(child.node).cloned() {
+                Some(child_keys) => child_keys,
+                None if has_rest && child.part != Part::Rest => {
+                    let (snap, keys) =
+                        self.child_keys(base, base_ty, &current, &current_keys, child)?;
+                    NodeKeys {
+                        snap,
+                        keys: keys.into_iter().collect(),
+                    }
+                }
+                None => continue,
             };
             // As in `child_snapshot`, a referent's snapshot is not a part of
             // the reference's.
             if child.part != Part::Referent {
-                snap = self.with_child_part(base, base_ty, snap, child, child_keys.snap);
+                snap = self.with_child_part(base, base_ty, snap, child, child_keys.snap)?;
             }
-            let child_positions = if child.part == Part::Variant {
+            let child_positions = if matches!(child.part, Part::Variant | Part::Rest) {
                 keys.iter().map(|&(p, _)| p).collect()
             } else {
                 self.node_positions(child.node)?.2
             };
             for (q, (_, key)) in child_positions.iter().zip(keys.iter_mut()) {
                 if let Some(&child_key) = child_keys.keys.get(q) {
-                    *key = self.with_child_part(base, base_ty, key, child, child_key);
+                    *key = self.with_child_part(base, base_ty, key, child, child_key)?;
                 }
             }
         }
@@ -1468,6 +1657,42 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 .map(|(q, key)| referent.cast_at(key, q, to_generic))
                 .collect();
             self.stmts(order(casts));
+            return Ok(());
+        }
+        // An array's element type is a type parameter whose positions are all
+        // of the array's.
+        if let ty::Array(element_ty, _) = ty.kind() {
+            let Some(indirect) = data.expect_array().element_indirect() else {
+                return Ok(());
+            };
+            let element_nodes = NodePredicates::new(
+                RustTyDecomposition::from_ty(*element_ty, self.def_id),
+                self.deps,
+            )?
+            .in_ty(*element_ty);
+            let mut casts = Vec::new();
+            for (index, child) in self.array_elements(ty, children)? {
+                let element_keys = match child.and_then(|child| child_keys(self, child.part)) {
+                    Some(keys) => keys,
+                    None => {
+                        let element_snap = self
+                            .ty_use_pure(ty)
+                            .expect_array()
+                            .index(snap.downcast_ty(), index);
+                        (0..keys.len())
+                            .map(LifetimePosition::new)
+                            .map(|q| (q, element_nodes.key(q, element_snap)))
+                            .collect()
+                    }
+                };
+                casts.extend(order(
+                    element_keys
+                        .into_iter()
+                        .map(|(q, key)| indirect.cast_at(key, q, to_generic))
+                        .collect(),
+                ));
+            }
+            self.stmts(casts);
             return Ok(());
         }
         let pure = self.ty_use_pure(ty);
@@ -1620,42 +1845,35 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                         .collect::<Vec<_>>();
                     self.stmts(unfolds);
                 }
+                let elements = self.array_elements(ty, children)?;
+                let unfolds = self
+                    .element_predicates(ty, &nodes, &keys, &elements)
+                    .into_iter()
+                    .map(|pred| self.vcx.mk_unfold_stmt(pred))
+                    .collect::<Vec<_>>();
+                self.stmts(unfolds);
                 for &child in children {
-                    let child_snap = self.child_snapshot(base, ty, &vars, &keys, child)?;
-                    // A child's predicate is keyed by its part of the base's
-                    // key, as in the body of the base's predicate. The child's
-                    // positions of the lifetime correspond to the base's, in
-                    // order.
-                    let child_keys = if child.part == Part::Variant {
-                        keys.clone()
-                    } else {
-                        let (_, _, child_positions) = self.node_positions(child.node)?;
-                        if child_positions.len() != keys.len() {
-                            return Err(self.unsupported(
-                                format!(
-                                    "INTERNAL ERROR: the positions of {} do not match those of {}",
-                                    child.node.to_short_string(self.pcg_ctxt()),
-                                    base.to_short_string(self.pcg_ctxt())
-                                ),
-                                self.current_span(),
-                            ));
-                        }
-                        let mut child_keys = Vec::new();
-                        for (&q, &(p, key)) in child_positions.iter().zip(&keys) {
-                            let part = NodeKeys {
-                                snap: key,
-                                keys: FxHashMap::default(),
-                            };
-                            let child_key =
-                                self.child_snapshot(base, ty, &part, &[(p, key)], child)?;
-                            child_keys.push((q, child_key));
-                        }
-                        child_keys
-                    };
+                    // The rest keeps its keys.
+                    if child.part == Part::Rest {
+                        continue;
+                    }
+                    let (child_snap, child_keys) =
+                        self.child_keys(base, ty, &vars, &keys, child)?;
                     self.set_node_vars(child.node, child_snap, child_keys);
                 }
                 if !is_variant {
                     self.cast_children(ty, vars.snap, &keys, &nodes, children, false)?;
+                }
+                // The rest's predicates are folded back with its keys, from
+                // the parts the other children do not take.
+                for &child in children.iter().filter(|child| child.part == Part::Rest) {
+                    let rest = self.expect_node_vars(child.node)?;
+                    let folds = positions
+                        .iter()
+                        .filter_map(|p| rest.keys.get(p).map(|key| (*p, *key)))
+                        .map(|(p, key)| self.vcx.mk_fold_stmt(nodes.predicate_with_key(p, key)))
+                        .collect::<Vec<_>>();
+                    self.stmts(folds);
                 }
             }
             FoldOrUnfold::Fold => {
@@ -1675,6 +1893,18 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                     }
                     None => self.expect_node_vars(base)?,
                 };
+                // The rest's predicates are unfolded, giving the parts the
+                // other children do not hold.
+                for &child in children.iter().filter(|child| child.part == Part::Rest) {
+                    let rest = self.expect_node_vars(child.node)?;
+                    let unfolds = positions
+                        .iter()
+                        .rev()
+                        .filter_map(|p| rest.keys.get(p).map(|key| (*p, *key)))
+                        .map(|(p, key)| self.vcx.mk_unfold_stmt(nodes.predicate_with_key(p, key)))
+                        .collect::<Vec<_>>();
+                    self.stmts(unfolds);
+                }
                 let stored = positions
                     .iter()
                     .filter_map(|p| vars.keys.get(p).map(|key| (*p, *key)))
@@ -1696,7 +1926,14 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                             self.current_span(),
                         )
                     })?;
+                let elements = self.array_elements(ty, children)?;
                 self.cast_children(ty, vars.snap, &keys, &nodes, children, true)?;
+                let element_folds = self
+                    .element_predicates(ty, &nodes, &keys, &elements)
+                    .into_iter()
+                    .map(|pred| self.vcx.mk_fold_stmt(pred))
+                    .collect::<Vec<_>>();
+                self.stmts(element_folds);
                 let folds = keys
                     .iter()
                     .map(|&(p, key)| self.vcx.mk_fold_stmt(nodes.predicate_with_key(p, key)))
@@ -1801,7 +2038,10 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 let sources = aggregate
                     .sources()
                     .iter()
-                    .filter_map(|source| Child::of_place(target, local_node(*source)?))
+                    .filter_map(|source| {
+                        let node = local_node(*source)?;
+                        Child::of_place(target, node).or_else(|| Child::rest_of(target, node))
+                    })
                     .collect::<Vec<_>>();
                 self.fold_or_unfold_node(
                     target,
@@ -2072,8 +2312,10 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             }
         }
         self.indirect_predicate_state.enter_package();
+        self.package_label = Some(label);
         let unblock =
             self.block(|visitor| visitor.pcs_unblock_actions(borrows_state, &mut footprint));
+        self.package_label = None;
         let decls = self.indirect_predicate_state.leave_package();
         let unblock = unblock?;
         let mut script = decls
