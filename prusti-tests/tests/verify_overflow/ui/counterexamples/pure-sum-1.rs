@@ -1,5 +1,6 @@
 //@ compile-flags: -Pcounterexample=true -Pcheck_overflows=false
-// ignore-test: this test is flaky
+//@ known-failure
+// This test is flaky.
 
 use prusti_contracts::*;
 
