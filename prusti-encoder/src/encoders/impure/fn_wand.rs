@@ -929,7 +929,7 @@ mod tests {
                 Ok(wands) => wands,
                 // The error of `WandEnc` itself comes last, after its context.
                 Err(EncodeFullError::DependencyError(errors)) => {
-                    let (_, message, _) = errors.last().unwrap();
+                    let message = &errors.last().unwrap().message;
                     return Ok(((), Shown::error(message)));
                 }
                 Err(error) => return Err(error),
