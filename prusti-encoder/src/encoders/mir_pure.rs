@@ -57,6 +57,19 @@ pub struct MirPureEncOutput<'vir> {
     pub expr: ExprRet<'vir>,
 }
 
+bitflags::bitflags! {
+    /// The modes a specification reads places in. A mode only changes reads
+    /// rooted at an argument or the result: `OLD` and `BEFORE_EXPIRY` the
+    /// heap read of a `&mut` dereference, `REL0`/`REL1` the whole read.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    struct Modes: u8 {
+        const OLD = 1 << 0;
+        const REL0 = 1 << 1;
+        const REL1 = 1 << 2;
+        const BEFORE_EXPIRY = 1 << 3;
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum PureKind {
     /// The closure passed to a quantifier or to `spec_block`, encoded as part
@@ -355,10 +368,7 @@ struct Enc<'vir: 'enc, 'enc> {
     version_ctr: IndexVec<mir::Local, usize>,
     uses: Uses, // TODO: mode indicators?
     phi_ctr: usize,
-    old_mode: bool,
-    rel0_mode: bool,
-    rel1_mode: bool,
-    before_expiry_mode: bool,
+    modes: Modes,
     impure_context: bool,
 }
 
@@ -460,10 +470,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
             version_ctr: IndexVec::from_elem_n(0, body.local_decls.len()),
             uses: Default::default(),
             phi_ctr: 0,
-            old_mode: false,
-            rel0_mode: false,
-            rel1_mode: false,
-            before_expiry_mode: false,
+            modes: Modes::empty(),
             // An impure method's specs and contained spec blocks get shallow
             // argument snapshots (and can take a snapshot of the predicates
             // behind `&mut`s). Pure functions currently also only get shallow
@@ -1317,7 +1324,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
     }
 
     fn in_mode(&self) -> bool {
-        self.old_mode || self.rel0_mode || self.rel1_mode || self.before_expiry_mode
+        !self.modes.is_empty()
     }
 
     fn encode_place_with_ref(
@@ -1361,7 +1368,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                 && matches!(place_ty.ty.kind(), TyKind::Ref(.., ty::Mutability::Mut));
             encoded_place = self.encode_place_element(curr_ver, place_ty, *elem, encoded_place)?;
             place_ty = place_ty.projection_ty(self.vcx.tcx(), *elem);
-            if heap_read && self.old_mode {
+            if heap_read && self.modes.contains(Modes::OLD) {
                 let inner = encoded_place.snap;
                 encoded_place.snap = self.vcx.mk_lazy_expr(
                     "old_mode_wrap",
@@ -1373,7 +1380,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                     }),
                 );
             }
-            if heap_read && self.before_expiry_mode {
+            if heap_read && self.modes.contains(Modes::BEFORE_EXPIRY) {
                 encoded_place.snap = self.vcx.mk_old_lhs_expr(encoded_place.snap);
             }
         }
@@ -1381,10 +1388,10 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
         assert!(place_ty.variant_index.is_none());
 
         if should_wrap {
-            if self.rel0_mode {
+            if self.modes.contains(Modes::REL0) {
                 encoded_place.snap = self.vcx.mk_rel_expr(encoded_place.snap, 0);
             }
-            if self.rel1_mode {
+            if self.modes.contains(Modes::REL1) {
                 encoded_place.snap = self.vcx.mk_rel_expr(encoded_place.snap, 1);
             }
         }
@@ -1597,22 +1604,22 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
             SpecBuiltin::ModeStart(mode) => {
                 match mode {
                     Mode::Old => {
-                        assert!(!self.old_mode);
-                        self.old_mode = true;
+                        assert!(!self.modes.contains(Modes::OLD));
+                        self.modes.insert(Modes::OLD);
                     }
                     Mode::Rel(0) => {
-                        assert!(!self.rel0_mode);
-                        assert!(!self.rel1_mode);
-                        self.rel0_mode = true;
+                        assert!(!self.modes.contains(Modes::REL0));
+                        assert!(!self.modes.contains(Modes::REL1));
+                        self.modes.insert(Modes::REL0);
                     }
                     Mode::Rel(_) => {
-                        assert!(!self.rel1_mode);
-                        assert!(!self.rel0_mode);
-                        self.rel1_mode = true;
+                        assert!(!self.modes.contains(Modes::REL1));
+                        assert!(!self.modes.contains(Modes::REL0));
+                        self.modes.insert(Modes::REL1);
                     }
                     Mode::BeforeExpiry => {
-                        assert!(!self.before_expiry_mode);
-                        self.before_expiry_mode = true;
+                        assert!(!self.modes.contains(Modes::BEFORE_EXPIRY));
+                        self.modes.insert(Modes::BEFORE_EXPIRY);
                     }
                 }
                 mk_bool(self.vcx.mk_bool::<true>().lazy()) // TODO: what value do we return?
@@ -1620,22 +1627,22 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
             SpecBuiltin::ModeEnd(mode) => {
                 match mode {
                     Mode::Old => {
-                        assert!(self.old_mode);
-                        self.old_mode = false;
+                        assert!(self.modes.contains(Modes::OLD));
+                        self.modes.remove(Modes::OLD);
                     }
                     Mode::Rel(0) => {
-                        assert!(self.rel0_mode);
-                        assert!(!self.rel1_mode);
-                        self.rel0_mode = false;
+                        assert!(self.modes.contains(Modes::REL0));
+                        assert!(!self.modes.contains(Modes::REL1));
+                        self.modes.remove(Modes::REL0);
                     }
                     Mode::Rel(_) => {
-                        assert!(!self.rel0_mode);
-                        assert!(self.rel1_mode);
-                        self.rel1_mode = false;
+                        assert!(!self.modes.contains(Modes::REL0));
+                        assert!(self.modes.contains(Modes::REL1));
+                        self.modes.remove(Modes::REL1);
                     }
                     Mode::BeforeExpiry => {
-                        assert!(self.before_expiry_mode);
-                        self.before_expiry_mode = false;
+                        assert!(self.modes.contains(Modes::BEFORE_EXPIRY));
+                        self.modes.remove(Modes::BEFORE_EXPIRY);
                     }
                 }
                 mk_bool(self.vcx.mk_bool::<true>().lazy()) // TODO: what value do we return?
