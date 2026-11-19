@@ -204,6 +204,9 @@ where
     /// (see `track_future_node_renames`). Taken from the PCG at the entry of
     /// each block and updated by the block's actions.
     pub future_edges: Vec<(NodeLp<'vir>, NodeLp<'vir>)>,
+    /// The statements that start the block being encoded: the copies of key
+    /// variables at a join (see `IndirectPredicateState::enter_block`).
+    pub block_entry_stmts: Vec<vir::Stmt<'vir>>,
 
     pub encoded_blocks: Vec<vir::CfgBlock<'vir>>, // TODO: use IndexVec ?
 }
@@ -239,6 +242,18 @@ pub(crate) struct IndirectPredicateState<'vir> {
 }
 
 type KeyMap<'vir> = FxHashMap<NodeLp<'vir>, Option<NodeKeys<'vir>>>;
+
+/// What starting a block found (see `IndirectPredicateState::enter_block`).
+pub(crate) struct BlockEntry<'vir> {
+    /// For each predecessor, the assignments `(new, old)` from its key
+    /// variables into the block's.
+    pub(crate) copies: Vec<(
+        mir::BasicBlock,
+        Vec<(vir::ExprSnap<'vir>, vir::ExprSnap<'vir>)>,
+    )>,
+    /// The nodes whose fold some predecessors defer and others do not.
+    pub(crate) disagreeing: Vec<NodeLp<'vir>>,
+}
 
 /// The method's state at the end of a CFG edge.
 #[derive(Clone)]
@@ -326,40 +341,85 @@ impl<'vir> IndirectPredicateState<'vir> {
     }
 
     /// Starts a block with its predecessors' state; the predecessors not
-    /// encoded yet are back edges of loops. A node keeps its keys only if all
-    /// of them hold the keys in the same variables. Returns the nodes whose
-    /// fold some predecessors defer and others do not.
+    /// encoded yet are back edges of loops. A node keeps the keys any of them
+    /// holds: a node only some of them hold is only used on paths through
+    /// these, as the PCG's edges of that node are conditioned on them. Where
+    /// they hold a node's keys in different variables, the node gets new ones,
+    /// which the returned copies assign from each predecessor's.
     pub(crate) fn enter_block(
         &mut self,
+        vcx: &'vir vir::VirCtxt<'vir>,
         block: mir::BasicBlock,
         preds: impl IntoIterator<Item = mir::BasicBlock>,
-    ) -> Vec<NodeLp<'vir>> {
-        let mut ends = preds
+    ) -> BlockEntry<'vir> {
+        let ends = preds
             .into_iter()
-            .filter_map(|pred| self.edge_ends.get(&(pred, block)));
-        let first = ends.next().cloned();
-        let mut keys = first
-            .as_ref()
-            .map(|end| end.keys.clone())
-            .unwrap_or_default();
-        let mut deferred = first
-            .as_ref()
-            .map(|end| end.deferred_folds.clone())
+            .filter_map(|pred| Some((pred, self.edge_ends.get(&(pred, block))?.clone())))
+            .collect::<Vec<_>>();
+        let mut nodes = Vec::new();
+        for (_, end) in &ends {
+            for (node, node_keys) in &end.keys {
+                if node_keys.is_some() && !nodes.contains(node) {
+                    nodes.push(*node);
+                }
+            }
+        }
+        let mut keys = KeyMap::default();
+        let mut copies: Vec<(
+            mir::BasicBlock,
+            Vec<(vir::ExprSnap<'vir>, vir::ExprSnap<'vir>)>,
+        )> = Vec::new();
+        for node in nodes {
+            let held = ends
+                .iter()
+                .filter_map(|(pred, end)| Some((*pred, end.keys.get(&node)?.as_ref()?)))
+                .collect::<Vec<_>>();
+            let first = held[0].1;
+            if held.iter().all(|(_, node_keys)| node_keys.same_vars(first)) {
+                keys.insert(node, Some(first.clone()));
+                continue;
+            }
+            if held.iter().any(|(_, node_keys)| {
+                node_keys.keys.len() != first.keys.len()
+                    || node_keys.keys.keys().any(|p| !first.keys.contains_key(p))
+            }) {
+                continue;
+            }
+            let joined = NodeKeys {
+                snap: self.new_var(vcx, "_ks", first.snap.ty()),
+                keys: first
+                    .keys
+                    .iter()
+                    .map(|(&p, key)| (p, self.new_var(vcx, "_k", key.ty())))
+                    .collect(),
+            };
+            for &(pred, node_keys) in &held {
+                let mut assigns = vec![(joined.snap, node_keys.snap)];
+                assigns.extend(joined.keys.iter().map(|(p, &var)| (var, node_keys.keys[p])));
+                match copies.iter_mut().find(|(other, _)| *other == pred) {
+                    Some((_, existing)) => existing.extend(assigns),
+                    None => copies.push((pred, assigns)),
+                }
+            }
+            keys.insert(node, Some(joined));
+        }
+        let mut deferred = ends
+            .first()
+            .map(|(_, end)| end.deferred_folds.clone())
             .unwrap_or_default();
         let mut disagreeing = FxHashSet::default();
-        for end in ends {
-            keys.retain(|node, node_keys| {
-                matches!((node_keys, end.keys.get(node)), (Some(a), Some(Some(b))) if a.same_vars(b))
-            });
+        for (_, end) in ends.iter().skip(1) {
             disagreeing.extend(deferred.symmetric_difference(&end.deferred_folds).copied());
             deferred.retain(|node| end.deferred_folds.contains(node));
         }
-        keys.retain(|_, node_keys| node_keys.is_some());
         self.restore(EdgeEnd {
             keys,
             deferred_folds: deferred,
         });
-        disagreeing.into_iter().collect()
+        BlockEntry {
+            copies,
+            disagreeing: disagreeing.into_iter().collect(),
+        }
     }
 
     /// Ends a block: its state ends each edge to `succs` without own PCG
@@ -2931,10 +2991,27 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                     .collect(),
             );
 
-            let disagreeing = self.indirect_predicate_state.enter_block(
+            let entry = self.indirect_predicate_state.enter_block(
+                self.vcx,
                 block,
                 body.basic_blocks.predecessors()[block].iter().copied(),
             );
+            let disagreeing = entry.disagreeing;
+            // The copies run at the start of the block, each on the paths from
+            // its predecessor.
+            self.block_entry_stmts = entry
+                .copies
+                .into_iter()
+                .map(|(pred, assigns)| {
+                    let taken = self.from_to_vars.get_or_create(self.vcx, pred, block).expr;
+                    let assigns = assigns
+                        .into_iter()
+                        .map(|(var, value)| self.vcx.mk_pure_assign_stmt(var, value))
+                        .collect::<Vec<_>>();
+                    self.vcx
+                        .mk_if_stmt(taken, self.vcx.alloc_slice(&assigns), &[])
+                })
+                .collect();
             // Cleanup blocks are not encoded (see `visit_basic_block_data`).
             if let Some(node) = disagreeing.first()
                 && !body[block].is_cleanup
@@ -3097,6 +3174,8 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         block: mir::BasicBlock,
         data: &mir::BasicBlockData<'vir>,
     ) -> EncodeResult<'vir, (), E> {
+        // Taken first: a block that is not encoded drops them.
+        let entry_stmts = std::mem::take(&mut self.block_entry_stmts);
         let current_block_label = self.vcx.mk_block_label(
             block.as_usize(),
             self.current_block_pres.as_ref().unwrap().iter().copied(),
@@ -3131,6 +3210,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         self.current_stmts = Some(Vec::with_capacity(
             data.statements.len(), // TODO: not exact?
         ));
+        self.stmts(entry_stmts);
         self.current_block_label = Some(current_block_label);
         let cfpcs = self.fpcs_analysis.get_all_for_bb(block).unwrap().unwrap();
 

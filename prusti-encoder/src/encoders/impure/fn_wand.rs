@@ -14,11 +14,15 @@ use crate::encoders::{
         indirect_nodes::NodePredicates,
     },
 };
-use pcg::borrow_pcg::{
-    ArgIdxOrResult, FunctionData, FunctionShape, FunctionShapeInput, FunctionShapeNode,
-    FunctionShapeOutput, GeneralizedLifetime, MakeFunctionShapeError,
-    region_projection::{ExtractRegionsCtxt, Generalized},
-    state::BorrowsState,
+use pcg::{
+    borrow_pcg::{
+        ArgIdxOrResult, FunctionData, FunctionShape, FunctionShapeInput, FunctionShapeNode,
+        FunctionShapeOutput, GeneralizedLifetime, MakeFunctionShapeError,
+        borrow_pcg_edge::BlockedNode,
+        region_projection::{ExtractRegionsCtxt, Generalized, LifetimeProjection},
+        state::BorrowsState,
+    },
+    utils::place::remote::RemotePlace,
 };
 use prusti_interface::PrustiError;
 use prusti_rustc_interface::{
@@ -82,10 +86,17 @@ impl<'vir, E: TaskEncoder> ImpureEncVisitor<'vir, '_, E> {
                         |i| args[i],
                         Some(vir::OldLabel::None),
                     );
-                    (
-                        mir::Place::from(g.mir_local()),
-                        resources.into_iter().collect(),
-                    )
+                    // The caller's view of the argument's lifetime projection,
+                    // which the PCG blocks by the argument's own projection
+                    // (`InitialBorrows`): unblocking it gives the argument's
+                    // predicates back along the edges into the result.
+                    let node: BlockedNode<'vir> =
+                        LifetimeProjection::<'vir, RemotePlace>::from_index(
+                            RemotePlace::new(g.mir_local()),
+                            g.region_idx(),
+                        )
+                        .into();
+                    (node, resources.into_iter().collect())
                 })
                 .collect();
             let mut package_script = self.pcs_package_script(final_borrow_state, rhs, label)?;
