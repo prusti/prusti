@@ -40,6 +40,7 @@
             ];
             nativeBuildInputs = [
               pkgs.makeWrapper
+              pkgs.python3
             ];
 
             copyTarget = true;
@@ -54,22 +55,21 @@
             };
             overrideMain = _: {
               postInstall = ''
-                rm $out/bin/test-crates
+                # `x.py package` copies the binaries, the contracts and the source tree's
+                # `viper_tools`, from which the packaged binaries take Viper and Z3, so link
+                # the Nix-built Viper there.
+                ln -s ${packages.viper} viper_tools
+                python3 x.py package release $out/bin
+                rm -rf $out/target
 
-                for f in $(find $out/bin/ $out/libexec/ -type f -executable); do
+                # Only Prusti's binaries are wrapped: the contracts' proc-macro library and
+                # the executables in `viper_tools` must stay as they are.
+                for f in $out/bin/{prusti-driver,prusti-rustc,cargo-prusti,prusti-server,prusti-server-driver}; do
                   wrapProgram $f \
                     --set RUST_SYSROOT "${rust}" \
                     --set JAVA_HOME "${pkgs.jdk11}/lib/openjdk" \
-                    --set LD_LIBRARY_PATH "${pkgs.jdk11}/lib/openjdk/lib/server" \
-                    --set VIPER_HOME "${packages.viper}/backends" \
-                    --set Z3_EXE "${packages.viper}/z3/bin/z3"
+                    --set LD_LIBRARY_PATH "${pkgs.jdk11}/lib/openjdk/lib/server"
                 done
-
-                mkdir $out/bin/deps
-                cp $out/target/release/libprusti_contracts.rlib $out/bin
-                cp $out/target/release/deps/libprusti_contracts_internal-* $out/bin/deps
-                rm -rf $out/target
-                rm $out/bin/deps/*.{rlib,rmeta}
               '';
             };
           };

@@ -21,8 +21,6 @@ fn process(mut args: Vec<String>) -> Result<(), i32> {
     let mut cmd = paths.prusti_driver_command();
     cmd.arg("--cfg=prusti");
 
-    let prusti_sysroot = launch::prusti_sysroot().expect("Failed to find Rust's sysroot");
-
     let cargo_invoked = env::var("PRUSTI_CARGO").is_ok();
 
     // No need to check if we happen to be running on e.g. the `prusti-contracts` crate since this
@@ -96,9 +94,9 @@ fn process(mut args: Vec<String>) -> Result<(), i32> {
     if has_no_sysroot_arg {
         cmd.arg("--sysroot");
         cmd.arg(
-            prusti_sysroot
-                .into_os_string()
-                .into_string()
+            paths
+                .sysroot()
+                .to_str()
                 .expect("sysroot is not a valid utf-8 string"),
         );
     };

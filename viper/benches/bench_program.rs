@@ -1,9 +1,8 @@
 use bencher::Bencher;
+use std::sync::LazyLock;
 use viper::*;
 
-lazy_static::lazy_static! {
-    static ref VIPER: Viper = Viper::new_for_tests();
-}
+static VIPER: LazyLock<Viper> = LazyLock::new(Viper::new_for_tests);
 
 bencher::benchmark_main!(ast_factory);
 bencher::benchmark_group!(ast_factory, bench_build_program, bench_verify_program);

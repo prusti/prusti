@@ -7,14 +7,13 @@
 use crate::{ServerMessage, VerificationRequest, VerificationRequestProcessing};
 use futures_util::{pin_mut, SinkExt, StreamExt};
 use log::info;
-use once_cell::sync::Lazy;
 use prusti_utils::config;
 use std::{
     net::{Ipv4Addr, SocketAddr},
     sync::{
         self,
         atomic::{AtomicUsize, Ordering},
-        mpsc, Arc,
+        mpsc, Arc, LazyLock, OnceLock,
     },
     thread,
 };
@@ -47,17 +46,25 @@ pub fn spawn_server_thread() -> SocketAddr {
 // see the file process_verification.rs).
 // It has to have a static lifetime because warp websockets need their closures to have a static
 // lifetime and we need to access this object in them.
-static VERIFICATION_REQUEST_PROCESSING: Lazy<VerificationRequestProcessing> =
-    Lazy::new(VerificationRequestProcessing::new);
+static VERIFICATION_REQUEST_PROCESSING: LazyLock<VerificationRequestProcessing> =
+    LazyLock::new(VerificationRequestProcessing::new);
 // TODO: caching currently does not work properly. The subject of caching needs to be redetermined.
 // currently, it is the whole program, and the returned result is the final errors (without
 // per-method ones).
-static CACHE: Lazy<Arc<sync::Mutex<PersistentCache>>> = Lazy::new(|| {
-    Arc::new(sync::Mutex::new(PersistentCache::load_cache(
-        config::cache_path(),
-        env!("BACKEND_FINGERPRINT"),
-    )))
-});
+//
+// A `OnceLock` rather than a `LazyLock`, so that `save_verification_cache` can tell whether the
+// cache was loaded without loading it.
+static CACHE: OnceLock<Arc<sync::Mutex<PersistentCache>>> = OnceLock::new();
+
+/// The server's verification cache, loaded on first use.
+fn cache() -> &'static Arc<sync::Mutex<PersistentCache>> {
+    CACHE.get_or_init(|| {
+        Arc::new(sync::Mutex::new(PersistentCache::load_cache(
+            config::cache_path(),
+            env!("BACKEND_FINGERPRINT"),
+        )))
+    })
+}
 
 static CACHE_HITS: AtomicUsize = AtomicUsize::new(0);
 static CACHE_MISSES: AtomicUsize = AtomicUsize::new(0);
@@ -74,7 +81,7 @@ pub fn verification_cache_hits_and_misses() -> (usize, usize) {
 /// Writes the server's verification cache to its configured path. `CACHE` is never dropped,
 /// so this is the only way its results reach later runs. Returns whether the cache was in use.
 pub fn save_verification_cache() -> bool {
-    if let Some(cache) = Lazy::get(&CACHE) {
+    if let Some(cache) = CACHE.get() {
         cache.lock().unwrap().save();
         true
     } else {
@@ -185,7 +192,7 @@ where
         let program_name = verification_request.program.get_name().to_string();
         // return early in case of a cache hit
         let stream = if config::enable_cache() {
-            match Lazy::force(&CACHE).get(request_hash) {
+            match cache().get(request_hash) {
                 Some(mut result) => {
                     CACHE_HITS.fetch_add(1, Ordering::Relaxed);
                     info!(
@@ -224,7 +231,7 @@ where
                         "Storing new cached result {:?} for program {}",
                         result, program_name
                     );
-                    CACHE.insert(request_hash, result.clone());
+                    cache().insert(request_hash, result.clone());
                 }
             };
             let msg = make_websocket_message(&server_msg);

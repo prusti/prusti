@@ -2054,33 +2054,6 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
 
         self.current_fpcs = Some(cfpcs);
 
-        /*
-        let mut phi_stmts = vec![];
-        if let Some(phi_nodes) = self.ssa_analysis.phi.get(&block) {
-            for phi_node in phi_nodes {
-                assert!(!phi_node.sources.is_empty());
-                let local_ty = &self.local_types[phi_node.local];
-                let expr = phi_node.sources.iter()
-                    .fold(self.vcx.mk_func_app(
-                        local_ty.function_unreachable,
-                        &[],
-                    ), |prev, source| self.vcx.alloc(vir::ExprData::Ternary(self.vcx.alloc(vir::TernaryData {
-                        cond: self.vcx.mk_local_ex(vir::vir_format_identifier!(self.vcx, "_reach_bb{}", source.0.as_usize())),
-                        then: self.vcx.mk_local_ex(vir::vir_format_identifier!(self.vcx, "_{}s_{}", phi_node.local.as_usize(), source.1)),
-                        else_: prev,
-                    }))));
-                phi_stmts.push(vir::StmtData::LocalDecl(self.vcx.alloc(vir::LocalDeclData {
-                    name: vir::vir_format_identifier!(self.vcx, "_{}s_{}", phi_node.local.as_usize(), phi_node.new_version),
-                    ty: self.local_types[phi_node.local].snapshot,
-                    expr: Some(expr),
-                })));
-            }
-        }
-        for phi_stmt in phi_stmts {
-            self.stmt(phi_stmt);
-        }
-        */
-
         assert!(self.current_terminator.is_none());
         for (index, statement) in data.statements.iter().enumerate() {
             let location = mir::Location {

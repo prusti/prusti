@@ -1,3 +1,6 @@
+// The generated bindings check their arguments only with debug assertions.
+#![cfg(debug_assertions)]
+
 use jni::objects::JObject;
 use jni::JNIEnv;
 use jni::errors::Result as JNIResult;
@@ -11,7 +14,6 @@ fn string_to_jobject<'a>(env: &JNIEnv<'a>, string: &str) -> JNIResult<JObject<'a
 }
 
 #[test]
-#[cfg(debug_assertions)]
 #[should_panic(expected = "Java binding type failure. Expected object of class java/lang/Error, but got java/lang/Integer instead")]
 fn field_setter_should_fail_on_wrong_receiver() {
     let jvm = get_jvm().expect("failed go get jvm reference");
@@ -34,7 +36,6 @@ fn field_setter_should_fail_on_wrong_receiver() {
 
 
 #[test]
-#[cfg(debug_assertions)]
 #[should_panic(expected = "Java binding type failure. Expected object of class java/lang/String, but got java/lang/Integer instead")]
 fn field_setter_should_fail_on_wrong_argument() {
     let jvm = get_jvm().expect("failed go get jvm reference");

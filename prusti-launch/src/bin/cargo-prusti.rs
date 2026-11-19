@@ -69,7 +69,6 @@ where
     {
         let exit_status = Command::new(cargo_path)
             .args(args)
-            .env("RUST_TOOLCHAIN", launch::get_rust_toolchain_channel())
             .env("RUSTUP_TOOLCHAIN", launch::get_rust_toolchain_channel())
             .env("RUSTC", prusti_rustc_path)
             .env("CARGO_TARGET_DIR", &cargo_target)
@@ -89,7 +88,6 @@ where
         .arg(&command)
         .args(features)
         .args(&args)
-        .env("RUST_TOOLCHAIN", launch::get_rust_toolchain_channel())
         .env("RUSTUP_TOOLCHAIN", launch::get_rust_toolchain_channel())
         .env("RUSTC", prusti_rustc_path)
         .env("PRUSTI_CARGO", "")
