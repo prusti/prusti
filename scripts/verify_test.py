@@ -6,6 +6,7 @@ import csv
 import json
 import glob
 import os
+import re
 from reporting import (
     report, error
 )
@@ -111,7 +112,7 @@ def verify_test(args):
         test_path = args.test_file
     else:
         candidate_test_paths = glob.glob(os.path.join(
-            current_path, "prusti-tests/tests*/*", args.test_file))
+            current_path, "prusti-tests/tests/*", args.test_file))
         if len(candidate_test_paths) == 0:
             error("Not tests found that match: {}", args.test_file)
         elif len(candidate_test_paths) > 1:
@@ -121,7 +122,15 @@ def verify_test(args):
                 args.test_file,
                 candidate_test_paths[:5]
             )
-        test_path = os.path.relpath(candidate_test_paths[0], current_path)
+        test_path = candidate_test_paths[0]
+    # The harness reports each test by its path relative to the repository
+    # root, which `--exact` compares with this one; if no test matches, the
+    # harness runs nothing and succeeds.
+    test_path = os.path.relpath(test_path, current_path).replace(os.sep, '/')
+    if (not os.path.isfile(test_path)
+            or not re.fullmatch(r'prusti-tests/tests/[^/]+/(fail|pass|ui)/.+\.rs', test_path)
+            or '/auxiliary/' in test_path):
+        error("Not a test file that the test harness runs: {}", test_path)
     report("Found test: {}", test_path)
     env = get_env()
     os.makedirs('log/config', exist_ok=True)
@@ -140,8 +149,8 @@ def verify_test(args):
         )
         if args.analyze_quantifiers:
             analyze_quantifier_logs(test_path)
-    # The harness passes on the variables set here, and reports the test by its
-    # path relative to the repository root, which `--exact` matches.
+    # The harness passes the variables set here on to Prusti, except those it
+    # sets itself for the test's group (`GROUPS` in `compiletest.rs`).
     run_command(
         ['cargo', 'test', '--test', 'main', '--', '--exact', test_path],
         env,

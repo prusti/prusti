@@ -111,6 +111,13 @@ pub(crate) fn run() -> TestsResult {
     // Run from the repository root, so that reported test paths are relative to it.
     env::set_current_dir(Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap())?;
 
+    // The server verifies in this process, which does not get the settings that `prusti-rustc`
+    // passes to the driver. Without this one, `PRUSTI_USE_SMT_WRAPPER` makes it panic.
+    env::set_var(
+        "PRUSTI_SMT_SOLVER_WRAPPER_PATH",
+        super::tested_bin("prusti-smt-solver"),
+    );
+
     // Spawn server process as child (so it stays around until main function terminates)
     let server_address = spawn_server_thread();
     env::set_var("PRUSTI_SERVER_ADDRESS", server_address.to_string());

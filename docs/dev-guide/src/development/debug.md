@@ -23,7 +23,7 @@ RUST_BACKTRACE=1 PRUSTI_DUMP_VIPER_PROGRAM=true PRUSTI_DUMP_DEBUG_INFO=true \
 
 This command does the following:
 
-1. Runs the specified test through the test harness, like `./x.py test --test main` does. So Prusti is built and run as for the test suite: with the compiler options and the environment of the test's group and the flags specified in the test file. The harness prints Prusti's output only if the test fails, and never for a test marked `//@ known-failure`.
+1. Runs the specified test through the test harness, like `./x.py test --test main` does. So Prusti is built and run as for the test suite: with the compiler options and the environment of the test's group and the flags specified in the test file. The variables set for the test's group (`GROUPS` in `prusti-tests/tests/harnesses/compiletest.rs`, e.g. `PRUSTI_EXTRA_VERIFIER_ARGS`) replace those of the same name in your environment. The harness prints Prusti's output only if the test fails, and never for a `fail` or `ui` test marked `//@ known-failure`.
 2. Dumps the information that is most commonly needed for debugging Prusti into the `log` directory.
 
 Tip: to see the expanded Prusti specification macros, add the following comment at the beginning of the test file:
@@ -34,7 +34,7 @@ Tip: to see the expanded Prusti specification macros, add the following comment 
 
 ### Running Prusti in a debugger
 
-The `verify-test` command also generates a VS Code launch config, which allows you to run Prusti in a debugger.
+The `verify-test` command also generates a VS Code launch config, which allows you to run Prusti in a debugger. It runs `prusti-driver` with the arguments and the variables that `prusti-rustc` passed to it, but not with the environment the driver inherited, such as the variables of the test's group.
 
 - In the `Cargo.toml`, section `[profile.dev]`, set `debug = 2`. This enables debug symbols.
 - Install the CodeLLDB VS Code extension.
