@@ -1,18 +1,9 @@
 //@ aux-build: foreign_traits.rs
-use foreign_traits::{Compare, Convert, Pair, Plain};
+use foreign_traits::{Compare, Convert, Pair, Plain, Wrapped};
 use prusti_contracts::*;
-use std::{fmt::Debug, ops::Not};
+use std::{cell::Cell, ops::Not};
 
 // Extern specs whose declared bounds follow from the target's.
-
-// The impl's parameters in a different order than the target's.
-#[extern_spec]
-impl<E, T> Result<T, E> {
-    #[trusted]
-    fn unwrap(self) -> T
-    where
-        E: Debug;
-}
 
 // `Clone` follows from the target's `T: Copy`.
 #[extern_spec]
@@ -43,6 +34,17 @@ impl Convert for Plain {
 trait Pair {
     #[trusted]
     fn pair(&self) -> (u8, Self);
+}
+
+// `Self` as the last field of a struct taken by value. As in the spec of a
+// local trait, the spec items need `Self: Sized`, which the target has at every
+// use since its argument is `Sized`.
+#[extern_spec(foreign_traits)]
+trait Wrapped {
+    #[trusted]
+    fn wrapped(x: Cell<Self>) -> bool
+    where
+        Self: Sized;
 }
 
 // A by-value receiver written with its type.

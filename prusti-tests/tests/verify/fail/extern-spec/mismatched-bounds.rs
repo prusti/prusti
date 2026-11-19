@@ -47,3 +47,12 @@ trait Borrow<Borrowed> {
 #[pure]
 #[trusted]
 fn size_of_val<T>(val: &T) -> usize;
+
+// `Self` is only behind a reference, so it need not be `Sized`.
+#[extern_spec(std::fmt)]
+trait Display {
+    #[trusted]
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result //~ ERROR: Invalid external specification
+    where
+        Self: Sized;
+}
