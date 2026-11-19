@@ -186,6 +186,14 @@ impl<'vir, E: TaskEncoder + 'vir + ?Sized> EncodeFullError<'vir, E> {
     }
 }
 
+impl<'vir, E: TaskEncoder + 'vir + ?Sized> EncodeFullError<'vir, E> {
+    /// An error of the encoder `E` at `span` for a mistake in the user's
+    /// program, such as a specification that calls an impure function.
+    pub fn incorrect(message: String, span: Span) -> Self {
+        Self::root(message, vec![span], ErrorKind::Incorrect)
+    }
+}
+
 // Manual implementation, since neither `E` nor `E::OutputFullDependency` are
 // required to be `Debug`.
 impl<'vir, E: TaskEncoder + 'vir + ?Sized> std::fmt::Debug for EncodeFullError<'vir, E> {

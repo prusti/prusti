@@ -146,6 +146,25 @@ impl<'vir> Program<'vir> {
         code
     }
 
+    /// Replaces the `let`s in the triggers of all items added so far by the
+    /// values they bind (see [`vir::inline_trigger_lets`]).
+    pub fn inline_trigger_lets(&mut self) {
+        vir::with_vcx(|vcx| {
+            for domain in self.domains.iter_mut() {
+                *domain = vir::inline_trigger_lets(vcx, *domain);
+            }
+            for predicate in self.predicates.iter_mut() {
+                *predicate = vir::inline_trigger_lets(vcx, *predicate);
+            }
+            for function in self.functions.iter_mut() {
+                *function = vir::inline_trigger_lets(vcx, *function);
+            }
+            for method in self.methods.iter_mut() {
+                *method = vir::inline_trigger_lets(vcx, *method);
+            }
+        });
+    }
+
     /// Simplifies the expressions of all domain axioms, predicates, functions
     /// and methods added so far (see [`vir::simplify`]).
     pub fn simplify(&mut self) {

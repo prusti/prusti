@@ -142,7 +142,7 @@ pub struct ExistsGenData<'vir, Curr, Next> {
     pub body: ExprGenBool<'vir, Curr, Next>,
 }
 
-#[derive(VirHash, VirReify, VirSerde, VirVisitable, VirFoldable)]
+#[derive(VirHash, VirReify, VirSerde, VirVisitable)]
 pub struct TriggerGenData<'vir, Curr, Next> {
     pub exprs: &'vir [ExprGenDyn<'vir, Curr, Next>],
 }

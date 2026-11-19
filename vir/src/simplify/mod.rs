@@ -14,7 +14,10 @@
 //!    not values whose locals a binder (a quantifier or `let`) rebinds,
 //!  - the span of the root of an expression tree is kept, since Prusti
 //!    backtranslates Viper errors through it,
-//!  - quantifier triggers and magic wands are left as encoded.
+//!  - quantifier triggers are simplified like the body, so that they become
+//!    the same terms as the body contains, unless that would make them
+//!    invalid triggers,
+//!  - magic wands are left as encoded.
 //!
 //! Equations may drop subexpressions together with their well-definedness
 //! checks: Prusti checks all side conditions explicitly in impure code.

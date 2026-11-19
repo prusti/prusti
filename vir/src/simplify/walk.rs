@@ -116,8 +116,9 @@ impl<'a, 'vir, 'tcx> Simplifier<'a, 'vir, 'tcx> {
 
     /// The simplified `e`. A local bound to a trivial value, or used only
     /// once, is replaced by its value; the `let` is then dropped by the
-    /// equations, unless a use the traversal does not substitute (in a
-    /// trigger, a wand, or where the binding is hidden) remains.
+    /// equations, unless a use the traversal does not substitute (in a wand,
+    /// a trigger set kept as encoded, or where the binding is hidden)
+    /// remains.
     fn simplify_node(&mut self, e: ExprDyn<'vir>) -> Option<ExprDyn<'vir>> {
         let children = match e.kind {
             ExprKindGenData::Local(l) => {
@@ -161,7 +162,8 @@ impl<'a, 'vir, 'tcx> Simplifier<'a, 'vir, 'tcx> {
                     self.node_at(e, ExprKindGenData::Unfolding(self.vcx.alloc(u)))
                 })
             }
-            // The triggers are left as encoded.
+            // The triggers are simplified like the body, so that a trigger
+            // becomes the same term as the body contains.
             ExprKindGenData::Forall(ForallGenData {
                 qvars,
                 triggers,
@@ -171,10 +173,17 @@ impl<'a, 'vir, 'tcx> Simplifier<'a, 'vir, 'tcx> {
                 qvars,
                 triggers,
                 body,
-            }) => self
-                .in_quantifier(qvars, |s| s.simplify(body.as_dyn()))
-                .map(|body| {
-                    let (qvars, triggers, body) = (*qvars, *triggers, body.inner_cast_ty());
+            }) => {
+                let (new_triggers, new_body) = self.in_quantifier(qvars, |s| {
+                    (
+                        s.simplify_triggers(qvars, triggers),
+                        s.simplify(body.as_dyn()),
+                    )
+                });
+                (new_triggers.is_some() || new_body.is_some()).then(|| {
+                    let qvars = *qvars;
+                    let triggers = new_triggers.unwrap_or(*triggers);
+                    let body = new_body.unwrap_or(body.as_dyn()).inner_cast_ty();
                     let kind = match e.kind {
                         ExprKindGenData::Forall(_) => {
                             let q = ForallGenData {
@@ -194,7 +203,8 @@ impl<'a, 'vir, 'tcx> Simplifier<'a, 'vir, 'tcx> {
                         }
                     };
                     self.node_at(e, kind)
-                }),
+                })
+            }
             _ => e.super_fold_with(self),
         };
         let node = children.unwrap_or(e);
@@ -222,6 +232,43 @@ impl<'a, 'vir, 'tcx> Simplifier<'a, 'vir, 'tcx> {
                 f(s)
             },
         )
+    }
+
+    /// The simplified `triggers` of a quantifier over `qvars`, `None` if
+    /// nothing about them changes. A trigger set whose simplified terms are not
+    /// a valid trigger set stays as encoded: a value substituted for a `let` may
+    /// contain what a trigger cannot, such as a conditional, and a term may
+    /// fold to a variable, such as `(i, 0).0` to `i`.
+    fn simplify_triggers(
+        &mut self,
+        qvars: &[LocalDeclDyn<'vir>],
+        triggers: &'vir [Trigger<'vir>],
+    ) -> Option<&'vir [Trigger<'vir>]> {
+        let mut changed = false;
+        let mut sets = Vec::with_capacity(triggers.len());
+        for &set in triggers {
+            let terms = set
+                .exprs
+                .iter()
+                .map(|&t| self.simplify(t))
+                .collect::<Vec<_>>();
+            if terms.iter().all(Option::is_none) {
+                sets.push(set);
+                continue;
+            }
+            let terms = terms
+                .into_iter()
+                .zip(set.exprs)
+                .map(|(term, &orig)| term.unwrap_or(orig))
+                .collect::<Vec<_>>();
+            if is_trigger_set(qvars, &terms) {
+                changed = true;
+                sets.push(self.vcx.mk_trigger(&terms));
+            } else {
+                sets.push(set);
+            }
+        }
+        changed.then(|| self.vcx.alloc_slice(&sets))
     }
 
     /// Runs `f` in the body of a quantifier over `qvars`.
@@ -322,6 +369,17 @@ impl<'vir> Binding<'vir> {
     fn mentions(&self, name: &str) -> bool {
         self.locals.contains(&name)
     }
+}
+
+/// Whether `terms` are a valid trigger set of a quantifier over `qvars` (see
+/// [`crate::check_trigger_set`]).
+fn is_trigger_set<'vir>(qvars: &[LocalDeclDyn<'vir>], terms: &[ExprDyn<'vir>]) -> bool {
+    let names = qvars.iter().map(|q| q.name).collect::<Vec<_>>();
+    let shapes = terms
+        .iter()
+        .map(|&term| crate::trigger_term_shape(term))
+        .collect::<Vec<_>>();
+    crate::check_trigger_set(&names, &shapes).is_ok()
 }
 
 /// How often `e` mentions the local `name`, also where it is rebound.

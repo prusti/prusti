@@ -716,11 +716,56 @@ pub fn rel_end<const E: usize>() {
     panic!()
 }
 
+/// The shape of the trigger argument of the quantifiers. The traits are
+/// public so that they can bound `forall` and `exists`, but cannot be named
+/// outside this crate.
+#[cfg(feature = "prusti")]
+mod triggers {
+    use core::marker::Tuple;
+
+    /// The trigger sets of a quantifier over `A`: a tuple of trigger sets.
+    #[diagnostic::on_unimplemented(
+        message = "a quantifier can have at most 12 trigger sets",
+        label = "this quantifier has more than 12 trigger sets"
+    )]
+    pub trait TriggerSets<A: Tuple> {}
+
+    /// A trigger set of a quantifier over `A`: a tuple of trigger terms.
+    #[diagnostic::on_unimplemented(
+        message = "a trigger set can have at most 12 terms",
+        label = "this trigger set has more than 12 terms"
+    )]
+    pub trait TriggerSet<A: Tuple> {}
+
+    /// A trigger term of a quantifier over `A`: a reference to a closure
+    /// taking the quantified variables. The closure must be `Fn`, like the
+    /// body: it only reads the variables it captures, through the reference.
+    pub trait TriggerTerm<A: Tuple> {}
+    impl<A: Tuple, F: Fn<A>> TriggerTerm<A> for &F {}
+
+    // Like the standard library's traits for tuples, these are implemented
+    // for tuples of up to twelve elements.
+    macro_rules! trigger_tuple_impls {
+        () => {
+            impl<A: Tuple> TriggerSets<A> for () {}
+            impl<A: Tuple> TriggerSet<A> for () {}
+        };
+        ($T:ident $($U:ident)*) => {
+            trigger_tuple_impls!($($U)*);
+            impl<A: Tuple, $T: TriggerSet<A>, $($U: TriggerSet<A>),*> TriggerSets<A>
+                for ($T, $($U,)*) {}
+            impl<A: Tuple, $T: TriggerTerm<A>, $($U: TriggerTerm<A>),*> TriggerSet<A>
+                for ($T, $($U,)*) {}
+        };
+    }
+    trigger_tuple_impls!(T1 T2 T3 T4 T5 T6 T7 T8 T9 T10 T11 T12);
+}
+
 /// Universal quantifier.
 ///
 /// This is a Prusti-internal representation of the `forall` syntax.
 #[cfg(feature = "prusti")]
-pub fn forall<T, A: core::marker::Tuple, F: Fn<A, Output = bool>>(
+pub fn forall<T: triggers::TriggerSets<A>, A: core::marker::Tuple, F: Fn<A, Output = bool>>(
     _trigger_set: T,
     _closure: &F,
 ) -> bool {
@@ -731,7 +776,7 @@ pub fn forall<T, A: core::marker::Tuple, F: Fn<A, Output = bool>>(
 ///
 /// This is a Prusti-internal representation of the `exists` syntax.
 #[cfg(feature = "prusti")]
-pub fn exists<T, A: core::marker::Tuple, F: Fn<A, Output = bool>>(
+pub fn exists<T: triggers::TriggerSets<A>, A: core::marker::Tuple, F: Fn<A, Output = bool>>(
     _trigger_set: T,
     _closure: &F,
 ) -> bool {
