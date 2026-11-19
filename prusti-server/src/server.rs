@@ -51,6 +51,7 @@ static VERIFICATION_REQUEST_PROCESSING: LazyLock<VerificationRequestProcessing> 
 // TODO: caching currently does not work properly. The subject of caching needs to be redetermined.
 // currently, it is the whole program, and the returned result is the final errors (without
 // per-method ones).
+//
 // A `OnceLock` rather than a `LazyLock`, so that `save_verification_cache` can tell whether the
 // cache was loaded without loading it.
 static CACHE: OnceLock<Arc<sync::Mutex<PersistentCache>>> = OnceLock::new();

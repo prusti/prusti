@@ -55,8 +55,9 @@
             };
             overrideMain = _: {
               postInstall = ''
-                # `x.py package` copies the binaries, the contracts and `viper_tools`,
-                # from which the binaries take Viper and Z3.
+                # `x.py package` copies the binaries, the contracts and the source tree's
+                # `viper_tools`, from which the packaged binaries take Viper and Z3, so link
+                # the Nix-built Viper there.
                 ln -s ${packages.viper} viper_tools
                 python3 x.py package release $out/bin
                 rm -rf $out/target
