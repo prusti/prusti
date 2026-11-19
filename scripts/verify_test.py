@@ -137,9 +137,9 @@ def verify_test(args):
     # directory.
     args_file = os.path.abspath('log/config/prusti-rustc-args')
     env_file = os.path.abspath('log/config/prusti-rustc-env')
-    # Every run of `prusti-rustc` writes these files (also the harness's
-    # initial `prusti-rustc -vV`), so they tell whether the harness ran the
-    # test: if no test matches the path, it runs nothing and succeeds.
+    # Each run of `prusti-rustc` overwrites these files, and the harness runs
+    # the test last, so the test ran if the last run's arguments contain its
+    # path. If no test matches the path, the harness runs none and succeeds.
     for path in (args_file, env_file):
         if os.path.exists(path):
             os.remove(path)
@@ -148,8 +148,8 @@ def verify_test(args):
             return False
         with open(args_file) as fp:
             # On Windows, the path ends in `\<file name>`.
-            args = [arg.replace('\\', '/') for arg in fp.read().splitlines()]
-        return test_path in args
+            logged_args = [arg.replace('\\', '/') for arg in fp.read().splitlines()]
+        return test_path in logged_args
     env['PRUSTI_RUSTC_LOG_ARGS'] = args_file
     env['PRUSTI_RUSTC_LOG_ENV'] = env_file
     if args.analyze_quantifiers:

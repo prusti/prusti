@@ -82,8 +82,9 @@ fn prusti_config(path: String, env: &[(&str, &str)], abort_check: &AbortCheck) -
 
 fn per_file_config(config: &mut Config, file_contents: &Spanned<Vec<u8>>) {
     default_per_file_config(config, file_contents);
-    // Expected outputs refer to the directory of the test file as `$DIR`. Earlier filters write
-    // paths in the outputs with `/` on every platform, so the directory is written so too.
+    // Expected outputs refer to the directory of the test file as `$DIR`. The default filters of
+    // `Config::rustc` (`Match::PathBackslash`) write paths in the outputs with `/` on every
+    // platform, so the directory is written so too.
     if let Some(dir) = file_contents.span.file.parent() {
         let dir = format!("{}/", dir.display()).replace('\\', "/");
         let dir = ui_test::Match::Exact(dir.into());
@@ -189,8 +190,8 @@ pub(crate) fn run() -> TestsResult {
             let rerun = config.root_dir.ends_with("fail") || config.root_dir.ends_with("ui");
             if matched && rerun && is_known_failure(path) {
                 let mut config = config.clone();
-                // `--bless` must not replace the expected output of a known failure with the
-                // wrong output it produces.
+                // `--bless` must not replace the expected output of a known-failing `ui` test with
+                // the wrong output it produces.
                 config.output_conflict_handling = ui_test::error_on_output_conflict;
                 let test = (path.to_path_buf(), config);
                 known_failing_tests.lock().unwrap().push(test);
