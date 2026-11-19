@@ -367,6 +367,7 @@ impl TaskEncoder for MethodEnc {
                     current_terminator: None,
                     indirect_predicate_state: Default::default(),
                     future_edges: Vec::new(),
+                    block_entry_stmts: Vec::new(),
                     encoded_blocks,
                 };
                 // if we encountered an error/cycle during encoding, we don't
