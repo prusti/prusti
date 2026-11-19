@@ -66,23 +66,21 @@ impl<'tcx> PreLoadedBodies<'tcx> {
     }
 }
 
-/// Key representing a concrete monomorphisation, consisting of:
+/// Key of a body instantiated for an encoding, consisting of:
 ///
-/// - the `DefId` of the monomorphised function (callee),
+/// - the `DefId` of the body,
 /// - the substitutions applied to it, and
-/// - (optionally) the `DefId` of the caller.
+/// - the `DefId` of the context the body is encoded in (its caller).
 ///
-/// The `DefId` of the caller is important as it determines the `ParamEnv`,
-/// from which we can resolve projection types (e.g. `<T as Foo>::AT` might
-/// resolve to `i32` if the `ParamEnv` of the caller has `T: Foo<AT = i32>`).
-/// However, such normalisation also erases the regions when using the current
-/// compiler APIs. As such, the caller `DefId` is left as `None` if:
+/// The context is important as it determines the `ParamEnv`, from which we
+/// can resolve projection types (e.g. `<T as Foo>::AT` might resolve to `i32`
+/// if the `ParamEnv` of the context has `T: Foo<AT = i32>`).
 ///
-/// - we are encoding an impure function, where the method is encoded only once
-///   and calls are performed indirectly via contract exhale/inhale; or
-/// - when the caller is unknown, e.g. to encode a closure or specification
-///   body generically.
-type MonomorphKey<'tcx> = (DefId, GenericArgsRef<'tcx>, Option<DefId>);
+/// Only specification and predicate bodies are instantiated this way. Bodies
+/// that are encoded generically, i.e. at their identity arguments, are taken
+/// as stored: instantiating them would only normalize them, which the
+/// encoding of types already does for the types it encodes.
+type MonomorphKey<'tcx> = (DefId, GenericArgsRef<'tcx>, DefId);
 
 /// Store for all the `mir::Body` which we've taken out of the compiler
 /// or imported from external crates, all of which are indexed by DefId
@@ -100,7 +98,8 @@ pub struct EnvBody<'tcx> {
     /// Quantifiers and triggers in predicates and specs
     closures: PreLoadedBodies<'tcx>,
 
-    /// Copies of above MIR bodies with the given substs applied.
+    /// Specification and predicate bodies instantiated for an encoding (see
+    /// `MonomorphKey`).
     monomorphised_bodies: RefCell<FxHashMap<MonomorphKey<'tcx>, MirBody<'tcx>>>,
 }
 
@@ -161,7 +160,7 @@ impl<'tcx> EnvBody<'tcx> {
         &self,
         def_id: DefId,
         substs: GenericArgsRef<'tcx>,
-        caller_def_id: Option<DefId>,
+        caller_def_id: DefId,
     ) -> Option<MirBody<'tcx>> {
         self.monomorphised_bodies
             .borrow()
@@ -172,7 +171,7 @@ impl<'tcx> EnvBody<'tcx> {
         &self,
         def_id: DefId,
         substs: GenericArgsRef<'tcx>,
-        caller_def_id: Option<DefId>,
+        caller_def_id: DefId,
         body: MirBody<'tcx>,
     ) -> MirBody<'tcx> {
         if let Entry::Vacant(v) =
@@ -180,7 +179,7 @@ impl<'tcx> EnvBody<'tcx> {
                 .borrow_mut()
                 .entry((def_id, substs, caller_def_id))
         {
-            let typing_env = TypingEnv::post_analysis(self.tcx, caller_def_id.unwrap_or(def_id));
+            let typing_env = TypingEnv::post_analysis(self.tcx, caller_def_id);
             // TODO: figure out some other way to substitute without losing the region information
             let body = self.tcx.erase_and_anonymize_regions((*body.0).clone());
             let monomorphised = self.tcx.instantiate_and_normalize_erasing_regions(
@@ -204,7 +203,10 @@ impl<'tcx> EnvBody<'tcx> {
         self.local_body(def_id).clone()
     }
 
-    fn get_closure_body_identity(&self, def_id: DefId) -> MirBody<'tcx> {
+    /// Get the MIR body of a closure (e.g. loop invariant or trigger), as
+    /// stored: closures are encoded generically, so their bodies need no
+    /// instantiation.
+    pub fn get_closure_body_identity(&self, def_id: DefId) -> MirBody<'tcx> {
         if let Some(body) = self.closures.get(def_id) {
             return body;
         }
@@ -214,21 +216,6 @@ impl<'tcx> EnvBody<'tcx> {
             .entry(local_def_id)
             .or_insert_with(|| self.load_local_mir(local_def_id))
             .clone()
-    }
-
-    /// Get the MIR body of a local closure (e.g. loop invariant or trigger),
-    /// monomorphised with the given type substitutions.
-    pub fn get_closure_body(
-        &self,
-        def_id: DefId,
-        substs: GenericArgsRef<'tcx>,
-        caller_def_id: Option<DefId>,
-    ) -> MirBody<'tcx> {
-        if let Some(body) = self.get_monomorphised(def_id, substs, caller_def_id) {
-            return body;
-        }
-        let body = self.get_closure_body_identity(def_id);
-        self.set_monomorphised(def_id, substs, caller_def_id, body)
     }
 
     /// Get the MIR body of a local or external pure function, as stored: pure
@@ -246,14 +233,20 @@ impl<'tcx> EnvBody<'tcx> {
         substs: GenericArgsRef<'tcx>,
         caller_def_id: DefId,
     ) -> MirBody<'tcx> {
-        if let Some(body) = self.get_monomorphised(def_id, substs, Some(caller_def_id)) {
+        if let Some(body) = self.get_monomorphised(def_id, substs, caller_def_id) {
             return body;
         }
         let body = self
             .specs
             .get(def_id)
             .unwrap_or_else(|| self.predicates.expect(def_id));
-        self.set_monomorphised(def_id, substs, Some(caller_def_id), body)
+        self.set_monomorphised(def_id, substs, caller_def_id, body)
+    }
+
+    /// Get the MIR body of a local or external spec (pres/posts/pledges/type-specs),
+    /// as stored, for an encoding that takes it generically.
+    pub fn get_spec_body_identity(&self, def_id: DefId) -> MirBody<'tcx> {
+        self.specs.expect(def_id)
     }
 
     /// Get the MIR body of a local or external spec (pres/posts/pledges/type-specs),
@@ -262,7 +255,7 @@ impl<'tcx> EnvBody<'tcx> {
         &self,
         def_id: DefId,
         substs: GenericArgsRef<'tcx>,
-        caller_def_id: Option<DefId>,
+        caller_def_id: DefId,
     ) -> MirBody<'tcx> {
         if let Some(body) = self.get_monomorphised(def_id, substs, caller_def_id) {
             return body;
@@ -280,7 +273,8 @@ impl<'tcx> EnvBody<'tcx> {
     }
 
     /// Ensures that the MIR body of a local spec is cached. This must be called on all specs,
-    /// prior to requesting their bodies with `get_spec_body` or exporting with `CrossCrateBodies::from`!
+    /// prior to requesting their bodies with `get_spec_body` or `get_spec_body_identity`, or
+    /// exporting with `CrossCrateBodies::from`!
     pub(crate) fn load_spec_body(&mut self, def_id: LocalDefId) {
         // The same `def_id` may be referenced twice, e.g. see fn `constrained_contract_inherits_posts` in
         // the `refinements-extend-base-attributes.rs` test case

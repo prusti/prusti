@@ -1,9 +1,6 @@
 use pcg::pcg::BodyWithBorrowckFacts;
 use prusti_interface::environment::{EnvQuery, body::MirBody};
-use prusti_rustc_interface::{
-    middle::ty,
-    span::def_id::{DefId, LocalDefId},
-};
+use prusti_rustc_interface::span::def_id::{DefId, LocalDefId};
 
 use crate::trait_support::is_function_with_body;
 
@@ -46,12 +43,10 @@ pub fn pure_body<'vir>(def_id: DefId) -> MirBody<'vir> {
 }
 
 /// The MIR body of the specification `def_id`, taken generically (i.e. with
-/// its own parameters, see [instantiated_spec_body] for the exception).
+/// its own parameters; `MirPureEnc` instantiates it with the arguments of its
+/// encoding instead).
 pub fn spec_body<'vir>(def_id: DefId) -> MirBody<'vir> {
-    vir::with_vcx(|vcx| {
-        let substs = ty::GenericArgs::identity_for_item(vcx.tcx(), def_id);
-        vcx.body_mut().get_spec_body(def_id, substs, None)
-    })
+    vir::with_vcx(|vcx| vcx.body_mut().get_spec_body_identity(def_id))
 }
 
 fn local_to_encode(def_id: DefId) -> Option<LocalDefId> {

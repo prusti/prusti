@@ -124,16 +124,15 @@ impl TaskEncoder for MirPureEnc {
 
         tracing::debug!("encoding {def_id:?}");
         let (inputs, expr) = vir::with_vcx(move |vcx| {
-            // The bodies are encoded generically, so they are fetched at the
-            // compiler's identity arguments. The one exception is a trait's
-            // specification encoded for an `impl` of that trait, which is
-            // instantiated with the arguments of the encoding.
-            let identity = ty::GenericArgs::identity_for_item(vcx.tcx(), def_id);
+            // A specification is instantiated with the arguments of the
+            // encoding, which differ from its own when a trait's specification
+            // is encoded for an `impl` of that trait. The other bodies are
+            // encoded generically, so they are taken as stored.
             let body = match kind {
-                PureKind::Closure => vcx.body_mut().get_closure_body(def_id, identity, None),
+                PureKind::Closure => vcx.body_mut().get_closure_body_identity(def_id),
                 PureKind::Spec { context, .. } => {
                     let substs = vcx.tcx().mk_args(gargs.args());
-                    vcx.body_mut().get_spec_body(def_id, substs, Some(context))
+                    vcx.body_mut().get_spec_body(def_id, substs, context)
                 }
                 PureKind::Pure => crate::encoders::pure_body(def_id),
                 PureKind::Constant(promoted) => {
