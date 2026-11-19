@@ -8,7 +8,11 @@ use prusti_rustc_interface::{
     span::def_id::{DefId, LocalDefId},
 };
 use rustc_hash::FxHashMap;
-use std::{cell::RefCell, collections::hash_map::Entry, rc::Rc};
+use std::{
+    cell::{RefCell, RefMut},
+    collections::hash_map::Entry,
+    rc::Rc,
+};
 
 use crate::environment::mir_storage;
 
@@ -84,7 +88,8 @@ type MonomorphKey<'tcx> = (DefId, GenericArgsRef<'tcx>, Option<DefId>);
 pub struct EnvBody<'tcx> {
     tcx: TyCtxt<'tcx>,
 
-    local_impure_fns: DynamicallyLoadedBodies<BodyWithBorrowckFacts<'tcx>>,
+    /// Local bodies taken out of `mir_storage`, which hands out each body only once.
+    local_bodies: DynamicallyLoadedBodies<BodyWithBorrowckFacts<'tcx>>,
     /// Loop invariants, quantifiers and triggers in impure functions
     local_closures: DynamicallyLoadedBodies<MirBody<'tcx>>,
 
@@ -102,7 +107,7 @@ impl<'tcx> EnvBody<'tcx> {
     pub fn new(tcx: TyCtxt<'tcx>) -> Self {
         EnvBody {
             tcx,
-            local_impure_fns: RefCell::new(FxHashMap::default()),
+            local_bodies: RefCell::new(FxHashMap::default()),
             local_closures: RefCell::new(FxHashMap::default()),
             pure_fns: PreLoadedBodies::new(),
             predicates: PreLoadedBodies::new(),
@@ -112,9 +117,10 @@ impl<'tcx> EnvBody<'tcx> {
         }
     }
 
-    /// Get local MIR body of non-spec functions. Retrieves the body from global state,
-    /// which was filled earlier by `mir_borrowck` (relatively expensive).
-    pub fn load_local_mir_with_facts(
+    /// Get the local MIR body of `def_id` with its borrowck facts. Retrieves the body from
+    /// global state, which was filled earlier by `mir_borrowck`. The regions of the body are
+    /// inference variables of the borrow checker, which the facts refer to.
+    fn load_local_mir_with_facts(
         tcx: TyCtxt<'tcx>,
         def_id: LocalDefId,
     ) -> BodyWithBorrowckFacts<'tcx> {
@@ -132,13 +138,22 @@ impl<'tcx> EnvBody<'tcx> {
         }
     }
 
-    /// Get local MIR body of spec or pure functions. Retrieves the body from
-    /// the compiler (relatively cheap).
-    pub fn load_local_mir(tcx: TyCtxt<'tcx>, def_id: LocalDefId) -> MirBody<'tcx> {
-        // SAFETY: This is safe because we are feeding in the same `tcx`
-        // that was used to store the data.
-        let body = unsafe { mir_storage::retrieve_promoted_mir_body(tcx, def_id) };
-        MirBody(Rc::new(body))
+    /// Get the local MIR body of a spec, predicate, pure function or closure, with its
+    /// regions erased. The regions of the stored body are inference variables of the borrow
+    /// checker, which mean nothing without its facts. These bodies are kept without the
+    /// facts, and all but the closures of impure functions are exported to other crates.
+    fn load_local_mir(&self, def_id: LocalDefId) -> MirBody<'tcx> {
+        let body = self.local_body(def_id).body.clone();
+        MirBody(Rc::new(self.tcx.erase_and_anonymize_regions(body)))
+    }
+
+    /// The local body of `def_id` with its borrowck facts, taken from global state on first use.
+    fn local_body(&self, def_id: LocalDefId) -> RefMut<'_, BodyWithBorrowckFacts<'tcx>> {
+        RefMut::map(self.local_bodies.borrow_mut(), |bodies| {
+            bodies
+                .entry(def_id)
+                .or_insert_with(|| Self::load_local_mir_with_facts(self.tcx, def_id))
+        })
     }
 
     fn get_monomorphised(
@@ -180,20 +195,12 @@ impl<'tcx> EnvBody<'tcx> {
 
     /// Get the MIR body of a local impure function, without any substitutions.
     pub fn get_impure_fn_body_identity(&self, def_id: LocalDefId) -> MirBody<'tcx> {
-        let mut impure = self.local_impure_fns.borrow_mut();
-        let body = impure
-            .entry(def_id)
-            .or_insert_with(|| Self::load_local_mir_with_facts(self.tcx, def_id));
-        MirBody(Rc::new(body.body.clone()))
+        MirBody(Rc::new(self.local_body(def_id).body.clone()))
     }
 
     /// Get the MIR body of a local impure function, without any substitutions.
     pub fn get_impure_fn_body_with_facts(&self, def_id: LocalDefId) -> BodyWithBorrowckFacts<'tcx> {
-        let mut impure = self.local_impure_fns.borrow_mut();
-        let body = impure
-            .entry(def_id)
-            .or_insert_with(|| Self::load_local_mir_with_facts(self.tcx, def_id));
-        body.clone()
+        self.local_body(def_id).clone()
     }
 
     fn get_closure_body_identity(&self, def_id: DefId) -> MirBody<'tcx> {
@@ -204,7 +211,7 @@ impl<'tcx> EnvBody<'tcx> {
         let mut closures = self.local_closures.borrow_mut();
         closures
             .entry(local_def_id)
-            .or_insert_with(|| Self::load_local_mir(self.tcx, local_def_id))
+            .or_insert_with(|| self.load_local_mir(local_def_id))
             .clone()
     }
 
@@ -287,25 +294,20 @@ impl<'tcx> EnvBody<'tcx> {
         if self.specs.local.contains_key(&def_id) {
             return;
         }
-        self.specs
-            .local
-            .insert(def_id, Self::load_local_mir(self.tcx, def_id));
+        self.specs.local.insert(def_id, self.load_local_mir(def_id));
     }
 
     pub(crate) fn load_predicate_body(&mut self, def_id: LocalDefId) {
         assert!(!self.predicates.local.contains_key(&def_id));
         self.predicates
             .local
-            .insert(def_id, Self::load_local_mir(self.tcx, def_id));
+            .insert(def_id, self.load_local_mir(def_id));
     }
 
     pub(crate) fn load_pure_fn_body(&mut self, def_id: LocalDefId) {
         assert!(!self.pure_fns.local.contains_key(&def_id));
-        let body = Self::load_local_mir(self.tcx, def_id);
+        let body = self.load_local_mir(def_id);
         self.pure_fns.local.insert(def_id, body);
-        let bwbf = Self::load_local_mir_with_facts(self.tcx, def_id);
-        // Also add to `impure_fns` since we'll also be encoding this as impure
-        self.local_impure_fns.borrow_mut().insert(def_id, bwbf);
     }
 
     pub(crate) fn load_closure_body(&mut self, def_id: LocalDefId) {
@@ -316,7 +318,7 @@ impl<'tcx> EnvBody<'tcx> {
         }
         self.closures
             .local
-            .insert(def_id, Self::load_local_mir(self.tcx, def_id));
+            .insert(def_id, self.load_local_mir(def_id));
     }
 
     /// Import non-local mir bodies of specs from cross-crate import.
