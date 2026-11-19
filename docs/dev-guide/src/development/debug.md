@@ -23,7 +23,7 @@ RUST_BACKTRACE=1 PRUSTI_DUMP_VIPER_PROGRAM=true PRUSTI_DUMP_DEBUG_INFO=true \
 
 This command does the following:
 
-1. Runs the specified test through the test harness, like `./x.py test --test main` does. So Prusti is built and run as for the test suite: with the compiler options and the environment of the test's group and the flags specified in the test file. The variables set for the test's group (`GROUPS` in `prusti-tests/tests/harnesses/compiletest.rs`, e.g. `PRUSTI_EXTRA_VERIFIER_ARGS`) replace those of the same name in your environment. The harness prints Prusti's output only if the test fails, and never for a `fail` or `ui` test marked `//@ known-failure`.
+1. Runs the specified test through the test harness, like `./x.py test --test main` does. So Prusti is built and run as for the test suite: with the compiler options and the environment of the test's group and the flags specified in the test file. The variables that the harness sets (`prusti_config`, `GROUPS` and `PRUSTI_SERVER_ADDRESS` in `prusti-tests/tests/harnesses/compiletest.rs`) replace those of the same name in your environment. For example, the `verify` groups set `PRUSTI_EXTRA_VERIFIER_ARGS=--timeout=90`, so verifier arguments such as a longer timeout or `--proverLogFile` have to be passed by running `prusti-rustc` directly. The harness prints Prusti's output only if the test fails, and never for a `fail` or `ui` test marked `//@ known-failure`.
 2. Dumps the information that is most commonly needed for debugging Prusti into the `log` directory.
 
 Tip: to see the expanded Prusti specification macros, add the following comment at the beginning of the test file:

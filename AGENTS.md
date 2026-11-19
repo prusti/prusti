@@ -10,7 +10,7 @@ flags; this file collects working norms and pitfalls.
   repository root. It sets up the Java, Viper and Z3 environment that plain `cargo` lacks.
 - Run test files with `./x.py test --test main -- <paths>` (e.g. `tests/verify/pass/`). It
   builds the Prusti binaries it runs and the contracts, so it always tests the current code.
-  `./x.py verify-test <path>` runs one test file the same way.
+  `./x.py verify-test prusti-tests/tests/<path>` runs one test file the same way.
 - For anything else that runs Prusti after a change, rebuild with `./x.py build` first.
   `./x.py run --bin prusti-rustc` and the tests of `prusti-launch` use
   `target/debug/prusti-driver`, the binary that `prusti-rustc` runs and that contains the

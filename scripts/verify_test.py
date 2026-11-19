@@ -124,8 +124,7 @@ def verify_test(args):
             )
         test_path = candidate_test_paths[0]
     # The harness reports each test by its path relative to the repository
-    # root, which `--exact` compares with this one; if no test matches, the
-    # harness runs nothing and succeeds.
+    # root, which `--exact` compares with this one.
     test_path = os.path.relpath(test_path, current_path).replace(os.sep, '/')
     if (not os.path.isfile(test_path)
             or not re.fullmatch(r'prusti-tests/tests/[^/]+/(fail|pass|ui)/.+\.rs', test_path)
@@ -134,8 +133,21 @@ def verify_test(args):
     report("Found test: {}", test_path)
     env = get_env()
     os.makedirs('log/config', exist_ok=True)
-    env['PRUSTI_RUSTC_LOG_ARGS'] = 'log/config/prusti-rustc-args'
-    env['PRUSTI_RUSTC_LOG_ENV'] = 'log/config/prusti-rustc-env'
+    args_file = 'log/config/prusti-rustc-args'
+    env_file = 'log/config/prusti-rustc-env'
+    # Every run of `prusti-rustc` writes these files (also the harness's
+    # initial `prusti-rustc -vV`), so they tell whether the harness ran the
+    # test: if no test matches the path, it runs nothing and succeeds.
+    for path in (args_file, env_file):
+        if os.path.exists(path):
+            os.remove(path)
+    def ran_test():
+        if not os.path.exists(args_file):
+            return False
+        with open(args_file) as fp:
+            return test_path in fp.read().splitlines()
+    env['PRUSTI_RUSTC_LOG_ARGS'] = args_file
+    env['PRUSTI_RUSTC_LOG_ENV'] = env_file
     if args.analyze_quantifiers:
         env['PRUSTI_USE_SMT_WRAPPER'] = 'true'
         env['PRUSTI_PRESERVE_SMT_TRACE_FILES'] = 'true'
@@ -143,17 +155,18 @@ def verify_test(args):
         env['PRUSTI_LOG_SMT_WRAPPER_INTERACTION'] = 'true'
         env['PRUSTI_NUMBER_OF_PARALLEL_VERIFIERS'] = '1'
     def verify_test_on_exit():
-        generate_launch_json(
-            'log/config/prusti-rustc-args',
-            'log/config/prusti-rustc-env'
-        )
+        if ran_test():
+            generate_launch_json(args_file, env_file)
         if args.analyze_quantifiers:
             analyze_quantifier_logs(test_path)
     # The harness passes the variables set here on to Prusti, except those it
-    # sets itself for the test's group (`GROUPS` in `compiletest.rs`).
+    # sets itself (`prusti_config`, `GROUPS` and `PRUSTI_SERVER_ADDRESS` in
+    # `compiletest.rs`).
     run_command(
         ['cargo', 'test', '--test', 'main', '--', '--exact', test_path],
         env,
         on_exit=verify_test_on_exit,
         report_time=True,
     )
+    if not ran_test():
+        error("The test harness ran no test for {}", test_path)
