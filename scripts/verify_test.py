@@ -133,8 +133,10 @@ def verify_test(args):
     report("Found test: {}", test_path)
     env = get_env()
     os.makedirs('log/config', exist_ok=True)
-    args_file = 'log/config/prusti-rustc-args'
-    env_file = 'log/config/prusti-rustc-env'
+    # Absolute, as the build of the contracts runs `prusti-rustc` in another
+    # directory.
+    args_file = os.path.abspath('log/config/prusti-rustc-args')
+    env_file = os.path.abspath('log/config/prusti-rustc-env')
     # Every run of `prusti-rustc` writes these files (also the harness's
     # initial `prusti-rustc -vV`), so they tell whether the harness ran the
     # test: if no test matches the path, it runs nothing and succeeds.

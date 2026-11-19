@@ -32,7 +32,8 @@ flags; this file collects working norms and pitfalls.
 
 - To reproduce a test outside the harness, use the environment and flags that
   `prusti-tests/tests/harnesses/compiletest.rs` sets, plus the file's `//@ compile-flags`
-  (and, to match CI, the variables set in `.github/workflows/test.yml`). Otherwise the
+  (and, to match CI, the variables set in `.github/workflows/test.yml` and the time limits
+  set in `.github/actions/time-limits`). Otherwise the
   results differ, e.g. overflow errors appear for checks the harness turns off.
 - Before writing a test, look at the existing tests of the feature. If one already covers
   the behaviour, don't add another. Otherwise add the case to an existing file where it
