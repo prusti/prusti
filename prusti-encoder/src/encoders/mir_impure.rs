@@ -3650,21 +3650,16 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                         // type parameters cover a block of the caller's
                         // positions each, which may be empty or have several
                         // positions; they are adapted before and after the call.
-                        let adjust = if func_out.is_trait_stub() {
-                            None
-                        } else {
-                            let wands = self.deps.require_dep::<WandEnc>(WandEncTask {
-                                data: FunctionData::new(func_def_id),
-                            })?;
-                            let arg_snaps = args
-                                .iter()
-                                .map(|arg| self.encode_operand_snap_immediate(&arg.node))
-                                .collect::<EncodeResult<'vir, Vec<_>, E>>()?;
-                            let call_ctx = self.gargs(caller_substs);
-                            let before = wands.before_call(vcx, self.deps, &arg_snaps, call_ctx)?;
-                            self.stmts(before);
-                            Some((wands, arg_snaps, call_ctx))
-                        };
+                        let wands = self.deps.require_dep::<WandEnc>(WandEncTask {
+                            data: FunctionData::new(func_def_id),
+                        })?;
+                        let arg_snaps = args
+                            .iter()
+                            .map(|arg| self.encode_operand_snap_immediate(&arg.node))
+                            .collect::<EncodeResult<'vir, Vec<_>, E>>()?;
+                        let call_ctx = self.gargs(caller_substs);
+                        let before = wands.before_call(vcx, self.deps, &arg_snaps, call_ctx)?;
+                        self.stmts(before);
 
                         let call = func_out.call(method_in, dest);
 
@@ -3687,19 +3682,17 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                         self.call_labels
                             .insert(location.block, (label_pre, label_post));
 
-                        if let Some((wands, arg_snaps, call_ctx)) = adjust {
-                            // The postcondition gives back the arguments'
-                            // predicates keyed by their snapshots before the call.
-                            let arg_snaps = arg_snaps
-                                .into_iter()
-                                .map(|arg| vcx.mk_local_labelled_old_expr(arg, label_pre))
-                                .collect::<Vec<_>>();
-                            let (_, result, _, _) =
-                                self.encode_place_with_snap(Place::from(*destination))?;
-                            let after =
-                                wands.after_call(vcx, self.deps, &arg_snaps, result, call_ctx)?;
-                            self.stmts(after);
-                        }
+                        // The postcondition gives back the arguments'
+                        // predicates keyed by their snapshots before the call.
+                        let arg_snaps = arg_snaps
+                            .into_iter()
+                            .map(|arg| vcx.mk_local_labelled_old_expr(arg, label_pre))
+                            .collect::<Vec<_>>();
+                        let (_, result, _, _) =
+                            self.encode_place_with_snap(Place::from(*destination))?;
+                        let after =
+                            wands.after_call(vcx, self.deps, &arg_snaps, result, call_ctx)?;
+                        self.stmts(after);
                         // The callee gives the arguments' predicates back
                         // keyed by their values before the call, extended by
                         // what the arguments hold after it.

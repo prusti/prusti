@@ -344,7 +344,14 @@ impl TaskEncoder for TraitFnEnc {
                     }
                 }
                 stub_posts.push(local_defs[mir::RETURN_PLACE].impure_pred);
-                // TODO: wands
+                // The indirect predicates and wands of the signature, as in the
+                // contract of a method with a body.
+                let wands = deps.require_dep::<WandEnc>(WandEncTask {
+                    data: pcg::borrow_pcg::FunctionData::new(def_id),
+                })?;
+                stub_pres.extend(wands.indirect_pres(vcx, &local_defs, deps));
+                stub_posts.extend(wands.indirect_posts(vcx, &local_defs, deps));
+                stub_posts.extend(wands.wand_posts(vcx, &local_defs, deps));
 
                 stub_pres.push(pre_func.call()(
                     vcx.alloc_slice(

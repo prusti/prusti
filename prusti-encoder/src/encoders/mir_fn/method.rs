@@ -27,16 +27,9 @@ pub struct MethodCallEncOutput<'vir> {
     ty_args: GArgsTy<'vir>,
     inputs: Vec<GArgCaster<'vir, Impure>>,
     output: GArgCaster<'vir, Impure>,
-    /// Whether the call goes to the stub of a trait method rather than to the
-    /// callee's own method, whose contract is that of the callee's signature.
-    trait_stub: bool,
 }
 
 impl<'vir> MethodCallEncOutput<'vir> {
-    pub fn is_trait_stub(&self) -> bool {
-        self.trait_stub
-    }
-
     pub fn call(
         &self,
         mut args: Vec<vir::ExprRef<'vir>>,
@@ -78,7 +71,6 @@ impl TaskEncoder for MethodCallEnc {
     ) -> EncodeFullResult<'vir, Self> {
         deps.emit_output_ref(*task_key, ())?;
         let (callee_def_id, assoc_enc) = task_key.trait_call(deps)?;
-        let trait_stub = assoc_enc.is_some();
         let method_ref = if let Some(assoc_enc) = assoc_enc {
             MethodEncOutputRef {
                 method_ref: assoc_enc.call_stub_impure,
@@ -114,7 +106,6 @@ impl TaskEncoder for MethodCallEnc {
                 ty_args,
                 inputs,
                 output,
-                trait_stub,
             },
         ))
     }
