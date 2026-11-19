@@ -1,11 +1,11 @@
 use crate::encoders::{
-    EncodeResult, ImpureEncVisitor, MirLocalDefEncOutput, MirSpecEnc,
-    mir_fn::report_dep_error,
+    EncodeResult, ImpureEncVisitor, MirLocalDefEncOutput, MirSpecEnc, Pure,
+    mir_fn::{RustSignature, report_dep_error},
     pure::spec::{EncodedPledge, MirSpecEncMode, PledgeArgs, PledgeExpr},
     ty::{
         RustTyDecomposition,
         generics::{
-            GArgs, GArgsTyEnc, GParams, GenericParamsEnc,
+            GArgs, GArgsCastEnc, GArgsTyEnc, GParams, GenericParamsEnc,
             lifetime_position::{
                 GeneralizedLifetime as TyLifetime, LifetimePosition, LifetimePositionEnc,
             },
@@ -484,7 +484,13 @@ impl<'vir> WandEncOutput<'vir> {
         label_post: &'vir str,
         call_ctx: GArgs<'vir>,
         visitor: &mut ImpureEncVisitor<'vir, '_, E>,
-    ) -> Vec<vir::Wand<'vir>> {
+    ) -> Result<Vec<vir::Wand<'vir>>, EncodeFullError<'vir, E>> {
+        // The wands are in the callee's terms.
+        let arguments = arguments
+            .iter()
+            .enumerate()
+            .map(|(local, &snap)| self.snap_in_callee(visitor.deps, local.into(), snap, call_ctx))
+            .collect::<Result<Vec<_>, _>>()?;
         let result = visitor
             .vcx
             .mk_local_labelled_old_expr(arguments[mir::RETURN_PLACE.as_usize()], label_post);
@@ -508,7 +514,28 @@ impl<'vir> WandEncOutput<'vir> {
             };
             wands.push(wand);
         }
-        wands
+        Ok(wands)
+    }
+
+    /// `snap`, the caller's snapshot of the callee's local `local` at a call
+    /// with generic arguments `call_ctx`, in the callee's terms: the value of a
+    /// type parameter of the callee is a generic snapshot, cast as for the
+    /// call's arguments.
+    fn snap_in_callee<E: TaskEncoder>(
+        &self,
+        deps: &mut TaskEncoderDependencies<'vir, E>,
+        local: mir::Local,
+        snap: vir::ExprSnap<'vir>,
+        call_ctx: GArgs<'vir>,
+    ) -> Result<vir::ExprSnap<'vir>, EncodeFullError<'vir, E>> {
+        let signature = RustSignature::new(self.function_data.def_id());
+        let ty = match local.as_usize() {
+            0 => signature.output,
+            arg => signature.inputs[arg - 1],
+        };
+        let normalized = ty.decompose_compare_normalize(signature.gparams, call_ctx);
+        let caster = deps.require_dep::<GArgsCastEnc<Pure>>(normalized)?;
+        Ok(caster.cast_to_callee_ctx(snap))
     }
 
     fn mk_wand<E: TaskEncoder>(
