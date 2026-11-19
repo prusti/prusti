@@ -3,7 +3,7 @@ use vir::{CallableIdn, CastType, FunctionIdn, HasType};
 
 use crate::encoders::ty::{
     RustParamData, RustTy, TySpecifics,
-    generics::{GenericParamsEnc, builtin_impls::BuiltinImplEnc},
+    generics::{GenericParamsEnc, arity::ArityEnc, builtin_impls::BuiltinImplEnc},
 };
 
 #[derive(Debug, Clone)]
@@ -97,6 +97,7 @@ impl TaskEncoder for TyConstructorEnc {
                 },
             )?;
             BuiltinImplEnc::require(task_key);
+            let _ = ArityEnc::encode(*task_key, false, prusti_rustc_interface::span::DUMMY_SP);
 
             let args = ty_accessor_functions
                 .iter()

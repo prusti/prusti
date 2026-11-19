@@ -2193,6 +2193,7 @@ dependencies = [
  "rustc-hash",
  "task-encoder",
  "tracing 0.1.0",
+ "viper",
  "vir",
 ]
 

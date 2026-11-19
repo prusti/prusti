@@ -1,6 +1,7 @@
 pub mod pure;
 pub mod inhabited;
-pub mod indirect;
+pub mod indirect_pred;
+pub mod indirect_nodes;
 pub mod impure;
 pub mod kinds;
 pub mod use_impure;
@@ -11,6 +12,8 @@ pub mod lifted;
 pub mod generics;
 mod data;
 mod rust_ty;
+#[cfg(test)]
+pub(crate) mod test_util;
 pub mod interpretation;
 
 pub use data::TySpecifics;

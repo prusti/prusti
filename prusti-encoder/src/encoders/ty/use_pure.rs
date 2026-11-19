@@ -500,6 +500,20 @@ impl<'vir> TyUsePureMutRef<'vir> {
         self.cast_to_caller_ctx(self.pure.value_access.call()(snap))
     }
 
+    /// The snapshot `snap` with its value replaced by `val`: the inverse of
+    /// `value_access`. The address and metadata are kept as they are.
+    pub fn with_value<Curr, Next>(
+        &self,
+        snap: vir::ExprGenCSnap<'vir, Curr, Next>,
+        val: vir::ExprGenSnap<'vir, Curr, Next>,
+    ) -> vir::ExprGenCSnap<'vir, Curr, Next> {
+        self.pure.prim_to_snap.call()(
+            self.pure.deref_access.call()(snap),
+            self.pure.metadata_access.call()(snap),
+            self.cast_to_callee_ctx(val),
+        )
+    }
+
     pub fn cast_to_caller_ctx<Curr, Next>(
         &self,
         inner_snap: vir::ExprGenPSnap<'vir, Curr, Next>,

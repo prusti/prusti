@@ -216,6 +216,22 @@ fn bin_op() {
     check("!(b)", |c| c.bin(CmpEq, c.b("b"), c.ff()));
     check("b", |c| c.bin(CmpNe, c.ff(), c.b("b")));
     check("false", |c| c.bin(CmpEq, c.tt(), c.ff()));
+    check("x", |c| c.bin(Add, c.int(0), c.i("x")));
+    check("x", |c| c.bin(Add, c.i("x"), c.int(0)));
+    check("x", |c| c.bin(Sub, c.i("x"), c.int(0)));
+    check("(0) - (x)", |c| c.bin(Sub, c.int(0), c.i("x")));
+    check("2", |c| c.bin(Add, c.int(1), c.int(1)));
+    check("-(1)", |c| c.bin(Sub, c.int(1), c.int(2)));
+    check("(x) + (1)", |c| {
+        c.bin(Sub, c.i("x"), c.bin(Sub, c.int(1), c.int(2)))
+    });
+    check("(x) + (3)", |c| {
+        c.bin(Add, c.bin(Add, c.i("x"), c.int(1)), c.int(2))
+    });
+    check("(x) + (3)", |c| {
+        c.bin(Add, c.bin(Add, c.int(1), c.i("x")), c.int(2))
+    });
+    check("(x) + (y)", |c| c.bin(Add, c.i("x"), c.i("y")));
     check("((x) == (z)) && ((y) == (w))", |c| {
         c.bin(
             CmpEq,
@@ -326,6 +342,15 @@ fn i128_min_literal() {
             expr: c.int(1 << 127).inner_cast_ty(),
         })));
         assert_eq!(super::equations::as_int(min), Some(i128::MIN));
+    });
+}
+
+#[test]
+fn old() {
+    check("old(x)", |c| c.old(c.old(c.i("x"))));
+    // The inner `old` decides the heap, whatever the outer one's label.
+    check("old[l](x)", |c| {
+        c.old(c.vcx.mk_local_labelled_old_expr(c.i("x"), "l"))
     });
 }
 

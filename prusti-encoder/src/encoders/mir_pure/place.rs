@@ -23,7 +23,9 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                         let val_expr = data.box_value_access(snap);
                         let place_ref = Some(data.box_address_access(snap));
                         let metadata = data.box_metadata_access(snap);
-                        EncodedPlace::new(val_expr, place_ref).with_metadata(metadata)
+                        EncodedPlace::new(val_expr, place_ref)
+                            .with_metadata(metadata)
+                            .with_in_deep_snap(encoded_place.in_deep_snap)
                     }
                     TyKind::Ref(.., ty::Mutability::Not) => {
                         let e_ty = e_ty.expect_immref();
@@ -38,6 +40,11 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                         let snap = encoded_place.snap.downcast_ty();
                         let metadata = e_ty.metadata_access(snap);
                         let ref_expr = e_ty.deref_access(snap);
+                        if encoded_place.in_deep_snap {
+                            return Ok(EncodedPlace::new(e_ty.value_access(snap), Some(ref_expr))
+                                .with_metadata(metadata)
+                                .with_in_deep_snap(true));
+                        }
                         if !self.impure_context {
                             // The value field of a mutable reference's snapshot
                             // is never constrained to the referent (see
@@ -90,7 +97,8 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                 let proj = variant[field_idx];
                 let proj_app = proj.read(encoded_place.snap.downcast_ty());
                 let place_ref = encoded_place.place_ref.map(|pr| proj.field_ref(pr));
-                let place = EncodedPlace::new(proj_app, place_ref);
+                let place = EncodedPlace::new(proj_app, place_ref)
+                    .with_in_deep_snap(encoded_place.in_deep_snap);
                 // Only the last field can be an unsized DST tail that shares the
                 // containing value's pointer metadata; propagate it there, and
                 // nowhere else (every other field is sized and thin).
@@ -161,6 +169,36 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
         Ok((encoded_place.snap, place_ref, metadata))
     }
 
+    /// Whether `place` dereferences a mutable reference.
+    fn derefs_mut_ref(&self, place: Place<'vir>) -> bool {
+        let mut place_ty = mir::PlaceTy::from_ty(self.body.local_decls[place.local].ty);
+        place.projection.iter().any(|elem| {
+            let derefs = matches!(elem, mir::ProjectionElem::Deref)
+                && matches!(place_ty.ty.kind(), TyKind::Ref(.., ty::Mutability::Mut));
+            place_ty = place_ty.projection_ty(self.vcx.tcx(), *elem);
+            derefs
+        })
+    }
+
+    /// The snapshot `snap` of `local`, extended through the local's indirect
+    /// predicates so that its `&mut`s hold their referents.
+    fn deep_snap(
+        &mut self,
+        local: mir::Local,
+        snap: ExprRet<'vir>,
+    ) -> EncodeResult<'vir, ExprRet<'vir>, MirPureEnc> {
+        let ty = RustTyDecomposition::from_ty(self.body.local_decls[local].ty, self.context);
+        let nodes = NodePredicates::new(ty, self.deps)?;
+        Ok(self.vcx.mk_lazy_expr(
+            "deep_snap",
+            snap.ty(),
+            Box::new(move |vcx, lctx: ExprInput<'vir>| {
+                use vir::Reify;
+                nodes.deep_snap(snap.reify(vcx, lctx)).kind
+            }),
+        ))
+    }
+
     /// A read of `place` at the versions `curr_ver` of the locals, in the
     /// current modes: its snapshot, with the address and pointer metadata
     /// that the dereferences in `place` give it.
@@ -192,11 +230,18 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
             self.uses.read(local, 0);
             self.input(local)?
         };
+        // Only reads behind a `&mut` need the extension.
+        let in_deep_snap = self.has_deep_snap(local) && self.derefs_mut_ref(place);
+        let snap = if in_deep_snap {
+            self.deep_snap(local, snap)?
+        } else {
+            snap
+        };
         let local_ty = mir::PlaceTy::from_ty(self.body.local_decls[local].ty);
         self.encode_projection(
             curr_ver,
             local_ty,
-            EncodedPlace::new(snap, None),
+            EncodedPlace::new(snap, None).with_in_deep_snap(in_deep_snap),
             place.projection,
             modes,
         )

@@ -27,6 +27,7 @@ use crate::encoders::{
     ty::{
         RustTyDecomposition,
         generics::{GArgs, GParams},
+        indirect_nodes::NodePredicates,
         use_pure::{TyUsePure, TyUsePureEnc},
     },
 };
@@ -253,6 +254,7 @@ struct BodySetup {
     captures: Option<IndexVec<abi::FieldIdx, FxHashSet<Modes>>>,
     /// Whether the body is a trigger (see `PureKind::Trigger`).
     trigger: bool,
+    kind: PureKind,
 }
 
 impl PureKind {
@@ -309,6 +311,7 @@ impl PureKind {
                 },
             ),
             trigger: matches!(self, PureKind::Trigger { .. }),
+            kind: self,
         }
     }
 }
@@ -466,6 +469,7 @@ struct Enc<'vir: 'enc, 'enc> {
     captures: Option<IndexVec<abi::FieldIdx, FxHashSet<Modes>>>,
     /// Whether the body is a trigger (see `PureKind::Trigger`).
     trigger: bool,
+    kind: PureKind,
 }
 
 struct EncodedPlace<'vir> {
@@ -477,6 +481,7 @@ struct EncodedPlace<'vir> {
     /// The metadata for the pointed-to value. Set when going through a
     /// `ProjectionElem::Deref`.
     metadata: Option<ExprRet<'vir>>,
+    in_deep_snap: bool,
 }
 
 impl<'vir> EncodedPlace<'vir> {
@@ -485,7 +490,13 @@ impl<'vir> EncodedPlace<'vir> {
             snap: expr,
             place_ref,
             metadata: None,
+            in_deep_snap: false,
         }
+    }
+
+    fn with_in_deep_snap(mut self, in_deep_snap: bool) -> Self {
+        self.in_deep_snap = in_deep_snap;
+        self
     }
 
     fn with_metadata(mut self, metadata: ExprRet<'vir>) -> Self {
@@ -564,6 +575,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
             impure_context,
             captures,
             trigger,
+            kind,
         } = setup;
         let rev_doms = rev_doms::ReverseDominators::new(&body.basic_blocks);
         Self {
@@ -582,7 +594,18 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
             impure_context,
             captures,
             trigger,
+            kind,
         }
+    }
+
+    /// Whether `local` is a contract's argument or result, read from its deep
+    /// snapshot.
+    fn has_deep_snap(&self, local: mir::Local) -> bool {
+        matches!(self.kind, PureKind::Spec { impure: true, .. })
+            && matches!(
+                self.body.local_kind(local),
+                mir::LocalKind::Arg | mir::LocalKind::ReturnPointer
+            )
     }
 
     fn ty_use(&mut self, ty: ty::Ty<'vir>) -> EncodeResult<'vir, TyUsePure<'vir>, MirPureEnc> {

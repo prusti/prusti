@@ -1017,17 +1017,30 @@ impl<'vir, 'v> ToViper<'vir, 'v> for vir::Stmt<'vir> {
                 ctx.ast.comment(&format!("var {}", decl.name))
             }
             vir::StmtKindGenData::MethodCall(v) => v.to_viper_with_span(ctx, self.span),
-            vir::StmtKindGenData::Package(wand, stmts) => ctx.ast.package(
-                wand.to_viper_no_pos(ctx),
-                ctx.ast.seqn(
-                    &stmts
-                        .iter()
-                        .map(|v| v.to_viper_no_pos(ctx))
-                        .collect::<Vec<_>>(),
-                    &[],
-                ),
-                ctx.span_to_pos(self.span),
-            ),
+            vir::StmtKindGenData::Package(wand, stmts) => {
+                // As in a method body, the variables declared in the proof
+                // script are declarations of its sequence.
+                let declarations = stmts
+                    .iter()
+                    .filter_map(|s| match s.kind {
+                        vir::StmtKindGenData::LocalDecl(decl, _) => {
+                            Some(decl.to_viper_no_pos(ctx).into())
+                        }
+                        _ => None,
+                    })
+                    .collect::<Vec<viper::Declaration>>();
+                ctx.ast.package(
+                    wand.to_viper_no_pos(ctx),
+                    ctx.ast.seqn(
+                        &stmts
+                            .iter()
+                            .map(|v| v.to_viper_no_pos(ctx))
+                            .collect::<Vec<_>>(),
+                        &declarations,
+                    ),
+                    ctx.span_to_pos(self.span),
+                )
+            }
             vir::StmtKindGenData::Apply(wand) => ctx
                 .ast
                 .apply(wand.to_viper_no_pos(ctx), ctx.span_to_pos(self.span)),

@@ -38,6 +38,12 @@ impl<'a> VerificationContext<'a> {
         AstUtils::new(&self.env)
     }
 
+    /// Verifies the Viper program in a file with Silicon, see
+    /// [`crate::verifier::verify_file_with_silicon`].
+    pub fn verify_file_with_silicon(&self, args: &[String]) -> Result<(), Vec<String>> {
+        crate::verifier::verify_file_with_silicon(&self.env, args)
+    }
+
     /// Should be used only by tests.
     pub fn new_verifier_with_default_smt(&self, backend: VerificationBackend) -> Verifier<'_> {
         self.new_verifier_with_default_smt_and_extra_args(backend, vec![])

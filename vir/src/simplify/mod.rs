@@ -27,6 +27,8 @@ mod equations;
 mod tests;
 mod walk;
 
+pub use equations::syntactic_eq;
+
 use prusti_rustc_interface::data_structures::fx::{FxHashMap, FxHashSet};
 
 use crate::{refs::*, Folder, ViperIdent, VirCtxt};

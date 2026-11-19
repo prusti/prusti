@@ -184,9 +184,12 @@ impl TaskEncoder for TyImpureEnc {
             deps.emit_output_ref(*task_key, data)?;
 
             let specifics = match &ty.specifics {
-                TySpecifics::Param(param) => {
-                    TySpecifics::Param(super::kinds::param::ty_impure(param, deps, &mut builder)?)
-                }
+                TySpecifics::Param(param) => TySpecifics::Param(super::kinds::param::ty_impure(
+                    task_key,
+                    param,
+                    deps,
+                    &mut builder,
+                )?),
                 TySpecifics::Opaque(opaque) => TySpecifics::Opaque(
                     super::kinds::opaque::ty_impure(opaque, deps, &mut builder)?,
                 ),

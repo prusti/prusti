@@ -22,14 +22,18 @@ use crate::encoders::{
     custom::{PairUseEnc, ReadPermEnc},
     ty::{
         generics::{
-            GArgsCastEnc,
+            GArgsCastEnc, IndirectCastersEnc,
+            arity::ArityEnc,
             builtin_impls::BuiltinImplEnc,
+            clamp::ClampEnc,
+            merge_split::MergeSplitEnc,
             r#trait::TraitEnc,
             trait_fn::TraitFnEnc,
             trait_impls::{
                 TraitImplConditionEnc, TraitImplDefaultFnEnc, TraitImplEnc, TraitImplItemEnc,
             },
         },
+        indirect_pred::IndirectPredEnc,
         interpretation::{bitvec::BitVecEnc, float::FloatLitEnc, float_conv::FloatBitVecConvEnc},
         lifted::TyConstructorEnc,
     },
@@ -83,6 +87,42 @@ pub fn test_entrypoint<'tcx>(
     if config::show_ide_info() {
         vir::with_vcx(|vcx| vcx.emit_contract_spans(env_diagnostic));
     }
+    let mut program = emit_program();
+
+    // Silicon finds a trigger among the terms of its quantifier's body, and
+    // so evaluates it under the body's conditions, only if it has no `let`s.
+    // This runs whether or not the simplifier does, and before it, as its
+    // check of the triggers it rewrites expects them without `let`s.
+    program.inline_trigger_lets();
+    if config::simplify_encoding() {
+        program.simplify();
+    }
+
+    if std::env::var("LOCAL_TESTING").is_ok() {
+        std::fs::write("local-testing/simple.vpr", program.code()).unwrap();
+    }
+
+    for (error_msg, span) in program.encoder_errors().drain(..) {
+        PrustiError::internal(error_msg, span.into()).emit(env_diagnostic);
+    }
+
+    // Errors raised during encoding (e.g. an unsupported feature that was
+    // replaced by an abstract stub) so that they surface rather than silently
+    // degrading.
+    for error in early_errors() {
+        error.emit(env_diagnostic);
+    }
+
+    let program = program.mk_program();
+
+    request::RequestWithContext {
+        program: program.to_ref(),
+    }
+}
+
+/// The program of everything encoded so far, in the order in which Prusti
+/// emits it.
+pub(crate) fn emit_program<'vir>() -> task_encoder::Program<'vir> {
     let mut program = task_encoder::Program::default();
 
     // We output results from both monomorphic and polymorphic encoding of
@@ -137,41 +177,17 @@ pub fn test_entrypoint<'tcx>(
     program.header("traits");
     TraitEnc::emit_outputs(&mut program);
     BuiltinImplEnc::emit_outputs(&mut program);
+    ArityEnc::emit_outputs(&mut program);
+    ClampEnc::emit_outputs(&mut program);
+    IndirectPredEnc::emit_outputs(&mut program);
+    IndirectCastersEnc::emit_outputs(&mut program);
+    MergeSplitEnc::emit_outputs(&mut program);
     TraitFnEnc::emit_outputs(&mut program);
     TraitImplEnc::emit_outputs(&mut program);
     TraitImplConditionEnc::emit_outputs(&mut program);
     TraitImplItemEnc::emit_outputs(&mut program);
     TraitImplDefaultFnEnc::emit_outputs(&mut program);
-
-    // Silicon finds a trigger among the terms of its quantifier's body, and
-    // so evaluates it under the body's conditions, only if it has no `let`s.
-    // This runs whether or not the simplifier does, and before it, as its
-    // check of the triggers it rewrites expects them without `let`s.
-    program.inline_trigger_lets();
-    if config::simplify_encoding() {
-        program.simplify();
-    }
-
-    if std::env::var("LOCAL_TESTING").is_ok() {
-        std::fs::write("local-testing/simple.vpr", program.code()).unwrap();
-    }
-
-    for (error_msg, span) in program.encoder_errors().drain(..) {
-        PrustiError::internal(error_msg, span.into()).emit(env_diagnostic);
-    }
-
-    // Errors raised during encoding (e.g. an unsupported feature that was
-    // replaced by an abstract stub) so that they surface rather than silently
-    // degrading.
-    for error in early_errors() {
-        error.emit(env_diagnostic);
-    }
-
-    let program = program.mk_program();
-
-    request::RequestWithContext {
-        program: program.to_ref(),
-    }
+    program
 }
 
 pub fn early_errors() -> Vec<PrustiError> {
