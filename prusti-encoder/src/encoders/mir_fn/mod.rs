@@ -172,6 +172,11 @@ pub fn encode_all_in_crate<'tcx>(tcx: ty::TyCtxt<'tcx>) {
                 if !(is_trusted && is_pure) {
                     let _ = method::MethodEnc::encode(def_id, false, DUMMY_SP);
                 }
+                // A closure body implements the closure's built-in `Fn*`
+                // impls, which `TraitImplEnc` checks.
+                if tcx.type_of(def_id).skip_binder().is_closure() {
+                    let _ = TraitImplEnc::encode(def_id, false, DUMMY_SP);
+                }
             }
             unsupported_item_kind => {
                 tracing::debug!("unsupported item: {unsupported_item_kind:?}");

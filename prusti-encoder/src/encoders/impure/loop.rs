@@ -15,14 +15,13 @@ use pcg::{
         maybe_remote::MaybeRemotePlace,
     },
 };
-use prusti_rustc_interface::middle::{mir, ty};
+use prusti_rustc_interface::middle::mir;
 
 use task_encoder::TaskEncoder;
 use vir::Reify;
 
 use crate::encoders::{
     EncodeResult, ImpureEncVisitor, TyUseImpureEnc,
-    mir_shared::PureRvalueEnc,
     ty::{
         RustTyDecomposition,
         indirect::{IndirectPredicatesEnc, IndirectPredicatesEncOutputRef, PrustiPcgCtxt},
@@ -71,7 +70,7 @@ impl<'vir: 'a, 'a, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             let projs = place.generalized_lifetime_projections(ctxt);
             for proj in projs {
                 let region = proj.region(ctxt);
-                let indirect = self.indirect_predicates(task, region, ty.ty)?;
+                let indirect = self.indirect_predicates(task, region)?;
                 inv.extend(indirect.predicate_applications.iter().map(|p| {
                     p.reify(
                         self.vcx,
@@ -140,7 +139,7 @@ impl<'vir: 'a, 'a, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         };
         let decomp = RustTyDecomposition::from_ty(ty.ty, self.def_id);
         let region = r.with_base(place).region(self.pcg_ctxt());
-        let indirect = self.indirect_predicates(decomp, region, ty.ty)?;
+        let indirect = self.indirect_predicates(decomp, region)?;
         Ok(indirect
             .predicate_applications
             .into_iter()
@@ -148,29 +147,17 @@ impl<'vir: 'a, 'a, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             .collect::<Vec<_>>())
     }
 
-    /// Encodes the indirect predicates of the lifetime projection of `decomp`, the
-    /// decomposition of `ty`, at `region`. If `region` is not among the lifetimes of
-    /// `decomp` (e.g. because `ty` is an opaque type, a trait object or an unnormalized
-    /// alias), nothing behind it is encoded and there are no indirect predicates. The
-    /// exception is a type containing a closure, whose captures are encoded although the
-    /// closure type has no capture regions; for it an unsupported feature is reported.
+    /// Encodes the indirect predicates of the lifetime projection of the type decomposition
+    /// `decomp` at `region`. If `region` is not among the lifetimes of `decomp` (e.g. because
+    /// the type is an opaque type, a trait object or an unnormalized alias), nothing behind it
+    /// is encoded and there are no indirect predicates.
     fn indirect_predicates(
         &mut self,
         decomp: RustTyDecomposition<'vir>,
         region: GeneralizedLifetime<'vir>,
-        ty: ty::Ty<'vir>,
     ) -> EncodeResult<'vir, IndirectPredicatesEncOutputRef<'vir>, E> {
         let Some(proj) = LifetimeProjection::new(decomp, region, None, PrustiPcgCtxt) else {
-            if !ty
-                .walk()
-                .any(|arg| arg.as_type().is_some_and(|ty| ty.is_closure()))
-            {
-                return Ok(IndirectPredicatesEncOutputRef::new(vec![]));
-            }
-            return Err(self.unsupported(
-                format!("a closure capturing a reference (`{ty}`)"),
-                self.current_span(),
-            ));
+            return Ok(IndirectPredicatesEncOutputRef::new(vec![]));
         };
         self.deps.require_dep::<IndirectPredicatesEnc>(proj)
     }

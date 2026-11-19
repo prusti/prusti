@@ -1,14 +1,17 @@
+use pcg::borrow_pcg::FunctionData;
 use prusti_interface::specs::is_spec_fn;
 use prusti_rustc_interface::{
     middle::{mir, ty},
     span::def_id::DefId,
 };
-use task_encoder::{EncodeFullResult, OutputRefAny, TaskEncoder, TaskEncoderDependencies};
+use task_encoder::{
+    EncodeFullError, EncodeFullResult, OutputRefAny, TaskEncoder, TaskEncoderDependencies,
+};
 use vir::{FunctionIdn, MethodIdn, ViperIdent, vir_format_identifier};
 
 use crate::{
     encoders::{
-        FunctionCallEnc, MirLocalDefEnc, MirLocalDefEncTask, MirSpecEnc,
+        FunctionCallEnc, MirLocalDefEnc, MirLocalDefEncTask, MirSpecEnc, WandEnc, WandEncTask,
         mir_fn::CallTaskDescription,
         pure::spec::MirSpecEncMode,
         ty::{
@@ -28,6 +31,9 @@ pub struct TraitFnEncOutputRef<'vir> {
     pub pre_func: FunctionIdn<'vir, (vir::ManySnap, vir::ManyTyVal, vir::ManyCSnap), vir::Bool>,
     pub post_func:
         FunctionIdn<'vir, (vir::Snap, vir::ManySnap, vir::ManyTyVal, vir::ManyCSnap), vir::Bool>,
+    /// The method stub for calls in impure code. It is only emitted where
+    /// the wands of the trait method's signature can be encoded, which
+    /// `MethodCallEnc` checks before calling it.
     pub call_stub_impure: MethodIdn<'vir, (vir::ManyRef, vir::ManyTyVal, vir::ManyCSnap)>,
     pub call_stub_pure_function:
         Option<FunctionIdn<'vir, (vir::ManySnap, vir::ManyTyVal, vir::ManyCSnap), vir::Snap>>,
@@ -303,20 +309,25 @@ impl TaskEncoder for TraitFnEnc {
                 ));
             }
 
-            // The method stub, for calls in impure code.
-            {
-                let mut stub_pres = Vec::new();
-                let mut stub_posts = Vec::new();
+            // The method stub, for calls in impure code (see `call_stub_impure`).
+            let wands = match deps.require_dep_spanned::<WandEnc>(
+                WandEncTask {
+                    data: FunctionData::new(def_id),
+                },
+                span,
+            ) {
+                Ok(wands) => Some(wands),
+                Err(EncodeFullError::DependencyError(_)) => None,
+                Err(err) => return Err(err),
+            };
+            if let Some(wands) = wands {
                 let mut args = Vec::with_capacity(arg_count + item_params.count());
                 for arg_idx in (0..arg_count).map(mir::Local::from) {
                     let name_p = local_defs[arg_idx].local.name;
                     args.push(vir::vir_local_decl! { vcx; [name_p] : Ref });
-                    if arg_idx != mir::RETURN_PLACE {
-                        stub_pres.push(local_defs[arg_idx].impure_pred);
-                    }
                 }
-                stub_posts.push(local_defs[mir::RETURN_PLACE].impure_pred);
-                // TODO: wands
+                let (mut stub_pres, mut stub_posts) =
+                    wands.signature_resources(vcx, &local_defs, deps);
 
                 stub_pres.push(pre_func.call()(
                     vcx.alloc_slice(

@@ -72,6 +72,11 @@ impl TaskEncoder for MethodCallEnc {
         deps.emit_output_ref(*task_key, ())?;
         let (callee_def_id, assoc_enc) = task_key.trait_call(deps)?;
         let method_ref = if let Some(assoc_enc) = assoc_enc {
+            // The trait method's stub exists only where the wands of its
+            // signature can be encoded (see `TraitFnEnc`).
+            deps.require_dep::<WandEnc>(WandEncTask {
+                data: FunctionData::new(callee_def_id),
+            })?;
             MethodEncOutputRef {
                 method_ref: assoc_enc.call_stub_impure,
             }
@@ -201,8 +206,6 @@ impl TaskEncoder for MethodEnc {
             // Method contract. We will need to emit pre- and postconditions for
             // the permissions, the functional spec, and (in the postcondition)
             // wands in case of a reborrowing function.
-            let mut pres = Vec::new();
-            let mut posts = Vec::new();
             let spec = deps.require_dep_spanned::<MirSpecEnc>(
                 (def_id, def_id, MirSpecEncMode::Impure),
                 span,
@@ -224,24 +227,12 @@ impl TaskEncoder for MethodEnc {
                     EncodeFullError::EncodingError(MethodEncError::Reported, None)
                 })?;
 
-            // Add direct resources for inputs and outputs to the pre- and
-            // postconditions, respectively. "Direct" here refers to owned
-            // Viper resources that must be passed in/out given the signature,
-            // without going through any dereferences.
             let mut args = Vec::with_capacity(arg_count + params.count());
             for arg_idx in (0..arg_count).map(mir::Local::from) {
                 let name_p = arg_defs[arg_idx].local.name;
                 args.push(vir::vir_local_decl! { vcx; [name_p] : Ref });
-                if arg_idx != mir::RETURN_PLACE {
-                    pres.push(arg_defs[arg_idx].impure_pred);
-                }
             }
-            posts.push(arg_defs[mir::RETURN_PLACE].impure_pred);
-
-            // ..
-            pres.extend(wands.indirect_pres(vcx, &arg_defs, deps));
-            posts.extend(wands.indirect_posts(vcx, &arg_defs, deps));
-            posts.extend(wands.wand_posts(vcx, &arg_defs, deps));
+            let (mut pres, mut posts) = wands.signature_resources(vcx, &arg_defs, deps);
 
             // The method of a pure function `f` gets the postcondition
             //     ensures snap(result) == f_(old(snap(args)))

@@ -4,16 +4,19 @@ use crate::encoders::{
     ty::{
         RustTyDecomposition,
         generics::{GArgs, GArgsTyEnc, GParams, GenericParamsEnc},
-        indirect::{IndirectPredicatesEnc, projection_for_generalized_idx},
+        indirect::{IndirectPredicatesEnc, PrustiPcgCtxt, projection_for_generalized_idx},
     },
 };
 use pcg::borrow_pcg::{
     FunctionData, FunctionShape, FunctionShapeInput, FunctionShapeNode, FunctionShapeOutput,
-    MakeFunctionShapeError, region_projection::Generalized, state::BorrowsState,
+    GeneralizedLifetime, MakeFunctionShapeError,
+    region_projection::{ExtractRegionsCtxt, Generalized, LifetimeProjection, PcgRegion},
+    state::BorrowsState,
 };
 use prusti_interface::PrustiError;
 use prusti_rustc_interface::{
     data_structures::fx::{FxHashMap, FxHashSet},
+    index::IndexVec,
     middle::{mir, ty},
     span::def_id::DefId,
 };
@@ -96,10 +99,13 @@ impl<'vir, E: TaskEncoder> ImpureEncVisitor<'vir, '_, E> {
 
 type EncodedPledges<'vir> = Vec<EncodedPledge<'vir>>;
 
-/// Not tied to a caller or callee context. `indirect_pres`, `indirect_posts`,
-/// `wand_posts`, and `package_wands` are identity-substituted and intended for
-/// use in the callee's own contract; `call_wands` is for caller use and
-/// re-substitutes via a [`WandCallContext`].
+/// Not tied to a caller or callee context. `wand_posts` and `package_wands`
+/// are identity-substituted and intended for use in the callee's own
+/// contract; `call_wands` is for caller use and re-substitutes via a
+/// [`WandCallContext`]. `indirect_pres` and `indirect_posts` take a
+/// [`WandCallContext`]: without one they are identity-substituted for the
+/// function's own contract; with one they are instantiated at it, as
+/// `TraitImplEnc` does for the trait method at the implementing type.
 #[derive(Clone)]
 pub struct WandEncOutput<'vir> {
     /// Information about the corresponding function.
@@ -167,8 +173,38 @@ impl<'vir> WandEncOutput<'vir> {
     ) -> Option<Vec<vir::ExprGenBool<'vir, vir::ExprSnap<'vir>, vir::ExprKind<'vir>>>> {
         let arg_ty = g.ty(self.fn_sig(vcx, call_ctx));
         let decomp = RustTyDecomposition::from_ty(arg_ty, self.g_params(vcx, call_ctx));
-        let region_proj =
-            projection_for_generalized_idx(arg_ty, g.region_idx(), decomp, vcx.tcx())?;
+        let region_proj = match call_ctx {
+            None => projection_for_generalized_idx(arg_ty, g.region_idx(), decomp, vcx.tcx())?,
+            // `g.region_idx()` indexes the generalized lifetimes of the
+            // function's own signature, where all regions of a type parameter
+            // are one `GeneralizedLifetime::RegionsIn` entry; the instantiated
+            // type has as many entries as the argument has regions. So the
+            // region is looked up in the generic type and instantiated with the
+            // call's arguments. A `RegionsIn` entry gets no resources (see
+            // `IndirectPredicatesEnc`), even where the call instantiates the
+            // parameter with a type holding references.
+            Some(ctx) => {
+                let generic_ty = g.ty(self.fn_sig(vcx, None));
+                let generic_lifetimes: IndexVec<_, GeneralizedLifetime<'vir>> =
+                    vcx.tcx().extract_regions(generic_ty);
+                let GeneralizedLifetime::Region(region) = *generic_lifetimes.get(g.region_idx())?
+                else {
+                    return None;
+                };
+                let region = match region {
+                    PcgRegion::ReEarlyParam(param) => {
+                        ctx.args()[param.index as usize].expect_region().into()
+                    }
+                    region => region,
+                };
+                LifetimeProjection::new(
+                    decomp,
+                    GeneralizedLifetime::Region(region),
+                    None,
+                    PrustiPcgCtxt,
+                )?
+            }
+        };
         let predicates = deps
             .require_dep::<IndirectPredicatesEnc>(region_proj)
             .unwrap()
@@ -204,10 +240,11 @@ impl<'vir> WandEncOutput<'vir> {
         &'a self,
         vcx: &'vir vir::VirCtxt<'vir>,
         local_defs: &'a MirLocalDefEncOutput<'vir>,
+        call_ctx: WandCallContext<'vir>,
         deps: &'a mut TaskEncoderDependencies<'vir, E>,
     ) -> impl Iterator<Item = vir::ExprBool<'vir>> + 'a {
-        self.inputs().filter_map(|g| {
-            self.encode_predicates_for_function_shape_node(vcx, deps, g, None, |i| {
+        self.inputs().filter_map(move |g| {
+            self.encode_predicates_for_function_shape_node(vcx, deps, g, call_ctx, |i| {
                 local_defs[i].impure_snap
             })
         })
@@ -217,6 +254,7 @@ impl<'vir> WandEncOutput<'vir> {
         &'a self,
         vcx: &'vir vir::VirCtxt<'vir>,
         local_defs: &'a MirLocalDefEncOutput<'vir>,
+        call_ctx: WandCallContext<'vir>,
         deps: &'a mut TaskEncoderDependencies<'vir, E>,
     ) -> impl Iterator<Item = vir::ExprBool<'vir>> + 'a {
         // The encoded predicates for the input lifetime projections that are
@@ -228,15 +266,15 @@ impl<'vir> WandEncOutput<'vir> {
             .inputs()
             .filter(|i| !self.blocked_inputs().contains(i))
             .filter_map(|lp| {
-                self.encode_predicates_for_function_shape_node(vcx, deps, lp, None, |i| {
+                self.encode_predicates_for_function_shape_node(vcx, deps, lp, call_ctx, |i| {
                     vcx.mk_old_expr(local_defs[i].impure_snap)
                 })
             })
             .collect::<Vec<_>>()
             .into_iter();
 
-        let output_posts = self.outputs().filter_map(|g| {
-            self.encode_predicates_for_function_shape_node(vcx, deps, g, None, |i| {
+        let output_posts = self.outputs().filter_map(move |g| {
+            self.encode_predicates_for_function_shape_node(vcx, deps, g, call_ctx, |i| {
                 local_defs[i].impure_snap
             })
         });
@@ -266,6 +304,27 @@ impl<'vir> WandEncOutput<'vir> {
                 vcx.mk_wand_expr(wand),
             ))
         })
+    }
+
+    /// The resources that a method with the function's signature takes and
+    /// gives back: the predicates of its arguments and of its result, what is
+    /// reachable through the mutable references among them, and the wands
+    /// that give back what the result borrows from the arguments.
+    pub fn signature_resources<E: TaskEncoder>(
+        &self,
+        vcx: &'vir vir::VirCtxt<'vir>,
+        local_defs: &MirLocalDefEncOutput<'vir>,
+        deps: &mut TaskEncoderDependencies<'vir, E>,
+    ) -> (Vec<vir::ExprBool<'vir>>, Vec<vir::ExprBool<'vir>>) {
+        let mut pres = local_defs
+            .args()
+            .map(|arg| arg.impure_pred)
+            .collect::<Vec<_>>();
+        let mut posts = vec![local_defs[mir::RETURN_PLACE].impure_pred];
+        pres.extend(self.indirect_pres(vcx, local_defs, None, deps));
+        posts.extend(self.indirect_posts(vcx, local_defs, None, deps));
+        posts.extend(self.wand_posts(vcx, local_defs, deps));
+        (pres, posts)
     }
 
     pub fn call_wands<E: TaskEncoder>(
