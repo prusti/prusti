@@ -1816,9 +1816,8 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             gargs: GParams::from(self.def_id).identity_args(),
             kind: PureKind::SpecBlock(spec_block),
         })?;
-        use vir::Reify;
         let mut locals: FxHashMap<mir::Local, vir::ExprSnap<'vir>> = FxHashMap::default();
-        for local in enc_output.inputs {
+        for &local in &enc_output.inputs {
             let place: Place = local.into();
             let place_ty = RustTyDecomposition::from_ty(place.ty(self.pcg_ctxt()).ty, self.def_id);
             // The places the local is unpacked to; computed once per local.
@@ -1842,13 +1841,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             )?;
             locals.insert(local, snap);
         }
-        let expr = enc_output
-            .expr
-            .reify(
-                self.vcx,
-                (self.def_id, self.vcx.alloc(locals), vir::OldLabel::None),
-            )
-            .downcast_ty();
+        let expr = enc_output.reify(self.vcx.alloc(locals)).downcast_ty();
         Ok(expr)
     }
 

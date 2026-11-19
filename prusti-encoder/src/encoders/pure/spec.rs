@@ -11,11 +11,11 @@ use prusti_rustc_interface::{
 
 use rustc_hash::FxHashMap;
 use task_encoder::{EncodeFullError, EncodeFullResult, TaskEncoder, TaskEncoderDependencies};
-use vir::{CastType, HasType, Reify};
+use vir::{CastType, HasType};
 
 use crate::encoders::{
     MirLocalDefEncTask, MirPureEnc,
-    mir_pure::{ExprInput, MirPureEncOutput, PureKind},
+    mir_pure::{MirPureEncOutput, PureKind},
     ty::generics::{GArgs, GParams, identity_params},
 };
 pub struct MirSpecEnc;
@@ -25,8 +25,7 @@ pub struct MirSpecEnc;
 /// corresponding side of the wand for the encoded pledge.
 #[derive(Debug, Clone, Copy)]
 pub struct PledgeExpr<'vir> {
-    did: DefId,
-    expr: vir::ExprGenBool<'vir, ExprInput<'vir>, vir::ExprKind<'vir>>,
+    expr: &'vir MirPureEncOutput<'vir>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -45,11 +44,8 @@ impl<'vir> std::ops::Index<mir::Local> for PledgeArgs<'vir> {
 }
 
 impl<'vir> PledgeExpr<'vir> {
-    pub fn new(
-        did: DefId,
-        expr: vir::ExprGenBool<'vir, ExprInput<'vir>, vir::ExprKind<'vir>>,
-    ) -> Self {
-        Self { did, expr }
+    pub fn new(expr: &'vir MirPureEncOutput<'vir>) -> Self {
+        Self { expr }
     }
 
     pub fn pledge_args<T: Borrow<vir::ExprSnap<'vir>>>(
@@ -67,21 +63,17 @@ impl<'vir> PledgeExpr<'vir> {
     }
 
     pub fn expr(&self, args: PledgeArgs<'vir>) -> vir::ExprBool<'vir> {
-        vir::with_vcx(|vcx| {
-            self.expr
-                .reify(vcx, (self.did, args.0, vir::OldLabel::None))
-        })
+        self.expr.reify(args.0).downcast_ty()
     }
 
     pub fn expr_at_label(&self, args: PledgeArgs<'vir>, label: &'vir str) -> vir::ExprBool<'vir> {
-        vir::with_vcx(|vcx| {
-            self.expr
-                .reify(vcx, (self.did, args.0, vir::OldLabel::Label(label)))
-        })
+        self.expr
+            .reify_at(args.0, vir::OldLabel::Label(label))
+            .downcast_ty()
     }
 
     pub fn span(&self) -> Span {
-        vir::with_vcx(|vcx| vcx.tcx().def_span(self.did))
+        vir::with_vcx(|vcx| vcx.tcx().def_span(self.expr.def_id))
     }
 }
 
@@ -283,14 +275,11 @@ impl TaskEncoder for MirSpecEnc {
                 .iter()
                 .map(|spec_def_id| {
                     let spec = Self::encode_pure(vcx, deps, pre_ctx, *spec_def_id, "precondition")?;
-                    let expr = spec.expr.downcast_ty::<vir::Bool>();
                     let span = vcx.tcx().def_span(*spec_def_id);
                     // Reify *inside* the span scope: the nodes created by the
                     // reification pick up the ambient span, which makes error
                     // positions inside this precondition point at the spec.
-                    let expr = vcx.with_span(span, |vcx| {
-                        expr.reify(vcx, (*spec_def_id, pre_args, vir::OldLabel::None))
-                    });
+                    let expr = vcx.with_span(span, |_| spec.reify(pre_args).downcast_ty());
                     Some((expr, span))
                 })
                 .collect();
@@ -322,8 +311,7 @@ impl TaskEncoder for MirSpecEnc {
                                 span.into(),
                             )])
                         });
-                        let expr = spec.expr.downcast_ty::<vir::Bool>();
-                        let expr = expr.reify(vcx, (*spec_def_id, post_args, vir::OldLabel::None));
+                        let expr = spec.reify(post_args).downcast_ty();
                         let expr = expr.realloc_span();
                         Some((expr, span))
                     })
@@ -347,25 +335,13 @@ impl TaskEncoder for MirSpecEnc {
                                     lhs_def_id,
                                     "pledge lhs",
                                 )?;
-                                let lhs = spec.expr.downcast_ty::<vir::Bool>();
-                                Some(PledgeExpr::new(lhs_def_id, lhs))
+                                Some(PledgeExpr::new(vcx.alloc(spec)))
                             }
                             None => None,
                         };
                         let spec =
                             Self::encode_pure(vcx, deps, pledge_ctx, *rhs_def_id, "pledge rhs")?;
-                        let rhs = spec.expr.downcast_ty::<vir::Bool>();
-                        let rhs_span = vcx.tcx().def_span(*rhs_def_id);
-                        let rhs_expr = vcx.with_span(rhs_span, move |vcx| {
-                            vcx.handle_error("exhale.failed:assertion.false", move |_| {
-                                Some(vec![PrustiError::verification(
-                                    "pledge in the postcondition might not hold.",
-                                    rhs_span.into(),
-                                )])
-                            });
-                            rhs
-                        });
-                        let rhs_expr = PledgeExpr::new(*rhs_def_id, rhs_expr);
+                        let rhs_expr = PledgeExpr::new(vcx.alloc(spec));
                         Some(EncodedPledge {
                             expiry_obligation: lhs_expr,
                             expiry_postcondition: rhs_expr,

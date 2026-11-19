@@ -36,11 +36,9 @@ pub enum MirPureEncError {
     // UnsupportedTerminator,
 }
 
-pub type ExprInput<'vir> = (
-    DefId,
-    &'vir FxHashMap<mir::Local, vir::ExprSnap<'vir>>,
-    vir::OldLabel<'vir>,
-);
+/// The values of an encoded body's inputs.
+pub type Inputs<'vir> = &'vir FxHashMap<mir::Local, vir::ExprSnap<'vir>>;
+type ExprInput<'vir> = (DefId, Inputs<'vir>, vir::OldLabel<'vir>);
 type ExprRet<'vir> = vir::ExprGenSnap<'vir, ExprInput<'vir>, vir::ExprKind<'vir>>;
 type ExprRetRef<'vir> = vir::ExprGenRef<'vir, ExprInput<'vir>, vir::ExprKind<'vir>>;
 type ExprRetAny<'vir, T> = vir::ExprGen<'vir, ExprInput<'vir>, vir::ExprKind<'vir>, T>;
@@ -54,7 +52,23 @@ type SpecClosure<'vir> = (
 #[derive(Clone, Debug)]
 pub struct MirPureEncOutput<'vir> {
     pub inputs: Vec<mir::Local>,
-    pub expr: ExprRet<'vir>,
+    /// The body `expr` encodes.
+    pub def_id: DefId,
+    expr: ExprRet<'vir>,
+}
+
+impl<'vir> MirPureEncOutput<'vir> {
+    /// The encoded body for the given values of its inputs, with `old`
+    /// referring to the pre-state of the method.
+    pub fn reify(&self, inputs: Inputs<'vir>) -> vir::ExprSnap<'vir> {
+        self.reify_at(inputs, vir::OldLabel::None)
+    }
+
+    /// Like `reify`, with `old(..)` in the body referring to the state `old`.
+    pub fn reify_at(&self, inputs: Inputs<'vir>, old: vir::OldLabel<'vir>) -> vir::ExprSnap<'vir> {
+        use vir::Reify;
+        vir::with_vcx(|vcx| self.expr.reify(vcx, (self.def_id, inputs, old)))
+    }
 }
 
 bitflags::bitflags! {
@@ -234,7 +248,12 @@ impl TaskEncoder for MirPureEnc {
         })?;
         tracing::debug!("finished {def_id:?}");
 
-        Ok(((), MirPureEncOutput { inputs, expr }))
+        let output = MirPureEncOutput {
+            inputs,
+            def_id,
+            expr,
+        };
+        Ok(((), output))
     }
 }
 
