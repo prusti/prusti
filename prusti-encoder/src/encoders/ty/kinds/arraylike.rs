@@ -1,7 +1,7 @@
 use crate::encoders::{
     TyUseImpureEnc,
     ty::{
-        RustTyDatas,
+        RustTyDatas, RustTyDecomposition,
         data::{ArrayData, TyData},
         impure::{ImpureTyDatas, PredicateBuilder, TyImpureArrayData, TyImpureEnc},
         kinds::opaque::set_opaque,
@@ -13,28 +13,37 @@ use vir::{CastType, HasType};
 
 pub(crate) fn ty_pure<'vir>(
     data: &ArrayData<'vir, RustTyDatas>,
-    _deps: &mut TaskEncoderDependencies<'vir, TyPureEnc>,
+    deps: &mut TaskEncoderDependencies<'vir, TyPureEnc>,
     builder: &mut DomainBuilder<'vir>,
 ) -> Result<ArrayData<'vir, PureTyDatas>, EncodeFullError<'vir, TyPureEnc>> {
-    let index_access = builder.function(
-        "index",
-        (builder.self_type(), vir::TYPE_INT),
-        vir::TYPE_PSNAP,
-    );
-    let args = (vir::TYPE_REF, vir::TYPE_INT, builder.params.ty_args());
+    // Elements are indexed by `s_UInt_usize` snapshots rather than their `Int`
+    // values, so that a trigger `index(a, i)` on a quantified index matches
+    // the reads at constant indices, `index(a, s_UInt_usize_cons(2))`, as well.
+    let usize_ty = builder.vcx.tcx().types.usize;
+    let usize_enc =
+        deps.require_dep::<TyPureEnc>(RustTyDecomposition::from_prim_ty(usize_ty).ty)?;
+    let usize_snap = usize_enc.snapshot.downcast_ty();
+    let index_access =
+        builder.function("index", (builder.self_type(), usize_snap), vir::TYPE_PSNAP);
+    let args = (vir::TYPE_REF, usize_snap, builder.params.ty_args());
     let ref_to_index_ref = builder.function("index_ref", args, vir::TYPE_REF);
 
     // The array-like with the elements of a sequence, for array values built
     // in pure code. Indices outside the sequence are unspecified.
     let seq_ty = builder.vcx.mk_ty_seq(vir::TYPE_PSNAP);
     let from_seq = builder.function("from_seq", seq_ty, builder.self_type());
-    let zero = builder.vcx.mk_uint::<0>();
+    let i_decl = builder.vcx.mk_local_decl("i", usize_snap);
+    let i = builder.vcx.mk_local_ex(i_decl);
+    let i_value = usize_enc
+        .expect_primitive()
+        .snap_to_prim(i)
+        .downcast_ty::<vir::Int>();
     builder.axiom(
         "from_seq",
         vir::expr! {
-            forall s: [seq_ty], i: Int :: {[index_access](([from_seq](s)), i)}
-                ((([zero]) <= (i)) && ((i) < (|s|)))
-                    ==> (([index_access](([from_seq](s)), i)) == (((s)[i]) as PSnap))
+            forall s: [seq_ty], [i_decl] :: {[index_access](([from_seq](s)), i)}
+                ((i_value) < (|s|))
+                    ==> (([index_access](([from_seq](s)), i)) == (((s)[i_value]) as PSnap))
         },
     );
     Ok(ArrayData::new(
@@ -56,11 +65,16 @@ pub(crate) fn ty_impure<'vir>(
     set_opaque(builder);
     let ref_self_decl = builder.ref_self_decl();
     let ref_self = builder.vcx.mk_local_ex(ref_self_decl);
-    let index_decl = builder.vcx.mk_local_decl("index", vir::TYPE_INT);
+    let usize_ty = builder.vcx.tcx().types.usize;
+    let usize_snap = deps
+        .require_ref::<TyPureEnc>(RustTyDecomposition::from_prim_ty(usize_ty).ty)?
+        .snapshot
+        .downcast_ty();
+    let index_decl = builder.vcx.mk_local_decl("index", usize_snap);
     let index = builder.vcx.mk_local_ex(index_decl);
     let index_predicate = builder
         .inner
-        .predicate::<(vir::Ref, vir::Int, vir::ManyTyVal, vir::ManyCSnap)>(
+        .predicate::<(vir::Ref, vir::CSnap, vir::ManyTyVal, vir::ManyCSnap)>(
             "index",
             (
                 ref_self_decl.ty(),
@@ -110,10 +124,10 @@ pub(crate) fn ty_impure<'vir>(
     let array_index = data.1.index_access.call()(array_snap, index);
     let method_fold = builder
         .inner
-        .method::<(vir::Int, vir::Ref, vir::ManyTyVal, vir::ManyCSnap)>(
+        .method::<(vir::CSnap, vir::Ref, vir::ManyTyVal, vir::ManyCSnap)>(
             "fold_index",
             (
-                vir::TYPE_INT,
+                usize_snap,
                 ref_self_decl.ty(),
                 builder.params.ty_args(),
                 builder.params.const_args(),
@@ -132,7 +146,7 @@ pub(crate) fn ty_impure<'vir>(
             &[
                 vir::expr! { [builder.ref_to_pred](ref_self, [..[builder.params.ty_exprs()]], [..[builder.params.const_exprs()]]) },
                 vir::expr! {
-                    forall idx: Int :: {[data.1.index_access](array_snap, idx)}
+                    forall idx: [usize_snap] :: {[data.1.index_access](array_snap, idx)}
                         ([data.1.index_access](array_snap, idx)) == (
                             ((idx) == (index))
                             ? ([builder.vcx.mk_old_expr(element_ty_out.ref_to_snap(index_ref).downcast_ty())])
@@ -143,10 +157,10 @@ pub(crate) fn ty_impure<'vir>(
         );
     let method_unfold = builder
         .inner
-        .method::<(vir::Int, vir::Ref, vir::ManyTyVal, vir::ManyCSnap)>(
+        .method::<(vir::CSnap, vir::Ref, vir::ManyTyVal, vir::ManyCSnap)>(
             "unfold_index",
             (
-                vir::TYPE_INT,
+                usize_snap,
                 ref_self_decl.ty(),
                 builder.params.ty_args(),
                 builder.params.const_args(),
@@ -177,10 +191,10 @@ pub(crate) fn ty_impure<'vir>(
 
     let method_uninit_fold_index = builder
         .inner
-        .method::<(vir::Int, vir::Ref, vir::ManyTyVal, vir::ManyCSnap)>(
+        .method::<(vir::CSnap, vir::Ref, vir::ManyTyVal, vir::ManyCSnap)>(
             "$uninit_fold_index",
             (
-                vir::TYPE_INT,
+                index_decl.ty(),
                 ref_self_decl.ty(),
                 builder.params.ty_args(),
                 builder.params.const_args(),

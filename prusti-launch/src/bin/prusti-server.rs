@@ -13,7 +13,7 @@ fn main() {
 }
 
 fn process(args: Vec<String>) -> Result<(), i32> {
-    let _setup = launch::job::setup().unwrap(); // Kill all subprocesses on kill or Ctrl-C
+    let _setup = launch::job::setup().unwrap(); // Terminate all subprocesses on kill or Ctrl-C
 
     let paths = launch::PrustiPaths::new();
 
@@ -23,7 +23,7 @@ fn process(args: Vec<String>) -> Result<(), i32> {
     // Prevent shadowing of default log behavior.
     cmd.env("DEFAULT_PRUSTI_LOG", "info");
 
-    let exit_status = cmd.status().expect("could not run prusti-server-driver");
+    let exit_status = launch::job::status(&mut cmd).expect("could not run prusti-server-driver");
 
     if exit_status.success() {
         Ok(())

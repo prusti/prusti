@@ -522,7 +522,7 @@ impl<'vir> TyUsePureArray<'vir> {
     pub fn index<Curr, Next>(
         &self,
         snap: vir::ExprGenCSnap<'vir, Curr, Next>,
-        index: vir::ExprGenInt<'vir, Curr, Next>,
+        index: vir::ExprGenCSnap<'vir, Curr, Next>,
     ) -> vir::ExprGenSnap<'vir, Curr, Next> {
         let res = self.pure.index_access.call()(snap, index);
         self.caster.cast_to_caller_ctx(res.upcast_ty())
@@ -535,7 +535,7 @@ impl<'vir> TyUsePureArray<'vir> {
     pub fn index_generic<Curr, Next>(
         &self,
         snap: vir::ExprGenCSnap<'vir, Curr, Next>,
-        index: vir::ExprGenInt<'vir, Curr, Next>,
+        index: vir::ExprGenCSnap<'vir, Curr, Next>,
     ) -> vir::ExprGenSnap<'vir, Curr, Next> {
         self.pure.index_access.call()(snap, index).upcast_ty()
     }
@@ -572,7 +572,7 @@ impl<'vir> TyUsePureArray<'vir> {
     pub fn ref_to_index_ref<Curr, Next>(
         &self,
         self_ref: vir::ExprGenRef<'vir, Curr, Next>,
-        index: vir::ExprGenInt<'vir, Curr, Next>,
+        index: vir::ExprGenCSnap<'vir, Curr, Next>,
     ) -> vir::ExprGenRef<'vir, Curr, Next> {
         self.data.pure.ref_to_index_ref.call()(self_ref, index, self.args.get_ty())
     }

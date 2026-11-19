@@ -22,9 +22,10 @@ flags; this file collects working norms and pitfalls.
   `./x.py clippy -- --no-deps -D warnings`; format with `./x.py fmt-all`.
 - Prusti panics on an unknown, non-empty `PRUSTI_*` environment variable, so give ad-hoc
   debugging variables a different prefix.
-- `prusti-rustc` runs `prusti-driver` as a child process. Ctrl-C stops both, but a
-  `timeout` or `kill` aimed at `prusti-rustc` leaves the driver and its Z3 processes
-  running.
+- `prusti-rustc` runs `prusti-driver` as a child process. Ctrl-C, `timeout` and `kill`
+  aimed at a launcher (`prusti-rustc`, `cargo-prusti`, `prusti-server`) stop everything
+  that launcher started, but `kill -9` (SIGKILL) sent to the launcher's pid alone cannot
+  be passed on, so it leaves the driver and its Z3 processes running.
 
 ## Tests
 

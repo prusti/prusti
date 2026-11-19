@@ -28,9 +28,31 @@
 //!
 //! # Job management on Unix:
 //!
-//! We register a SIGINT handler that kills the process group.
+//! A launcher and everything it starts stay in the caller's process group, so
+//! signals that the terminal, a shell or `timeout` send to that group reach
+//! all of them, and the terminal treats them as one job. A SIGINT, SIGTERM or
+//! SIGHUP sent to the launcher alone is passed on to every process still among
+//! its descendants, found in the process table, so `kill` stops the whole
+//! tree but no other member of the group, such as the other commands of a
+//! pipeline. The launcher passes on the signal it received itself, so that
+//! launchers among its descendants pass it on in turn and the drivers' JVMs
+//! shut down cleanly.
+//! The launcher then terminates with that signal, once the child it runs with
+//! `status` has exited, or at once if there is no such child (e.g. during the
+//! `java` and `rustup` queries that precede it). If one of these signals or
+//! SIGQUIT terminated the child, the launcher terminates with it too. While
+//! that child runs, the launcher ignores SIGQUIT, which Ctrl-\ sends to the
+//! child too: the driver's JVM then prints a thread dump and continues.
+//! A signal that is ignored when the launcher starts (e.g. SIGHUP under
+//! `nohup`) stays ignored. SIGKILL cannot be handled, so sent to the launcher
+//! alone, it leaves the processes the launcher started running.
 
 #![allow(clippy::missing_safety_doc)]
+
+use std::{
+    io,
+    process::{Command, ExitStatus},
+};
 
 pub use self::imp::Setup;
 
@@ -38,33 +60,214 @@ pub fn setup() -> Option<Setup> {
     unsafe { imp::setup() }
 }
 
+/// Runs `cmd` like `Command::status`. On Unix, a SIGINT, SIGTERM or SIGHUP
+/// that arrives while the child runs terminates the launcher only after the
+/// child has exited, and so does one of these signals or SIGQUIT that
+/// terminated the child. Only one call may run at a time.
+pub fn status(cmd: &mut Command) -> io::Result<ExitStatus> {
+    imp::status(cmd)
+}
+
 #[cfg(unix)]
 mod imp {
-    use nix::{
-        sys::signal::{killpg, Signal},
-        unistd::{getpgrp, setpgid, Pid},
+    use std::{
+        io, mem,
+        os::unix::process::ExitStatusExt,
+        process::{self, Command, ExitStatus},
+        ptr,
+        sync::{Mutex, MutexGuard, PoisonError},
+        thread,
     };
+
+    use nix::libc;
+    use rustc_hash::{FxHashMap, FxHashSet};
+    use signal_hook::iterator::Signals;
 
     pub type Setup = bool;
 
-    fn sigint_handler() {
-        // Killing the process group terminates the process tree
-        killpg(getpgrp(), Signal::SIGKILL).expect("Error killing process tree.");
+    struct State {
+        /// The SIGINT, SIGTERM or SIGHUP received while `status` waits.
+        received: Option<libc::c_int>,
+        /// The child that `status` waits for. While there is one, `status`,
+        /// not the signal thread, terminates the launcher.
+        child: Option<libc::pid_t>,
     }
 
+    /// The signal thread holds the lock while handling a signal, and `status`
+    /// while spawning, so a signal either reaches the new child or terminates
+    /// the launcher before it is spawned.
+    static STATE: Mutex<State> = Mutex::new(State {
+        received: None,
+        child: None,
+    });
+
+    fn state() -> MutexGuard<'static, State> {
+        STATE.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Terminates the launcher by the default action of `signal`, so that its
+    /// caller sees which signal ended it.
+    fn terminate(signal: libc::c_int) -> ! {
+        unsafe { libc::signal(signal, libc::SIG_DFL) };
+        let _ = signal_hook::low_level::raise(signal);
+        // The default action does not terminate e.g. the init process of a pid namespace.
+        process::exit(128 + signal)
+    }
+
+    fn is_ignored(signal: libc::c_int) -> bool {
+        let mut action: libc::sigaction = unsafe { mem::zeroed() };
+        // With a null new action, `sigaction` only reads the current one.
+        let read = unsafe { libc::sigaction(signal, ptr::null(), &mut action) };
+        read == 0 && action.sa_sigaction == libc::SIG_IGN
+    }
+
+    /// The signals that the launcher handles, unless they are ignored at start.
+    const HANDLED: [libc::c_int; 4] = [libc::SIGINT, libc::SIGTERM, libc::SIGHUP, libc::SIGQUIT];
+
     pub(super) unsafe fn setup() -> Option<Setup> {
-        // Move process to group leader if it isn't. The only applicable error should be EPERM which
-        // can be thrown when the process is already the group leader. Thus, we ignore it.
-        let _ = setpgid(Pid::this(), Pid::this());
-        // Register the SIGINT handler
-        ctrlc::set_handler(sigint_handler).expect("Error setting Ctrl-C handler");
+        let signals = HANDLED.into_iter().filter(|&signal| !is_ignored(signal));
+        // signal-hook's handler only wakes the thread spawned below, so that thread may allocate
+        // and read the process table.
+        let mut signals = Signals::new(signals).expect("Error setting signal handlers");
+        thread::spawn(move || {
+            for signal in signals.forever() {
+                let mut state = state();
+                if signal == libc::SIGQUIT {
+                    // Ctrl-\ also reaches the child, whose JVM prints a thread dump and
+                    // continues, so the launcher keeps waiting for it.
+                    if state.child.is_none() {
+                        terminate(signal);
+                    }
+                    continue;
+                }
+                signal_descendants(signal, state.child);
+                if state.child.is_none() {
+                    terminate(signal);
+                }
+                state.received = Some(signal);
+            }
+        });
         Some(false)
+    }
+
+    pub(super) fn status(cmd: &mut Command) -> io::Result<ExitStatus> {
+        let mut child = {
+            let mut state = state();
+            let child = cmd.spawn()?;
+            state.child = Some(child.id() as libc::pid_t);
+            child
+        };
+        let status = child.wait();
+        let mut state = state();
+        state.child = None;
+        // A signal sent to the whole group, such as Ctrl-C, can terminate the child before the
+        // signal thread has handled it, so a child terminated by a handled signal counts too. A
+        // child that catches the signal and exits with a status instead, like the JVM, is not
+        // recognised this way, but it normally exits only after the signal thread has recorded
+        // the signal.
+        let child_signal = status.as_ref().ok().and_then(|status| status.signal());
+        if let Some(signal) = state
+            .received
+            .or(child_signal.filter(|signal| HANDLED.contains(signal)))
+        {
+            terminate(signal);
+        }
+        status
+    }
+
+    /// Sends `signal` to `child`, if any, and every other descendant of this
+    /// process, parents first. The descendants are looked up before any of them
+    /// is signalled, since the children of a process that terminates are
+    /// reparented and so leave the tree. `child` is signalled even if the
+    /// process table cannot be read. A second lookup catches processes that the
+    /// recipients started meanwhile.
+    fn signal_descendants(signal: libc::c_int, child: Option<libc::pid_t>) {
+        let root = process::id() as libc::pid_t;
+        let descendants_before = descendants(root);
+        let mut signalled = FxHashSet::default();
+        let mut send = |pid| {
+            if signalled.insert(pid) {
+                unsafe { libc::kill(pid, signal) };
+            }
+        };
+        child.into_iter().for_each(&mut send);
+        descendants_before.into_iter().for_each(&mut send);
+        descendants(root).into_iter().for_each(&mut send);
+    }
+
+    /// The descendants of `root` in the process table, in breadth-first order.
+    fn descendants(root: libc::pid_t) -> Vec<libc::pid_t> {
+        let mut children: FxHashMap<libc::pid_t, Vec<libc::pid_t>> = FxHashMap::default();
+        for (pid, parent) in process_table() {
+            children.entry(parent).or_default().push(pid);
+        }
+        let mut result = children.remove(&root).unwrap_or_default();
+        let mut next = 0;
+        while let Some(&pid) = result.get(next) {
+            result.extend(children.remove(&pid).unwrap_or_default());
+            next += 1;
+        }
+        result
+    }
+
+    /// The (pid, parent pid) of every process that can be inspected.
+    #[cfg(target_os = "linux")]
+    fn process_table() -> Vec<(libc::pid_t, libc::pid_t)> {
+        let Ok(entries) = std::fs::read_dir("/proc") else {
+            return Vec::new();
+        };
+        entries
+            .filter_map(|entry| {
+                let entry = entry.ok()?;
+                let pid = entry.file_name().to_str()?.parse().ok()?;
+                // The parent pid is the second field after the parenthesised command name,
+                // which may itself contain spaces and parentheses.
+                let stat = std::fs::read_to_string(entry.path().join("stat")).ok()?;
+                let parent = stat.rsplit_once(')')?.1.split_whitespace().nth(1)?;
+                Some((pid, parent.parse().ok()?))
+            })
+            .collect()
+    }
+
+    /// The (pid, parent pid) of every process that can be inspected.
+    #[cfg(target_vendor = "apple")]
+    fn process_table() -> Vec<(libc::pid_t, libc::pid_t)> {
+        // Called without a buffer, `proc_listallpids` returns the number of processes. With a
+        // buffer, it returns the number of pids it stored, which equals the buffer's capacity if
+        // the buffer was too small.
+        let mut capacity = unsafe { libc::proc_listallpids(ptr::null_mut(), 0) }.max(0) as usize;
+        let mut pids: Vec<libc::pid_t> = Vec::new();
+        loop {
+            capacity += 64;
+            pids.resize(capacity, 0);
+            let size = (capacity * mem::size_of::<libc::pid_t>()) as libc::c_int;
+            let count = unsafe { libc::proc_listallpids(pids.as_mut_ptr().cast(), size) };
+            let count = count.max(0) as usize;
+            if count < capacity {
+                pids.truncate(count);
+                break;
+            }
+        }
+        pids.into_iter()
+            .filter_map(|pid| {
+                let mut info: libc::proc_bsdinfo = unsafe { mem::zeroed() };
+                let size = mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+                let pointer = (&mut info as *mut libc::proc_bsdinfo).cast();
+                let filled =
+                    unsafe { libc::proc_pidinfo(pid, libc::PROC_PIDTBSDINFO, 0, pointer, size) };
+                (filled == size).then_some((pid, info.pbi_ppid as libc::pid_t))
+            })
+            .collect()
     }
 }
 
 #[cfg(windows)]
 mod imp {
-    use std::{io, mem, ptr};
+    use std::{
+        io, mem,
+        process::{Command, ExitStatus},
+        ptr,
+    };
 
     use winapi::{
         shared::minwindef::*,
@@ -130,6 +333,11 @@ mod imp {
         }
 
         Some(Setup { job })
+    }
+
+    /// The child is in our job object, together with everything it starts.
+    pub(super) fn status(cmd: &mut Command) -> io::Result<ExitStatus> {
+        cmd.status()
     }
 
     impl Drop for Setup {

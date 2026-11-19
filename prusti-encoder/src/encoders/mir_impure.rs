@@ -596,7 +596,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
 
     /// The index argument for folding or unfolding an array-typed place,
     /// if the expansion is guided by an indexing projection.
-    fn expansion_index(&mut self, guide: RepackGuide) -> Option<vir::ExprInt<'vir>> {
+    fn expansion_index(&mut self, guide: RepackGuide) -> Option<vir::ExprCSnap<'vir>> {
         match guide {
             RepackGuide::Index(index_local, _) => {
                 let mut index = self
@@ -605,13 +605,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 if let Some(label) = index_local.label() {
                     index = self.vcx.mk_old(index, self.get_location_label(label));
                 }
-                let usize_ty_out = self.ty_use_pure(self.vcx.tcx().types.usize);
-                Some(
-                    usize_ty_out
-                        .expect_primitive()
-                        .snap_to_prim(index.downcast_ty())
-                        .downcast_ty(),
-                )
+                Some(index.downcast_ty())
             }
             RepackGuide::ConstantIndex(constant_index, _) => {
                 // `from_end` indexes from the runtime length of a slice; it
@@ -624,11 +618,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 else {
                     todo!("from-end `ConstantIndex` (into a slice)")
                 };
-                Some(
-                    self.vcx
-                        .mk_const_expr(vir::ConstData::Int(offset as u128))
-                        .downcast_ty(),
-                )
+                Some(self.usize_const_snap(offset))
             }
             _ => None,
         }
@@ -1890,12 +1880,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                     .index_labels
                     .get(&(place, idx_local))
                     .map(|&at| self.get_location_label(at));
-                let idx = self.vcx.maybe_apply_label(idx, label);
-                let usize_ty = self.ty_use_pure(self.vcx.tcx().types.usize);
-                let idx = usize_ty
-                    .expect_primitive()
-                    .snap_to_prim(idx.downcast_ty())
-                    .downcast_ty();
+                let idx = self.vcx.maybe_apply_label(idx, label).downcast_ty();
                 PlaceExpr {
                     address: e_ty.ref_to_index_ref(expr.address, idx),
                     metadata: None,
@@ -1913,10 +1898,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 ..
             } => {
                 let e_ty = self.ty_use_impure(place_ty.ty).expect_array();
-                let idx = self
-                    .vcx
-                    .mk_const_expr(vir::ConstData::Int(offset as u128))
-                    .downcast_ty();
+                let idx = self.usize_const_snap(offset);
                 PlaceExpr {
                     address: e_ty.ref_to_index_ref(expr.address, idx),
                     metadata: None,
