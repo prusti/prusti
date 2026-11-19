@@ -1,4 +1,4 @@
-use std::cmp::Ordering;
+use std::{cell::Cell, cmp::Ordering};
 
 pub trait Compare: Eq + PartialOrd<Self> {
     fn compare(&self, other: &Self) -> Ordering;
@@ -18,4 +18,8 @@ impl Convert for Plain {
 
 pub trait Pair {
     fn pair(&self) -> (u8, Self);
+}
+
+pub trait Wrapped {
+    fn wrapped(x: Cell<Self>) -> bool;
 }
