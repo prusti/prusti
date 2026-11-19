@@ -1,3 +1,4 @@
+use super::panic;
 use crate::encoders::{
     EncodeResult, ImpureEncVisitor, MirLocalDefEncOutput, MirSpecEnc,
     pure::spec::{EncodedPledge, MirSpecEncMode, PledgeArgs, PledgeExpr},
@@ -35,18 +36,22 @@ impl<'vir, E: TaskEncoder> ImpureEncVisitor<'vir, '_, E> {
     ) -> EncodeResult<'vir, Vec<vir::Stmt<'vir>>, E> {
         let mut wand_packages = Vec::new();
         let label = self.new_label("package_post");
-        let result = self.local_defs[mir::RETURN_PLACE].impure_snap;
-        let result = self.vcx.mk_local_labelled_old_expr(result, label);
+        let result = self.vcx.mk_local_ex(panic::result_snap_decl(
+            self.vcx,
+            self.local_defs[mir::RETURN_PLACE].local_snap.ty(),
+        ));
         let args = self
             .local_defs
             .args()
             .map(|a| self.vcx.mk_old_expr(a.impure_snap));
         let args = PledgeExpr::pledge_args(result, args);
 
+        let panicked = self.vcx.mk_local_ex(panic::panicked_decl(self.vcx));
+        let returned = panic::returned(self.vcx, panicked);
         for wand_data in self.wands.viper_wands() {
             let Some(wand) = self
                 .wands
-                .mk_wand(&wand_data, args, None, None, self.vcx, self.deps)
+                .mk_wand(&wand_data, args, None, None, returned, self.vcx, self.deps)
             else {
                 continue;
             };
@@ -213,10 +218,13 @@ impl<'vir> WandEncOutput<'vir> {
         })
     }
 
+    /// The indirect resources of the postcondition; those of the result are
+    /// guarded by `returned`.
     pub fn indirect_posts<'a, E: TaskEncoder>(
         &'a self,
         vcx: &'vir vir::VirCtxt<'vir>,
         local_defs: &'a MirLocalDefEncOutput<'vir>,
+        returned: vir::ExprBool<'vir>,
         deps: &'a mut TaskEncoderDependencies<'vir, E>,
     ) -> impl Iterator<Item = vir::ExprBool<'vir>> + 'a {
         // The encoded predicates for the input lifetime projections that are
@@ -235,45 +243,45 @@ impl<'vir> WandEncOutput<'vir> {
             .collect::<Vec<_>>()
             .into_iter();
 
-        let output_posts = self.outputs().filter_map(|g| {
+        let output_posts = self.outputs().filter_map(move |g| {
             self.encode_predicates_for_function_shape_node(vcx, deps, g, None, |i| {
                 local_defs[i].impure_snap
             })
+            .map(|post| panic::if_returned(vcx, returned, post))
         });
         unblocked_input_posts.chain(output_posts)
     }
 
+    /// The wands of the postcondition; `result_snap` is the returned snapshot
+    /// of the result (see [`panic`]).
     pub fn wand_posts<'a, E: TaskEncoder>(
         &'a self,
         vcx: &'vir vir::VirCtxt<'vir>,
         local_defs: &'a MirLocalDefEncOutput<'vir>,
+        returned: vir::ExprBool<'vir>,
+        result_snap: vir::ExprSnap<'vir>,
         deps: &'a mut TaskEncoderDependencies<'vir, E>,
     ) -> impl Iterator<Item = vir::ExprBool<'vir>> + 'a {
-        let wand_result =
-            vcx.mk_local_decl("wand_result", local_defs[mir::RETURN_PLACE].local_snap.ty());
-        let wand_result_expr = vcx.mk_local_ex(wand_result);
         let args = local_defs
             .args()
             .map(|arg| vcx.mk_old_expr(arg.impure_snap));
-        let args = PledgeExpr::pledge_args(wand_result_expr, args);
+        let args = PledgeExpr::pledge_args(result_snap, args);
 
         // TODO: wands for late-bound regions
         self.viper_wands().into_iter().filter_map(move |wand_data| {
-            let wand = self.mk_wand(&wand_data, args, None, None, vcx, deps)?;
-            Some(vcx.mk_let_expr(
-                wand_result,
-                local_defs[mir::RETURN_PLACE].impure_snap,
-                vcx.mk_wand_expr(wand),
-            ))
+            let wand = self.mk_wand(&wand_data, args, None, None, returned, vcx, deps)?;
+            Some(vcx.mk_wand_expr(wand))
         })
     }
 
+    /// The wands of a call; `returned` is the condition that it returned.
     pub fn call_wands<E: TaskEncoder>(
         &self,
         arguments: &[vir::ExprSnap<'vir>],
         label_pre: &'vir str,
         label_post: &'vir str,
         call_ctx: GArgs<'vir>,
+        returned: vir::ExprBool<'vir>,
         visitor: &mut ImpureEncVisitor<'vir, '_, E>,
     ) -> Vec<vir::Wand<'vir>> {
         let result = visitor
@@ -292,6 +300,7 @@ impl<'vir> WandEncOutput<'vir> {
                 args,
                 Some(label_pre),
                 Some(call_ctx),
+                returned,
                 visitor.vcx,
                 visitor.deps,
             ) else {
@@ -302,12 +311,17 @@ impl<'vir> WandEncOutput<'vir> {
         wands
     }
 
+    /// The wand for `wand_data`. Its left-hand side, the resources of the
+    /// result, is guarded by `returned`: a call that unwinds has no result,
+    /// so the wand can then be applied right away.
+    #[allow(clippy::too_many_arguments)]
     fn mk_wand<E: TaskEncoder>(
         &self,
         wand_data: &WandData<'vir>,
         pledge_args: PledgeArgs<'vir>,
         pledge_old_label: Option<&'vir str>,
         call_ctx: WandCallContext<'vir>,
+        returned: vir::ExprBool<'vir>,
         vcx: &'vir vir::VirCtxt<'vir>,
         deps: &mut TaskEncoderDependencies<'vir, E>,
     ) -> Option<vir::Wand<'vir>> {
@@ -352,7 +366,7 @@ impl<'vir> WandEncOutput<'vir> {
                     .filter_map(|pledge| pledge.expiry_obligation.as_ref().map(pledge_expr)),
             )
             .collect::<Vec<_>>();
-        let lhs = vcx.mk_conj(&lhs);
+        let lhs = panic::if_returned(vcx, returned, vcx.mk_conj(&lhs));
         Some(vcx.mk_wand(lhs, rhs))
     }
 

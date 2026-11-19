@@ -376,17 +376,19 @@ pub struct PrustiBuiltinTask<'vir> {
     pub builtin: PrustiBuiltin,
     pub def_id: DefId,
     pub args: GArgs<'vir>,
-    /// Whether the call site is in pure code. The partial collection
-    /// operations (element indexing/update/lookup) encode to their *checked*
-    /// native form in impure code (where the well-definedness obligation is
-    /// a meaningful verification condition), and to the total wrappers of
-    /// [`CollectionOpsEnc`] in pure code (where the precondition-free `f_`
-    /// functions could never discharge it).
-    pub is_pure: bool,
-    /// The call-site span (`is_none()` iff `is_pure`). The returned expression
-    /// is partial iff `!is_pure`, therefore in this case we need to report
-    /// verification errors with this span (thus each impure call site is
-    /// encoded separately).
+    /// Whether the partial collection operations (element
+    /// indexing/update/lookup, slicing) are checked, i.e. encoded to their
+    /// native form, whose well-definedness is a verification condition. They
+    /// are checked in impure code unless only the core proof is verified,
+    /// which ignores specifications and ghost code. Otherwise they encode to
+    /// the total wrappers of [`CollectionOpsEnc`]; in pure code, the
+    /// precondition-free `f_` functions could never discharge the check.
+    pub checked: bool,
+    /// The call-site span in impure code (`None` in pure code), where
+    /// encoding errors are reported. The returned expression is partial iff
+    /// `checked`, therefore in this case we also need to report verification
+    /// errors with this span (thus each impure call site is encoded
+    /// separately).
     pub span: Option<Span>,
 }
 
@@ -450,7 +452,7 @@ impl TaskEncoder for PrustiBuiltinEnc {
         deps: &mut TaskEncoderDependencies<'vir, Self>,
     ) -> EncodeFullResult<'vir, Self> {
         deps.emit_output_ref(*task_key, ())?;
-        // The span of a checked operation is part of the key, so this
+        // The span of an impure call site is part of the key, so this
         // encoding belongs to (and is reachable from) that call statement.
         vir::with_vcx(|vcx| match task_key.span {
             Some(span) => vcx.with_span(span, |vcx| Self::encode(task_key, deps, vcx)),
@@ -464,8 +466,8 @@ impl TaskEncoder for PrustiBuiltinEnc {
 }
 
 impl PrustiBuiltinEnc {
-    /// Encodes the operation of `task_key`, with its span (if it is a
-    /// checked operation) on the span stack.
+    /// Encodes the operation of `task_key`, with its span (if it is an
+    /// impure call site) on the span stack.
     fn encode<'vir>(
         task_key: &PrustiBuiltinTask<'vir>,
         deps: &mut TaskEncoderDependencies<'vir, Self>,
@@ -475,10 +477,10 @@ impl PrustiBuiltinEnc {
             builtin,
             def_id,
             args,
-            is_pure,
+            checked,
             span,
         } = *task_key;
-        assert_eq!(is_pure, span.is_none());
+        assert!(!checked || span.is_some());
         let tcx = vcx.tcx();
         let sig = tcx
             .fn_sig(def_id)
@@ -509,6 +511,7 @@ impl PrustiBuiltinEnc {
             args,
             operands,
             span,
+            checked,
         };
         let res: ExprRet<'vir, vir::Snap> = match builtin {
             PrustiBuiltin::Spec(_) => {
@@ -565,6 +568,7 @@ struct BuiltinCtxt<'enc, 'vir> {
     args: GArgs<'vir>,
     operands: &'enc [ExprRet<'vir, vir::Snap>],
     span: Option<Span>,
+    checked: bool,
 }
 
 impl<'enc, 'vir> BuiltinCtxt<'enc, 'vir> {
@@ -632,7 +636,7 @@ impl<'enc, 'vir> BuiltinCtxt<'enc, 'vir> {
                 let idx = self.index_to_int(self.operands[1], self.sig.inputs()[1])?;
                 let value = self.value_operand(2, Self::adt_type_arg(self.sig.inputs()[0], 0))?;
                 let val = seq.elem_caster().cast_to_callee_ctx(value);
-                if let Some(span) = self.span {
+                if let Some(span) = self.checked_span() {
                     self.handle_partial_op_error(
                         "call.failed:seq.index.length",
                         "the update index may be out of bounds",
@@ -684,8 +688,9 @@ impl<'enc, 'vir> BuiltinCtxt<'enc, 'vir> {
                     ty::TyKind::Adt(adt, adt_args) => (Some(adt.did()), adt_args.types().next()),
                     _ => (None, None),
                 };
-                // Slices in specs are total (the native clamping take/drop);
-                // in impure code the bounds are *checked* via the
+                // Unchecked slices (in particular in specs) are total (the
+                // native clamping take/drop); checked ones (see
+                // `PrustiBuiltinTask::checked`) verify their bounds via the
                 // `prusti_seq_slice` precondition, matching Rust's panicking
                 // slice semantics.
 
@@ -717,7 +722,7 @@ impl<'enc, 'vir> BuiltinCtxt<'enc, 'vir> {
                     // `s[i]`: the element, wrapped in the (single-field)
                     // `Ghost` struct of the output.
                     let idx = self.index_to_int(self.operands[1], self.sig.inputs()[1])?;
-                    let elem = if let Some(span) = self.span {
+                    let elem = if let Some(span) = self.checked_span() {
                         self.handle_partial_op_error(
                             "call.failed:seq.index.length",
                             "the sequence index may be out of bounds",
@@ -751,18 +756,18 @@ impl<'enc, 'vir> BuiltinCtxt<'enc, 'vir> {
     }
 
     /// A subsequence `seq[start..end]`; a `None` bound is the corresponding
-    /// end of the sequence. Slices in specs are total (the native clamping
-    /// take/drop); in impure code the bounds are *checked* via the
-    /// `prusti_seq_slice_to`/`prusti_seq_slice_from` preconditions, matching
-    /// Rust's panicking slice semantics. Either way, only the given bounds
-    /// apply their operation.
+    /// end of the sequence. Unchecked slices (in particular in specs) are
+    /// total (the native clamping take/drop); checked ones verify their
+    /// bounds via the `prusti_seq_slice_to`/`prusti_seq_slice_from`
+    /// preconditions, matching Rust's panicking slice semantics. Either way,
+    /// only the given bounds apply their operation.
     fn seq_slice(
         &mut self,
         seq: ExprRet<'vir, vir::Seq>,
         start: Option<ExprRet<'vir, vir::Int>>,
         end: Option<ExprRet<'vir, vir::Int>>,
     ) -> EncResult<'vir, ExprRet<'vir, vir::Snap>> {
-        Ok(if let Some(span) = self.span {
+        Ok(if let Some(span) = self.checked_span() {
             self.handle_partial_op_error(
                 "application.precondition:assertion.false",
                 "the range bounds may be out of bounds",
@@ -933,7 +938,7 @@ impl<'enc, 'vir> BuiltinCtxt<'enc, 'vir> {
                 let self_ = self.sig.inputs()[0].builtin_deref(false).unwrap();
                 let key = self.value_operand(1, Self::adt_type_arg(self_, 0))?;
                 let key = map_data.map_key_caster().cast_to_callee_ctx(key);
-                let val = if let Some(span) = self.span {
+                let val = if let Some(span) = self.checked_span() {
                     self.handle_partial_op_error(
                         "call.failed:map.key.contains",
                         "the map may not contain this key",
@@ -1067,8 +1072,14 @@ impl<'enc, 'vir> BuiltinCtxt<'enc, 'vir> {
         Ok(*ty.expect_float())
     }
 
+    /// The call-site span if the partial collection operations are checked
+    /// (see [`PrustiBuiltinTask::checked`]).
+    fn checked_span(&self) -> Option<Span> {
+        self.span.filter(|_| self.checked)
+    }
+
     /// Registers a backtranslation handler for the well-definedness
-    /// obligation of a checked (impure-code) partial collection operation.
+    /// obligation of a checked partial collection operation.
     /// The handler attaches to this encoding's span - the call statement,
     /// which is part of the task key.
     fn handle_partial_op_error(&self, error_kind: &'static str, message: &'static str, span: Span) {
@@ -1312,9 +1323,9 @@ impl<'enc, 'vir> BuiltinCtxt<'enc, 'vir> {
 ///   pure function drops the precondition, so a partial operation in a
 ///   contract could never be proven well-formed.
 /// - `SeqSliceFrom`/`SeqSliceTo` are *checked* slices (`s[a..]`/`s[..b]`)
-///   for impure (ghost) code: program functions whose bound precondition is
-///   verified at each application. A two-sided slice `s[a..b]` composes the
-///   two.
+///   for checked code (see [`PrustiBuiltinTask::checked`]): program functions
+///   whose bound precondition is verified at each application. A two-sided
+///   slice `s[a..b]` composes the two.
 /// - `MapSetminus` (key removal) has no native Viper correspondent at all;
 ///   it is total and axiomatized by its domain and its lookups.
 /// - `SeqRepeat` (`n` copies of a value) has no native correspondent either;

@@ -11,6 +11,7 @@ use prusti_rustc_interface::{
     middle::mir::{self, BasicBlock},
     span::{Span, def_id::DefId},
 };
+use prusti_utils::config;
 use task_encoder::{EncodeFullResult, TaskEncoder, TaskEncoderDependencies};
 
 use crate::encoders::mir_fn::RustSignature;
@@ -839,6 +840,12 @@ impl<'enc, 'vir: 'enc> mir::visit::Visitor<'vir> for SpecVisitor<'enc, 'vir> {
                 unreachable!("malformed spec-only block: unknown spec kind");
             };
 
+            self.spec_blocks.insert(location.block);
+            // When only the core proof is verified, the block is still skipped
+            // as specification-only code but its specification is dropped.
+            if config::only_core_proof() {
+                return;
+            }
             let nonspec_predecessor =
                 get_single_predecessor(&self.body.basic_blocks.predecessors()[location.block]);
             self.specs_for
@@ -850,7 +857,6 @@ impl<'enc, 'vir: 'enc> mir::visit::Visitor<'vir> for SpecVisitor<'enc, 'vir> {
                     kind,
                     span: terminator.source_info.span,
                 });
-            self.spec_blocks.insert(location.block);
         });
     }
 }

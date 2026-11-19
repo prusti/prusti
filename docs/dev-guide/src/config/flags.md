@@ -10,7 +10,6 @@
 | [`CARGO_COMMAND`](#cargo_command) | `String` | `"check"` | B |
 | [`CARGO_PATH`](#cargo_path) | `String` | `"cargo"` | B |
 | [`CHECK_OVERFLOWS`](#check_overflows) | `bool` | `true` | A |
-| [`CHECK_PANICS`](#check_panics) | `bool` | `true` | A |
 | [`CHECK_TIMEOUT`](#check_timeout) | `Option<u32>` | `None` | A |
 | [`COUNTEREXAMPLE`](#counterexample) | `bool` | `false` | A |
 | [`DELETE_BASIC_BLOCKS`](#delete_basic_blocks) | `Vec<String>` | `vec![]` | A |
@@ -39,6 +38,7 @@
 | [`VERIFY_MODE`](#verify_mode) | `String` | `verify` | A |
 | [`NO_VERIFY_DEPS`](#no_verify_deps) | `bool` | `false` | B |
 | [`IGNORE_DEPS_CONTRACTS`](#ignore_deps_contracts) | `bool` | `false` | B |
+| [`ONLY_CORE_PROOF`](#only_core_proof) | `bool` | `false` | A |
 | [`OPT_IN_VERIFICATION`](#opt_in_verification) | `bool` | `false` | A |
 | [`PRESERVE_SMT_TRACE_FILES`](#preserve_smt_trace_files) | `bool` | `false` | A |
 | [`PRINT_COLLECTED_VERIFICATION_ITEMS`](#print_collected_verification_items) | `bool` | `false` | A |
@@ -122,10 +122,6 @@ The path to `cargo` when running `cargo prusti`. Useful if `cargo` is not availa
 ## `CHECK_OVERFLOWS`
 
 When enabled, binary operations and numeric casts will be checked for overflows. See [integer type encoding](../encoding/types-heap.md#i-u-char).
-
-## `CHECK_PANICS`
-
-When enabled, Prusti will check for an absence of `panic!`s.
 
 ## `CHECK_TIMEOUT`
 
@@ -274,6 +270,16 @@ When enabled, Prusti will not collect contracts from the project's dependencies.
 ## `OPT_IN_VERIFICATION`
 
 When enabled, Prusti will only try to verify the functions annotated with `#[verified]`. All other functions are assumed to be `#[trusted]`, by default. Functions annotated with both `#[trusted]` and `#[verified]` will not be verified.
+
+## `ONLY_CORE_PROOF`
+
+When enabled, only the core proof is verified: the absence of undefined behaviour, which the Rust type system guarantees for safe code. Neither functional correctness nor the absence of panics (which in general needs specifications to prove) is verified:
+
+- Every function is encoded as if it had no specifications: contracts, pledges, loop invariants, and `prusti_assert!`, `prusti_assume!` and `prusti_refute!` are ignored, including the extern specs of the standard library.
+- The ignored contracts include those of unsafe functions, so calls of unsafe functions are not checked against the conditions under which they are safe to call.
+- `#[pure]` is ignored: every function is encoded as impure. `#[trusted]` keeps its meaning.
+- The bounds of operations on ghost collections (e.g. `Seq` indexing) are not checked.
+- Panics are control flow: a failing MIR assertion (bounds, overflow, division by zero, ...), a call or a drop may unwind, and the cleanup code then run (e.g. drops) is verified too.
 
 ## `PRESERVE_SMT_TRACE_FILES`
 

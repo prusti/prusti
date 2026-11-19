@@ -16,7 +16,7 @@ use std::{
     process::Command,
 };
 
-/// How a crate should be tested. All tests use `check_panics=false`, `check_overflows=false` and
+/// How a crate should be tested. All tests use `only_core_proof=true`, `check_overflows=false` and
 /// `skip_unsupported_features=true`.
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
 enum TestKind {
@@ -339,7 +339,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                         .env("RUST_BACKTRACE", "1")
                         .env("PRUSTI_ASSERT_TIMEOUT", "60000")
                         .env("PRUSTI_LOG_DIR", "/tmp/prusti_log")
-                        .env("PRUSTI_CHECK_PANICS", "false")
+                        .env("PRUSTI_ONLY_CORE_PROOF", "true")
                         .env("PRUSTI_CHECK_OVERFLOWS", "false")
                         .env("PRUSTI_ENCODE_UNSIGNED_NUM_CONSTRAINT", "false")
                         // Do not report errors for unsupported language features

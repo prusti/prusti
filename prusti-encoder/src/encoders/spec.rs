@@ -8,6 +8,7 @@ use prusti_interface::specs::{
     },
 };
 use prusti_rustc_interface::{middle::ty, span::def_id::DefId};
+use prusti_utils::config;
 use task_encoder::{EncodeFullResult, TaskEncoder, TaskEncoderDependencies};
 
 use crate::encoders::ty::generics::GArgs;
@@ -87,9 +88,11 @@ pub fn is_function_pure<'tcx>(def_id: DefId, args: GArgs<'tcx>) -> bool {
 
 /// `kind.is_pure()`, treating an invalid trait-to-impl kind refinement as
 /// impure. This is a pure query; the refinement error itself is reported to
-/// the user separately by [`report_kind_refinement_error`].
+/// the user separately by [`report_kind_refinement_error`]. When only the core
+/// proof is verified, every function is impure: `#[pure]` only serves
+/// specifications, and the pure encoding cannot express that a call panics.
 pub fn kind_is_pure(kind: &SpecificationItem<typed::ProcedureSpecificationKind>) -> bool {
-    kind.is_pure().unwrap_or(false)
+    kind.is_pure().unwrap_or(false) && !config::only_core_proof()
 }
 
 /// Emit a user error for an invalid trait-to-impl kind refinement (e.g. an
@@ -194,6 +197,18 @@ impl TaskEncoder for SpecEnc {
                     ty::List::identity_for_item(vcx.tcx(), task_key.0),
                 ),
                 |specs| {
+                    // When only the core proof is verified, every function is
+                    // encoded as if it had no contract. The extern-spec kind is
+                    // not part of the contract: it only says how to read the
+                    // generics of the spec items.
+                    if config::only_core_proof() {
+                        return (
+                            specs.extern_spec,
+                            SpecificationItem::Empty,
+                            SpecificationItem::Empty,
+                            SpecificationItem::Empty,
+                        );
+                    }
                     // TODO: handle specs other than `empty_or_inherent`
                     let pres = specs.pres.map(|items| vcx.alloc_slice(items));
                     let posts = specs.posts.map(|items| vcx.alloc_slice(items));

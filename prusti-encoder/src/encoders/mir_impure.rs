@@ -37,6 +37,7 @@ use prusti_rustc_interface::{
     },
     span::{Span, Spanned, def_id::DefId},
 };
+use prusti_utils::config;
 use rustc_hash::{FxHashMap, FxHashSet};
 use task_encoder::{TaskEncoder, TaskEncoderDependencies};
 use vir::{CastType, CompType, LocalDeclData};
@@ -44,7 +45,7 @@ use vir::{CastType, CompType, LocalDeclData};
 use crate::encoders::{
     self, MirBuiltinUseCastEnc, MirBuiltinUseCastTask, MirPureEnc, MirPureEncTask, PrustiBuiltin,
     PureKind, TyUseImpureEnc, WandEnc, WandEncTask,
-    impure::{WandOldOuter, assert_error_message},
+    impure::{WandOldOuter, assert_error_message, panic},
     mir_fn::{CallTaskDescription, RustSignature, SpecBlockKind, SpecBlocks},
     mir_shared::{EncodeResult, PureRvalueEnc, RustcIntrinsic},
     ty::{
@@ -171,6 +172,10 @@ where
     /// created no wand to apply on expiry.
     pub wandless_calls: FxHashSet<mir::BasicBlock>,
     pub from_to_vars: FromToVars<'vir>,
+    /// The locals holding the snapshots of the results of the method calls,
+    /// by the block the call terminates; declared at the start of the method,
+    /// together with the calls' [Self::call_panicked] locals.
+    pub call_results: FxHashMap<mir::BasicBlock, vir::LocalDeclSnap<'vir>>,
 
     // for the current basic block
     pub current_fpcs: Option<PcgBasicBlock<'enc, 'vir>>,
@@ -218,6 +223,9 @@ macro_rules! comment {
 /// [PureRvalueEnc::EncodePlaceCtxt]) only to the encoding of the statement's
 /// effect; all other operand reads (terminators, repack guides) pass `None`.
 type OperandSnaps<'vir> = Option<FxHashMap<mir::Place<'vir>, vir::ExprSnap<'vir>>>;
+
+/// The statements of a panic edge and the block it jumps to.
+type PanicEdge<'vir> = (Vec<vir::Stmt<'vir>>, vir::CfgBlockLabel<'vir>);
 
 struct EncodedRvalue<'vir> {
     /// A snapshot of the rvalue. This snapshot is guaranteed to be well-formed
@@ -801,12 +809,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 let bb = &self.body[call.location().block];
                 let terminator = bb.terminator.as_ref().unwrap();
                 match &terminator.kind {
-                    mir::TerminatorKind::Call {
-                        func,
-                        args,
-                        destination,
-                        ..
-                    } => {
+                    mir::TerminatorKind::Call { func, args, .. } => {
                         // Calls not encoded as impure method calls create no
                         // wands (e.g., a Viper function application).
                         if self.wandless_calls.contains(&call.location().block) {
@@ -814,18 +817,27 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                         }
                         let (_, caller_substs) = self.get_call_data(func);
 
-                        let (_, dest_snap, _, _) =
-                            self.encode_place_with_snap((*destination).into())?;
+                        // The wands refer to the result through the snapshot
+                        // the call returned (see `panic`), which is also
+                        // defined if the call unwound.
+                        let result_snap = self
+                            .vcx
+                            .mk_local_ex(self.call_results[&call.location().block]);
                         let wand_args =
-                            std::iter::once(Ok(dest_snap))
+                            std::iter::once(Ok(result_snap))
                                 .chain(args.iter().map(|operand| {
                                     self.encode_operand_snap_immediate(&operand.node)
                                 }))
                                 .collect::<EncodeResult<'vir, Vec<_>, E>>()?;
                         let (label_pre, label_post) = self.call_labels[&call.location().block];
                         let call_ctx = self.gargs(caller_substs);
-                        let wands =
-                            wands.call_wands(&wand_args, label_pre, label_post, call_ctx, self);
+                        let panicked = self
+                            .vcx
+                            .mk_local_ex(self.call_panicked(call.location().block));
+                        let returned = panic::returned(self.vcx, panicked);
+                        let wands = wands.call_wands(
+                            &wand_args, label_pre, label_post, call_ctx, returned, self,
+                        );
                         for wand in wands {
                             if let Some(footprint) = &mut footprint {
                                 footprint.parts.push(self.vcx.mk_wand_expr(wand));
@@ -1216,6 +1228,129 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             .mk_goto_stmt(self.current_block_succs.as_ref().unwrap()[&target]))
     }
 
+    /// The panic edge of the terminator of `location`'s block, i.e. its edge
+    /// for `unwind`, or `None` if the terminator cannot unwind. The edge
+    /// starts from the terminator's `PostMain` state, or from its `PreMain`
+    /// state for a call, which unwinds without its main effect (assigning the
+    /// destination).
+    fn panic_edge(
+        &mut self,
+        location: mir::Location,
+        unwind: mir::UnwindAction,
+    ) -> EncodeResult<'vir, Option<PanicEdge<'vir>>, E> {
+        let phase = if matches!(
+            self.body[location.block].terminator().kind,
+            mir::TerminatorKind::Call { .. }
+        ) {
+            EvalStmtPhase::PreMain
+        } else {
+            EvalStmtPhase::PostMain
+        };
+        let current_fpcs = self.current_fpcs.take().unwrap();
+        let state = &current_fpcs.statements.last().unwrap().states[phase];
+        let edge = match unwind {
+            mir::UnwindAction::Cleanup(cleanup) => {
+                let succ = current_fpcs
+                    .terminator
+                    .succs
+                    .iter()
+                    .find(|succ| succ.block() == cleanup)
+                    .unwrap();
+                let edge_to_loop = self.loop_head_of(cleanup).is_some();
+                // For a call, the actions start with the effect of the
+                // unwinding call, whose wands then give back the borrows
+                // passed to it.
+                self.block(|this| {
+                    this.pcg_actions(state, succ.actions(), edge_to_loop)?;
+                    let set_flag = this.set_from_to_flag(location.block, cleanup);
+                    this.stmt(set_flag);
+                    Ok(())
+                })
+                .map(|stmts| Some((stmts, self.current_block_succs.as_ref().unwrap()[&cleanup])))
+            }
+            // MIR building routes every unwind through a cleanup block, which
+            // ends in `UnwindResume`. Only `RemoveNoopLandingPads`, which runs
+            // after borrow checking, replaces an unwind into a cleanup block
+            // that just resumes by `Continue`.
+            mir::UnwindAction::Continue => unreachable!("unwind to caller in borrowck MIR"),
+            // The program aborts.
+            mir::UnwindAction::Terminate(_) => Ok(Some((
+                vec![self.vcx.mk_inhale_stmt(self.vcx.mk_bool::<false>())],
+                self.vcx.alloc(vir::CfgBlockLabelData::End),
+            ))),
+            mir::UnwindAction::Unreachable => Ok(None),
+        };
+        self.current_fpcs = Some(current_fpcs);
+        edge
+    }
+
+    /// The terminator that takes the panic edge `(panic_stmts, panic_target)`
+    /// of the terminator of `location`'s block if `panics` holds, and else its
+    /// edge to `target` (or none, if it does not return). With `post_main`,
+    /// the `PostMain` actions are still to be emitted, on the latter edge.
+    fn branch_on_panic(
+        &mut self,
+        location: mir::Location,
+        panics: vir::ExprBool<'vir>,
+        (panic_stmts, panic_target): PanicEdge<'vir>,
+        target: Option<mir::BasicBlock>,
+        post_main: bool,
+    ) -> EncodeResult<'vir, vir::TerminatorStmt<'vir>, E> {
+        let (otherwise, otherwise_stmts) = match target {
+            Some(target) => {
+                let stmts = self.block(|this| {
+                    if post_main {
+                        comment!(this, "PCG (T) {}", EvalStmtPhase::PostMain);
+                        this.pcg_phase_actions(location, EvalStmtPhase::PostMain)?;
+                    }
+                    this.pcs_succ_to(target)?;
+                    let set_flag = this.set_from_to_flag(location.block, target);
+                    this.stmt(set_flag);
+                    Ok(())
+                })?;
+                (self.current_block_succs.as_ref().unwrap()[&target], stmts)
+            }
+            None => (
+                self.vcx.alloc(vir::CfgBlockLabelData::End),
+                vec![self.vcx.mk_inhale_stmt(self.vcx.mk_bool::<false>())],
+            ),
+        };
+        Ok(self.vcx.mk_goto_if_stmt(
+            panics.as_dyn(),
+            self.vcx.alloc_slice(&[self.vcx.mk_goto_if_target(
+                self.vcx.mk_bool::<true>().as_dyn(),
+                panic_target,
+                self.vcx.alloc_slice(&panic_stmts),
+            )]),
+            otherwise,
+            self.vcx.alloc_slice(&otherwise_stmts),
+        ))
+    }
+
+    /// Ends the method by unwinding: records that it panicked and packages
+    /// the wands of its postcondition, whose left-hand sides then hold
+    /// trivially, from the borrows `borrows`.
+    fn unwind_from_method(
+        &mut self,
+        borrows: &pcg::borrow_pcg::state::BorrowsState<'_, 'vir>,
+    ) -> EncodeResult<'vir, (), E> {
+        self.stmt(self.set_panicked(true));
+        let packages = self.package_wands(borrows)?;
+        self.stmts(packages);
+        Ok(())
+    }
+
+    /// The assignment of `value` to the method's `panicked` return variable.
+    fn set_panicked(&self, value: bool) -> vir::Stmt<'vir> {
+        let panicked = self.vcx.mk_local_ex(panic::panicked_decl(self.vcx));
+        self.vcx.mk_pure_assign_stmt(
+            panicked,
+            self.vcx
+                .mk_const_expr(vir::ConstData::Bool(value))
+                .downcast_ty(),
+        )
+    }
+
     fn encode_operand(
         &mut self,
         operand: &mir::Operand<'vir>,
@@ -1514,6 +1649,15 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         self.tmp_ctr += 1;
         self.stmt(self.vcx.mk_local_decl_stmt(local, None));
         self.vcx.mk_local_ex(local)
+    }
+
+    /// The local recording whether the method call terminating `block`
+    /// panicked; the wands of the call are guarded by its negation.
+    pub(crate) fn call_panicked(&self, block: mir::BasicBlock) -> vir::LocalDecl<'vir, vir::Bool> {
+        self.vcx.mk_local_decl(
+            vir::vir_format!(self.vcx, "_panicked_bb{}", block.index()),
+            vir::TYPE_BOOL,
+        )
     }
 
     pub(crate) fn new_label(&mut self, base: &str) -> &'vir str {
@@ -1950,9 +2094,13 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             self.current_block_pres.as_ref().unwrap().iter().copied(),
         );
 
-        // We are verifying the absence of panics, so cleanup block should never
-        // be reached, or even referenced.
-        if data.is_cleanup {
+        // Cleanup blocks are only reached when unwinding. Unless only the core
+        // proof is verified, the panic edges are not taken, so they are not
+        // encoded; neither are those the PCG found unreachable.
+        if data.is_cleanup
+            && (!config::only_core_proof()
+                || self.fpcs_analysis.get_all_for_bb(block).unwrap().is_none())
+        {
             self.encoded_blocks.push(
                 self.vcx.mk_cfg_block(
                     current_block_label,
@@ -2283,6 +2431,20 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 target: *live_target,
             });
         let terminator = match spec_goto.as_ref().unwrap_or(&terminator.kind) {
+            // When only the core proof is verified, the drop glue may panic
+            // (in a `Drop` impl): the drop then takes its panic edge.
+            mir::TerminatorKind::Drop { target, unwind, .. } if config::only_core_proof() => {
+                match self.panic_edge(location, *unwind)? {
+                    Some(edge) => {
+                        // `panics` is left unassigned, so the verifier
+                        // considers both edges.
+                        let panics = self.new_tmp(vir::TYPE_BOOL);
+                        self.finish_terminator(location)?;
+                        self.branch_on_panic(location, panics, edge, Some(*target), false)?
+                    }
+                    None => self.goto_single_succ(location, *target)?,
+                }
+            }
             mir::TerminatorKind::Goto { target }
             | mir::TerminatorKind::FalseUnwind {
                 real_target: target,
@@ -2340,6 +2502,15 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 )
             }
             mir::TerminatorKind::Return => {
+                // Set before packaging the wands, whose left-hand sides
+                // depend on them.
+                self.stmt(self.set_panicked(false));
+                let result = &self.local_defs[mir::RETURN_PLACE];
+                let result_snap = panic::result_snap_decl(self.vcx, result.local_snap.ty);
+                self.stmt(
+                    self.vcx
+                        .mk_pure_assign_stmt(self.vcx.mk_local_ex(result_snap), result.impure_snap),
+                );
                 let current_fpcs = self.current_fpcs.take().unwrap();
                 let borrows = current_fpcs.statements.last().unwrap().states
                     [EvalStmtPhase::PostMain]
@@ -2356,6 +2527,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 args,
                 destination,
                 target,
+                unwind,
                 ..
             } => {
                 // emit the current block, create a new label for the terminator
@@ -2417,7 +2589,13 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                             .map(|arg| self.encode_operand(&arg.node))
                             .collect::<Result<Vec<_>, _>>()?;
 
-                        let call = func_out.call(method_in, dest);
+                        let panicked = self.call_panicked(location.block);
+                        let result_snap = self.vcx.mk_local_decl(
+                            vir::vir_format!(self.vcx, "_result_bb{}", location.block.index()),
+                            func_out.result_snap_ty(),
+                        );
+                        self.call_results.insert(location.block, result_snap);
+                        let call = func_out.call(method_in, dest, panicked, result_snap);
 
                         let label_pre = self.new_label("pre");
                         vcx.handle_error(
@@ -2437,13 +2615,51 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                         let label_post = self.new_label("post");
                         self.call_labels
                             .insert(location.block, (label_pre, label_post));
+                        if !config::only_core_proof() {
+                            // Unless only the core proof is verified, callees do
+                            // not panic (`ensures !panicked`): the panic path is
+                            // dead.
+                            self.stmt(vcx.mk_if_stmt(
+                                vcx.mk_local_ex(panicked),
+                                vcx.alloc_slice(&[vcx.mk_assert_stmt(vcx.mk_bool::<false>())]),
+                                &[],
+                            ));
+                        }
                     }
                     Ok(())
                 })?;
 
-                match *target {
-                    Some(target) => self.goto_single_succ(location, target)?,
-                    None => {
+                // When only the core proof is verified, a method call may
+                // unwind: it then takes its panic edge, before its main effect.
+                let panic_edge = if config::only_core_proof()
+                    && !self.wandless_calls.contains(&location.block)
+                {
+                    let panics = self.vcx.mk_local_ex(self.call_panicked(location.block));
+                    let edge = self.panic_edge(location, *unwind)?;
+                    if edge.is_none() {
+                        self.stmt(self.vcx.mk_inhale_stmt(panic::returned(self.vcx, panics)));
+                    }
+                    edge.map(|edge| (panics, edge))
+                } else {
+                    None
+                };
+
+                match (panic_edge, *target) {
+                    (Some((panics, edge)), target) => {
+                        // The end of the block, shared by both edges. The
+                        // snapshots the PCG takes "after" the block refer to
+                        // the state right after the call; the `PostMain`
+                        // actions, which only the returned edge takes, change
+                        // no value.
+                        let label = self.block_end_label(
+                            location.block,
+                            self.current_block_pres.as_ref().unwrap(),
+                        );
+                        self.stmt(self.vcx.mk_label_stmt(label));
+                        self.branch_on_panic(location, panics, edge, target, true)?
+                    }
+                    (None, Some(target)) => self.goto_single_succ(location, target)?,
+                    (None, None) => {
                         // TODO: detect panic causes, adjust message accordingly
                         self.vcx.with_span(span, |vcx| {
                             vcx.handle_error("exhale.failed:assertion.false", move |_| {
@@ -2463,6 +2679,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 expected,
                 msg,
                 target,
+                unwind,
                 ..
             } => {
                 let enc = self
@@ -2473,20 +2690,55 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                     .mk_const_expr(vir::ConstData::Bool(*expected))
                     .downcast_ty();
                 let assert = self.vcx.mk_eq_expr(enc, expected);
-                if let Some(error_msg) = assert_error_message(msg) {
+                // In all cases, the condition is read as the terminator's main
+                // effect, before the deferred `PostMain` re-pack, which may
+                // fold the place the condition projects into.
+                if config::only_core_proof() {
+                    // A failing assertion panics: it then takes its panic
+                    // edge, whether or not the assertion is checked otherwise
+                    // (e.g. an overflow check when overflows are not
+                    // checked).
+                    match self.panic_edge(location, *unwind)? {
+                        Some(edge) => {
+                            let failed = self.new_tmp(vir::TYPE_BOOL);
+                            self.stmt(
+                                self.vcx.mk_pure_assign_stmt(
+                                    failed,
+                                    self.vcx
+                                        .mk_unary_op_expr(vir::UnOpKind::Not, assert.upcast_ty())
+                                        .downcast_ty(),
+                                ),
+                            );
+                            self.finish_terminator(location)?;
+                            self.branch_on_panic(location, failed, edge, Some(*target), false)?
+                        }
+                        // It cannot unwind: a failing assertion aborts.
+                        None => {
+                            self.stmt(self.vcx.mk_inhale_stmt(assert));
+                            self.goto_single_succ(location, *target)?
+                        }
+                    }
+                } else if let Some(error_msg) = assert_error_message(msg) {
+                    // A failing assertion panics: the panic path is checked
+                    // to be dead.
                     self.vcx.with_span(span, |vcx| {
-                        vcx.handle_error("exhale.failed:assertion.false", move |_| {
+                        vcx.handle_error("assert.failed:assertion.false", move |_| {
                             Some(vec![PrustiError::verification(error_msg, span.into())])
                         });
-                        self.stmt(self.vcx.mk_exhale_stmt(assert));
+                        let failed = vcx
+                            .mk_unary_op_expr(vir::UnOpKind::Not, assert.upcast_ty())
+                            .downcast_ty();
+                        self.stmt(vcx.mk_if_stmt(
+                            failed,
+                            vcx.alloc_slice(&[vcx.mk_assert_stmt(vcx.mk_bool::<false>())]),
+                            &[],
+                        ));
                     });
+                    self.goto_single_succ(location, *target)?
                 } else {
                     self.stmt(self.vcx.mk_inhale_stmt(assert));
+                    self.goto_single_succ(location, *target)?
                 }
-                // The check is the terminator's main effect, emitted before
-                // the deferred `PostMain` re-pack, which may fold the place
-                // the condition projects into.
-                self.goto_single_succ(location, *target)?
             }
             mir::TerminatorKind::Unreachable => self.vcx.with_span(span, |vcx| {
                 vcx.handle_error("exhale.failed:assertion.false", move |_| {
@@ -2499,18 +2751,22 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 self.vcx.mk_assume_false_stmt()
             }),
 
-            mir::TerminatorKind::UnwindResume | mir::TerminatorKind::UnwindTerminate(..) => {
-                self.vcx.with_span(span, |vcx| {
-                    vcx.handle_error("exhale.failed:assertion.false", move |_| {
-                        Some(vec![PrustiError::unsupported(
-                            "unwind paths are not supported",
-                            span.into(),
-                        )])
-                    });
-                    self.stmt(self.vcx.mk_exhale_stmt(self.vcx.mk_bool::<false>()));
-                    self.vcx.mk_assume_false_stmt()
-                })
+            // The end of a panic path: the panic propagates to the caller.
+            // Cleanup blocks are only encoded when the core proof alone is
+            // verified (see `visit_basic_block_data`).
+            mir::TerminatorKind::UnwindResume => {
+                let current_fpcs = self.current_fpcs.take().unwrap();
+                let borrows = current_fpcs.statements.last().unwrap().states
+                    [EvalStmtPhase::PostMain]
+                    .borrow_pcg();
+                let res = self.unwind_from_method(borrows);
+                self.current_fpcs = Some(current_fpcs);
+                res?;
+                self.vcx
+                    .mk_goto_stmt(self.vcx.alloc(vir::CfgBlockLabelData::End))
             }
+            // A panic while unwinding: the program aborts.
+            mir::TerminatorKind::UnwindTerminate(..) => self.vcx.mk_assume_false_stmt(),
 
             mir::TerminatorKind::TailCall { .. } => {
                 return Err(self.unsupported("tail calls are not supported".to_string(), span));

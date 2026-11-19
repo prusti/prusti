@@ -4,11 +4,12 @@ use prusti_rustc_interface::{middle::mir, span::def_id::DefId};
 use task_encoder::{
     EncodeFullError, EncodeFullResult, OutputRefAny, TaskEncoder, TaskEncoderDependencies,
 };
-use vir::MethodIdn;
+use vir::{CastType, MethodIdn};
 
 use crate::encoders::{
     FunctionCallEnc, Impure, ImpureEncVisitor, MirLocalDefEnc, MirLocalDefEncTask, MirSpecEnc,
     WandEnc, WandEncTask,
+    impure::panic,
     mir_fn::{CallTaskDescription, RustSignature, SpecBlocks, SpecBlocksEnc},
     pure::spec::MirSpecEncMode,
     ty::generics::{
@@ -27,13 +28,24 @@ pub struct MethodCallEncOutput<'vir> {
     ty_args: GArgsTy<'vir>,
     inputs: Vec<GArgCaster<'vir, Impure>>,
     output: GArgCaster<'vir, Impure>,
+    /// The type of the callee's returned snapshot of its result.
+    result_snap_ty: vir::TypeSnap<'vir>,
 }
 
 impl<'vir> MethodCallEncOutput<'vir> {
+    pub fn result_snap_ty(&self) -> vir::TypeSnap<'vir> {
+        self.result_snap_ty
+    }
+
+    /// The statements of the call, which records whether the callee panicked
+    /// in `panicked` and the snapshot of its result in `result_snap` (see
+    /// [`panic`]).
     pub fn call(
         &self,
         mut args: Vec<vir::ExprRef<'vir>>,
         ret: vir::ExprRef<'vir>,
+        panicked: vir::LocalDecl<'vir, vir::Bool>,
+        result_snap: vir::LocalDeclSnap<'vir>,
     ) -> Vec<vir::Stmt<'vir>> {
         assert_eq!(self.inputs.len(), args.len());
         let generics = args.iter().zip(self.inputs.iter());
@@ -42,13 +54,26 @@ impl<'vir> MethodCallEncOutput<'vir> {
             .collect();
 
         args.insert(0, ret);
-        let call = (self.method.method_ref)(&args, self.ty_args.get_ty(), self.ty_args.get_const())
+        let call = self
+            .method
+            .method_ref
+            .call_with_targets(
+                &[panicked.as_dyn(), result_snap.as_dyn()],
+                (&args, self.ty_args.get_ty(), self.ty_args.get_const()),
+            )
             .alloc();
         stmts.push(call);
 
+        // Only a call that returned has a result to cast.
         let result = self.output.cast_to_caller_ctx(ret);
         if let Some(result) = result {
-            stmts.push(result);
+            stmts.push(vir::with_vcx(|vcx| {
+                vcx.mk_if_stmt(
+                    panic::returned(vcx, vcx.mk_local_ex(panicked)),
+                    vcx.alloc_slice(&[result]),
+                    &[],
+                )
+            }));
         }
         stmts
     }
@@ -92,6 +117,14 @@ impl TaskEncoder for MethodCallEnc {
             .output
             .decompose_compare_normalize(signature.gparams, task_key.gargs);
         let output = deps.require_dep::<GArgsCastEnc<Impure>>(normalized)?;
+        // The callee's (or call stub's) `res_snap` is declared with the
+        // snapshot type of its return local.
+        let result_snap_ty = deps.require_dep::<MirLocalDefEnc>(MirLocalDefEncTask::Local {
+            def_id: callee_def_id,
+            all_locals: false,
+        })?[mir::RETURN_PLACE]
+            .local_snap
+            .ty;
         Ok((
             (),
             MethodCallEncOutput {
@@ -99,6 +132,7 @@ impl TaskEncoder for MethodCallEnc {
                 ty_args,
                 inputs,
                 output,
+                result_snap_ty,
             },
         ))
     }
@@ -236,12 +270,20 @@ impl TaskEncoder for MethodEnc {
                     pres.push(arg_defs[arg_idx].impure_pred);
                 }
             }
-            posts.push(arg_defs[mir::RETURN_PLACE].impure_pred);
+            let returns = panic::method_returns(vcx, &arg_defs[mir::RETURN_PLACE]);
+            let returned = returns.returned;
+            posts.extend(returns.posts);
 
             // ..
             pres.extend(wands.indirect_pres(vcx, &arg_defs, deps));
-            posts.extend(wands.indirect_posts(vcx, &arg_defs, deps));
-            posts.extend(wands.wand_posts(vcx, &arg_defs, deps));
+            posts.extend(wands.indirect_posts(vcx, &arg_defs, returned, deps));
+            posts.extend(wands.wand_posts(
+                vcx,
+                &arg_defs,
+                returned,
+                vcx.mk_local_ex(returns.result_snap),
+                deps,
+            ));
 
             // The method of a pure function `f` gets the postcondition
             //     ensures snap(result) == f_(old(snap(args)))
@@ -355,6 +397,7 @@ impl TaskEncoder for MethodEnc {
                     call_labels: Default::default(),
                     wandless_calls: Default::default(),
                     from_to_vars: Default::default(),
+                    call_results: Default::default(),
 
                     current_block: None,
                     current_block_pres: None,
@@ -377,6 +420,14 @@ impl TaskEncoder for MethodEnc {
                                 .decls()
                                 .map(|v| vcx.mk_local_decl_stmt(v, Some(vcx.mk_bool::<false>()))),
                         );
+                        start_stmts.extend(visitor.call_results.iter().flat_map(
+                            |(block, result)| {
+                                [
+                                    vcx.mk_local_decl_stmt(visitor.call_panicked(*block), None),
+                                    vcx.mk_local_decl_stmt(*result, None),
+                                ]
+                            },
+                        ));
                         visitor.encoded_blocks[0] = vcx.mk_cfg_block(
                             &vir::CfgBlockLabelData::Start,
                             &[],
@@ -414,6 +465,10 @@ impl TaskEncoder for MethodEnc {
             };
 
             // Add functional specification as the last pre- and postconditions.
+            // Unlike the postconditions above, the functional ones and the tie
+            // below are not guarded by `returns.returned`: they only exist
+            // unless only the core proof is verified, and then the leading
+            // `ensures !panicked` covers them.
             pres.extend(spec.pre_exprs());
             posts.extend(spec.post_exprs());
             // After the functional postconditions: applying `f_` assumes its
@@ -430,7 +485,7 @@ impl TaskEncoder for MethodEnc {
                     method: vcx.mk_method(
                         method_ref,
                         (&args, generics.ty_decls(), generics.const_decls()),
-                        &[],
+                        returns.decls,
                         vcx.alloc_slice(&pres),
                         vcx.alloc_slice(&posts),
                         blocks.map(|blocks| vcx.alloc_slice(&blocks)),
