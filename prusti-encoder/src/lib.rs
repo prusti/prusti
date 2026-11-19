@@ -23,6 +23,7 @@ use crate::encoders::{
     ty::{
         generics::{
             GArgsCastEnc,
+            hrtb::{HrtbEnc, HrtbImplEnc},
             sizedness::SizednessEnc,
             r#trait::TraitEnc,
             trait_fn::TraitFnEnc,
@@ -142,6 +143,8 @@ pub fn test_entrypoint<'tcx>(
     TraitImplConditionEnc::emit_outputs(&mut program);
     TraitImplItemEnc::emit_outputs(&mut program);
     TraitImplDefaultFnEnc::emit_outputs(&mut program);
+    HrtbEnc::emit_outputs(&mut program);
+    HrtbImplEnc::emit_outputs(&mut program);
 
     if config::simplify_encoding() {
         program.simplify();

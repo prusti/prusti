@@ -4,6 +4,7 @@ mod casters;
 mod param_typ;
 mod args_ty;
 mod args;
+pub mod hrtb;
 pub mod r#trait;
 pub mod sizedness;
 pub mod trait_fn;

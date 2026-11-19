@@ -160,5 +160,91 @@ mod fn_spec {
     }
 }
 
+// Higher-ranked where-clauses must hold for every region, not just for some:
+// `impl Tr for &'static u8` does not make `for<'a> &'a u8: Tr` hold. So the
+// blanket impls below do not apply at the types of the concrete impls next
+// to them, and rustc selects the concrete ones (without any warning).
+mod higher_ranked {
+    pub struct W<U>(pub U);
+    pub trait Foo {
+        type X;
+    }
+
+    pub trait Tr {}
+    impl Tr for &'static u8 {}
+    impl<U> Foo for W<U>
+    where
+        for<'a> &'a U: Tr,
+    {
+        type X = u16;
+    }
+    impl Foo for W<u8> {
+        type X = u8;
+    }
+
+    // The trait part `for<'a> &'a u8: Pr` holds, the projection part
+    // `for<'a> <&'a u8 as Pr>::A == &'a u8` does not.
+    pub trait Pr {
+        type A;
+    }
+    impl<'x> Pr for &'x u8 {
+        type A = &'static u8;
+    }
+    pub struct V<U>(pub U);
+    impl<U> Foo for V<U>
+    where
+        for<'a> &'a U: Pr<A = &'a u8>,
+    {
+        type X = u16;
+    }
+    impl Foo for V<u8> {
+        type X = u8;
+    }
+
+    // `for<'a> &'a u8: Nt` needs the impl's own higher-ranked where-clause
+    // `for<'b> &'b u8: Tr`, which does not hold.
+    pub trait Nt {}
+    impl<'x, Y> Nt for &'x Y where for<'b> &'b Y: Tr {}
+    pub struct N<U>(pub U);
+    impl<U> Foo for N<U>
+    where
+        for<'a> &'a U: Nt,
+    {
+        type X = u16;
+    }
+    impl Foo for N<u8> {
+        type X = u8;
+    }
+
+    // Normalizing the impl's where-clause infers `T = u8`, so the impl makes
+    // `for<'a> &'a u8: In` hold, not `for<'a> &'a u16: In`.
+    pub trait Lift {
+        type Out;
+    }
+    impl Lift for Vec<u8> {
+        type Out = u32;
+    }
+    pub trait Small {}
+    impl Small for u32 {}
+    pub trait In {}
+    impl<'x, T> In for &'x T
+    where
+        <Vec<T> as Lift>::Out: Small,
+        Vec<T>: Lift,
+    {
+    }
+    impl In for &'static u16 {}
+    pub struct I<U>(pub U);
+    impl<U> Foo for I<U>
+    where
+        for<'a> &'a U: In,
+    {
+        type X = u16;
+    }
+    impl Foo for I<u16> {
+        type X = u8;
+    }
+}
+
 #[ensures(false)] //~ ERROR: postcondition might not hold
 pub fn canary() {}
