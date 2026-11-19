@@ -14,7 +14,7 @@ fn main() {
 }
 
 fn process(mut args: Vec<String>) -> Result<(), i32> {
-    let _setup = launch::job::setup().unwrap(); // Kill all subprocesses on kill or Ctrl-C
+    let _setup = launch::job::setup().unwrap(); // Terminate all subprocesses on kill or Ctrl-C
 
     let paths = launch::PrustiPaths::new();
 
@@ -125,8 +125,7 @@ fn process(mut args: Vec<String>) -> Result<(), i32> {
         file.sync_all().unwrap();
     }
 
-    let exit_status = cmd
-        .status()
+    let exit_status = launch::job::status(&mut cmd)
         .unwrap_or_else(|e| panic!("failed to execute prusti-driver: {e}"));
 
     if exit_status.success() {

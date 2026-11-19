@@ -94,14 +94,26 @@ fn run_on_test_files<F: Fn(&PathBuf) -> Command>(run: F) {
     assert!(num_fail_tests >= 2);
 }
 
-/// Kill a spawned Child process even in case of panics.
+/// Stop a spawned launcher and the processes it started, even in case of panics.
 struct ChildGuard(Child);
 
 impl Drop for ChildGuard {
     fn drop(&mut self) {
-        if let Err(e) = self.0.kill() {
-            panic!("Could not kill child process: {e}");
+        // `Child::kill` sends SIGKILL on Unix, which the launcher cannot handle, so it would leave
+        // its driver running. The launcher passes SIGTERM on to the processes it started.
+        #[cfg(unix)]
+        let result = nix::sys::signal::kill(
+            nix::unistd::Pid::from_raw(self.0.id() as i32),
+            nix::sys::signal::Signal::SIGTERM,
+        )
+        .map_err(std::io::Error::from);
+        #[cfg(not(unix))]
+        let result = self.0.kill();
+        if let Err(e) = result {
+            panic!("Could not stop child process: {e}");
         }
+        // The launcher exits only once its child has exited.
+        let _ = self.0.wait();
     }
 }
 
