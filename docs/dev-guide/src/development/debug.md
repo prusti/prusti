@@ -14,7 +14,7 @@ See the list of [flags](../config/flags.md) for way to configure Prusti. Of part
 
 ## Debugging tests
 
-A proposed way of fixing Prusti limitations is to add a regression test by creating a new file in `prusti-tests/tests` and then use the following command to get Prusti output:
+A proposed way of fixing Prusti limitations is to add a regression test by creating a new file in `prusti-tests/tests` and then use the following command to run it and collect Prusti's debugging output:
 
 ```bash
 RUST_BACKTRACE=1 PRUSTI_DUMP_VIPER_PROGRAM=true PRUSTI_DUMP_DEBUG_INFO=true \
