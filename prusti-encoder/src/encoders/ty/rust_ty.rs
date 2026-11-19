@@ -711,8 +711,9 @@ impl<'tcx> TySpecifics<'tcx, RustTyDatas> {
                 TySpecifics::mk_param(RustParamData::Generic)
             }
             ty::TyKind::Closure(_, args) => {
-                let parent = args.as_closure().parent_args().len();
-                let fields = (0..args.as_closure().upvar_tys().len())
+                let closure = args.as_closure();
+                let parent = closure.parent_args().len();
+                let fields = (0..closure.upvar_tys().len())
                     .map(|i| RustFieldData {
                         name: symbol::Symbol::intern(&format!("c{i}")),
                         fid: abi::FieldIdx::from_usize(i),

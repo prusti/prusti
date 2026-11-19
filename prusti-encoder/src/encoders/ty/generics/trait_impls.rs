@@ -1,9 +1,10 @@
-use prusti_interface::PrustiError;
+use pcg::borrow_pcg::FunctionData;
+use prusti_interface::{PrustiError, specs::typed::SpecificationItem};
 use prusti_rustc_interface::{
     data_structures::fx::{FxHashSet, FxIndexMap},
     errors::MultiSpan,
     middle::{mir, traits::specialization_graph, ty},
-    span::def_id::DefId,
+    span::{Span, def_id::DefId},
 };
 use task_encoder::{
     DependencyErrorLink, EncodeFullError, EncodeFullResult, TaskEncoder, TaskEncoderDependencies,
@@ -12,15 +13,16 @@ use vir::{CastType, Domain, Method, MethodIdn, ViperIdent, vir_format_identifier
 
 use crate::{
     encoders::{
-        ConstEnc, FunctionCallEnc, MirLocalDefEnc, MirLocalDefEncTask, MirSpecEnc, Pure,
+        ConstEnc, FunctionCallEnc, MirLocalDefEnc, MirLocalDefEncOutput, MirLocalDefEncTask,
+        MirSpecEnc, Pure, SpecEnc, SpecEncTask, WandEnc, WandEncTask,
         r#const::ConstEncTask,
-        mir_fn::{CallTaskDescription, RustSignature},
+        mir_fn::{CallTaskDescription, RustSignature, dep_error},
         pure::spec::MirSpecEncMode,
         ty::{
             RustTy, RustTyDecomposition,
             generics::{
-                GArgs, GArgsCastEnc, GArgsTyEnc, GParams, GenericParamsEnc, r#trait::TraitEnc,
-                trait_fn::TraitFnEnc,
+                GArgs, GArgsCastEnc, GArgsTyEnc, GParams, GenericParamsEnc, closure_impls,
+                r#trait::TraitEnc, trait_fn::TraitFnEnc,
             },
             lifted::TyConstructorEnc,
         },
@@ -30,9 +32,11 @@ use crate::{
 
 /// Encodes the behavioral-subtyping proof obligations of a trait impl:
 /// methods checking that each impl fn weakens the trait fn's precondition and
-/// strengthens its postcondition. Only run on local impls (foreign impls are
-/// trusted to conform, their conditions and axioms are encoded by
-/// [`TraitImplConditionEnc`]).
+/// strengthens its postcondition, and needs no more resources and gives back
+/// no fewer than a call of the trait fn. Only run on local impls (foreign
+/// impls are trusted to conform, their conditions and axioms are encoded by
+/// [`TraitImplConditionEnc`]) and on local closures, for their built-in `Fn*`
+/// impls (see [`closure_impls`]).
 pub struct TraitImplEnc;
 
 impl TaskEncoder for TraitImplEnc {
@@ -55,33 +59,62 @@ impl TaskEncoder for TraitImplEnc {
         vir::with_vcx(|vcx| {
             let tcx = vcx.tcx();
 
-            let all_impls = tcx.trait_impls_in_crate(task_key.krate);
-            let idx = all_impls.iter().position(|did| did == task_key).unwrap();
+            // A local closure's built-in `Fn*` impls are checked like the
+            // methods of a trait impl.
+            let is_closure = tcx.is_closure_like(*task_key);
+            // How errors name the implementation.
+            let implementation = if is_closure {
+                "the closure"
+            } else {
+                "the implementation"
+            };
+            let (check_prefix, impl_fns) = if is_closure {
+                closure_impls::closure_impl_fn(vcx, *task_key)
+            } else {
+                let all_impls = tcx.trait_impls_in_crate(task_key.krate);
+                let idx = all_impls.iter().position(|did| did == task_key).unwrap();
 
-            let impl_context = GParams::from(*task_key);
+                let impl_context = GParams::from(*task_key);
 
-            let trait_ref = tcx.impl_trait_ref(*task_key).instantiate_identity();
-            let trait_did = trait_ref.skip_normalization().def_id;
-            let trait_data = deps.require_ref::<TraitEnc>(trait_did)?;
-            let trait_name = trait_data.trait_name;
+                let trait_ref = tcx.impl_trait_ref(*task_key).instantiate_identity();
+                let trait_did = trait_ref.skip_normalization().def_id;
+                let trait_data = deps.require_ref::<TraitEnc>(trait_did)?;
+                let trait_name = trait_data.trait_name;
+
+                let implementing_ty = tcx
+                    .type_of(*task_key)
+                    .instantiate_identity()
+                    .skip_normalization();
+                let implementing_ty = RustTyDecomposition::from_ty(implementing_ty, impl_context);
+                let implementing_ty = implementing_ty.ty.name();
+
+                let impl_fns = tcx
+                    .associated_items(*task_key)
+                    .in_definition_order()
+                    .filter(|impl_item| matches!(impl_item.kind, ty::AssocKind::Fn { .. }))
+                    .map(|impl_item| ImplFn {
+                        def_id: impl_item.def_id,
+                        trait_fn: impl_item.trait_item_def_id().unwrap(),
+                        trait_args: trait_item_args(vcx, impl_item.def_id),
+                    })
+                    .collect();
+                (
+                    vir::vir_format!(vcx, "trait_{trait_name}_impl_{implementing_ty}_{idx}"),
+                    impl_fns,
+                )
+            };
 
             let mut methods = Vec::new();
 
-            let implementing_ty = tcx
-                .type_of(*task_key)
-                .instantiate_identity()
-                .skip_normalization();
-            let implementing_ty = RustTyDecomposition::from_ty(implementing_ty, impl_context);
-            let implementing_ty = implementing_ty.ty.name();
-
-            for impl_item in tcx.associated_items(*task_key).in_definition_order() {
-                let ty::AssocKind::Fn { .. } = impl_item.kind else {
-                    continue;
-                };
-                let trait_item_def_id = impl_item.trait_item_def_id().unwrap();
-                let impl_item_def_id = impl_item.def_id;
+            for impl_fn in impl_fns {
+                let ImplFn {
+                    def_id: impl_item_def_id,
+                    trait_fn: trait_item_def_id,
+                    trait_args,
+                } = impl_fn;
                 let impl_span = vcx.tcx().def_span(impl_item_def_id);
                 let item_name = ViperIdent::from_def_id(vcx, impl_item_def_id);
+                let trait_fn_path = vcx.tcx().def_path_str(trait_item_def_id);
 
                 let impl_item_context = GParams::from(impl_item_def_id);
                 let impl_item_params = deps.require_dep::<GenericParamsEnc>(impl_item_context)?;
@@ -102,10 +135,40 @@ impl TaskEncoder for TraitImplEnc {
 
                 let impl_item_has_body = is_function_with_body(vcx.tcx(), impl_item_def_id);
 
-                let trait_item_spec = deps.require_dep_spanned::<MirSpecEnc>(
-                    (trait_item_def_id, impl_item_def_id, MirSpecEncMode::Impure),
-                    impl_span,
-                )?;
+                // A trait method without specifications, like the `Fn*` methods
+                // that closures implement, has none to encode in the context of
+                // the implementation.
+                let trait_specs = deps.require_dep::<SpecEnc>(SpecEncTask {
+                    def_id: trait_item_def_id,
+                })?;
+                // A call of the trait method gets the stub's wands, which carry
+                // the trait method's pledges. An implementation inheriting the
+                // pledges is verified against them; one with its own pledges is
+                // not compared with the trait method's, so it is rejected.
+                if !crate::encoders::spec_items(&trait_specs.pledges)
+                    .0
+                    .is_empty()
+                {
+                    let impl_specs = deps.require_dep::<SpecEnc>(SpecEncTask {
+                        def_id: impl_item_def_id,
+                    })?;
+                    if !matches!(impl_specs.pledges, SpecificationItem::Inherited(_)) {
+                        vcx.emit_early_error(PrustiError::unsupported(
+                            "refining the pledges of a trait method is not supported",
+                            impl_span.into(),
+                        ));
+                    }
+                }
+                let trait_item_spec =
+                    (!crate::encoders::spec_items(&trait_specs.pres).0.is_empty()
+                        || !crate::encoders::spec_items(&trait_specs.posts).0.is_empty())
+                    .then(|| {
+                        deps.require_dep_spanned::<MirSpecEnc>(
+                            (trait_item_def_id, impl_item_def_id, MirSpecEncMode::Impure),
+                            impl_span,
+                        )
+                    })
+                    .transpose()?;
                 let impl_item_spec = deps.require_dep_spanned::<MirSpecEnc>(
                     (impl_item_def_id, impl_item_def_id, MirSpecEncMode::Impure),
                     impl_span,
@@ -120,22 +183,55 @@ impl TaskEncoder for TraitImplEnc {
                         impure_arg_preds.push(local_defs[arg_idx].impure_pred);
                     }
                 }
-                // TODO: wands
+
+                // A call of the trait method gives the implementation what the
+                // trait method's stub takes, and gives back to the caller what
+                // the stub gives back.
+                let resources = match IndirectResources::new(
+                    vcx,
+                    deps,
+                    impl_item_def_id,
+                    trait_item_def_id,
+                    trait_args,
+                    &local_defs,
+                ) {
+                    Ok(resources) => resources,
+                    // Without the resources of both signatures, the
+                    // implementation is not checked. The failure is reported
+                    // at the implementation for its own signature, and at
+                    // each call for the trait method's, which has no stub.
+                    Err(EncodeFullError::DependencyError(_)) => continue,
+                    Err(err) => return Err(err),
+                };
 
                 let mut pre_weaken_pres = impure_arg_preds.clone();
-                pre_weaken_pres.extend(trait_item_spec.pre_exprs());
+                pre_weaken_pres.extend(resources.trait_pres.iter().copied());
+                pre_weaken_pres.extend(trait_item_spec.iter().flat_map(|spec| spec.pre_exprs()));
 
                 // Spans of the trait method's preconditions, to point the
                 // behavioral-subtyping error's hint at them.
-                let trait_pre_spans: Vec<_> =
-                    trait_item_spec.pres.iter().map(|(_, s)| *s).collect();
+                let trait_pre_spans: Vec<_> = trait_item_spec
+                    .iter()
+                    .flat_map(|spec| &spec.pres)
+                    .map(|(_, s)| *s)
+                    .collect();
 
                 // Both checks are only needed where the impl applies.
                 let bounds = Self::assume_context_bounds(vcx, deps, impl_item_context)?;
 
+                let needs_impl_pres = assert_held(
+                    vcx,
+                    impl_span,
+                    &resources.impl_pres,
+                    format!(
+                        "{implementation} needs the targets of mutable references that a call \
+                         of `{trait_fn_path}` does not give it"
+                    ),
+                );
+
                 methods.push(vcx.mk_method(
                     MethodIdn::<(vir::ManyRef, vir::ManyTyVal, vir::ManyCSnap)>::new(
-                        vir_format_identifier!(vcx, "trait_{trait_name}_impl_{implementing_ty}_{idx}_fn_pre_weaken_{item_name}"),
+                        vir_format_identifier!(vcx, "{check_prefix}_fn_pre_weaken_{item_name}"),
                         (ref_args, impl_item_params.ty_args(), impl_item_params.const_args()),
                     ),
                     (ref_arg_decls.as_slice(), trait_ty_decls, trait_const_decls),
@@ -146,12 +242,12 @@ impl TaskEncoder for TraitImplEnc {
                         vcx.mk_cfg_block(
                             &vir::CfgBlockLabelData::Start,
                             &[],
-                            vcx.alloc_slice(&bounds.iter().copied().chain(impl_item_spec.pres.iter().copied()
+                            vcx.alloc_slice(&bounds.iter().copied().chain(needs_impl_pres).chain(impl_item_spec.pres.iter().copied()
                                 .map(|(pre, pre_span)| vcx.with_span(pre_span, |vcx| {
                                     let trait_pre_spans = trait_pre_spans.clone();
                                     vcx.handle_error("exhale.failed:assertion.false", move |_| {
                                         let mut err = PrustiError::verification(
-                                            "the implementation's precondition may be stronger than the trait method's",
+                                            format!("{implementation}'s precondition may be stronger than the trait method's"),
                                             pre_span.into(),
                                         );
                                         for trait_span in &trait_pre_spans {
@@ -171,14 +267,26 @@ impl TaskEncoder for TraitImplEnc {
                 ));
 
                 let mut post_strengthen_pres = impure_arg_preds;
-                post_strengthen_pres.extend(trait_item_spec.pre_exprs());
+                post_strengthen_pres.extend(resources.trait_pres.iter().copied());
+                post_strengthen_pres
+                    .extend(trait_item_spec.iter().flat_map(|spec| spec.pre_exprs()));
 
                 // exceptionally, we also put the allocated result in the precondition
                 post_strengthen_pres.push(local_defs[mir::RETURN_PLACE].impure_pred);
 
+                // The call hands over what the stub takes and gets back what
+                // the implementation gives back. The stub's resources are
+                // exhaled at once: inner ones are read through outer ones.
+                let mut stmts = bounds;
+                stmts.push(vcx.mk_exhale_stmt(vcx.mk_conj(&resources.trait_pres)));
+                stmts.extend(
+                    resources
+                        .impl_posts
+                        .iter()
+                        .map(|&post| vcx.mk_inhale_stmt(post)),
+                );
                 // here we inhale the impl postconditions, since they
                 // can contain "old" variables
-                let mut stmts = bounds;
                 for post in impl_item_spec.post_exprs() {
                     stmts.push(vcx.mk_inhale_stmt(post));
                 }
@@ -201,12 +309,22 @@ impl TaskEncoder for TraitImplEnc {
                         ([local_defs[mir::RETURN_PLACE].impure_snap]) == ([pure_func_app])
                     }));
                 }
+                stmts.extend(assert_held(
+                    vcx,
+                    impl_span,
+                    &resources.trait_posts,
+                    format!(
+                        "{implementation} does not give back the targets of mutable references \
+                         that a call of `{trait_fn_path}` gives back"
+                    ),
+                ));
                 // The failing exhale is a trait postcondition, but the problem
                 // is the impl's postcondition being too weak: point the error at
                 // the impl's postcondition(s) and hint at the trait's.
                 let impl_post_spans: Vec<_> =
                     impl_item_spec.posts.iter().map(|(_, s)| *s).collect();
-                for &(post, trait_post_span) in &trait_item_spec.posts {
+                for &(post, trait_post_span) in trait_item_spec.iter().flat_map(|spec| &spec.posts)
+                {
                     let impl_post_spans = impl_post_spans.clone();
                     vcx.with_span(impl_span, |vcx| {
                         vcx.handle_error("exhale.failed:assertion.false", move |_| {
@@ -216,7 +334,7 @@ impl TaskEncoder for TraitImplEnc {
                                 MultiSpan::from_spans(impl_post_spans.clone())
                             };
                             let err = PrustiError::verification(
-                                "the implementation's postcondition may be weaker than the trait method's",
+                                format!("{implementation}'s postcondition may be weaker than the trait method's"),
                                 primary,
                             )
                             .add_note(
@@ -231,26 +349,31 @@ impl TaskEncoder for TraitImplEnc {
 
                 methods.push(vcx.mk_method(
                     MethodIdn::<(vir::ManyRef, vir::ManyTyVal, vir::ManyCSnap)>::new(
-                        vir_format_identifier!(vcx, "trait_{trait_name}_impl_{implementing_ty}_{idx}_fn_post_strengthen_{item_name}"),
-                        (ref_args, impl_item_params.ty_args(), impl_item_params.const_args()),
+                        vir_format_identifier!(
+                            vcx,
+                            "{check_prefix}_fn_post_strengthen_{item_name}"
+                        ),
+                        (
+                            ref_args,
+                            impl_item_params.ty_args(),
+                            impl_item_params.const_args(),
+                        ),
                     ),
                     (ref_arg_decls.as_slice(), trait_ty_decls, trait_const_decls),
                     &[],
                     vcx.alloc_slice(&post_strengthen_pres),
                     &[],
-                    Some(vcx.alloc_slice(&[
-                        vcx.mk_cfg_block(
-                            &vir::CfgBlockLabelData::Start,
-                            &[],
-                            vcx.alloc_slice(&stmts),
-                            vcx.alloc(vir::TerminatorStmtData::Exit),
-                        )
-                    ])),
+                    Some(vcx.alloc_slice(&[vcx.mk_cfg_block(
+                        &vir::CfgBlockLabelData::Start,
+                        &[],
+                        vcx.alloc_slice(&stmts),
+                        vcx.alloc(vir::TerminatorStmtData::Exit),
+                    )])),
                 ));
             }
 
             // Make the impl visible to the trait's `impl_fun`.
-            if implements_trait(tcx, *task_key) {
+            if !is_closure && implements_trait(tcx, *task_key) {
                 deps.require_dep::<TraitImplConditionEnc>(*task_key)?;
             }
 
@@ -265,6 +388,143 @@ impl TaskEncoder for TraitImplEnc {
             }
         }
     }
+}
+
+/// The generic arguments of the trait item that `impl_item_def_id`
+/// implements, in the context of the impl item.
+///
+/// Combine the args to the trait in the impl and the identity args
+/// for the item itself. That is, for:
+/// ```text
+/// trait MyTrait<'a, A> { fn foo<'b, B>() {} }
+/// impl<T> MyTrait<'static, (T, bool)> for MyType {
+///     fn foo<'b, B>() {}
+/// }
+/// ```
+/// The `impl_item_context` of `foo` is `<T, 'b, B>` and
+/// `impl_context` is `<T>`. We take the suffix of the impl item's
+/// params that are specific to the item (i.e. not inherited from
+/// the impl) and combine them with the trait args to get:
+/// `<MyType, 'static, (T, bool), 'b, B>`. We use
+/// `impl_item_context` rather than the trait item's context because
+/// the parameter indices must match the `impl_item_context` used in
+/// `GArgs::new` below.
+fn trait_item_args<'vir>(vcx: &'vir vir::VirCtxt<'vir>, impl_item_def_id: DefId) -> GArgs<'vir> {
+    let impl_did = vcx.tcx().impl_of_assoc(impl_item_def_id).unwrap();
+    let impl_context = GParams::from(impl_did);
+    let impl_item_context = GParams::from(impl_item_def_id);
+    let trait_ref = vcx
+        .tcx()
+        .impl_trait_ref(impl_did)
+        .instantiate_identity()
+        .skip_normalization();
+    let item_args = &impl_item_context.rust_params()[impl_context.rust_params().len()..];
+    let args = trait_ref.args.iter().chain(item_args.iter().copied());
+    let args = vcx.tcx().mk_args_from_iter(args);
+    GArgs::new(impl_item_context, args)
+}
+
+/// A function implementing a trait method, checked against it by
+/// [`TraitImplEnc`].
+pub(crate) struct ImplFn<'vir> {
+    /// The implementing function.
+    pub def_id: DefId,
+    /// The trait method that it implements.
+    pub trait_fn: DefId,
+    /// The trait method's generic arguments, in the context of `def_id`.
+    pub trait_args: GArgs<'vir>,
+}
+
+/// The indirect resources (what is reachable through the mutable references
+/// among the arguments and the result, see [`WandEncOutput`]) of a function
+/// implementing a trait method, and of the trait method's stub (see
+/// `TraitFnEnc`) at the implementing type. The stub's generic signature has no
+/// regions for references inside a type parameter (e.g. in `Self = &mut i32`),
+/// so it can take less than the implementation needs, which `TraitImplEnc`
+/// checks.
+struct IndirectResources<'vir> {
+    trait_pres: Vec<vir::ExprBool<'vir>>,
+    trait_posts: Vec<vir::ExprBool<'vir>>,
+    impl_pres: Vec<vir::ExprBool<'vir>>,
+    impl_posts: Vec<vir::ExprBool<'vir>>,
+}
+
+impl<'vir> IndirectResources<'vir> {
+    /// The indirect resources of `impl_fn` and of `trait_fn` at `trait_args`,
+    /// both reified at the arguments of `impl_fn` in `local_defs`. Only the
+    /// arguments with regions in the trait method's signature are read, which
+    /// are arguments of `impl_fn` at the same positions.
+    fn new<E: TaskEncoder>(
+        vcx: &'vir vir::VirCtxt<'vir>,
+        deps: &mut TaskEncoderDependencies<'vir, E>,
+        impl_fn: DefId,
+        trait_fn: DefId,
+        trait_args: GArgs<'vir>,
+        local_defs: &MirLocalDefEncOutput<'vir>,
+    ) -> Result<Self, EncodeFullError<'vir, E>> {
+        let span = vcx.tcx().def_span(impl_fn);
+        let impl_wands = deps
+            .require_dep_spanned::<WandEnc>(
+                WandEncTask {
+                    data: FunctionData::new(impl_fn),
+                },
+                span,
+            )
+            .inspect_err(|err| {
+                // This error is worded like `MethodEnc`'s for the same
+                // failure, so rustc deduplicates the two. It is needed here
+                // because `MethodEnc` does not encode trusted pure functions.
+                if matches!(err, EncodeFullError::DependencyError(_)) {
+                    vcx.emit_early_error(dep_error(err).report(
+                        format!("method `{}`", vcx.tcx().def_path_str(impl_fn)),
+                        span,
+                    ));
+                }
+            })?;
+        let trait_wands = deps.require_dep_spanned::<WandEnc>(
+            WandEncTask {
+                data: FunctionData::new(trait_fn),
+            },
+            span,
+        )?;
+        let trait_args = Some(trait_args);
+        Ok(Self {
+            trait_pres: trait_wands
+                .indirect_pres(vcx, local_defs, trait_args, deps)
+                .collect(),
+            trait_posts: trait_wands
+                .indirect_posts(vcx, local_defs, trait_args, deps)
+                .collect(),
+            impl_pres: impl_wands
+                .indirect_pres(vcx, local_defs, None, deps)
+                .collect(),
+            impl_posts: impl_wands
+                .indirect_posts(vcx, local_defs, None, deps)
+                .collect(),
+        })
+    }
+}
+
+/// Asserts that `resources` are held, reporting `message` at `span` where they
+/// are not.
+fn assert_held<'vir>(
+    vcx: &'vir vir::VirCtxt<'vir>,
+    span: Span,
+    resources: &[vir::ExprBool<'vir>],
+    message: String,
+) -> Vec<vir::Stmt<'vir>> {
+    resources
+        .iter()
+        .map(|&resource| {
+            vcx.with_span(span, |vcx| {
+                let message = message.clone();
+                vcx.handle_error("assert.failed:insufficient.permission", move |_| {
+                    Some(vec![PrustiError::unsupported(message.clone(), span.into())])
+                });
+                vcx.mk_assert_stmt(resource)
+            })
+        })
+        .collect()
 }
 
 /// Encodes the applicability condition of a trait impl: the axiom that the
@@ -888,27 +1148,8 @@ impl TaskEncoder for TraitImplItemEnc {
                 &impl_item_params.const_decls()[..impl_params.const_decls().len()]
             );
 
-            // Combine the args to the trait in the impl and the identity args
-            // for the item itself. That is, for:
-            // ```
-            // trait MyTrait<'a, A> { fn foo<'b, B>() {} }
-            // impl<T> MyTrait<'static, (T, bool)> for MyType {
-            //     fn foo<'b, B>() {}
-            // }
-            // ```
-            // The `impl_item_context` of `foo` is `<T, 'b, B>` and
-            // `impl_context` is `<T>`. We take the suffix of the impl item's
-            // params that are specific to the item (i.e. not inherited from
-            // the impl) and combine them with the trait args to get:
-            // `<MyType, 'static, (T, bool), 'b, B>`. We use
-            // `impl_item_context` rather than the trait item's context because
-            // the parameter indices must match the `impl_item_context` used in
-            // `GArgs::new` below.
             let trait_item_context = GParams::from(trait_item_def_id);
-            let item_args = &impl_item_context.rust_params()[impl_context.rust_params().len()..];
-            let args = trait_ref.args.iter().chain(item_args.iter().copied());
-            let args = tcx.mk_args_from_iter(args);
-            let impl_item_args = GArgs::new(impl_item_context, args);
+            let impl_item_args = trait_item_args(vcx, impl_item_def_id);
             let args = deps.require_dep::<GArgsTyEnc>(impl_item_args)?;
 
             let trait_tys = args.get_ty();

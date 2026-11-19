@@ -1,9 +1,9 @@
 //@ known-failure
-// Calls of closures that capture references are not supported yet: a call goes
-// to the generic stub of the `Fn*` trait method, which knows nothing about the
-// closure (not even its `Output` type) and takes no permission for what it
-// captures. Verification fails with an unbacktranslatable
-// `call.precondition:insufficient.permission`.
+// Calls of closures are not supported yet: a call goes to the stub of the `Fn*`
+// trait method, which knows nothing about the closure (not even its `Output`
+// type). It also does not take the targets of mutable references that the
+// closure captures, so closures that need them are rejected (see
+// `fail/closures/mut-capture.rs`).
 
 pub fn straight_line() {
     let mut c = 0;
@@ -23,7 +23,6 @@ pub fn map_with_counter() {
     }
 }
 
-// Closure capturing a reference that is called in a loop.
 pub fn closure_in_loop(n: u32) {
     let k = 1u32;
     let r = &k;

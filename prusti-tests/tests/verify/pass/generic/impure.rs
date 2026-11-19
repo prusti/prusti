@@ -95,3 +95,20 @@ fn boxes() {
         None => assert!(false),
     }
 }
+
+// A generic function returning a borrow from an argument beside a type
+// parameter, called with the parameter instantiated with a type without
+// references.
+fn second<T>(p: (T, &mut i32)) -> &mut i32 {
+    p.1
+}
+
+fn second_client() {
+    let mut y = 0;
+    {
+        let r = second((1u8, &mut y));
+        *r = 2;
+    }
+    y = 3;
+    assert!(y == 3);
+}
