@@ -85,7 +85,7 @@ impl<'vir> EnclosureGraph<'vir> {
         context: GParams<'vir>,
     ) -> GeneralizedLifetime<'vir> {
         for &arg in &self.paths[p] {
-            let (_, args) = TyData::<RustTyDatas>::identity_for_ty(ty, false);
+            let (_, args) = TyData::<RustTyDatas>::identity_for_ty(ty);
             match args[arg].kind() {
                 ty::GenericArgKind::Lifetime(region) => return GeneralizedLifetime::Region(region),
                 ty::GenericArgKind::Type(arg_ty) => ty = arg_ty,
