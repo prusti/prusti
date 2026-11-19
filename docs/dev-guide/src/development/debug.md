@@ -31,7 +31,7 @@ This command does the following:
 Tip: to see the expanded Prusti specification macros, add the following comment at the beginning of the test file:
 
 ```rust
-// compile-flags: -Zunpretty=expanded
+//@ compile-flags: -Zunpretty=expanded
 ```
 
 ### Running Prusti in a debugger

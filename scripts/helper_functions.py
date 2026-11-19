@@ -198,7 +198,10 @@ def extract_test_compile_flags(test_path):
     compile_flags = []
     with open(test_path) as fp:
         for line in fp:
-            if line.startswith('// compile-flags:'):
-                compile_flags.extend(line[len('// compile-flags:'):].strip().split())
+            if not line.startswith('//@'):
+                continue
+            command = line[len('//@'):].strip()
+            if command.startswith('compile-flags:'):
+                compile_flags.extend(command[len('compile-flags:'):].split())
         report("Additional compile flags: {}", compile_flags)
     return compile_flags
