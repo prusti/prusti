@@ -112,8 +112,8 @@ impl<'vir> SimplifyCtx<'vir> {
     }
 }
 
-/// Simplifies the expressions of a program item (a domain, predicate,
-/// function or method).
+/// Simplifies the expressions of a program, or of one of its items (a
+/// domain, predicate, function or method).
 pub fn simplify<'vir, 'tcx, T: Foldable<'vir, (), !> + Copy>(
     vcx: &'vir VirCtxt<'tcx>,
     ctx: &SimplifyCtx<'vir>,
