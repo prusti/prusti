@@ -39,23 +39,28 @@ fn tail_thin<T: ?Sized>(a: *const Tail<T>) -> *const u8 {
     a as *const u8
 }
 
+#[pure]
+fn tail_thin_via_tail<T: ?Sized>(a: *const Tail<T>) -> *const u8 {
+    a as *const T as *const u8
+}
+
 // Negations of the pass tests' assertions on thin casts in a generic body at
 // unsized instantiations. They would verify if the metadata facts the casts
 // rely on were contradictory.
 fn tail_thin_slice(a: *const Tail<[u8]>) {
-    prusti_assert!(tail_thin(a) != a as *const u8); //~ERROR: the asserted expression might not hold
+    prusti_assert!(tail_thin(a) != a as *const [u8] as *const u8); //~ERROR: the asserted expression might not hold
 }
 
 trait Tr {}
 
 fn tail_thin_dyn(a: *const Tail<dyn Tr>) {
-    prusti_assert!(tail_thin(a) != a as *const u8); //~ERROR: the asserted expression might not hold
+    prusti_assert!(tail_thin(a) != tail_thin_via_tail(a)); //~ERROR: the asserted expression might not hold
 }
 
 fn tail_thin_nested(a: *const Tail<Tail<str>>) {
-    prusti_assert!(tail_thin(a) != a as *const u8); //~ERROR: the asserted expression might not hold
+    prusti_assert!(tail_thin(a) != a as *const str as *const u8); //~ERROR: the asserted expression might not hold
 }
 
 fn tail_thin_tuple(a: *const Tail<(u8, [u8])>) {
-    prusti_assert!(tail_thin(a) != a as *const u8); //~ERROR: the asserted expression might not hold
+    prusti_assert!(tail_thin(a) != a as *const [u8] as *const u8); //~ERROR: the asserted expression might not hold
 }

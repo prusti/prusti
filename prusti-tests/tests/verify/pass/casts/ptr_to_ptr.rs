@@ -70,7 +70,7 @@ fn to_thin_sized(p: *const u8) {
 }
 
 fn to_thin_generic_sized<T>(p: *const T) {
-    prusti_assert!(to_thin(p) == p as *const u8);
+    prusti_assert!(to_thin(p) as *const T == p);
 }
 
 struct Tail<T: ?Sized> {
@@ -97,31 +97,32 @@ fn tail_round_trip_slice(a: *const Tail<[u8]>) {
 }
 
 // The casts in bodies generic over `T: ?Sized` drop the metadata at unsized
-// instantiations too, whose metadata types are not `()`.
+// instantiations too, whose metadata types are not `()`: the result equals a
+// thin cast after a cast to the tail, which keeps the metadata.
 #[pure]
 fn tail_thin<T: ?Sized>(a: *const Tail<T>) -> *const u8 {
     a as *const u8
 }
 
 fn tail_thin_slice(a: *const Tail<[u8]>) {
-    prusti_assert!(tail_thin(a) == a as *const u8);
+    prusti_assert!(tail_thin(a) == a as *const [u8] as *const u8);
 }
 
 trait Tr {}
 
 fn tail_thin_dyn(a: *const Tail<dyn Tr>) {
-    prusti_assert!(tail_thin(a) == a as *const u8);
+    prusti_assert!(tail_thin(a) == tail_thin_via_tail(a));
 }
 
 fn tail_thin_nested(a: *const Tail<Tail<str>>) {
-    prusti_assert!(tail_thin(a) == a as *const u8);
+    prusti_assert!(tail_thin(a) == a as *const str as *const u8);
 }
 
 fn tail_thin_tuple(a: *const Tail<(u8, [u8])>) {
-    prusti_assert!(tail_thin(a) == a as *const u8);
+    prusti_assert!(tail_thin(a) == a as *const [u8] as *const u8);
 }
 
-// A thin cast after a cast to the tail, which keeps the metadata.
+// The same with the casts in the generic body instead.
 #[pure]
 fn tail_thin_via_tail<T: ?Sized>(a: *const Tail<T>) -> *const u8 {
     a as *const T as *const u8
@@ -142,5 +143,5 @@ fn field_thin<T: ?Sized>(h: &H<T>) -> *const u8 {
 }
 
 fn field_thin_slice(h: &H<[u8]>) {
-    prusti_assert!(field_thin(h) == h.p as *const u8);
+    prusti_assert!(field_thin(h) == h.p as *const [i8] as *const u8);
 }

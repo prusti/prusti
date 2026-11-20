@@ -43,7 +43,6 @@ impl TaskEncoder for ValueCastEnc {
         );
         vir::with_vcx(|vcx| {
             let domain_fn = vcx.mk_domain_function(fn_idn, false, None);
-            // See comment in `MetadataCastEnc` about the corresponding axiom there.
             // forall input: s_Param, same: Type :: { value_cast(input, same, same) }
             //     value_cast(input, same, same) == input
             let expr = vir::expr! {
@@ -79,8 +78,10 @@ impl TaskEncoder for ValueCastEnc {
 /// (`rustc_const_eval/src/interpret/cast.rs`), a cast keeps the metadata
 /// between pointees with the same metadata type and replaces it with `()` in a
 /// cast to a thin pointer; these are all raw-pointer casts rustc accepts (all
-/// trait objects are one Viper type). An unsizing coercion always changes the
-/// metadata type, so neither applies to it.
+/// trait objects are one Viper type). An unsizing coercion from a sized type
+/// changes the metadata type, so neither applies to it. A coercion between
+/// trait objects falls under the first: it keeps the vtable, also for an
+/// upcast, where rustc replaces it.
 pub struct MetadataCastEnc;
 
 impl TaskEncoder for MetadataCastEnc {
