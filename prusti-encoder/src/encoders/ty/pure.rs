@@ -246,6 +246,10 @@ pub struct TyPureEncLocal<'vir> {
     /// Other functions related to this type.
     functions: &'vir [vir::Function<'vir>],
     kind: TyPureEncLocalKind<'vir>,
+    /// Whether this encodes something the user writes rather than something
+    /// rustc or the encoding adds, which the simplifier may fold away (see
+    /// `add_user_adt`).
+    user_level: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -361,13 +365,21 @@ impl TaskEncoder for TyPureEnc {
                     domain,
                     literal_inverse,
                 } => {
-                    program.add_domain(domain);
+                    if output.user_level {
+                        program.add_user_domain(domain);
+                    } else {
+                        program.add_domain(domain);
+                    }
                     if let Some(literal_inverse) = literal_inverse {
                         program.add_literal_inverse(literal_inverse);
                     }
                 }
                 TyPureEncLocalKind::Adt { adt, discr_fn } => {
-                    program.add_adt(adt);
+                    if output.user_level {
+                        program.add_user_adt(adt);
+                    } else {
+                        program.add_adt(adt);
+                    }
                     if let Some(discr_fn) = discr_fn {
                         program.add_function(discr_fn);
                     }
@@ -423,6 +435,10 @@ pub(crate) struct TyPureBuilder<'vir> {
     unreachable_to_snap: FunctionIdn<'vir, (vir::ManyTyVal, vir::ManyCSnap), vir::Snap>,
     pub(super) params: GenericParams<'vir>,
     data: BuilderData<'vir>,
+    /// Whether this encodes something the user writes rather than something
+    /// rustc or the encoding adds, which the simplifier may fold away (see
+    /// `add_user_adt`).
+    user_level: bool,
 }
 
 pub enum BuilderData<'vir> {
@@ -505,6 +521,7 @@ impl<'vir> TyPureBuilder<'vir> {
             unreachable_to_snap,
             params,
             data: BuilderData::None,
+            user_level: ty.user_level,
         }
     }
 
@@ -560,11 +577,13 @@ impl<'vir> TyPureBuilder<'vir> {
                 _ => &[],
             };
             let functions = vcx.alloc_slice(functions);
+            let user_level = self.user_level;
             let kind = self.build_kind();
             TyPureEncLocal {
                 unreachable_to_snap,
                 kind,
                 functions,
+                user_level,
             }
         })
     }

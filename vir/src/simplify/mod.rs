@@ -41,7 +41,11 @@ pub struct LiteralInverse<'vir> {
 
 /// What the simplification knows about the program: its adt constructors and
 /// destructors, its total functions and the literal inverses its encoder
-/// declares, used to recognize the foldable applications.
+/// declares, used to recognize the foldable applications. The definitions
+/// that the encoder declares user-level, which encode what the user writes,
+/// are left out: folding away an application of one would remove a term
+/// that a trigger the user wrote can match, and the solver finds matches
+/// only among the terms that exist.
 pub struct SimplifyCtx<'vir> {
     /// Constructor name to its ordered field (destructor) declarations.
     constructors: FxHashMap<&'vir str, &'vir [crate::LocalDeclDyn<'vir>]>,
@@ -49,8 +53,9 @@ pub struct SimplifyCtx<'vir> {
     destructors: FxHashMap<&'vir str, (&'vir str, usize)>,
     /// The constructors of single-constructor adts.
     eta: FxHashSet<&'vir str>,
-    /// Names of the total functions: domain functions and functions without
-    /// preconditions (which therefore cannot read the heap either).
+    /// Names of the total functions that are not user-level: domain functions
+    /// and functions without preconditions (which therefore cannot read the
+    /// heap either).
     total_functions: FxHashSet<&'vir str>,
     /// The declared literal inverses, by the name of `outer`.
     literal_inverses: FxHashMap<&'vir str, LiteralInverse<'vir>>,
@@ -62,21 +67,24 @@ impl<'vir> SimplifyCtx<'vir> {
         domains: &[Domain<'vir>],
         functions: &[Function<'vir>],
         literal_inverses: &[LiteralInverse<'vir>],
+        user_level: &FxHashSet<&'vir str>,
     ) -> Self {
+        let foldable = |name: &str| !user_level.contains(name);
         let total_functions = domains
             .iter()
+            .filter(|d| foldable(d.name))
             .flat_map(|d| d.functions.iter().map(|f| f.name.to_str()))
             .chain(
                 functions
                     .iter()
-                    .filter(|f| f.pres.is_empty())
+                    .filter(|f| f.pres.is_empty() && foldable(f.name))
                     .map(|f| f.name),
             )
             .collect();
         let mut constructors = FxHashMap::default();
         let mut destructors = FxHashMap::default();
         let mut eta = FxHashSet::default();
-        for adt in adts {
+        for adt in adts.iter().filter(|adt| foldable(adt.name)) {
             let eta_adt = adt.constructors.len() == 1;
             for cons in adt.constructors {
                 constructors.insert(cons.name, cons.args);

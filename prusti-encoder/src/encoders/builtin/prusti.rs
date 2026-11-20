@@ -1546,12 +1546,12 @@ impl TaskEncoder for CollectionOpsEnc {
                     functions.push(function);
                     axioms.extend(axs);
                 }
-                CollectionOpOutput::Function(function) => program.add_function(function),
+                CollectionOpOutput::Function(function) => program.add_user_function(function),
             }
         }
         if !functions.is_empty() {
             vir::with_vcx(|vcx| {
-                program.add_domain(vcx.mk_domain(
+                program.add_user_domain(vcx.mk_domain(
                     vir::ViperIdent::new("PrustiCollectionOps"),
                     &[],
                     vcx.alloc_slice(&axioms),

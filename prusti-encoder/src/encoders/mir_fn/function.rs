@@ -266,7 +266,7 @@ impl TaskEncoder for FunctionEnc {
 
     fn emit_outputs<'vir>(program: &mut task_encoder::Program<'vir>) {
         for output in Self::all_outputs_local(program) {
-            program.add_function(output.function);
+            program.add_user_function(output.function);
         }
     }
 }

@@ -88,6 +88,12 @@ pub(super) struct MirBuiltinCastLocal<'vir> {
     cast: vir::Function<'vir>,
     unsize: Option<vir::Method<'vir>>,
     undo: Option<vir::Method<'vir>>,
+    /// Whether the cast is user-level (see
+    /// `task_encoder::Program::add_user_function`), i.e. no pointer coercion.
+    /// A pointer coercion is encoding-level even when written with `as`: most
+    /// coercions are implicit, and `MirBuiltinUseCastTask::new` encodes
+    /// explicit and implicit ones as the same function.
+    user_level: bool,
 }
 
 impl TaskEncoder for MirBuiltinCastEnc {
@@ -120,6 +126,7 @@ impl TaskEncoder for MirBuiltinCastEnc {
         let res_ty = deps.require_dep::<TyUsePureEnc>(res_ty)?;
         let res_ty_snap = res_ty.snapshot.downcast_ty::<vir::CSnap>();
 
+        let user_level = !matches!(kind, mir::CastKind::PointerCoercion(..));
         let (name, ty_args) = match kind {
             mir::CastKind::PointerCoercion(ty::adjustment::PointerCoercion::Unsize, ..) => {
                 ("unsize", CastTyArgs::Referents)
@@ -475,7 +482,12 @@ impl TaskEncoder for MirBuiltinCastEnc {
             let (unsize, unsize_idn) = unsize.unzip();
             let (undo, undo_idn) = undo.unzip();
             Ok((
-                MirBuiltinCastLocal { cast, unsize, undo },
+                MirBuiltinCastLocal {
+                    cast,
+                    unsize,
+                    undo,
+                    user_level,
+                },
                 MirBuiltinCastOutput {
                     cast: cast_idn,
                     unsize: unsize_idn,
@@ -488,7 +500,11 @@ impl TaskEncoder for MirBuiltinCastEnc {
 
     fn emit_outputs<'vir>(program: &mut task_encoder::Program<'vir>) {
         for local in Self::all_outputs_local(program) {
-            program.add_function(local.cast);
+            if local.user_level {
+                program.add_user_function(local.cast);
+            } else {
+                program.add_function(local.cast);
+            }
             if let Some(unsize) = local.unsize {
                 program.add_method(unsize);
             }

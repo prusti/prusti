@@ -58,8 +58,10 @@ impl TaskEncoder for TraitFnEnc {
     fn emit_outputs<'vir>(program: &mut task_encoder::Program<'vir>) {
         for (dom, funcs, methods) in Self::all_outputs_local(program) {
             program.add_domain(dom);
+            // The call stub of a pure trait method stands for the calls the
+            // user writes.
             for func in funcs {
-                program.add_function(func);
+                program.add_user_function(func);
             }
             for method in methods {
                 program.add_method(method);

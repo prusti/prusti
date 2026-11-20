@@ -2,7 +2,10 @@
 #![feature(associated_type_defaults)]
 
 use core::panic;
-use prusti_rustc_interface::{data_structures::fx::FxIndexMap, span::Span};
+use prusti_rustc_interface::{
+    data_structures::fx::{FxHashSet, FxIndexMap},
+    span::Span,
+};
 use std::cell::RefCell;
 
 mod cache;
@@ -24,6 +27,9 @@ pub struct Program<'vir> {
     functions: Vec<vir::Function<'vir>>,
     methods: Vec<vir::Method<'vir>>,
     literal_inverses: Vec<vir::simplify::LiteralInverse<'vir>>,
+    /// The names of the adts, domains and functions that encode what the user
+    /// writes, which the simplifier never folds away (see `add_user_adt`).
+    user_level: FxHashSet<&'vir str>,
 
     code: Vec<CodeItem>,
     encoder_errors: Vec<(String, Span)>,
@@ -60,6 +66,41 @@ impl<'vir> Program<'vir> {
     pub fn add_domain(&mut self, domain: vir::Domain<'vir>) {
         self.code.push(CodeItem::Domain(self.domains.len()));
         self.domains.push(domain);
+    }
+
+    /// Adds an adt whose constructors and fields encode what the user writes,
+    /// such as the snapshot of a Rust struct. [`Self::simplify`] never folds
+    /// away an application of such a user-level adt, domain or function, so
+    /// that a trigger of a quantifier the user wrote still finds the terms the
+    /// user wrote. What rustc adds to the MIR, or the encoding introduces, is
+    /// not user-level and may be folded away.
+    ///
+    /// - User-level: the snapshots of structs, enums, arrays and slices, pure
+    ///   functions, operators, constants, ghost collection operations and
+    ///   value casts, which come from `as`.
+    /// - Not user-level: references, boxes, raw pointers, closures and
+    ///   tuples, which rustc and Prusti build and take apart themselves (e.g.
+    ///   auto-refs, the arguments of a closure call, the trigger sets of a
+    ///   quantifier); the snapshots of primitives and generic parameters,
+    ///   which wrap values for the encoding; and pointer coercions, which are
+    ///   mostly implicit (one written with `as` is encoded as the same
+    ///   function).
+    pub fn add_user_adt(&mut self, adt: vir::Adt<'vir>) {
+        self.user_level.insert(adt.name);
+        self.add_adt(adt);
+    }
+
+    /// Adds a domain whose functions are user-level (see
+    /// [`Self::add_user_adt`]).
+    pub fn add_user_domain(&mut self, domain: vir::Domain<'vir>) {
+        self.user_level.insert(domain.name);
+        self.add_domain(domain);
+    }
+
+    /// Adds a user-level function (see [`Self::add_user_adt`]).
+    pub fn add_user_function(&mut self, function: vir::Function<'vir>) {
+        self.user_level.insert(function.name);
+        self.add_function(function);
     }
 
     /// Declares a literal inverse, which [`Self::simplify`] then folds.
@@ -114,6 +155,7 @@ impl<'vir> Program<'vir> {
                 &self.domains,
                 &self.functions,
                 &self.literal_inverses,
+                &self.user_level,
             );
             for domain in self.domains.iter_mut() {
                 *domain = vir::simplify::simplify(vcx, &ctx, *domain);
