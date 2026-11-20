@@ -32,7 +32,7 @@ pub use genrefs::*;
 pub use r#type::*;
 pub use refs::*;
 pub use reify::*;
-pub use spans::{ErrorGuaranteed, ErrorTaint, VirSpan};
+pub use spans::{ErrorTaint, Reported, VirSpan};
 pub use viper_ident::*;
 pub use visit::*;
 

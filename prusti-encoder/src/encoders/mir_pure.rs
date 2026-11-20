@@ -1,7 +1,7 @@
 use crate::encoders::{
     FunctionCallEnc, Mode, PrustiBuiltin, SpecBuiltin, ViperTupleEnc,
     mir_fn::{CallTaskDescription, RustSignature, SpecArms},
-    mir_shared::{EncodeResult, PureRvalueEnc, RustcIntrinsic},
+    mir_shared::{EncodeResult, PureRvalueEnc, RustcIntrinsic, unsupported_opaque},
     pure::spec::MirSpecEncMode,
     ty::{
         RustTyDecomposition,
@@ -23,7 +23,8 @@ use prusti_rustc_interface::{
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::fmt;
 use task_encoder::{
-    DependencyErrorLink, EncodeFullError, EncodeFullResult, TaskEncoder, TaskEncoderDependencies,
+    DependencyErrorLink, EncodeFullError, EncodeFullResult, ErrorKind, TaskEncoder,
+    TaskEncoderDependencies,
 };
 use vir::{CastType, CompType, add_debug_note};
 
@@ -371,7 +372,7 @@ impl<'vir: 'enc, 'enc> PureRvalueEnc<'vir> for Enc<'vir, 'enc> {
                 self.encode_place_snap((*place).into(), curr_ver)?
             }
             mir::Operand::Constant(box constant) => {
-                self.encode_constant_snap(constant)?.upcast_ty().lift()
+                self.encode_constant_snap(constant)?.upcast_ty().lazy()
             }
             mir::Operand::RuntimeChecks(_) => todo!(),
         })
@@ -755,7 +756,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                         self.vcx.mk_ternary_expr(
                             self.vcx.mk_eq_expr(
                                 discr_ty_out.snap_to_prim(discr_expr),
-                                discr_ty_out.expr_from_bits(discr_ty, cond_val).lift(),
+                                discr_ty_out.expr_from_bits(discr_ty, cond_val).lazy(),
                             ),
                             self.reify_branch(
                                 &tuple_ref,
@@ -965,8 +966,8 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                                     self.vcx.tcx().def_path_str(def_id)
                                 ),
                                 vec![term.source_info.span],
-                            )
-                            .incorrect(),
+                                ErrorKind::Incorrect,
+                            ),
                         ]))
                     }
                 });
@@ -1042,13 +1043,13 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                 // Reading a mutable reference's referent needs an address
                 // holding a predicate, which pure-created mutrefs don't have.
                 if kind.mutability().is_mut() {
-                    return Err(self.unsupported(
+                    return Err(EncodeFullError::unsupported(
                         format!(
                             "mutable borrow of `{}` in a specification: take a shared \
                              reference (`&`) instead",
                             place.ty(self.body, self.vcx.tcx()).ty
                         ),
-                        self.current_span(),
+                        vec![self.current_span()],
                     ));
                 }
                 let encoded_place = self.encode_place_with_ref(curr_ver, (*place).into())?;
@@ -1098,7 +1099,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                 let place_ty = place.ty(self.body, self.vcx.tcx());
                 let ty = self.ty_use(place_ty.ty);
                 if ty.specifics.is_opaque() {
-                    return Err(self.unsupported_opaque(place_ty.ty, span));
+                    return Err(unsupported_opaque(place_ty.ty, span));
                 }
                 let discr = match ty
                     .get_enumlike()
@@ -1112,7 +1113,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                         let e_rvalue_ty = self.ty_use(rvalue_ty).expect_primitive();
                         // mir::Rvalue::Discriminant documents "Returns zero for types without discriminant"
                         let zero = self.vcx.mk_uint::<0>();
-                        e_rvalue_ty.prim_to_snap(zero.upcast_ty()).lift()
+                        e_rvalue_ty.prim_to_snap(zero.upcast_ty()).lazy()
                     }
                 };
                 Ok(discr.upcast_ty())
@@ -1140,7 +1141,10 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                     .prim_to_snap(place_ref, metadata)
                     .upcast_ty())
             }
-            _ => Err(self.unsupported(format!("unsupported rvalue {rvalue:?} in pure code"), span)),
+            _ => Err(EncodeFullError::unsupported(
+                format!("unsupported rvalue {rvalue:?} in pure code"),
+                vec![span],
+            )),
         }
     }
 
@@ -1183,12 +1187,12 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                             // The value field of a mutable reference's snapshot
                             // is never constrained to the referent (see
                             // `p_Ref_mutable_arbitrary_value`).
-                            return Err(self.unsupported(
+                            return Err(EncodeFullError::unsupported(
                                 format!(
                                     "dereference of the mutable reference `{}` in pure code",
                                     place_ty.ty
                                 ),
-                                self.current_span(),
+                                vec![self.current_span()],
                             ));
                         }
                         let val_expr = {
@@ -1217,9 +1221,9 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                         EncodedPlace::new(val_expr, Some(ref_expr)).with_metadata(metadata)
                     }
                     TyKind::RawPtr(..) => {
-                        return Err(self.unsupported(
+                        return Err(EncodeFullError::unsupported(
                             format!("dereference of the raw pointer `{}`", place_ty.ty),
-                            self.current_span(),
+                            vec![self.current_span()],
                         ));
                     }
                     _ => unreachable!(),
@@ -1227,7 +1231,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
             }
             mir::ProjectionElem::Field(field_idx, _) => {
                 if e_ty.specifics.is_opaque() {
-                    return Err(self.unsupported_opaque(place_ty.ty, self.current_span()));
+                    return Err(unsupported_opaque(place_ty.ty, self.current_span()));
                 }
                 let variant = e_ty.expect_variant_opt(place_ty.variant_index);
                 let proj = variant[field_idx];
@@ -1382,7 +1386,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
             value = match elem {
                 mir::ProjectionElem::Downcast(..) => value,
                 mir::ProjectionElem::Field(..) if e_ty.specifics.is_opaque() => {
-                    return Err(self.unsupported_opaque(base_ty.ty, span));
+                    return Err(unsupported_opaque(base_ty.ty, span));
                 }
                 mir::ProjectionElem::Field(field_idx, _) => e_ty
                     .expect_variant_opt(base_ty.variant_index)
@@ -1396,13 +1400,13 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                 // that replaces one element; writes through a `&mut` need its
                 // referent's value, which pure code does not have.
                 _ => {
-                    return Err(self.unsupported(
+                    return Err(EncodeFullError::unsupported(
                         format!(
                             "assignment to a part of a `{}` in pure code: only fields and \
                              boxed values can be assigned to",
                             base_ty.ty
                         ),
-                        span,
+                        vec![span],
                     ));
                 }
             };
@@ -1578,7 +1582,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                         self.before_expiry_mode = true;
                     }
                 }
-                mk_bool(self.vcx.mk_bool::<true>().lift()) // TODO: what value do we return?
+                mk_bool(self.vcx.mk_bool::<true>().lazy()) // TODO: what value do we return?
             }
             SpecBuiltin::ModeEnd(mode) => {
                 match mode {
@@ -1601,7 +1605,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                         self.before_expiry_mode = false;
                     }
                 }
-                mk_bool(self.vcx.mk_bool::<true>().lift()) // TODO: what value do we return?
+                mk_bool(self.vcx.mk_bool::<true>().lazy()) // TODO: what value do we return?
             }
         }
         .upcast_ty())

@@ -38,11 +38,8 @@ pub enum TaskEncoderCacheState<'vir, E: TaskEncoder + 'vir + ?Sized> {
         output_dep: <E as TaskEncoder>::OutputFullDependency<'vir>,
     },
 
-    /// An error occurred when enqueing the task.
-    ErrorEnqueue {
-        error: TaskEncoderError<E>,
-        spans: Vec<Span>,
-    },
+    /// The task's encoding failed before emitting an output reference.
+    ErrorBeforeRef { failure: TaskFailure<E> },
 
     /// An error occurred when encoding the task. The full "local" encoding is
     /// not available. However, tasks which depend on this task may still
@@ -53,10 +50,65 @@ pub enum TaskEncoderCacheState<'vir, E: TaskEncoder + 'vir + ?Sized> {
     ErrorEncode {
         output_ref: <E as TaskEncoder>::OutputRef<'vir>,
         deps: TaskEncoderDependencies<'vir, E>,
-        error: TaskEncoderError<E>,
         output_dep: Option<<E as TaskEncoder>::OutputFullDependency<'vir>>,
-        spans: Vec<Span>,
+        failure: TaskFailure<E>,
     },
+}
+
+/// The failure of a task: its error, the spans of the requests of the task,
+/// and the record of whether the failure was reported.
+pub struct TaskFailure<E: TaskEncoder + ?Sized> {
+    pub error: TaskEncoderError<E>,
+    pub spans: Vec<Span>,
+    pub report: ErrorReport,
+}
+
+impl<'vir, E: TaskEncoder + 'vir + ?Sized> TaskEncoderCacheState<'vir, E> {
+    /// The task's output reference, if its encoding (or a re-run of it)
+    /// emitted one.
+    pub fn output_ref(&self) -> Option<&<E as TaskEncoder>::OutputRef<'vir>> {
+        match self {
+            Self::Started { output_ref }
+            | Self::Restarted { output_ref }
+            | Self::Encoded { output_ref, .. }
+            | Self::ErrorEncode { output_ref, .. } => Some(output_ref),
+            Self::Encoding | Self::ReEncoding | Self::ErrorBeforeRef { .. } => None,
+        }
+    }
+
+    /// The task's failure, if its encoding failed.
+    pub fn failure(&self) -> Option<&TaskFailure<E>> {
+        match self {
+            Self::ErrorBeforeRef { failure } | Self::ErrorEncode { failure, .. } => Some(failure),
+            Self::Encoding
+            | Self::ReEncoding
+            | Self::Started { .. }
+            | Self::Restarted { .. }
+            | Self::Encoded { .. } => None,
+        }
+    }
+
+    /// See [Self::failure].
+    pub fn failure_mut(&mut self) -> Option<&mut TaskFailure<E>> {
+        match self {
+            Self::ErrorBeforeRef { failure } | Self::ErrorEncode { failure, .. } => Some(failure),
+            Self::Encoding
+            | Self::ReEncoding
+            | Self::Started { .. }
+            | Self::Restarted { .. }
+            | Self::Encoded { .. } => None,
+        }
+    }
+
+    /// Whether the task's encoding has finished, successfully or not.
+    pub fn is_finished(&self) -> bool {
+        match self {
+            Self::Encoded { .. } | Self::ErrorBeforeRef { .. } | Self::ErrorEncode { .. } => true,
+            Self::Encoding | Self::ReEncoding | Self::Started { .. } | Self::Restarted { .. } => {
+                false
+            }
+        }
+    }
 }
 
 /// Cache for a task encoder. See `TaskEncoderCacheState` for a description of

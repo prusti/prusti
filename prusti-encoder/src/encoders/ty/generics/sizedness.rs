@@ -103,7 +103,7 @@ impl TaskEncoder for SizednessEnc {
     }
 
     fn emit_outputs<'vir>(program: &mut task_encoder::Program<'vir>) {
-        for domain in Self::all_outputs_local_no_errors(program) {
+        for domain in Self::all_outputs_local(program) {
             program.add_domain(domain);
         }
     }
@@ -114,6 +114,9 @@ impl SizednessEnc {
     /// `TyConstructorEnc` encodes.
     pub fn require(constructor: RustTy<'_>) {
         if !matches!(constructor.sizedness, RustTySizedness::None) {
+            // TODO: request the facts with the span of the type's definition
+            // (or of the field whose type is the tail), so that a failure is
+            // not reported without a location. `RustTy` carries neither.
             let _ = Self::encode(constructor, false, DUMMY_SP);
         }
     }
