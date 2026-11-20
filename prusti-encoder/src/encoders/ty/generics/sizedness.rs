@@ -136,12 +136,12 @@ impl SizednessEnc {
 /// ```text
 /// axiom { forall T :: {Metadata(s_Slice_type(T))} Metadata(s_Slice_type(T)) == s_UInt_usize_type() }
 /// axiom { forall T :: {Metadata(s_W_type(T))} Metadata(s_W_type(T)) == Metadata(T) }
-/// axiom { forall T :: {Metadata(T)} Sized_impl(T) ==> Metadata(T) == () }
+/// axiom { forall T :: {Metadata(T)} Sized_impl(T) ==> Metadata(T) == s_0_Tuple_type() }
 /// ```
 ///
 /// These are needed where a metadata type stays a projection, e.g.
-/// `<T as Pointee>::Metadata` in a body generic over `T: ?Sized`, which is
-/// then known at the instantiations of `T`.
+/// `<T as Pointee>::Metadata` in a body generic over `T: ?Sized`; they
+/// determine it at each instantiation of `T`.
 pub struct PointeeMetadataEnc;
 
 impl TaskEncoder for PointeeMetadataEnc {
@@ -160,11 +160,10 @@ impl TaskEncoder for PointeeMetadataEnc {
         deps: &mut TaskEncoderDependencies<'vir, Self>,
     ) -> EncodeFullResult<'vir, Self> {
         deps.emit_output_ref(*task_key, ())?;
-        let domain = match *task_key {
-            None => Self::encode_sized(deps)?,
-            Some(constructor) => Self::encode_constructor(deps, constructor)?,
-        };
-        Ok((domain, ()))
+        match *task_key {
+            None => Self::encode_sized(deps),
+            Some(constructor) => Self::encode_constructor(deps, constructor),
+        }
     }
 
     fn emit_outputs<'vir>(program: &mut task_encoder::Program<'vir>) {
@@ -176,10 +175,9 @@ impl TaskEncoder for PointeeMetadataEnc {
 
 impl PointeeMetadataEnc {
     /// Encodes the metadata type of a type constructor, and the fact for type
-    /// parameters, once the `Pointee` trait, whose `Metadata` function they
-    /// are stated with, is requested, so that a program without that
-    /// function does not get them. Called for every constructor
-    /// `TyConstructorEnc` encodes.
+    /// parameters, once the `Pointee` trait is requested. They are stated with
+    /// its `Metadata` function, so a program that never uses it does not get
+    /// them. Called for every constructor `TyConstructorEnc` encodes.
     pub fn require(constructor: RustTy<'_>) {
         if matches!(constructor.sizedness, RustTySizedness::None) {
             return;
@@ -212,7 +210,7 @@ impl PointeeMetadataEnc {
 
     fn encode_sized<'vir>(
         deps: &mut TaskEncoderDependencies<'vir, Self>,
-    ) -> Result<vir::Domain<'vir>, EncodeFullError<'vir, Self>> {
+    ) -> EncodeFullResult<'vir, Self> {
         let unit = vir::with_vcx(|vcx| {
             RustTyDecomposition::from_ty(vcx.tcx().types.unit, GParams::empty())
         });
@@ -231,14 +229,17 @@ impl PointeeMetadataEnc {
                 forall [ty_decl] :: { [metadata] }
                     (sized) ==> ((metadata) == (unit_ty))
             };
-            Ok(vcx.mk_domain(
-                vir::ViperIdent::new("PointeeMetadata"),
-                &[],
-                vcx.alloc_slice(&[
-                    vcx.mk_domain_axiom(vir::ViperIdent::new("pointee_metadata_sized"), axiom)
-                ]),
-                &[],
-                None,
+            Ok((
+                vcx.mk_domain(
+                    vir::ViperIdent::new("PointeeMetadata"),
+                    &[],
+                    vcx.alloc_slice(&[
+                        vcx.mk_domain_axiom(vir::ViperIdent::new("pointee_metadata_sized"), axiom)
+                    ]),
+                    &[],
+                    None,
+                ),
+                (),
             ))
         })
     }
@@ -246,22 +247,23 @@ impl PointeeMetadataEnc {
     fn encode_constructor<'vir>(
         deps: &mut TaskEncoderDependencies<'vir, Self>,
         constructor: RustTy<'vir>,
-    ) -> Result<vir::Domain<'vir>, EncodeFullError<'vir, Self>> {
+    ) -> EncodeFullResult<'vir, Self> {
         let params = deps.require_dep::<GenericParamsEnc>(constructor.params)?;
         let ty_constructor = deps
             .require_ref::<TyConstructorEnc>(constructor)?
             .ty_constructor;
-        let ty = ty_constructor(params.ty_exprs(), params.const_exprs());
+        let ty = ty_constructor.call()(params.ty_exprs(), params.const_exprs());
         let metadata_fun = Self::metadata_fun(deps)?;
         vir::with_vcx(|vcx| {
-            let tcx = vcx.tcx();
             // The metadata type over the constructor's parameters, `None`
             // for a trait object.
             let metadata = match constructor.sizedness {
                 RustTySizedness::None => unreachable!(),
+                // rustc computes a pointee's metadata type from a pointer to it.
                 RustTySizedness::Sized { sized_if, .. } => {
-                    Some(sized_if.map_or(tcx.types.unit, |tail| {
-                        ty::Ty::new_imm_ptr(tcx, tail).pointee_metadata_ty_or_projection(tcx)
+                    Some(sized_if.map_or(vcx.tcx().types.unit, |tail| {
+                        ty::Ty::new_imm_ptr(vcx.tcx(), tail)
+                            .pointee_metadata_ty_or_projection(vcx.tcx())
                     }))
                 }
                 RustTySizedness::MetaSized
@@ -273,21 +275,22 @@ impl PointeeMetadataEnc {
                     None
                 }
                 // `str` and slices.
-                RustTySizedness::MetaSized => Some(tcx.types.usize),
+                RustTySizedness::MetaSized => Some(vcx.tcx().types.usize),
                 // Extern types.
-                RustTySizedness::PointeeSized => Some(tcx.types.unit),
+                RustTySizedness::PointeeSized => Some(vcx.tcx().types.unit),
             };
             let metadata = match metadata {
                 Some(metadata) => params.ty_expr(
                     deps,
                     RustTyDecomposition::from_ty(metadata, constructor.params),
                 )?,
-                // `DynMetadata<Self>` with the `Dyn` constructor as `Self`:
-                // all trait objects share that parameterless constructor, so
-                // there is no rustc type to instantiate `DynMetadata` with.
+                // All trait objects are encoded by the one parameterless `Dyn`
+                // constructor, so there is no rustc type `dyn Trait` to
+                // instantiate `DynMetadata` with; `DynMetadata` is applied to
+                // the `Dyn` type directly.
                 None => {
-                    let did = tcx.require_lang_item(LangItem::DynMetadata, DUMMY_SP);
-                    let dyn_metadata = tcx.type_of(did).instantiate_identity();
+                    let did = vcx.tcx().require_lang_item(LangItem::DynMetadata, DUMMY_SP);
+                    let dyn_metadata = vcx.tcx().type_of(did).instantiate_identity();
                     let dyn_metadata = deps.require_ref::<TyConstructorEnc>(
                         RustTyDecomposition::from_ty(dyn_metadata.skip_normalization(), did).ty,
                     )?;
@@ -307,12 +310,15 @@ impl PointeeMetadataEnc {
                     vcx.mk_eq_expr(metadata_ty, metadata),
                 ),
             );
-            Ok(vcx.mk_domain(
-                vir_format_identifier!(vcx, "pointee_metadata_{base_name}"),
-                &[],
-                vcx.alloc_slice(&[axiom]),
-                &[],
-                None,
+            Ok((
+                vcx.mk_domain(
+                    vir_format_identifier!(vcx, "pointee_metadata_{base_name}"),
+                    &[],
+                    vcx.alloc_slice(&[axiom]),
+                    &[],
+                    None,
+                ),
+                (),
             ))
         })
     }

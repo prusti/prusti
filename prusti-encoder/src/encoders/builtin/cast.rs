@@ -47,26 +47,23 @@ pub(super) enum CastTyArgs {
     /// types (e.g. an integer cast).
     None,
     /// The operand's and the result's referent types `[U, V]`, which give the
-    /// metadata and value of an unsizing coercion (e.g. `&[T; N] -> &[T]`).
+    /// metadata after a pointer cast (via `metadata_cast`) and the value of an
+    /// unsizing coercion (e.g. `&[T; N] -> &[T]`).
     Referents,
-    /// The operand's and the result's pointee metadata types `[M, N]`, which
-    /// give the metadata after a cast between raw pointers.
-    PointeeMetadata,
 }
 
 impl CastTyArgs {
     /// The type parameters that the cast's function and methods declare.
     fn params<'vir>(self, vcx: &'vir vir::VirCtxt<'vir>) -> GParams<'vir> {
-        let (first, second) = match self {
-            CastTyArgs::None => return GParams::empty(),
-            CastTyArgs::Referents => ("U", "V"),
-            CastTyArgs::PointeeMetadata => ("M", "N"),
-        };
-        let param = |idx, name| ty::Ty::new_param(vcx.tcx(), idx, symbol::Symbol::intern(name));
-        GParams::empty_env(
-            vcx.tcx()
-                .mk_args(&[param(0, first).into(), param(1, second).into()]),
-        )
+        match self {
+            CastTyArgs::None => GParams::empty(),
+            CastTyArgs::Referents => {
+                let param = |idx, name| {
+                    ty::Ty::new_param(vcx.tcx(), idx, symbol::Symbol::intern(name)).into()
+                };
+                GParams::empty_env(vcx.tcx().mk_args(&[param(0, "U"), param(1, "V")]))
+            }
+        }
     }
 }
 
@@ -127,7 +124,7 @@ impl TaskEncoder for MirBuiltinCastEnc {
                 ("unsize", CastTyArgs::Referents)
             }
             mir::CastKind::IntToInt => ("i2i", CastTyArgs::None),
-            mir::CastKind::PtrToPtr => ("p2p", CastTyArgs::PointeeMetadata),
+            mir::CastKind::PtrToPtr => ("p2p", CastTyArgs::Referents),
             mir::CastKind::IntToFloat => ("i2f", CastTyArgs::None),
             mir::CastKind::FloatToInt => ("f2i", CastTyArgs::None),
             mir::CastKind::PointerCoercion(
@@ -148,9 +145,8 @@ impl TaskEncoder for MirBuiltinCastEnc {
             }
         };
         // The pointee types are not part of the task key: a cast that needs
-        // them takes the referents or their metadata types as type arguments
-        // (`CastTyArgs`), so the name only uses the pointer types and one task
-        // serves every pointee.
+        // them takes them as type arguments (`CastTyArgs`), so the name only
+        // uses the pointer types and one task serves every pointee.
         let name = vir::with_vcx(|vcx| {
             vir::vir_format_identifier!(
                 vcx,

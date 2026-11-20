@@ -8,7 +8,7 @@ use crate::encoders::{
     },
     ty::{
         RustTyDecomposition, RustTySpecial, TySpecifics,
-        generics::{GArgsTy, GArgsTyEnc, TyExprEnc},
+        generics::{GArgsTy, GArgsTyEnc},
     },
 };
 
@@ -114,18 +114,6 @@ impl TaskEncoder for MirBuiltinUseCastEnc {
         let cast = deps.require_dep::<MirBuiltinCastEnc>(task)?;
         let ty_args = match cast.ty_args {
             CastTyArgs::None => &[],
-            CastTyArgs::PointeeMetadata => {
-                // The pointee metadata types, normalized in the body's context:
-                // this resolves e.g. `<T as Pointee>::Metadata` to `()` under a
-                // `T: Sized` bound, as rustc's typeck does when it checks the cast.
-                let metadata_ty = |ptr_ty: RustTyDecomposition<'vir>| {
-                    let metadata = ptr_ty.ty.ref_data().unwrap().metadata;
-                    metadata.decompose_normalize(ptr_ty.args)
-                };
-                let op_metadata = deps.require_dep::<TyExprEnc>(metadata_ty(operand_ty))?;
-                let result_metadata = deps.require_dep::<TyExprEnc>(metadata_ty(result_ty))?;
-                vir::with_vcx(|vcx| vcx.alloc_slice(&[op_metadata, result_metadata]))
-            }
             CastTyArgs::Referents => {
                 // The cast function and the unsize/undo methods are all generic over
                 // the operand and result referent type values `[U, V]`. The referent

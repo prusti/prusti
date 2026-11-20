@@ -1,3 +1,4 @@
+use prusti_rustc_interface::{hir::attrs::LangItem, span::DUMMY_SP};
 use task_encoder::{EncodeFullResult, TaskEncoder, TaskEncoderDependencies};
 use vir::{CastType, FunctionIdn};
 
@@ -5,7 +6,7 @@ use crate::encoders::{
     Pure,
     ty::{
         RustTyDecomposition, RustTyNormalized,
-        generics::{GArgsCastEnc, GParams, TyExprEnc},
+        generics::{GArgsCastEnc, GParams, TyExprEnc, r#trait::TraitEnc},
         use_pure::TyUsePureEnc,
     },
 };
@@ -71,16 +72,16 @@ impl TaskEncoder for ValueCastEnc {
     }
 }
 
-/// The (uninterpreted) function giving a pointer's metadata after a cast:
-/// `metadata_cast(metadata, from_ty, to_ty)`. An unsizing coercion passes the
-/// referent types, a raw-pointer cast the pointee *metadata* types. It is only
-/// defined by axioms: the universally valid ones here, and those for
-/// particular types in `MetadataCastAxiomEnc`. For raw-pointer casts, like
-/// rustc's `ptr_to_ptr` (`rustc_const_eval/src/interpret/cast.rs`), the ones
-/// here keep the metadata between pointers with the same metadata type and
-/// replace it with `()` in a cast to a thin pointer. The only other casts rustc
-/// accepts are between trait objects that differ in auto traits, whose
-/// metadata types are the same Viper type, as are all trait objects.
+/// The (uninterpreted) function giving a pointer's metadata after a cast from
+/// a pointer to `from_ty` to a pointer to `to_ty`:
+/// `metadata_cast(metadata, from_ty, to_ty)`. It is only defined by axioms:
+/// the ones here, which hold for every pointer cast, and those for particular
+/// types in `MetadataCastAxiomEnc`. Like rustc's `ptr_to_ptr`
+/// (`rustc_const_eval/src/interpret/cast.rs`), a cast keeps the metadata
+/// between pointees with the same metadata type and replaces it with `()` in a
+/// cast to a thin pointer; these are all raw-pointer casts rustc accepts (all
+/// trait objects are one Viper type). An unsizing coercion always changes the
+/// metadata type, so neither applies to it.
 pub struct MetadataCastEnc;
 
 impl TaskEncoder for MetadataCastEnc {
@@ -123,25 +124,36 @@ impl TaskEncoder for MetadataCastEnc {
         let unit_metadata = unit_caster
             .cast_to_callee_ctx(unit_snap.upcast_ty())
             .downcast_ty::<vir::PSnap>();
+        let pointee_metadata = vir::with_vcx(|vcx| {
+            let pointee = vcx
+                .tcx()
+                .require_lang_item(LangItem::PointeeTrait, DUMMY_SP);
+            let metadata = vcx.tcx().require_lang_item(LangItem::Metadata, DUMMY_SP);
+            Ok(deps.require_ref::<TraitEnc>(pointee)?.assoc_types[&metadata])
+        })?;
         vir::with_vcx(|vcx| {
             let domain_fn = vcx.mk_domain_function(fn_idn, false, None);
+            let input_decl = vcx.mk_local_decl("input", vir::TYPE_PSNAP);
+            let input = vcx.mk_local_ex(input_decl);
+            let from_decl = vcx.mk_local_decl("from", vir::TYPE_TYVAL);
+            let from = vcx.mk_local_ex(from_decl);
+            let to_decl = vcx.mk_local_decl("to", vir::TYPE_TYVAL);
+            let to = vcx.mk_local_ex(to_decl);
+            let call = fn_idn.call()(input, from, to);
+            let from_metadata = pointee_metadata(&[from], &[]);
+            let to_metadata = pointee_metadata(&[to], &[]);
 
-            // A cast between the same types leaves the metadata unchanged, and
-            // a cast to the metadata type `()` from another one gives `()`.
-            // The latter states the former for `()`, rather than `()` for
-            // every `input`, which would contradict the former when `input` is
-            // not `()`. Casts that rewrite the metadata otherwise (e.g. array
-            // -> slice, where the metadata becomes the slice length) are
-            // attached per type in `MetadataCastAxiomEnc`.
+            // The two conditions are disjoint: both conclusions together would
+            // equate `input` with `()` for any `input`.
             let eq = vir::expr! {
-                forall input: PSnap, same: Type :: { [fn_idn](input, same, same) }
-                    ([fn_idn](input, same, same)) == (input)
+                forall [input_decl], [from_decl], [to_decl] :: { [call] }
+                    ((from_metadata) == (to_metadata)) ==> ((call) == (input))
             };
             let axiom_eq = vcx.mk_domain_axiom(vir::ViperIdent::new("metadata_cast_eq"), eq);
             let thin = vir::expr! {
-                forall input: PSnap, from: Type :: { [fn_idn](input, from, unit_ty) }
-                    ([fn_idn](input, from, unit_ty))
-                        == (((from) == (unit_ty)) ? (input) : (unit_metadata))
+                forall [input_decl], [from_decl], [to_decl] :: { [call] }
+                    ((!((from_metadata) == (unit_ty))) && ((to_metadata) == (unit_ty)))
+                        ==> ((call) == (unit_metadata))
             };
             let axiom_thin = vcx.mk_domain_axiom(vir::ViperIdent::new("metadata_cast_thin"), thin);
 
