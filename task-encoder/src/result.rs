@@ -157,11 +157,21 @@ impl<'vir, E: TaskEncoder + 'vir + ?Sized> EncodeFullError<'vir, E> {
     /// The error for a feature that `E` does not support, which `message`
     /// describes, at `spans`.
     pub fn unsupported(message: String, spans: Vec<Span>) -> Self {
+        Self::root(message, spans, ErrorKind::Unsupported)
+    }
+
+    /// The error for an internal error of `E` (e.g. an unexpected analysis
+    /// result), which `message` describes, at `spans`.
+    pub fn internal(message: String, spans: Vec<Span>) -> Self {
+        Self::root(message, spans, ErrorKind::Internal)
+    }
+
+    fn root(message: String, spans: Vec<Span>, kind: ErrorKind) -> Self {
         Self::DependencyError(vec![DependencyErrorLink::new(
             E::ENCODER_NAME,
             message,
             spans,
-            ErrorKind::Unsupported,
+            kind,
         )])
     }
 

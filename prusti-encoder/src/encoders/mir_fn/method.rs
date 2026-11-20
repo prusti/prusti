@@ -213,12 +213,7 @@ impl TaskEncoder for MethodEnc {
                     // Without its wands, the method has no sound contract, so
                     // it is not emitted. This is reported here, once; each call
                     // to it reports its own failure (see `MethodCallEnc`).
-                    err => {
-                        let name = vcx.tcx().def_path_str(def_id);
-                        EncodeFullError::Reported(super::report_dep_error(vcx, &err, |err| {
-                            err.report(format!("method `{name}`"), vcx.tcx().def_span(def_id))
-                        }))
-                    }
+                    err => EncodeFullError::Reported(WandEnc::report_failure(vcx, def_id, &err)),
                 })?;
 
             // Add direct resources for inputs and outputs to the pre- and

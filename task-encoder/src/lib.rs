@@ -357,7 +357,7 @@ pub trait TaskEncoder {
 
             let new_state = match cache.get(&task_key) {
                 Some(
-                    TaskEncoderCacheState::ErrorEnqueue { failure }
+                    TaskEncoderCacheState::ErrorBeforeRef { failure }
                     | TaskEncoderCacheState::ErrorEncode { failure, .. },
                 ) => return Some(Err(failure.error.clone())),
                 Some(TaskEncoderCacheState::Encoded {
@@ -490,7 +490,7 @@ pub trait TaskEncoder {
                             Ok(None)
                         }
                     }
-                    TaskEncoderCacheState::ErrorEnqueue { failure }
+                    TaskEncoderCacheState::ErrorBeforeRef { failure }
                     | TaskEncoderCacheState::ErrorEncode { failure, .. } => {
                         Err(failure.error.clone())
                     }
@@ -714,7 +714,7 @@ fn cached_output_ref<'vir, E: TaskEncoder + 'vir + ?Sized>(
 
 /// Records that encoding the task failed with `error`. If the encoding (or a
 /// re-run of it) emitted an output ref, the ref stays available to dependents
-/// (`ErrorEncode`); otherwise the task has none (`ErrorEnqueue`). The spans
+/// (`ErrorEncode`); otherwise the task has none (`ErrorBeforeRef`). The spans
 /// of an error recorded earlier for the task are kept.
 fn record_error<'vir, E: TaskEncoder + 'vir + ?Sized>(
     task_key: E::TaskKey<'vir>,
@@ -747,7 +747,7 @@ fn record_error<'vir, E: TaskEncoder + 'vir + ?Sized>(
                 output_dep,
                 failure,
             },
-            None => TaskEncoderCacheState::ErrorEnqueue { failure },
+            None => TaskEncoderCacheState::ErrorBeforeRef { failure },
         };
         cache.insert(task_key, new_state);
     });

@@ -39,7 +39,7 @@ pub enum TaskEncoderCacheState<'vir, E: TaskEncoder + 'vir + ?Sized> {
     },
 
     /// The task's encoding failed before emitting an output reference.
-    ErrorEnqueue { failure: TaskFailure<E> },
+    ErrorBeforeRef { failure: TaskFailure<E> },
 
     /// An error occurred when encoding the task. The full "local" encoding is
     /// not available. However, tasks which depend on this task may still
@@ -72,14 +72,14 @@ impl<'vir, E: TaskEncoder + 'vir + ?Sized> TaskEncoderCacheState<'vir, E> {
             | Self::Restarted { output_ref }
             | Self::Encoded { output_ref, .. }
             | Self::ErrorEncode { output_ref, .. } => Some(output_ref),
-            Self::Encoding | Self::ReEncoding | Self::ErrorEnqueue { .. } => None,
+            Self::Encoding | Self::ReEncoding | Self::ErrorBeforeRef { .. } => None,
         }
     }
 
     /// The task's failure, if its encoding failed.
     pub fn failure(&self) -> Option<&TaskFailure<E>> {
         match self {
-            Self::ErrorEnqueue { failure } | Self::ErrorEncode { failure, .. } => Some(failure),
+            Self::ErrorBeforeRef { failure } | Self::ErrorEncode { failure, .. } => Some(failure),
             Self::Encoding
             | Self::ReEncoding
             | Self::Started { .. }
@@ -91,7 +91,7 @@ impl<'vir, E: TaskEncoder + 'vir + ?Sized> TaskEncoderCacheState<'vir, E> {
     /// See [Self::failure].
     pub fn failure_mut(&mut self) -> Option<&mut TaskFailure<E>> {
         match self {
-            Self::ErrorEnqueue { failure } | Self::ErrorEncode { failure, .. } => Some(failure),
+            Self::ErrorBeforeRef { failure } | Self::ErrorEncode { failure, .. } => Some(failure),
             Self::Encoding
             | Self::ReEncoding
             | Self::Started { .. }
@@ -103,7 +103,7 @@ impl<'vir, E: TaskEncoder + 'vir + ?Sized> TaskEncoderCacheState<'vir, E> {
     /// Whether the task's encoding has finished, successfully or not.
     pub fn is_finished(&self) -> bool {
         match self {
-            Self::Encoded { .. } | Self::ErrorEnqueue { .. } | Self::ErrorEncode { .. } => true,
+            Self::Encoded { .. } | Self::ErrorBeforeRef { .. } | Self::ErrorEncode { .. } => true,
             Self::Encoding | Self::ReEncoding | Self::Started { .. } | Self::Restarted { .. } => {
                 false
             }

@@ -1,5 +1,6 @@
 use crate::encoders::{
     EncodeResult, ImpureEncVisitor, MirLocalDefEncOutput, MirSpecEnc,
+    mir_fn::report_dep_error,
     pure::spec::{EncodedPledge, MirSpecEncMode, PledgeArgs, PledgeExpr},
     ty::{
         RustTyDecomposition,
@@ -22,6 +23,21 @@ use vir::{CastType, HasType};
 
 /// Encodes the magic wands given a function signature.
 pub struct WandEnc;
+
+impl WandEnc {
+    /// Reports the failure `err` to generate the wands of the function
+    /// `def_id` at the function, and returns the proof that it was reported.
+    pub(crate) fn report_failure<'vir, E: TaskEncoder + ?Sized>(
+        vcx: &'vir vir::VirCtxt<'vir>,
+        def_id: DefId,
+        err: &EncodeFullError<'vir, E>,
+    ) -> vir::Reported {
+        let name = vcx.tcx().def_path_str(def_id);
+        report_dep_error(vcx, err, |err| {
+            err.report(format!("method `{name}`"), vcx.tcx().def_span(def_id))
+        })
+    }
+}
 
 impl<'vir, E: TaskEncoder> ImpureEncVisitor<'vir, '_, E> {
     pub fn package_wands(

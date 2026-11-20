@@ -1125,8 +1125,8 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                     )));
                     Ok(())
                 } else {
-                    Err(EncodeFullError::unsupported(
-                        format!("INTERNAL ERROR: unexpected PCG operation {other:?}"),
+                    Err(EncodeFullError::internal(
+                        format!("unexpected PCG operation {other:?}"),
                         vec![self.current_span()],
                     ))
                 }
@@ -1911,10 +1911,8 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             // for other specblocks we take the owned capabilities
             let Some(capability) = pcg_state.computed_owned_capability(place, self.pcg_ctxt())
             else {
-                return Err(EncodeFullError::unsupported(
-                    format!(
-                        "INTERNAL ERROR: no capability for `{place:?}` when encoding a specification"
-                    ),
+                return Err(EncodeFullError::internal(
+                    format!("no capability for `{place:?}` when encoding a specification"),
                     vec![self.current_span()],
                 ));
             };

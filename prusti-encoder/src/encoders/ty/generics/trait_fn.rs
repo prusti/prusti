@@ -1,14 +1,17 @@
+use pcg::borrow_pcg::FunctionData;
 use prusti_interface::specs::is_spec_fn;
 use prusti_rustc_interface::{
     middle::{mir, ty},
     span::def_id::DefId,
 };
-use task_encoder::{EncodeFullResult, OutputRefAny, TaskEncoder, TaskEncoderDependencies};
+use task_encoder::{
+    EncodeFullError, EncodeFullResult, OutputRefAny, TaskEncoder, TaskEncoderDependencies,
+};
 use vir::{FunctionIdn, MethodIdn, ViperIdent, vir_format_identifier};
 
 use crate::{
     encoders::{
-        FunctionCallEnc, MirLocalDefEnc, MirLocalDefEncTask, MirSpecEnc,
+        FunctionCallEnc, MirLocalDefEnc, MirLocalDefEncTask, MirSpecEnc, WandEnc, WandEncTask,
         mir_fn::CallTaskDescription,
         pure::spec::MirSpecEncMode,
         ty::{
@@ -169,6 +172,28 @@ impl TaskEncoder for TraitFnEnc {
             // trait so that its impls' condition/axiom triggers are registered
             // (foreign traits are not encoded by `encode_all_in_crate`).
             deps.require_ref::<TraitEnc>(trait_def_id)?;
+            // Wands that cannot be generated are reported at the method by
+            // `MethodEnc`, which `encode_all_in_crate` runs for the functions
+            // with a local body, trait methods with a default body included.
+            // For the trait methods without one, they are reported here; the
+            // stub does not use them, and each call reports its own failure.
+            let has_body = is_function_with_body(tcx, def_id);
+            if !(def_id.is_local() && has_body) {
+                let wands_task = WandEncTask {
+                    data: FunctionData::new(def_id),
+                };
+                match deps.require_dep::<WandEnc>(wands_task) {
+                    Ok(_) => {}
+                    Err(EncodeFullError::AlreadyEncoded) => {
+                        return Err(EncodeFullError::AlreadyEncoded);
+                    }
+                    // The encoding goes on, so the proof that the error was
+                    // reported is not needed.
+                    Err(err) => {
+                        let _ = WandEnc::report_failure(vcx, def_id, &err);
+                    }
+                }
+            }
             dom_funcs.push(vcx.mk_domain_function(pre_func, false, None));
             dom_funcs.push(vcx.mk_domain_function(post_func, false, None));
 
@@ -182,7 +207,6 @@ impl TaskEncoder for TraitFnEnc {
             // default body instead unlocks the axiom stating that body at its
             // trait refs. Only final definitions are assumed (see
             // `final_leaf_def`).
-            let has_body = is_function_with_body(vcx.tcx(), def_id);
             for impl_did in trait_impls::implementing_impls(tcx, trait_def_id) {
                 let Some(leaf) = trait_impls::final_leaf_def(tcx, impl_did, def_id) else {
                     continue;
