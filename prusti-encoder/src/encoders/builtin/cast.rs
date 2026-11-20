@@ -88,11 +88,9 @@ pub(super) struct MirBuiltinCastLocal<'vir> {
     cast: vir::Function<'vir>,
     unsize: Option<vir::Method<'vir>>,
     undo: Option<vir::Method<'vir>>,
-    /// Whether the cast is user-level (see
-    /// `task_encoder::Program::add_user_function`), i.e. no pointer coercion.
-    /// A pointer coercion is encoding-level even when written with `as`: most
-    /// coercions are implicit, and `MirBuiltinUseCastTask::new` encodes
-    /// explicit and implicit ones as the same function.
+    /// Whether this encodes something the user writes rather than something
+    /// rustc or the encoding adds, which the simplifier may fold away (see
+    /// `add_user_adt`).
     user_level: bool,
 }
 
@@ -126,19 +124,18 @@ impl TaskEncoder for MirBuiltinCastEnc {
         let res_ty = deps.require_dep::<TyUsePureEnc>(res_ty)?;
         let res_ty_snap = res_ty.snapshot.downcast_ty::<vir::CSnap>();
 
-        let user_level = !matches!(kind, mir::CastKind::PointerCoercion(..));
-        let (name, ty_args) = match kind {
+        let (name, ty_args, user_level) = match kind {
             mir::CastKind::PointerCoercion(ty::adjustment::PointerCoercion::Unsize, ..) => {
-                ("unsize", CastTyArgs::Referents)
+                ("unsize", CastTyArgs::Referents, false)
             }
-            mir::CastKind::IntToInt => ("i2i", CastTyArgs::None),
-            mir::CastKind::PtrToPtr => ("p2p", CastTyArgs::Referents),
-            mir::CastKind::IntToFloat => ("i2f", CastTyArgs::None),
-            mir::CastKind::FloatToInt => ("f2i", CastTyArgs::None),
+            mir::CastKind::IntToInt => ("i2i", CastTyArgs::None, true),
+            mir::CastKind::PtrToPtr => ("p2p", CastTyArgs::Referents, true),
+            mir::CastKind::IntToFloat => ("i2f", CastTyArgs::None, true),
+            mir::CastKind::FloatToInt => ("f2i", CastTyArgs::None, true),
             mir::CastKind::PointerCoercion(
                 ty::adjustment::PointerCoercion::MutToConstPointer,
                 ..,
-            ) => ("mut2const", CastTyArgs::None),
+            ) => ("mut2const", CastTyArgs::None, false),
             mir::CastKind::PointerCoercion(coercion, _) => {
                 return Err(EncodeFullError::unsupported(
                     format!("the pointer coercion `{coercion:?}`"),
