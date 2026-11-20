@@ -7,7 +7,7 @@ use super::{
     RustTy, RustTyDecomposition,
     data::TySpecifics,
     generics::{
-        GArgsTyEnc, GenericParamsEnc,
+        GArgsTyEnc, GenericParamsEnc, ParamTypEnc,
         arity::{TyArityEnc, add, sub},
         clamp::ClampEnc,
         lifetime_position::{
@@ -541,6 +541,104 @@ impl IndirectPredEnc {
     }
 }
 
+/// The declarations of `graft` and `shallow` of a type.
+#[derive(Clone, Copy)]
+pub enum GraftShallowDecls<'vir> {
+    /// Functions with bodies.
+    Functions(vir::Function<'vir>, vir::Function<'vir>),
+    /// At a type parameter, where they are abstract and do not depend on the
+    /// heap: domain functions, with their facts as axioms.
+    Domain(vir::Domain<'vir>),
+}
+
+impl IndirectPredEnc {
+    /// The domain of `graft` and `shallow` of the type parameter `task_key`.
+    /// Their results are values of the parameter's type, as the snapshots of
+    /// its predicate are, so that they can be cast to the instantiated type.
+    /// Grafting an empty interval changes nothing, and grafting changes only
+    /// what references hold, not the shallow snapshot, as for every type whose
+    /// `graft` and `shallow` have bodies.
+    fn param_graft_shallow<'vir>(
+        task_key: &RustTy<'vir>,
+        graft: FunctionIdn<
+            'vir,
+            (
+                vir::Snap,
+                vir::ManyTyVal,
+                vir::ManyCSnap,
+                vir::Snap,
+                vir::Int,
+                vir::Int,
+            ),
+            vir::Snap,
+        >,
+        shallow: FunctionIdn<'vir, (vir::Snap, vir::ManyTyVal, vir::ManyCSnap), vir::Snap>,
+        deps: &mut TaskEncoderDependencies<'vir, Self>,
+    ) -> Result<GraftShallowDecls<'vir>, EncodeFullError<'vir, Self>> {
+        let params = deps.require_dep::<GenericParamsEnc>(task_key.params)?;
+        let snapshot = deps.require_dep::<TyPureEnc>(*task_key)?.data.snapshot;
+        let typ = deps.require_dep::<ParamTypEnc>(())?.typ;
+        vir::with_vcx(|vcx| {
+            let s_decl = vcx.mk_local_decl("s", snapshot);
+            let t_decl = vcx.mk_local_decl("t", snapshot);
+            let lo_decl = vcx.mk_local_decl("lo", vir::TYPE_INT);
+            let hi_decl = vcx.mk_local_decl("hi", vir::TYPE_INT);
+            let s: vir::ExprSnap<'vir> = vcx.mk_local_ex(s_decl);
+            let t: vir::ExprSnap<'vir> = vcx.mk_local_ex(t_decl);
+            let lo = vcx.mk_local_ex(lo_decl);
+            let hi = vcx.mk_local_ex(hi_decl);
+            let (tys, consts) = (params.ty_exprs(), params.const_exprs());
+            let param = tys[0];
+            let grafted = graft.call()(s, tys, consts, t, lo, hi);
+            let shallow_s = shallow.call()(s, tys, consts);
+            let shallow_grafted = shallow.call()(grafted, tys, consts);
+            let grafted_typ = vcx.mk_eq_expr(typ(grafted.downcast_ty()), param);
+            let shallow_typ = vcx.mk_eq_expr(typ(shallow_s.downcast_ty()), param);
+            let graft_facts = vir::expr! { vcx;
+                forall [s_decl], ..[params.ty_decls()], ..[params.const_decls()],
+                    [t_decl], [lo_decl], [hi_decl]
+                    :: { [grafted] }
+                    ([grafted_typ]) && (((hi) <= (lo)) ==> (([grafted]) == (s)))
+            };
+            let shallow_facts = vir::expr! { vcx;
+                forall [s_decl], ..[params.ty_decls()], ..[params.const_decls()]
+                    :: { [shallow_s] }
+                    [shallow_typ]
+            };
+            let shallow_graft = vir::expr! { vcx;
+                forall [s_decl], ..[params.ty_decls()], ..[params.const_decls()],
+                    [t_decl], [lo_decl], [hi_decl]
+                    :: { [shallow_grafted] }
+                    ([shallow_grafted]) == ([shallow_s])
+            };
+            let name = task_key.name();
+            Ok(GraftShallowDecls::Domain(vcx.mk_domain(
+                vir::vir_format_identifier!(vcx, "Indirect_{name}"),
+                &[],
+                vcx.alloc_slice(&[
+                    vcx.mk_domain_axiom(
+                        vir::vir_format_identifier!(vcx, "graft_{name}_facts"),
+                        graft_facts,
+                    ),
+                    vcx.mk_domain_axiom(
+                        vir::vir_format_identifier!(vcx, "shallow_{name}_facts"),
+                        shallow_facts,
+                    ),
+                    vcx.mk_domain_axiom(
+                        vir::vir_format_identifier!(vcx, "shallow_graft_{name}"),
+                        shallow_graft,
+                    ),
+                ]),
+                vcx.alloc_slice(&[
+                    vcx.mk_domain_function(graft, false, None),
+                    vcx.mk_domain_function(shallow, false, None),
+                ]),
+                None,
+            )))
+        })
+    }
+}
+
 impl TaskEncoder for IndirectPredEnc {
     task_encoder::encoder_cache!(IndirectPredEnc);
     const ENCODER_NAME: &'static str = "indirect predicate encoder";
@@ -551,8 +649,7 @@ impl TaskEncoder for IndirectPredEnc {
     type OutputFullLocal<'vir> = (
         vir::Predicate<'vir>,
         vir::Function<'vir>,
-        vir::Function<'vir>,
-        vir::Function<'vir>,
+        GraftShallowDecls<'vir>,
         Option<vir::Predicate<'vir>>,
     );
 
@@ -1026,8 +1123,18 @@ impl TaskEncoder for IndirectPredEnc {
             // `extend` reads differs from its key only at the extended positions, so
             // grafting it back in gives it again, and making it shallow gives the
             // shallow key; field
-            // snapshots of types containing the parameter have these forms.
+            // snapshots of types containing the parameter have these forms. Their
+            // results are values of the parameter's type, as the snapshots of its
+            // predicate are, so that they can be cast to the instantiated type.
+            let param_typ = if ty.specifics.is_param() {
+                let typ = deps.require_dep::<ParamTypEnc>(())?.typ;
+                let result = vcx.mk_result(vir::TYPE_PSNAP);
+                Some(vcx.mk_eq_expr(typ(result), params.ty_exprs()[0]))
+            } else {
+                None
+            };
             let mut extend_posts = array_posts.0;
+            extend_posts.extend(param_typ);
             if ty.specifics.is_param() {
                 let result = vcx.mk_result(snapshot);
                 let grafted =
@@ -1037,14 +1144,6 @@ impl TaskEncoder for IndirectPredEnc {
                     shallow.call()(result, params.ty_exprs(), params.const_exprs());
                 let shallow_key = shallow.call()(k, params.ty_exprs(), params.const_exprs());
                 extend_posts.push(vcx.mk_eq_expr(shallow_result, shallow_key));
-            }
-            // Grafting an empty interval changes nothing, as for every type whose `graft`
-            // has a body.
-            let mut graft_posts = array_posts.1;
-            if ty.specifics.is_param() {
-                let result = vcx.mk_result(snapshot);
-                let unchanged = vcx.mk_eq_expr(result, s);
-                graft_posts.push(vir::expr! { vcx; ((hi) <= (lo)) ==> (unchanged) });
             }
             let extend_decl = vcx.mk_function(
                 extend,
@@ -1061,46 +1160,44 @@ impl TaskEncoder for IndirectPredEnc {
                 extend_body,
             );
 
-            let graft_decl = vcx.mk_function(
-                graft,
-                (
-                    s_decl,
-                    params.ty_decls(),
-                    params.const_decls(),
-                    t_decl,
-                    lo_decl,
-                    hi_decl,
-                ),
-                &[],
-                vcx.alloc_slice(&graft_posts),
-                None,
-                graft_body,
-            );
-
-            let shallow_decl = vcx.mk_function(
-                shallow,
-                (s_decl, params.ty_decls(), params.const_decls()),
-                &[],
-                vcx.alloc_slice(&array_posts.2),
-                None,
-                shallow_body,
-            );
+            let graft_shallow = if ty.specifics.is_param() {
+                Self::param_graft_shallow(task_key, graft, shallow, deps)?
+            } else {
+                let graft_decl = vcx.mk_function(
+                    graft,
+                    (
+                        s_decl,
+                        params.ty_decls(),
+                        params.const_decls(),
+                        t_decl,
+                        lo_decl,
+                        hi_decl,
+                    ),
+                    &[],
+                    vcx.alloc_slice(&array_posts.1),
+                    None,
+                    graft_body,
+                );
+                let shallow_decl = vcx.mk_function(
+                    shallow,
+                    (s_decl, params.ty_decls(), params.const_decls()),
+                    &[],
+                    vcx.alloc_slice(&array_posts.2),
+                    None,
+                    shallow_body,
+                );
+                GraftShallowDecls::Functions(graft_decl, shallow_decl)
+            };
 
             Ok((
-                (
-                    predicate_decl,
-                    extend_decl,
-                    graft_decl,
-                    shallow_decl,
-                    element_decl,
-                ),
+                (predicate_decl, extend_decl, graft_shallow, element_decl),
                 (),
             ))
         })
     }
 
     fn emit_outputs<'vir>(program: &mut task_encoder::Program<'vir>) {
-        for (predicate, extend, graft, shallow, element) in
+        for (predicate, extend, graft_shallow, element) in
             Self::all_outputs_local_no_errors(program)
         {
             program.add_predicate(predicate);
@@ -1108,8 +1205,13 @@ impl TaskEncoder for IndirectPredEnc {
                 program.add_predicate(element);
             }
             program.add_function(extend);
-            program.add_function(graft);
-            program.add_function(shallow);
+            match graft_shallow {
+                GraftShallowDecls::Functions(graft, shallow) => {
+                    program.add_function(graft);
+                    program.add_function(shallow);
+                }
+                GraftShallowDecls::Domain(domain) => program.add_domain(domain),
+            }
         }
     }
 }

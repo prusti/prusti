@@ -142,7 +142,7 @@ impl<'vir: 'a, 'a, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             let (place_res, _snap, _, ty_out) = self.encode_place_with_snap(*place)?;
             inv.push(ty_out.ref_to_pred(self.vcx, place_res.expr.expect_predicate(), None));
         }
-        inv.extend(self.indirect_loop_invariant(entry_graph, &held)?);
+        inv.extend(self.indirect_loop_invariant(&cfpcs.statements[0].entry_state)?);
 
         for edge in state.borrow_pcg().graph().coupled_edges() {
             let mut let_bind = WandOldOuter::LetBind(Vec::new());

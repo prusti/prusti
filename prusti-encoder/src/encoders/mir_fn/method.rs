@@ -366,9 +366,8 @@ impl TaskEncoder for MethodEnc {
                     current_stmts: None,
                     current_terminator: None,
                     indirect_predicate_state: Default::default(),
-                    future_edges: Vec::new(),
-                    block_entry_stmts: Vec::new(),
                     package_label: None,
+                    phase_start: None,
                     encoded_blocks,
                 };
                 // if we encountered an error/cycle during encoding, we don't
@@ -381,13 +380,6 @@ impl TaskEncoder for MethodEnc {
                                 .from_to_vars
                                 .decls()
                                 .map(|v| vcx.mk_local_decl_stmt(v, Some(vcx.mk_bool::<false>()))),
-                        );
-                        start_stmts.extend(
-                            visitor
-                                .indirect_predicate_state
-                                .method_decls()
-                                .iter()
-                                .map(|v| vcx.mk_local_decl_stmt(*v, None)),
                         );
                         visitor.encoded_blocks[0] = vcx.mk_cfg_block(
                             &vir::CfgBlockLabelData::Start,
