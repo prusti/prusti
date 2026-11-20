@@ -534,13 +534,14 @@ impl TaskEncoder for IndirectCastersEnc {
             let concrete_extend = generic(concrete_ind.extend.call()(k, tys, consts, lo, hi));
             let generic_extend = param_ind.extend.call()(generic_k, &[ty], no_consts, lo, hi);
             // Making a snapshot shallow and grafting do not depend on the heap, so they are the
-            // same on both sides everywhere, not only after a cast.
+            // same on both sides everywhere, not only after a cast. Making it shallow is related
+            // from either side: a key read from a value makes it shallow before the cast.
             let concrete_shallow = concrete_ind.shallow.call()(s, tys, consts);
             let generic_shallow = param_ind.shallow.call()(generic(s), &[ty], no_consts);
             let same_shallow = generic(concrete_shallow);
             let same_shallow = vir::expr! { vcx;
                 forall [s_decl], ..[generics.ty_decls()], ..[generics.const_decls()]
-                    :: { [generic_shallow] }
+                    :: { [generic_shallow] } { [same_shallow] }
                     ([generic_shallow]) == ([same_shallow])
             };
             let shallow_axiom = vcx.mk_domain_axiom(

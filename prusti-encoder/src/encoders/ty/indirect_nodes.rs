@@ -131,6 +131,25 @@ impl<'vir> NodePredicates<'vir> {
         self.block(snap).graft_enclosing(p, from)
     }
 
+    /// `value` with every reference collapsed, the shallow snapshot.
+    pub fn shallow(&self, value: vir::ExprSnap<'vir>) -> vir::ExprSnap<'vir> {
+        if self.graph.is_empty() {
+            return value;
+        }
+        self.ind.shallow.call()(value, self.tys, self.consts)
+    }
+
+    /// The key of position `p` on a place with the value `value`, which
+    /// includes the referents: its shallow snapshot with the values at the
+    /// positions enclosing `p` taken from `value`.
+    pub fn key_of_value(
+        &self,
+        p: LifetimePosition,
+        value: vir::ExprSnap<'vir>,
+    ) -> vir::ExprSnap<'vir> {
+        self.graft_enclosing(p, self.shallow(value), value)
+    }
+
     /// The predicate of position `p` on a place with snapshot `snap`.
     pub fn predicate(
         &self,
@@ -180,27 +199,25 @@ impl<'vir> NodePredicates<'vir> {
         self.graph.interval(p)
     }
 
-    /// `snap` extended at each position of `keys` through the predicate with
-    /// its key there, outermost first.
-    pub fn extend_with_keys(
-        &self,
-        mut snap: vir::ExprSnap<'vir>,
-        keys: &[(LifetimePosition, vir::ExprSnap<'vir>)],
-    ) -> vir::ExprSnap<'vir> {
-        for p in self.graph.positions_outermost_first() {
-            if let Some(&(_, key)) = keys.iter().find(|(q, _)| *q == p) {
-                let (lo, hi) = self.graph.interval(p);
-                snap = self
-                    .ind
-                    .extend_from(snap, key, self.tys, self.consts, lo, hi);
-            }
-        }
-        snap
-    }
-
     pub fn deep_snap(&self, snap: vir::ExprSnap<'vir>) -> vir::ExprSnap<'vir> {
         let block = self.block(snap);
         block.fold(&block.positions())
+    }
+
+    /// `snap` extended through the predicates of its positions other than
+    /// `excluded`, outermost first.
+    pub fn deep_snap_except(
+        &self,
+        snap: vir::ExprSnap<'vir>,
+        excluded: &[LifetimePosition],
+    ) -> vir::ExprSnap<'vir> {
+        let block = self.block(snap);
+        let positions = block
+            .positions()
+            .into_iter()
+            .filter(|p| !excluded.contains(p))
+            .collect::<Vec<_>>();
+        block.fold(&positions)
     }
 }
 
