@@ -60,6 +60,7 @@ use crate::encoders::{
             lifetime_position::{LifetimePosition, LifetimePositionEnc},
         },
         indirect_nodes::NodePredicates,
+        indirect_pred::if_nonempty,
         use_impure::TyUseImpure,
         use_pure::{TyUsePure, TyUsePureEnc},
     },
@@ -1011,10 +1012,11 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 .filter(|p| held.contains(p))
                 .collect::<Vec<_>>();
             for (p, key) in self.place_keys(place, &nodes, &positions, &state)? {
-                inv.push(
+                inv.push(if_nonempty(
+                    nodes.nonempty(p),
                     self.vcx
                         .mk_predicate_app_expr(nodes.predicate_with_key(p, key)),
-                );
+                ));
             }
         }
         Ok(inv)
@@ -1298,6 +1300,14 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             }
         };
         if self.is_expanded_in(current, pcg) {
+            // An expanded enum has the value of the variant it is expanded
+            // into.
+            if ty.ty.is_enum()
+                && ty.variant_index.is_none()
+                && let Some(variant) = self.expanded_variant_in(current, pcg)
+            {
+                return self.place_read_in(variant.into(), pcg, at);
+            }
             if ty.ty.is_box() || ty.ty.is_array() || ty.ty.is_enum() && ty.variant_index.is_none() {
                 return Err(EncodeFullError::unsupported(
                     format!("INTERNAL ERROR: the value of the expanded place `{current:?}`"),
@@ -1320,12 +1330,16 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 .field_snaps_to_snap(values);
             return Ok(PlaceRead::Value(value.upcast_ty()));
         }
+        // A part of an expanded place, or a dereferenced referent, is held
+        // apart from the enclosing place.
         let dereferenced_referent = graph.edges().any(|edge| {
             matches!(edge.kind(), BorrowPcgEdgeKind::Deref(deref) if deref.deref_place() == place)
         });
-        let parent = current
-            .last_projection()
-            .filter(|_| pcg.place_capability(current, ctxt).is_none() && !dereferenced_referent);
+        let parent = current.last_projection().filter(|(parent, _)| {
+            pcg.place_capability(current, ctxt).is_none()
+                && !dereferenced_referent
+                && !self.is_expanded_in(*parent, pcg)
+        });
         let Some((parent, elem)) = parent else {
             return Ok(PlaceRead::Held(self.place_snap(place)?));
         };
@@ -1366,6 +1380,71 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 ));
             }
         }))
+    }
+
+    /// The variant place that the PCG state `pcg` has the current enum `place`
+    /// expanded into, as an owned place or by a borrowed expansion.
+    fn expanded_variant_in(&self, place: Place<'vir>, pcg: &Pcg<'_, 'vir>) -> Option<Place<'vir>> {
+        let ctxt = self.pcg_ctxt();
+        let is_variant = |part: Place<'vir>| {
+            part.projection.len() == place.projection.len() + 1
+                && place.is_prefix_of(part)
+                && matches!(
+                    part.projection.last(),
+                    Some(mir::ProjectionElem::Downcast(..))
+                )
+        };
+        let local_state = &pcg.owned()[place.local];
+        if local_state.is_allocated() {
+            for leaf in local_state.expansions().leaf_places(ctxt) {
+                let leaf: Place<'vir> = leaf.into();
+                if leaf.projection.len() > place.projection.len() {
+                    let part =
+                        Place::new(leaf.local, &leaf.projection[..place.projection.len() + 1]);
+                    if is_variant(part) {
+                        return Some(part);
+                    }
+                }
+            }
+        }
+        pcg.borrow_pcg()
+            .graph()
+            .edges()
+            .find_map(|edge| match edge.kind() {
+                BorrowPcgEdgeKind::BorrowPcgExpansion(expansion)
+                    if expansion.base() == PcgNode::Place(MaybeLabelledPlace::Current(place)) =>
+                {
+                    expansion
+                        .expansion()
+                        .into_iter()
+                        .find_map(|part| match part {
+                            PcgNode::Place(MaybeLabelledPlace::Current(part))
+                                if is_variant(part) =>
+                            {
+                                Some(part)
+                            }
+                            _ => None,
+                        })
+                }
+                _ => None,
+            })
+    }
+
+    /// `place` as its `variant`, named `name`.
+    fn downcast_place(
+        &self,
+        place: Place<'vir>,
+        name: Option<prusti_rustc_interface::span::Symbol>,
+        variant: abi::VariantIdx,
+    ) -> Place<'vir> {
+        let projection = self.vcx.tcx().mk_place_elems_from_iter(
+            place
+                .projection
+                .iter()
+                .copied()
+                .chain([mir::ProjectionElem::Downcast(name, variant)]),
+        );
+        Place::new(place.local, projection)
     }
 
     /// Whether the PCG state `pcg` has the current `place` expanded into its
@@ -1519,7 +1598,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         nodes: &NodePredicates<'vir>,
         keys: &[(LifetimePosition, vir::ExprSnap<'vir>)],
         elements: &[(vir::ExprCSnap<'vir>, Option<Child<'vir>>)],
-    ) -> Vec<vir::PredicateApp<'vir>> {
+    ) -> Vec<(Option<vir::ExprBool<'vir>>, vir::PredicateApp<'vir>)> {
         let mut preds = Vec::new();
         for &(index, _) in elements {
             for &(p, key) in keys {
@@ -1527,10 +1606,29 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                     .ty_use_pure(ty)
                     .expect_array()
                     .index_generic(key.downcast_ty(), index);
-                preds.extend(nodes.element_predicate(p, index, value));
+                preds.extend(
+                    nodes
+                        .element_predicate(p, index, value)
+                        .map(|pred| (nodes.nonempty(p), pred)),
+                );
             }
         }
         preds
+    }
+
+    /// `stmt`, a fold or unfold of a predicate, under the condition `nonempty`
+    /// that its interval is non-empty (see `NodePredicates::nonempty`).
+    fn if_nonempty_stmt(
+        &self,
+        nonempty: Option<vir::ExprBool<'vir>>,
+        stmt: vir::Stmt<'vir>,
+    ) -> vir::Stmt<'vir> {
+        match nonempty {
+            None => stmt,
+            Some(nonempty) => self
+                .vcx
+                .mk_if_stmt(nonempty, self.vcx.alloc_slice(&[stmt]), &[]),
+        }
     }
 
     /// Cast the predicates of the generic fields or the generic referent of
@@ -1768,12 +1866,12 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             rest_predicates.extend(
                 rest_keys
                     .into_iter()
-                    .map(|(p, key)| nodes.predicate_with_key(p, key)),
+                    .map(|(p, key)| (nodes.nonempty(p), nodes.predicate_with_key(p, key))),
             );
         }
         let predicates = keys
             .iter()
-            .map(|&(p, key)| nodes.predicate_with_key(p, key))
+            .map(|&(p, key)| (nodes.nonempty(p), nodes.predicate_with_key(p, key)))
             .collect::<Vec<_>>();
         if unfold {
             // Innermost first: the keys read the enclosing predicates.
@@ -1781,7 +1879,9 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 .into_iter()
                 .rev()
                 .chain(element_predicates)
-                .map(|pred| self.vcx.mk_unfold_stmt(pred))
+                .map(|(nonempty, pred)| {
+                    self.if_nonempty_stmt(nonempty, self.vcx.mk_unfold_stmt(pred))
+                })
                 .collect::<Vec<_>>();
             self.stmts(unfolds);
             self.cast_children(ty, base, &state, &keys, &nodes, children, false)?;
@@ -1798,14 +1898,18 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             }
             let folds = rest_predicates
                 .into_iter()
-                .map(|pred| self.vcx.mk_fold_stmt(pred))
+                .map(|(nonempty, pred)| {
+                    self.if_nonempty_stmt(nonempty, self.vcx.mk_fold_stmt(pred))
+                })
                 .collect::<Vec<_>>();
             self.stmts(folds);
         } else {
             let unfolds = rest_predicates
                 .into_iter()
                 .rev()
-                .map(|pred| self.vcx.mk_unfold_stmt(pred))
+                .map(|(nonempty, pred)| {
+                    self.if_nonempty_stmt(nonempty, self.vcx.mk_unfold_stmt(pred))
+                })
                 .collect::<Vec<_>>();
             self.stmts(unfolds);
             self.cast_children(ty, base, &state, &keys, &nodes, children, true)?;
@@ -1819,7 +1923,9 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             let folds = element_predicates
                 .into_iter()
                 .chain(predicates)
-                .map(|pred| self.vcx.mk_fold_stmt(pred))
+                .map(|(nonempty, pred)| {
+                    self.if_nonempty_stmt(nonempty, self.vcx.mk_fold_stmt(pred))
+                })
                 .collect::<Vec<_>>();
             self.stmts(folds);
         }
@@ -2431,9 +2537,21 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                     self.stmts(data.unfold(place_ty.variant_index, place_enc, index, None, None));
                 } else if matches!(repack_op, pcg::free_pcs::RepackOp::Collapse(..)) {
                     self.stmts(data.fold(place_ty.variant_index, place_enc, index, None, None));
-                    if index.is_none()
-                        && let Ok(parts) = place.expand_field(None, self.pcg_ctxt())
-                    {
+                    // An enum is put back together from the variant it was
+                    // expanded into, any other place from its fields.
+                    let parts = match guide {
+                        Some(RepackGuide::Downcast(name, variant, _)) => {
+                            Some(vec![self.downcast_place(place, name, variant)])
+                        }
+                        _ if index.is_none()
+                            && !place_ty.ty.is_box()
+                            && !(place_ty.ty.is_enum() && place_ty.variant_index.is_none()) =>
+                        {
+                            place.expand_field(None, self.pcg_ctxt()).ok()
+                        }
+                        _ => None,
+                    };
+                    if let Some(parts) = parts {
                         self.fold_place_nodes(place, &parts)?;
                     }
                 } else {

@@ -531,6 +531,9 @@ impl TaskEncoder for IndirectCastersEnc {
                 acc([param_ind.predicate](generic_k, [..[&[ty]]], [..[no_consts]], lo, hi))
             };
             let generic_pred = vir::expr! { vcx; ((lo) < (hi)) ==> (generic_pred) };
+            // Likewise, the concrete predicate over an empty interval is not
+            // held, as its interval may come from a type parameter's.
+            let concrete_pred = vir::expr! { vcx; ((lo) < (hi)) ==> (concrete_pred) };
             let concrete_extend = generic(concrete_ind.extend.call()(k, tys, consts, lo, hi));
             let generic_extend = param_ind.extend.call()(generic_k, &[ty], no_consts, lo, hi);
             // Making a snapshot shallow and grafting do not depend on the heap, so they are the
