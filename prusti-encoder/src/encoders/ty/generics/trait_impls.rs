@@ -127,14 +127,13 @@ impl TaskEncoder for TraitImplEnc {
                 // behavioral-subtyping error's hint at them.
                 let trait_pre_spans: Vec<_> =
                     trait_item_spec.pres.iter().map(|(_, s)| *s).collect();
-                // Skipped trait preconditions are no hypothesis to check the
-                // impl's against. Nor do they need one, as long as a trait
-                // precondition that cannot be encoded here (in impure mode,
-                // for the impl) cannot be encoded for the trait axioms (in a
-                // pure mode, for the trait) either: these then leave it out,
-                // so calls through the trait only rely on the impl's own
-                // preconditions. The pure modes support less, and no spec is
-                // known to fail only for the impl.
+                // If the trait method's preconditions were skipped, the impl's
+                // are not checked against them. The trait axioms then leave
+                // the trait's preconditions out too, so calls through the
+                // trait rely only on the impl's preconditions. This assumes
+                // that a trait precondition that cannot be encoded here (in
+                // impure mode) cannot be encoded for the trait axioms (in a
+                // pure mode) either, as the pure modes support less.
                 let impl_pres_to_check = if trait_item_spec.skipped {
                     &[][..]
                 } else {

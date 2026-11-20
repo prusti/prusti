@@ -109,8 +109,9 @@ pub struct MirSpecEncOutput<'vir> {
     /// Whether the specs were skipped because one could not be encoded, in
     /// which case `pres`, `posts` and `pledges` are empty. Where the
     /// preconditions are a hypothesis (e.g. "the trait's precondition holds if
-    /// these do"), the empty list must not stand for `true`: another mode may
-    /// have encoded them and assume them.
+    /// these do"), the empty list must not stand for `true`: a consumer of
+    /// another mode, such as the function's method in impure mode, may have
+    /// them and assume them.
     pub skipped: bool,
 }
 

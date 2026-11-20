@@ -66,8 +66,8 @@ pub enum ErrorKind {
 /// One link of a dependency error: the encoder, the task it was encoding (or,
 /// for the last link, the error itself), the spans involved, the kind of the
 /// failure that the chain passes on, and optionally advice for the user on
-/// how to avoid the error. The link for the failed dependency itself, the
-/// first of the chain, refers to the record of that failure.
+/// how to avoid the error. A link that names a failed dependency refers to
+/// the record of that dependency's failure.
 #[derive(Clone)]
 pub struct DependencyErrorLink {
     pub encoder: &'static str,
