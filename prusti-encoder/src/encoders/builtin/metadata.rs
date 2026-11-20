@@ -5,7 +5,7 @@ use crate::encoders::{
     Pure,
     ty::{
         RustTyDecomposition, RustTyNormalized,
-        generics::{GArgsCastEnc, GParams, TyExprEnc, sizedness::pointee_metadata_fun},
+        generics::{GArgsCastEnc, GParams, TyExprEnc, builtin_impls::pointee_metadata},
         use_pure::TyUsePureEnc,
     },
 };
@@ -123,7 +123,7 @@ impl TaskEncoder for MetadataCastEnc {
         let unit_metadata = unit_caster
             .cast_to_callee_ctx(unit_snap.upcast_ty())
             .downcast_ty::<vir::PSnap>();
-        let pointee_metadata = pointee_metadata_fun(deps)?;
+        let (_, pointee_metadata) = pointee_metadata(deps)?;
         vir::with_vcx(|vcx| {
             let domain_fn = vcx.mk_domain_function(fn_idn, false, None);
             let input_decl = vcx.mk_local_decl("input", vir::TYPE_PSNAP);

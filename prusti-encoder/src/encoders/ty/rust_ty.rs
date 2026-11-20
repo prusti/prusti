@@ -275,7 +275,7 @@ pub struct RustTyData<'tcx> {
 
 /// Which of the sizedness traits (`Sized`, `MetaSized`, `PointeeSized`) the
 /// constructor's instances implement. These traits have no impls, so their
-/// facts are encoded per constructor instead (see `SizednessEnc`). Mirrors
+/// facts are encoded per constructor instead (see `BuiltinImplEnc`). Mirrors
 /// `Ty::has_trivial_sizedness`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RustTySizedness<'tcx> {
