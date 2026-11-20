@@ -21,18 +21,67 @@ pub type EncodeFullResult<'vir, E /*: TaskEncoder + 'vir + ?Sized*/> = Result<
     EncodeFullError<'vir, E>,
 >;
 
+/// Records whether the failure of a task has been reported to the user.
+///
+/// The dependency error that passes the failure on to a dependent refers to
+/// the record. A dependent that reports a dependency error marks the records
+/// it refers to (see [EncodeFullError::mark_reported]). The final error
+/// collection reports each failure whose record is not marked (see
+/// [TaskEncoder::all_outputs_local_no_errors]), so a failure is only left out
+/// once it was reported, and a dependent that drops the error cannot hide it.
+#[derive(Clone, Debug, Default)]
+pub struct ErrorReport(std::rc::Rc<std::cell::OnceCell<vir::Reported>>);
+
+impl ErrorReport {
+    /// The record of a failure that was reported when it occurred.
+    pub(crate) fn reported(reported: vir::Reported) -> Self {
+        let report = Self::default();
+        report.mark(reported);
+        report
+    }
+
+    fn mark(&self, reported: vir::Reported) {
+        // Marking it once is enough to prove that the failure was reported.
+        let _ = self.0.set(reported);
+    }
+
+    pub(crate) fn is_marked(&self) -> bool {
+        self.0.get().is_some()
+    }
+}
+
 /// One link of a dependency error: the encoder, the task it was encoding (or,
 /// for the last link, the error itself), the spans involved, optionally
 /// advice for the user on how to avoid the error, and, for the last link,
 /// whether the error is a mistake in the user's program rather than a
-/// limitation of the encoder.
-#[derive(Clone, Debug)]
+/// limitation of the encoder, and whether it is an internal error (a panic, a
+/// cycle or an enqueueing error), which is reported as such, also when
+/// unsupported features are only warnings. The link for the failed dependency
+/// itself, the first of the chain, refers to the record of that failure.
+#[derive(Clone)]
 pub struct DependencyErrorLink {
     pub encoder: &'static str,
     pub message: String,
     pub spans: Vec<Span>,
     pub help: Option<String>,
     pub incorrect: bool,
+    pub internal: bool,
+    pub(crate) report: Option<ErrorReport>,
+}
+
+// Manual implementation, so that the record (whose state depends on what has
+// been reported so far) does not show up in error messages.
+impl std::fmt::Debug for DependencyErrorLink {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DependencyErrorLink")
+            .field("encoder", &self.encoder)
+            .field("message", &self.message)
+            .field("spans", &self.spans)
+            .field("help", &self.help)
+            .field("incorrect", &self.incorrect)
+            .field("internal", &self.internal)
+            .finish()
+    }
 }
 
 impl DependencyErrorLink {
@@ -43,6 +92,8 @@ impl DependencyErrorLink {
             spans,
             help: None,
             incorrect: false,
+            internal: false,
+            report: None,
         }
     }
 
@@ -57,6 +108,13 @@ impl DependencyErrorLink {
     #[must_use]
     pub fn incorrect(mut self) -> Self {
         self.incorrect = true;
+        self
+    }
+
+    /// Marks the error as an internal error.
+    #[must_use]
+    pub(crate) fn internal(mut self) -> Self {
+        self.internal = true;
         self
     }
 }
@@ -80,6 +138,33 @@ pub enum EncodeFullError<'vir, E: TaskEncoder + 'vir + ?Sized> {
     ),
 
     DependencyError(Vec<DependencyErrorLink>),
+
+    /// The task cannot be encoded, and this was already reported to the user.
+    /// It is passed on to the encoders that depend on the task, so that they
+    /// do not report it again.
+    Reported(vir::Reported),
+}
+
+impl<'vir, E: TaskEncoder + 'vir + ?Sized> EncodeFullError<'vir, E> {
+    /// The error for a feature that `E` does not support, which `message`
+    /// describes, at `spans`.
+    pub fn unsupported(message: String, spans: Vec<Span>) -> Self {
+        Self::DependencyError(vec![DependencyErrorLink::new(
+            E::ENCODER_NAME,
+            message,
+            spans,
+        )])
+    }
+
+    /// Records that this error has been reported, as `reported` proves: the
+    /// failures of the dependencies it contains are then not reported again.
+    pub fn mark_reported(&self, reported: vir::Reported) {
+        if let Self::DependencyError(chain) = self {
+            for report in chain.iter().filter_map(|link| link.report.as_ref()) {
+                report.mark(reported);
+            }
+        }
+    }
 }
 
 // Manual implementation, since neither `E` nor `E::OutputFullDependency` are
@@ -93,6 +178,7 @@ impl<'vir, E: TaskEncoder + 'vir + ?Sized> std::fmt::Debug for EncodeFullError<'
                 .field(err) /*.field(output_dep)*/
                 .finish(),
             Self::DependencyError(contents) => write!(f, "DependencyError({contents:?})"),
+            Self::Reported(reported) => write!(f, "Reported({reported:?})"),
         }
     }
 }
@@ -103,6 +189,7 @@ pub enum TaskEncoderError<E: TaskEncoder + ?Sized> {
     DependencyError(Vec<DependencyErrorLink>),
     CyclicError,
     PanicError(String),
+    Reported(vir::Reported),
 }
 
 impl<E: TaskEncoder + ?Sized> std::fmt::Debug for TaskEncoderError<E>
@@ -117,6 +204,7 @@ where
             Self::DependencyError(stack) => helper.field("DependencyError", stack),
             Self::CyclicError => helper.field("CyclicError", &""),
             Self::PanicError(msg) => helper.field("PanicError", msg),
+            Self::Reported(reported) => helper.field("Reported", reported),
         };
         helper.finish()
     }
@@ -131,6 +219,7 @@ impl<E: TaskEncoder + ?Sized> Clone for TaskEncoderError<E> {
             Self::DependencyError(stack) => Self::DependencyError(stack.clone()),
             Self::CyclicError => Self::CyclicError,
             Self::PanicError(msg) => Self::PanicError(msg.clone()),
+            Self::Reported(reported) => Self::Reported(*reported),
         }
     }
 }

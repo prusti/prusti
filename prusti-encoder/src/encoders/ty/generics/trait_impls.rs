@@ -5,9 +5,7 @@ use prusti_rustc_interface::{
     middle::{mir, traits::specialization_graph, ty},
     span::def_id::DefId,
 };
-use task_encoder::{
-    DependencyErrorLink, EncodeFullError, EncodeFullResult, TaskEncoder, TaskEncoderDependencies,
-};
+use task_encoder::{EncodeFullError, EncodeFullResult, TaskEncoder, TaskEncoderDependencies};
 use vir::{CastType, Domain, Method, MethodIdn, ViperIdent, vir_format_identifier};
 
 use crate::{
@@ -465,20 +463,17 @@ impl TraitImplEnc {
                 None => Some(0),
             };
             let Some(next) = next else {
-                return Err(EncodeFullError::DependencyError(vec![
-                    DependencyErrorLink::new(
-                        <E as TaskEncoder>::ENCODER_NAME,
-                        format!(
-                            "these projection bounds mention generics that are never bound: {}",
-                            proj_preds
-                                .iter()
-                                .map(ToString::to_string)
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        ),
-                        vec![],
+                return Err(EncodeFullError::unsupported(
+                    format!(
+                        "these projection bounds mention generics that are never bound: {}",
+                        proj_preds
+                            .iter()
+                            .map(ToString::to_string)
+                            .collect::<Vec<_>>()
+                            .join(", ")
                     ),
-                ]));
+                    vec![],
+                ));
             };
             let proj_pred = proj_preds.remove(next);
             let trait_did = proj_pred.trait_def_id(tcx);
@@ -1016,18 +1011,22 @@ impl TaskEncoder for TraitImplItemEnc {
                         .iter()
                         .map(|arg| arg.upcast_ty())
                         .collect::<Vec<vir::LocalDeclDyn>>();
-                    axioms.push(vcx.mk_domain_axiom(
-                        vir_format_identifier!(vcx, "{impl_name}_fn_pre_{item_name}"),
-                        TraitImplEnc::guarded_forall(
-                            vcx,
-                            deps,
-                            impl_did,
-                            impl_item_def_id,
-                            &arg_decls,
-                            pre_func_call.upcast_ty(),
-                            guard_inherited(vir::expr! { (pres) ==> (pre_func_call) }),
-                        )?,
-                    ));
+                    // Skipped preconditions establish nothing: the impl's
+                    // method may still assume them.
+                    if !impl_item_spec.skipped {
+                        axioms.push(vcx.mk_domain_axiom(
+                            vir_format_identifier!(vcx, "{impl_name}_fn_pre_{item_name}"),
+                            TraitImplEnc::guarded_forall(
+                                vcx,
+                                deps,
+                                impl_did,
+                                impl_item_def_id,
+                                &arg_decls,
+                                pre_func_call.upcast_ty(),
+                                guard_inherited(vir::expr! { (pres) ==> (pre_func_call) }),
+                            )?,
+                        ));
+                    }
                     let mut posts = impl_item_spec.post_exprs().collect::<Vec<_>>();
                     if impl_item_has_body && impl_item_is_pure {
                         let pure_func = deps.require_dep::<FunctionCallEnc>(

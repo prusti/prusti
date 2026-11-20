@@ -125,11 +125,7 @@ pub(crate) trait PureRvalueEnc<'vir> {
 
     /// Build an error for an unsupported feature at `span`.
     fn unsupported(&self, message: String, span: Span) -> EncodeFullError<'vir, Self::Encoder> {
-        EncodeFullError::DependencyError(vec![DependencyErrorLink::new(
-            <Self::Encoder as TaskEncoder>::ENCODER_NAME,
-            message,
-            vec![span],
-        )])
+        EncodeFullError::unsupported(message, vec![span])
     }
 
     /// Build an error for using the fields or variant of `ty`, which its

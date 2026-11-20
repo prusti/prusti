@@ -228,16 +228,20 @@ impl TaskEncoder for TraitFnEnc {
                 item_generics.ty_exprs(),
                 item_generics.const_exprs(),
             );
-            axioms.push(vcx.mk_domain_axiom(
-                vir_format_identifier!(
-                    vcx,
-                    "{trait_name}_fn_pre_{item_name}_base",
-                ),
-                vir::expr! {
-                    forall ..[func_args], ..[item_generics.ty_decls()], ..[item_generics.const_decls()] :: {[pre_func_call]}
-                        (pres) ==> (pre_func_call)
-                },
-            ));
+            // Skipped preconditions establish nothing: an impl may still
+            // assume them.
+            if !spec.skipped {
+                axioms.push(vcx.mk_domain_axiom(
+                    vir_format_identifier!(
+                        vcx,
+                        "{trait_name}_fn_pre_{item_name}_base",
+                    ),
+                    vir::expr! {
+                        forall ..[func_args], ..[item_generics.ty_decls()], ..[item_generics.const_decls()] :: {[pre_func_call]}
+                            (pres) ==> (pre_func_call)
+                    },
+                ));
+            }
             // A default body is not part of the trait's contract: impls may
             // override it with a different result.
             let posts = vcx.mk_conj(&spec.post_exprs().collect::<Vec<_>>());

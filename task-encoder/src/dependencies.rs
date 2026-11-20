@@ -56,17 +56,21 @@ impl<'vir, E: TaskEncoder + 'vir + ?Sized> TaskEncoderDependencies<'vir, E> {
             });
         }
         res.map_err(|err| {
+            let task_key = EOther::task_to_key(&task);
             let mut chain = vec![DependencyErrorLink::new(
                 EOther::ENCODER_NAME,
                 EOther::describe_task(task),
                 span.into_iter().collect(),
             )];
             match err {
-                TaskEncoderError::EnqueueingError(_) => chain.push(DependencyErrorLink::new(
-                    EOther::ENCODER_NAME,
-                    "? EnqueueingError".to_string(),
-                    Vec::new(),
-                )),
+                TaskEncoderError::EnqueueingError(_) => chain.push(
+                    DependencyErrorLink::new(
+                        EOther::ENCODER_NAME,
+                        "? EnqueueingError".to_string(),
+                        Vec::new(),
+                    )
+                    .internal(),
+                ),
                 TaskEncoderError::EncodingError(err) => chain.push(DependencyErrorLink::new(
                     EOther::ENCODER_NAME,
                     EOther::describe_error(err),
@@ -76,17 +80,33 @@ impl<'vir, E: TaskEncoder + 'vir + ?Sized> TaskEncoderDependencies<'vir, E> {
                 // unsupported-feature message) is preserved instead of being
                 // collapsed to an opaque "? DependencyError".
                 TaskEncoderError::DependencyError(items) => chain.extend(items),
-                TaskEncoderError::CyclicError => chain.push(DependencyErrorLink::new(
-                    EOther::ENCODER_NAME,
-                    "? CyclicError".to_string(),
-                    Vec::new(),
-                )),
-                TaskEncoderError::PanicError(_) => chain.push(DependencyErrorLink::new(
-                    EOther::ENCODER_NAME,
-                    "? PanicError".to_string(),
-                    Vec::new(),
-                )),
+                TaskEncoderError::CyclicError => chain.push(
+                    DependencyErrorLink::new(
+                        EOther::ENCODER_NAME,
+                        "? CyclicError".to_string(),
+                        Vec::new(),
+                    )
+                    .internal(),
+                ),
+                TaskEncoderError::PanicError(msg) => chain.push(
+                    DependencyErrorLink::new(
+                        EOther::ENCODER_NAME,
+                        format!("the encoder panicked: {msg}"),
+                        Vec::new(),
+                    )
+                    .internal(),
+                ),
+                TaskEncoderError::Reported(reported) => return EncodeFullError::Reported(reported),
             }
+            // A dependent that reports this error marks the linked record, so
+            // that the final collection leaves the dependency's failure out.
+            chain[0].report = EOther::with_cache(|cache| match cache.borrow().get(&task_key) {
+                Some(
+                    TaskEncoderCacheState::ErrorEncode { report, .. }
+                    | TaskEncoderCacheState::ErrorEnqueue { report, .. },
+                ) => Some(report.clone()),
+                _ => None,
+            });
             EncodeFullError::DependencyError(chain)
         })
         .and_then(|result| {

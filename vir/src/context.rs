@@ -82,10 +82,23 @@ impl<'tcx> VirCtxt<'tcx> {
         subst: &'tcx FxHashMap<&'tcx str, ExprDyn<'tcx>>,
         f: impl FnOnce() -> T,
     ) -> T {
-        let prev = self.local_subst.replace(Some(subst));
-        let res = f();
-        self.local_subst.replace(prev);
-        res
+        /// Restores the previous substitution when dropped, so that it is
+        /// also restored when `f` panics: the task encoder catches the panic,
+        /// and the encoding continues.
+        struct Restore<'tcx> {
+            vcx: &'tcx VirCtxt<'tcx>,
+            prev: Option<&'tcx FxHashMap<&'tcx str, ExprDyn<'tcx>>>,
+        }
+        impl Drop for Restore<'_> {
+            fn drop(&mut self) {
+                self.vcx.local_subst.replace(self.prev);
+            }
+        }
+        let _restore = Restore {
+            vcx: self,
+            prev: self.local_subst.replace(Some(subst)),
+        };
+        f()
     }
 
     pub(crate) fn local_subst<'vir>(&'vir self, name: &str) -> Option<ExprDyn<'vir>> {
@@ -132,10 +145,6 @@ impl<'tcx> VirCtxt<'tcx> {
 
     pub fn alloc_array<T: Copy, const N: usize>(&self, val: &[T; N]) -> &[T; N] {
         &*self.arena.alloc(*val)
-    }
-
-    pub fn reset(&mut self) {
-        self.arena.reset();
     }
 
     pub fn apply_ty_substs<'vir>(
@@ -244,20 +253,6 @@ where
         //   the rustc type context, respectively
         let vcx = vcx.as_ref().expect("VIR context was not initialised");
         let vcx = unsafe { std::mem::transmute::<&VirCtxt<'_>, &VirCtxt<'_>>(vcx) };
-        f(vcx)
-    })
-}
-
-pub fn with_vcx_mut<'vir, 'tcx: 'vir, F, R>(f: F) -> R
-where
-    F: FnOnce(&'vir mut VirCtxt<'tcx>) -> R,
-{
-    VCTX.with_borrow_mut(|vcx: &mut Option<VirCtxt<'static>>| {
-        // SAFETY: the 'vir and 'tcx given to this function will always be
-        //   the same (or shorter) than the lifetimes of the VIR arena and
-        //   the rustc type context, respectively
-        let vcx = vcx.as_mut().expect("VIR context was not initialised");
-        let vcx = unsafe { std::mem::transmute::<&mut VirCtxt<'_>, &mut VirCtxt<'_>>(vcx) };
         f(vcx)
     })
 }

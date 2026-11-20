@@ -23,24 +23,33 @@ use prusti_rustc_interface::{
 };
 use task_encoder::{EncodeFullError, TaskEncoder, TaskEncoderDependencies};
 
-/// The cause of an encoding error, reported when a function or method body or
-/// a contract cannot be encoded (e.g. an unsupported feature) and an abstract
-/// stub is used instead.
+/// The cause of an encoding error, reported when a function or method body, a
+/// contract or one of its specs cannot be encoded (e.g. an unsupported
+/// feature).
 pub(crate) struct DepError {
     pub message: String,
     pub help: Option<String>,
     pub span: Option<Span>,
     pub incorrect: bool,
+    pub internal: bool,
 }
 
 impl DepError {
     /// The error to report at `span` when `what` cannot be encoded. A mistake
     /// in the user's program is reported as an invalid-specification error
-    /// stating only the cause; anything else is an unsupported-feature error
-    /// that also names `what`.
+    /// stating only the cause; a failure caused by an internal error (e.g. a
+    /// panic) as an internal error, which, unlike an unsupported feature, is
+    /// not downgraded to a warning when unsupported features are skipped;
+    /// anything else is an unsupported-feature error. The latter two also
+    /// name `what`.
     pub(crate) fn report(self, what: String, span: Span) -> PrustiError {
         let error = if self.incorrect {
             PrustiError::incorrect(self.message, span.into())
+        } else if self.internal {
+            PrustiError::internal(
+                format!("cannot encode {what}: {}", self.message),
+                span.into(),
+            )
         } else {
             PrustiError::unsupported(
                 format!("cannot encode {what}: {}", self.message),
@@ -54,11 +63,30 @@ impl DepError {
     }
 }
 
+/// Reports the encoding error `err` with the diagnostic that `report` builds
+/// from its cause and returns the proof that it was reported. If `err` was
+/// already reported, reports nothing and returns that report's proof.
+pub(crate) fn report_dep_error<'vir, E: TaskEncoder + ?Sized>(
+    vcx: &'vir vir::VirCtxt<'vir>,
+    err: &EncodeFullError<'vir, E>,
+    report: impl FnOnce(DepError) -> PrustiError,
+) -> vir::Reported {
+    match err {
+        EncodeFullError::Reported(reported) => *reported,
+        err => {
+            let reported = vcx.emit_early_error(report(dep_error(err)));
+            err.mark_reported(reported);
+            reported
+        }
+    }
+}
+
 /// Extracts the cause of an encoding error. For a dependency error, the
-/// message, the help and whether the user's program is at fault come from the
-/// root cause (the last link of the chain), which holds the actual error, and
-/// the span is the innermost one in the chain.
-pub(crate) fn dep_error<'vir, E: TaskEncoder + ?Sized>(err: &EncodeFullError<'vir, E>) -> DepError {
+/// message, the help, whether the user's program is at fault and whether the
+/// cause is an internal error come from the root cause (the last link of the
+/// chain), which holds the actual error, and the span is the innermost one in
+/// the chain.
+fn dep_error<'vir, E: TaskEncoder + ?Sized>(err: &EncodeFullError<'vir, E>) -> DepError {
     match err {
         EncodeFullError::DependencyError(chain) => {
             let root = chain.last();
@@ -73,6 +101,7 @@ pub(crate) fn dep_error<'vir, E: TaskEncoder + ?Sized>(err: &EncodeFullError<'vi
                     .rev()
                     .find_map(|link| link.spans.first().copied()),
                 incorrect: root.is_some_and(|link| link.incorrect),
+                internal: root.is_some_and(|link| link.internal),
             }
         }
         other => DepError {
@@ -80,6 +109,7 @@ pub(crate) fn dep_error<'vir, E: TaskEncoder + ?Sized>(err: &EncodeFullError<'vi
             help: None,
             span: None,
             incorrect: false,
+            internal: false,
         },
     }
 }
@@ -184,7 +214,8 @@ pub fn encode_all_in_crate<'tcx>(tcx: ty::TyCtxt<'tcx>) {
     // use tcx.visible_traits and tcx.all_impls(trait_id)
     for def_id in tcx.hir_crate_items(()).definitions() {
         // A failed encoding stays in the encoder's cache, from which its
-        // `emit_outputs` reports it at the span of the item's first request.
+        // `emit_outputs` reports it at the first non-dummy span of the item's
+        // requests.
         match tcx.def_kind(def_id) {
             hir::def::DefKind::Trait => {
                 let _ = TraitEnc::encode(def_id.to_def_id(), false, tcx.def_span(def_id));

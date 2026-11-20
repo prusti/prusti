@@ -371,7 +371,7 @@ impl<'vir: 'enc, 'enc> PureRvalueEnc<'vir> for Enc<'vir, 'enc> {
                 self.encode_place_snap((*place).into(), curr_ver)?
             }
             mir::Operand::Constant(box constant) => {
-                self.encode_constant_snap(constant)?.upcast_ty().lift()
+                self.encode_constant_snap(constant)?.upcast_ty().lazy()
             }
             mir::Operand::RuntimeChecks(_) => todo!(),
         })
@@ -755,7 +755,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                         self.vcx.mk_ternary_expr(
                             self.vcx.mk_eq_expr(
                                 discr_ty_out.snap_to_prim(discr_expr),
-                                discr_ty_out.expr_from_bits(discr_ty, cond_val).lift(),
+                                discr_ty_out.expr_from_bits(discr_ty, cond_val).lazy(),
                             ),
                             self.reify_branch(
                                 &tuple_ref,
@@ -1112,7 +1112,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                         let e_rvalue_ty = self.ty_use(rvalue_ty).expect_primitive();
                         // mir::Rvalue::Discriminant documents "Returns zero for types without discriminant"
                         let zero = self.vcx.mk_uint::<0>();
-                        e_rvalue_ty.prim_to_snap(zero.upcast_ty()).lift()
+                        e_rvalue_ty.prim_to_snap(zero.upcast_ty()).lazy()
                     }
                 };
                 Ok(discr.upcast_ty())
@@ -1578,7 +1578,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                         self.before_expiry_mode = true;
                     }
                 }
-                mk_bool(self.vcx.mk_bool::<true>().lift()) // TODO: what value do we return?
+                mk_bool(self.vcx.mk_bool::<true>().lazy()) // TODO: what value do we return?
             }
             SpecBuiltin::ModeEnd(mode) => {
                 match mode {
@@ -1601,7 +1601,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                         self.before_expiry_mode = false;
                     }
                 }
-                mk_bool(self.vcx.mk_bool::<true>().lift()) // TODO: what value do we return?
+                mk_bool(self.vcx.mk_bool::<true>().lazy()) // TODO: what value do we return?
             }
         }
         .upcast_ty())

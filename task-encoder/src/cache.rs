@@ -38,10 +38,11 @@ pub enum TaskEncoderCacheState<'vir, E: TaskEncoder + 'vir + ?Sized> {
         output_dep: <E as TaskEncoder>::OutputFullDependency<'vir>,
     },
 
-    /// An error occurred when enqueing the task.
+    /// The task's encoding failed before emitting an output reference.
     ErrorEnqueue {
         error: TaskEncoderError<E>,
         spans: Vec<Span>,
+        report: ErrorReport,
     },
 
     /// An error occurred when encoding the task. The full "local" encoding is
@@ -56,6 +57,7 @@ pub enum TaskEncoderCacheState<'vir, E: TaskEncoder + 'vir + ?Sized> {
         error: TaskEncoderError<E>,
         output_dep: Option<<E as TaskEncoder>::OutputFullDependency<'vir>>,
         spans: Vec<Span>,
+        report: ErrorReport,
     },
 }
 

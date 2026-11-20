@@ -204,12 +204,6 @@ pub trait TaskEncoder {
         format!("{error:?}")
     }
 
-    /// Whether the error was already reported to the user by the encoder
-    /// itself, so that it must not be reported again as an encoder error.
-    fn error_reported(_error: &Self::EncodingError) -> bool {
-        false
-    }
-
     /// Enters the given function with a reference to the cache for this
     /// encoder.
     fn with_cache<'vir, F, R>(f: F) -> R
@@ -323,18 +317,7 @@ pub trait TaskEncoder {
         let task_key = Self::task_to_key(&task);
 
         // is there an output ref available already?
-        let task_key_clone = task_key.clone();
-        if let Some(output_ref) =
-            Self::with_cache(move |cache| match cache.borrow().get(&task_key_clone) {
-                Some(TaskEncoderCacheState::Started { output_ref })
-                | Some(TaskEncoderCacheState::Restarted { output_ref })
-                | Some(TaskEncoderCacheState::Encoded { output_ref, .. })
-                | Some(TaskEncoderCacheState::ErrorEncode { output_ref, .. }) => {
-                    Some(output_ref.clone())
-                }
-                _ => None,
-            })
-        {
+        if let Some(output_ref) = cached_output_ref::<Self>(&task_key) {
             return Ok(output_ref);
         }
 
@@ -343,28 +326,20 @@ pub trait TaskEncoder {
         // was (recursively) requested from the same encoder before its first
         // invocation reached a call to `emit_output_ref` (see
         // `TaskEncoderCacheState::Encoding`).
-        let encode_res = Self::encode(task, false, span);
-        match encode_res {
-            Ok(_) | Err(TaskEncoderError::DependencyError(..)) => (), // pass, check for output ref
-            Err(err) => return Err(err),
+        match Self::encode(task, false, span) {
+            // A successful encoding has emitted the output ref.
+            Ok(_) => {
+                Ok(cached_output_ref::<Self>(&task_key)
+                    .expect("output ref not found after encoding"))
+            }
+            // The output ref may have been emitted before the error. A
+            // requester then gets it, as later requesters do from the cache,
+            // and fails only if it needs the part that could not be encoded.
+            Err(err @ (TaskEncoderError::DependencyError(..) | TaskEncoderError::Reported(..))) => {
+                cached_output_ref::<Self>(&task_key).ok_or(err)
+            }
+            Err(err) => Err(err),
         }
-
-        let task_key_clone = task_key.clone();
-        if let Some(output_ref) =
-            Self::with_cache(move |cache| match cache.borrow().get(&task_key_clone) {
-                Some(TaskEncoderCacheState::Started { output_ref })
-                | Some(TaskEncoderCacheState::Restarted { output_ref })
-                | Some(TaskEncoderCacheState::Encoded { output_ref, .. })
-                | Some(TaskEncoderCacheState::ErrorEncode { output_ref, .. }) => {
-                    Some(output_ref.clone())
-                }
-                _ => None,
-            })
-        {
-            return Ok(output_ref);
-        }
-
-        panic!("output ref not found after encoding") // TODO: error?
     }
 
     fn encode<'vir>(
@@ -452,53 +427,21 @@ pub trait TaskEncoder {
                 "<unknown panic>".to_string()
             };
             let error = TaskEncoderError::PanicError(msg);
-            Self::with_cache(|cache| {
-                let mut cache = cache.borrow_mut();
-                match cache.get(&task_key) {
-                    Some(
-                        TaskEncoderCacheState::Started { output_ref }
-                        | TaskEncoderCacheState::Restarted { output_ref },
-                    ) => {
-                        let output_ref = output_ref.clone();
-                        cache.insert(
-                            task_key.clone(),
-                            TaskEncoderCacheState::ErrorEncode {
-                                output_ref,
-                                deps: TaskEncoderDependencies::new(),
-                                error: error.clone(),
-                                output_dep: None,
-                                spans: vec![span],
-                            },
-                        );
-                    }
-                    _ => {
-                        cache.insert(
-                            task_key.clone(),
-                            TaskEncoderCacheState::ErrorEnqueue {
-                                error: error.clone(),
-                                spans: vec![span],
-                            },
-                        );
-                    }
-                }
-            });
+            record_error::<Self>(
+                task_key.clone(),
+                error.clone(),
+                TaskEncoderDependencies::new(),
+                None,
+                span,
+            );
             error
         })?;
 
-        // `ErrorEncode`: a suspended run whose re-run failed (moving the task
-        // to that state) finds its own error here.
-        let output_ref = Self::with_cache(|cache| match cache.borrow().get(&task_key) {
-            Some(
-                TaskEncoderCacheState::Started { output_ref }
-                | TaskEncoderCacheState::Restarted { output_ref }
-                | TaskEncoderCacheState::Encoded { output_ref, .. }
-                | TaskEncoderCacheState::ErrorEncode { output_ref, .. },
-            ) => output_ref.clone(),
-            _ => panic!("encoder did not provide output ref for task {task_key:?}"),
-        });
-
         match encode_result {
             Ok((output_local, output_dep)) => {
+                let output_ref = cached_output_ref::<Self>(&task_key).unwrap_or_else(|| {
+                    panic!("encoder did not provide output ref for task {task_key:?}")
+                });
                 if need_output {
                     Self::with_cache(|cache| {
                         cache.borrow_mut().insert(
@@ -565,34 +508,34 @@ pub trait TaskEncoder {
                 ))
                 .chain(stack)
                 .collect::<Vec<_>>();
-                Self::with_cache(|cache| {
-                    cache.borrow_mut().insert(
-                        task_key,
-                        TaskEncoderCacheState::ErrorEncode {
-                            output_ref: output_ref.clone(),
-                            deps,
-                            error: TaskEncoderError::DependencyError(owned_stack.clone()),
-                            output_dep: None,
-                            spans: vec![span],
-                        },
-                    )
-                });
+                record_error::<Self>(
+                    task_key,
+                    TaskEncoderError::DependencyError(owned_stack.clone()),
+                    deps,
+                    None,
+                    span,
+                );
                 Err(TaskEncoderError::DependencyError(owned_stack))
             }
             Err(EncodeFullError::EncodingError(err, maybe_output_dep)) => {
-                Self::with_cache(|cache| {
-                    cache.borrow_mut().insert(
-                        task_key,
-                        TaskEncoderCacheState::ErrorEncode {
-                            output_ref: output_ref.clone(),
-                            deps,
-                            error: TaskEncoderError::EncodingError(err.clone()),
-                            output_dep: maybe_output_dep.map(|dep| *dep),
-                            spans: vec![span],
-                        },
-                    )
-                });
+                record_error::<Self>(
+                    task_key,
+                    TaskEncoderError::EncodingError(err.clone()),
+                    deps,
+                    maybe_output_dep.map(|dep| *dep),
+                    span,
+                );
                 Err(TaskEncoderError::EncodingError(err))
+            }
+            Err(EncodeFullError::Reported(reported)) => {
+                record_error::<Self>(
+                    task_key,
+                    TaskEncoderError::Reported(reported),
+                    deps,
+                    None,
+                    span,
+                );
+                Err(TaskEncoderError::Reported(reported))
             }
         }
     }
@@ -709,59 +652,120 @@ pub trait TaskEncoder {
         deps: &mut TaskEncoderDependencies<'vir, Self>,
     ) -> EncodeFullResult<'vir, Self>;
 
+    /// The local outputs of the successfully encoded tasks of this encoder.
+    /// The failures of the other tasks that have not been reported (see
+    /// [ErrorReport]) are added to `program` as encoder errors.
     fn all_outputs_local_no_errors<'vir>(
         program: &mut Program<'vir>,
     ) -> Vec<Self::OutputFullLocal<'vir>>
     where
         Self: 'vir,
     {
-        let (outputs, errored) = Self::all_outputs_local();
-        for (key, error, spans) in errored {
-            let span = spans
-                .into_iter()
-                .next()
-                .unwrap_or(prusti_rustc_interface::span::DUMMY_SP);
-            let msg = match error {
-                TaskEncoderError::EncodingError(err) if Self::error_reported(&err) => continue,
-                TaskEncoderError::EncodingError(err) => Self::describe_error(err),
-                other => format!(
-                    "encoder '{}' failed to encode {:?}:\n {:?}",
-                    Self::ENCODER_NAME,
-                    key,
-                    other
-                ),
-            };
-            program.encoder_errors.push((msg, span));
-        }
-        outputs
-    }
-
-    #[allow(clippy::type_complexity)]
-    fn all_outputs_local<'vir>() -> (
-        Vec<Self::OutputFullLocal<'vir>>,
-        Vec<(Self::TaskKey<'vir>, TaskEncoderError<Self>, Vec<Span>)>,
-    )
-    where
-        Self: 'vir,
-    {
         Self::with_cache(|cache| {
             let mut outputs = Vec::new();
-            let mut errored = Vec::new();
             for (key, cache_state) in cache.borrow().iter() {
-                match cache_state {
+                let (error, spans) = match cache_state {
                     TaskEncoderCacheState::Encoded { output_local, .. } => {
                         outputs.push(output_local.clone());
+                        continue;
                     }
-                    TaskEncoderCacheState::ErrorEncode { error, spans, .. }
-                    | TaskEncoderCacheState::ErrorEnqueue { error, spans } => {
-                        errored.push((key.clone(), error.clone(), spans.clone()));
+                    TaskEncoderCacheState::ErrorEncode {
+                        error,
+                        spans,
+                        report,
+                        ..
+                    }
+                    | TaskEncoderCacheState::ErrorEnqueue {
+                        error,
+                        spans,
+                        report,
+                    } => {
+                        if report.is_marked() {
+                            continue;
+                        }
+                        (error, spans)
                     }
                     _ => panic!("task encoder not completed: {key:?}"),
-                }
+                };
+                let span = spans
+                    .iter()
+                    .copied()
+                    .find(|span| !span.is_dummy())
+                    .unwrap_or(prusti_rustc_interface::span::DUMMY_SP);
+                let msg = match error {
+                    TaskEncoderError::EncodingError(err) => Self::describe_error(err.clone()),
+                    other => format!(
+                        "encoder '{}' failed to encode {:?}:\n {:?}",
+                        Self::ENCODER_NAME,
+                        key,
+                        other
+                    ),
+                };
+                program.encoder_errors.push((msg, span));
             }
-            (outputs, errored)
+            outputs
         })
     }
 
     fn emit_outputs<'vir>(_program: &mut Program<'vir>) {}
+}
+
+/// The task's output ref, if its encoding (or a re-run of it) emitted one.
+fn cached_output_ref<'vir, E: TaskEncoder + 'vir + ?Sized>(
+    task_key: &E::TaskKey<'vir>,
+) -> Option<E::OutputRef<'vir>> {
+    E::with_cache(|cache| match cache.borrow().get(task_key) {
+        Some(
+            TaskEncoderCacheState::Started { output_ref }
+            | TaskEncoderCacheState::Restarted { output_ref }
+            | TaskEncoderCacheState::Encoded { output_ref, .. }
+            | TaskEncoderCacheState::ErrorEncode { output_ref, .. },
+        ) => Some(output_ref.clone()),
+        _ => None,
+    })
+}
+
+/// Records that encoding the task failed with `error`. If the encoding (or a
+/// re-run of it) emitted an output ref, the ref stays available to dependents
+/// (`ErrorEncode`); otherwise the task has none (`ErrorEnqueue`). The spans
+/// of an error recorded earlier for the task are kept.
+fn record_error<'vir, E: TaskEncoder + 'vir + ?Sized>(
+    task_key: E::TaskKey<'vir>,
+    error: TaskEncoderError<E>,
+    deps: TaskEncoderDependencies<'vir, E>,
+    output_dep: Option<E::OutputFullDependency<'vir>>,
+    span: Span,
+) {
+    let output_ref = cached_output_ref::<E>(&task_key);
+    E::with_cache(|cache| {
+        let mut cache = cache.borrow_mut();
+        let mut spans = match cache.get(&task_key) {
+            Some(
+                TaskEncoderCacheState::ErrorEncode { spans, .. }
+                | TaskEncoderCacheState::ErrorEnqueue { spans, .. },
+            ) => spans.clone(),
+            _ => Vec::new(),
+        };
+        spans.push(span);
+        let report = match error {
+            TaskEncoderError::Reported(reported) => ErrorReport::reported(reported),
+            _ => ErrorReport::default(),
+        };
+        let new_state = match output_ref {
+            Some(output_ref) => TaskEncoderCacheState::ErrorEncode {
+                output_ref,
+                deps,
+                error,
+                output_dep,
+                spans,
+                report,
+            },
+            None => TaskEncoderCacheState::ErrorEnqueue {
+                error,
+                spans,
+                report,
+            },
+        };
+        cache.insert(task_key, new_state);
+    });
 }
