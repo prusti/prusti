@@ -41,6 +41,7 @@ typed!(LocalData; Prim => LocalPrim, Snap => LocalSnap, Dyn => LocalDyn);
 pub type Local<'vir, T> = &'vir crate::data::LocalData<'vir, T>;
 typed!(LocalDeclData; Bool => LocalDeclBool, Int => LocalDeclInt, Perm => LocalDeclPerm, Ref => LocalDeclRef, Set => LocalDeclSet);
 typed!(LocalDeclData; CSnap => LocalDeclCSnap, PSnap => LocalDeclPSnap, TyVal => LocalDeclTyVal);
+typed!(LocalDeclData; Pair => LocalDeclPair);
 typed!(LocalDeclData; Prim => LocalDeclPrim, Snap => LocalDeclSnap, Dyn => LocalDeclDyn);
 pub type LocalDecl<'vir, T> = &'vir crate::data::LocalDeclData<'vir, T>;
 pub type Method<'vir> = &'vir crate::data::MethodData<'vir>;

@@ -16,13 +16,13 @@ impl<'vir> PairUse<'vir> {
     pub fn mk_cons<Curr, Next, T: vir::CompType>(
         &self,
         elems: &[vir::ExprGen<'vir, Curr, Next, T>],
-    ) -> vir::ExprGen<'vir, Curr, Next, vir::Pair> {
+    ) -> vir::ExprGenPair<'vir, Curr, Next> {
         self.constructor.call()(elems.as_dyn())
     }
 
     pub fn mk_elem<Curr, Next>(
         &self,
-        pair: vir::ExprGen<'vir, Curr, Next, vir::Pair>,
+        pair: vir::ExprGenPair<'vir, Curr, Next>,
         elem: usize,
     ) -> vir::ExprGenDyn<'vir, Curr, Next> {
         self.destructors[elem].call()(pair)

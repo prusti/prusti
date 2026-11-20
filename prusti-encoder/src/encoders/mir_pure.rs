@@ -280,7 +280,7 @@ struct Update<'vir> {
 #[derive(Debug)]
 enum UpdateBind<'vir> {
     Local(#[allow(dead_code)] mir::Local, Version<'vir>, ExprRet<'vir>),
-    Phi(vir::LocalDecl<'vir, vir::Pair>, ExprRetAny<'vir, vir::Pair>),
+    Phi(vir::LocalDeclPair<'vir>, ExprRetAny<'vir, vir::Pair>),
 }
 
 impl<'vir> Update<'vir> {
