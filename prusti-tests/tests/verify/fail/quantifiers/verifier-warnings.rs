@@ -5,7 +5,7 @@ use prusti_contracts::*;
 
 // The verifier finds no term in the quantifier's body to use as a trigger.
 // The fail group needs an error besides the warning.
-#[requires(forall(|a: i32| exists(|b: i32| b == 5 ==> b < a)))] //~WARN: the verifier reports: No triggers provided or inferred for quantifier
+#[requires(forall(|a: i32| exists(|b: i32| b == 5 ==> b < a)))] //~WARN: the verifier found no trigger for this quantifier, so it might not be able to use it
 pub fn no_trigger() {
     prusti_assert!(false); //~ERROR: might not hold
 }

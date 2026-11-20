@@ -303,6 +303,22 @@ fn verifier_warning(warning: &viper::VerifierWarning) -> PrustiError {
              nonzero without these conditions",
         );
     }
+    // Silicon infers triggers for a quantifier without any, and if it finds
+    // none, hands the quantifier to the solver without them.
+    if warning
+        .message
+        .starts_with("No triggers provided or inferred for quantifier")
+    {
+        return PrustiError::warning(
+            "the verifier found no trigger for this quantifier, so it might not be able to use \
+             it",
+            span.into(),
+        )
+        .set_help(
+            "the verifier instantiates a quantifier only where one of its triggers occurs; \
+             specify them with `triggers = [...]`",
+        );
+    }
     PrustiError::warning(
         format!("the verifier reports: {}", warning.message),
         span.into(),
