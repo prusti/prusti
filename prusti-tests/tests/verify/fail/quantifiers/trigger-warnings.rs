@@ -16,7 +16,7 @@ pub fn q(_x: usize) -> usize {
 
 // The trigger does not occur in the body, so it is evaluated on its own,
 // where the divisor `i` is not known to be nonzero.
-#[requires(forall(|i: usize| p(i), triggers = [(q(10 / i),)]))] //~WARN: this trigger might not be used
+#[requires(forall(|i: usize| p(i), triggers = [(q(10 / i),)]))] //~WARN: this expression is left out of its trigger set
 pub fn division() {}
 
 // The trigger reads the captured `n`, but it is the same term as the body

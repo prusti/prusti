@@ -32,7 +32,7 @@ fn p(i: usize) -> bool {
 #[requires(forall(|i: usize| p(i), triggers = [(by_value(s, i),)]))] //~ERROR: expected a closure that implements the `Fn` trait
 pub fn trigger_moves_capture(s: S) {}
 
-#[requires(forall(|i: usize| p(i), triggers = [(p(i), p(i), p(i), p(i), p(i), p(i), p(i), p(i), p(i), p(i), p(i), p(i), p(i))]))] //~ERROR: a trigger set can have at most 12 terms
+#[requires(forall(|i: usize| p(i), triggers = [(p(i), p(i), p(i), p(i), p(i), p(i), p(i), p(i), p(i), p(i), p(i), p(i), p(i))]))] //~ERROR: a trigger set can have at most 12 expressions
 pub fn too_many_terms() {}
 
 // TODO: Test parser errors.

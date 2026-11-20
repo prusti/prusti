@@ -2,8 +2,8 @@
 //! problems `vir::check_trigger_set` finds in the encoded terms (see
 //! `PureKind::Trigger` for how they are encoded). Rust's operators on
 //! primitive types are encoded as applications of functions, so a trigger may
-//! use them; the snapshot equality `===` and the operations of ghost types
-//! such as `Int` are encoded as Viper's own operators, so it may not.
+//! use them; the snapshot equality `===` and the operations of `Int` and
+//! `Real` are encoded as Viper's own operators, so it may not.
 
 use crate::encoders::{MirPureEnc, mir_shared::EncodeResult};
 use prusti_rustc_interface::span::{Span, Symbol, def_id::DefId};
@@ -22,7 +22,7 @@ pub(super) fn check_set<'vir>(
 ) -> EncodeResult<'vir, (), MirPureEnc> {
     let Some(&first) = closures.first() else {
         return Err(EncodeFullError::incorrect(
-            "a trigger set must contain at least one term".to_string(),
+            "a trigger set must contain at least one expression".to_string(),
             span,
         ));
     };
@@ -34,27 +34,28 @@ pub(super) fn check_set<'vir>(
     let (message, span) = match error {
         TriggerSetError::Head(idx) => (
             "a trigger must be a function or method call, an operator, a field access or an \
-             indexing"
+             indexing, not a bare variable or constant"
                 .to_string(),
             term_span(idx),
         ),
         TriggerSetError::Forbidden(idx) => (
-            "a trigger cannot contain `===` or an operation on a ghost type such as `Int`, \
-             which are encoded as operators that Viper does not allow in triggers"
+            "a trigger cannot contain the snapshot equality `===` or an operation on Prusti's \
+             mathematical integers and reals (`Int`, `Real`)"
                 .to_string(),
             term_span(idx),
         ),
         TriggerSetError::NoQuantifiedVariable(idx) => (
-            "every term of a trigger set must mention a variable bound by its quantifier"
+            "every expression of a trigger set must mention a bound variable of the quantifier"
                 .to_string(),
             term_span(idx),
         ),
         TriggerSetError::MissingQuantifiedVariable(missing) => (
             match bound_name(vcx, first, missing) {
                 Some(name) => {
-                    format!("this trigger set does not mention the quantified variable `{name}`")
+                    format!("this trigger set does not mention the bound variable `{name}`")
                 }
-                None => "this trigger set does not mention every quantified variable".to_string(),
+                None => "this trigger set does not mention every bound variable of the quantifier"
+                    .to_string(),
             },
             term_span(0).to(term_span(closures.len() - 1)),
         ),

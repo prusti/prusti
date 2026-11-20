@@ -207,11 +207,12 @@ forall(|x: usize| foo(x) ==> bar(x), triggers=[(foo(x),), (bar(x),)])
 The verifier instantiates the quantifier for the values of the bound variables at which all expressions of one of its trigger sets occur in the terms it reasons about: in the example above, once `foo(5)` or `bar(5)` occurs, for `x = 5`. Each expression of a trigger set must be a function or method call, an operator, a field access or an indexing, and can contain `old`; it cannot be a bare variable or constant, as in `triggers=[(x,)]`. It cannot contain:
 
 - conditionals (`if`, `match`, `&&` and `||`) or quantifiers,
-- the snapshot equality `===` or operations on Prusti's mathematical integers (`Int`).
+- the snapshot equality `===` or operations on Prusti's mathematical integers and reals (`Int`, `Real`),
+- calls that never return, such as `panic!()`.
 
 Every expression of a trigger set must mention a bound variable, and the set as a whole must mention all of them. A quantifier can have at most 12 trigger sets, each of at most 12 expressions.
 
-An expression of a trigger set that does not occur in the body of the quantifier is evaluated on its own, outside the filter of the quantifier. If an operation in it then needs a condition that only the filter establishes, the verifier may not use it, and Prusti warns that the trigger might not be used. For example, the trigger of `forall(|i: usize| i > 0 ==> foo(10 / i), triggers=[(bar(10 / i),)])` divides by `i`, which is not known to be nonzero there.
+The expressions of a trigger set that do not occur in the body of the quantifier are evaluated on their own, outside the filter of the quantifier. If an operation in them then needs a condition that only the filter establishes, the verifier leaves them out of the trigger set, and Prusti warns about each of them. For example, the trigger of `forall(|i: usize| i > 0 ==> foo(10 / i), triggers=[(bar(10 / i),)])` divides by `i`, which is not known to be nonzero there.
 
 ## Specification entailments
 

@@ -1,4 +1,4 @@
-error: [Prusti: invalid specification] this trigger set does not mention the quantified variable `res`
+error: [Prusti: invalid specification] this trigger set does not mention the bound variable `res`
   --> $DIR/forall_triggers.rs:12:79
    |
 12 | #[requires(forall(|n: usize, res: usize| count(n) == res ==> true, triggers=[(count(n),)]))]

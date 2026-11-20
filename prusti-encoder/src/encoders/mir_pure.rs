@@ -1068,6 +1068,14 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                 ..
             } => {
                 let Some(target) = *target else {
+                    if self.trigger {
+                        return Err(EncodeFullError::incorrect(
+                            "a trigger cannot contain a call that never returns, such as \
+                             `panic!()`"
+                                .to_string(),
+                            term.source_info.span,
+                        ));
+                    }
                     // target is none if the call diverges (i.e. returns !), in
                     // this case treat it just like an unreachable terminator.
                     return Ok(None);
@@ -1906,9 +1914,14 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                 // Viper allows `old` in a trigger; the other states have no
                 // encoding in a trigger yet.
                 SpecBuiltin::ModeStart(Mode::Old) | SpecBuiltin::ModeEnd(Mode::Old) => {}
-                SpecBuiltin::ModeStart(_) | SpecBuiltin::ModeEnd(_) => {
+                SpecBuiltin::ModeStart(mode) | SpecBuiltin::ModeEnd(mode) => {
+                    let keyword = match mode {
+                        Mode::Rel(execution) => format!("rel{execution}"),
+                        Mode::BeforeExpiry => "before_expiry".to_string(),
+                        Mode::Old => unreachable!("`old` is supported in a trigger"),
+                    };
                     return Err(EncodeFullError::unsupported(
-                        "`rel` and `before_expiry` in a trigger".to_string(),
+                        format!("`{keyword}` in a trigger"),
                         vec![span],
                     ));
                 }

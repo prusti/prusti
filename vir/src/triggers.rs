@@ -155,11 +155,13 @@ pub fn check_trigger_set(
     shapes: &[TriggerTermShape<'_>],
 ) -> Result<(), TriggerSetError> {
     for (idx, shape) in shapes.iter().enumerate() {
-        if !shape.valid_head {
-            return Err(TriggerSetError::Head(idx));
-        }
+        // A forbidden node at the top also makes the head invalid, and is
+        // the more precise reason.
         if shape.forbidden {
             return Err(TriggerSetError::Forbidden(idx));
+        }
+        if !shape.valid_head {
+            return Err(TriggerSetError::Head(idx));
         }
         if !qvars.iter().any(|q| shape.locals.contains(q)) {
             return Err(TriggerSetError::NoQuantifiedVariable(idx));

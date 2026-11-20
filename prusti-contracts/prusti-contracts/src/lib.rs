@@ -732,8 +732,8 @@ mod triggers {
 
     /// A trigger set of a quantifier over `A`: a tuple of trigger terms.
     #[diagnostic::on_unimplemented(
-        message = "a trigger set can have at most 12 terms",
-        label = "this trigger set has more than 12 terms"
+        message = "a trigger set can have at most 12 expressions",
+        label = "this trigger set has more than 12 expressions"
     )]
     pub trait TriggerSet<A: Tuple> {}
 

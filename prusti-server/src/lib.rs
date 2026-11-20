@@ -283,22 +283,24 @@ fn verifier_warning(warning: &viper::VerifierWarning) -> PrustiError {
         .and_then(|id| id.parse::<usize>().ok())
         .and_then(|id| vir::with_vcx(|vcx| vcx.get_span_from_id(id)))
         .unwrap_or(DUMMY_SP);
-    // Silicon evaluates a trigger that is not part of the body of its
-    // quantifier on its own, and discards it if that fails. Its message
-    // prints the trigger in Viper syntax, which the span already points at.
+    // Silicon evaluates the expressions of a trigger set that are not part of
+    // the body of its quantifier together, on their own, and if that fails,
+    // warns about each of them and leaves them out of the set. Its message
+    // prints the expression in Viper syntax, which the span already points
+    // at.
     if warning
         .message
         .starts_with("Might not be able to use trigger")
     {
         return PrustiError::warning(
-            "this trigger might not be used: the verifier could not evaluate it outside the \
-             body of the quantifier, and leaves it out of the quantifier's trigger set",
+            "this expression is left out of its trigger set: the verifier could not evaluate \
+             the expressions of the set that do not occur in the body of the quantifier",
             span.into(),
         )
         .set_help(
-            "a trigger that does not occur in the body is evaluated on its own, without the \
-             conditions of the body, so that e.g. the divisor of a division in it must be known \
-             to be nonzero without them",
+            "such expressions are evaluated without the conditions of the body, such as the \
+             filter before `==>`: e.g. the divisor of a division in them must be known to be \
+             nonzero without these conditions",
         );
     }
     PrustiError::warning(
