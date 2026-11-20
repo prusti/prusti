@@ -21,8 +21,15 @@ impl<'vir> Simplifier<'_, 'vir, '_> {
             ExprKindGenData::Forall(q) => self.fold_quantifier(q.body.as_dyn()),
             ExprKindGenData::Exists(q) => self.fold_quantifier(q.body.as_dyn()),
             ExprKindGenData::Let(l) => self.fold_let(l),
+            ExprKindGenData::Old(o) => self.fold_old(o.expr),
             _ => None,
         }
+    }
+
+    /// `old[l](e)`: `old[l](old[k](a))` is `old[k](a)`, since the inner `old`
+    /// already fixes the heap that `a` is evaluated in.
+    fn fold_old(&mut self, e: ExprDyn<'vir>) -> Option<ExprDyn<'vir>> {
+        matches!(e.kind, ExprKindGenData::Old(_)).then_some(e)
     }
 
     /// `let x = v in b`:
@@ -62,7 +69,7 @@ impl<'vir> Simplifier<'_, 'vir, '_> {
         }
     }
 
-    /// `l && r`, `l || r`, `l ==> r`, `l == r` and `l != r`:
+    /// `l && r`, `l || r`, `l ==> r`, `l == r`, `l != r`, `l + r` and `l - r`:
     ///  - `true && r` is `r` and `false && r` is `false`, `false || r` is `r`
     ///    and `true || r` is `true`, and likewise with the literal on the
     ///    right,
@@ -71,7 +78,12 @@ impl<'vir> Simplifier<'_, 'vir, '_> {
     ///    are `!l`, and likewise with the literal on the left,
     ///  - `C(a_0, ..) == C(b_0, ..)` is `a_0 == b_0 && ..` since adt
     ///    constructors are injective, and `!=` is its negation; the
-    ///    applications may be locals bound to them.
+    ///    applications may be locals bound to them,
+    ///  - `0 + r` is `r`, and `l + 0` and `l - 0` are `l`,
+    ///  - `l - -k` is `l + k` for a positive integer literal `k`,
+    ///  - the sum and difference of two integer literals are evaluated, and
+    ///    `(e + k1) + k2` and `(k1 + e) + k2` are `e + (k1 + k2)` for integer
+    ///    literals `k1` and `k2`; results beyond `i128` are left as they are.
     fn fold_bin_op(
         &mut self,
         kind: BinOpKind,
@@ -79,6 +91,30 @@ impl<'vir> Simplifier<'_, 'vir, '_> {
         r: ExprDyn<'vir>,
     ) -> Option<ExprDyn<'vir>> {
         use BinOpKind::*;
+        match (kind, as_int(l), as_int(r)) {
+            (Add, Some(0), _) => return Some(r),
+            (Add | Sub, _, Some(0)) => return Some(l),
+            (Add, Some(a), Some(b)) => return a.checked_add(b).map(|v| self.int(v)),
+            (Sub, Some(a), Some(b)) => return a.checked_sub(b).map(|v| self.int(v)),
+            (Sub, None, Some(k)) if k < 0 => {
+                let k = self.int(k.checked_neg()?);
+                return Some(self.bin_op(Add, l, k));
+            }
+            (Add, None, Some(k2)) => {
+                if let ExprKindGenData::BinOp(inner) = l.kind {
+                    if inner.kind == Add {
+                        let (e, k1) = match (as_int(inner.lhs), as_int(inner.rhs)) {
+                            (None, Some(k1)) => (inner.lhs, k1),
+                            (Some(k1), None) => (inner.rhs, k1),
+                            _ => return None,
+                        };
+                        let k = self.int(k1.checked_add(k2)?);
+                        return Some(self.bin_op(Add, e, k));
+                    }
+                }
+            }
+            _ => {}
+        }
         match (kind, as_bool(l), as_bool(r)) {
             (And, Some(true), _) | (Or, Some(false), _) | (Implies, Some(true), _) => Some(r),
             (And, _, Some(true)) | (Or, _, Some(false)) => Some(l),
@@ -308,6 +344,22 @@ impl<'vir> Simplifier<'_, 'vir, '_> {
         self.node(ExprKindGenData::Const(self.vcx.alloc(ConstData::Bool(b))))
     }
 
+    /// The integer literal `v`, a negative one written as the negation of its
+    /// absolute value (see `as_int`).
+    fn int(&self, v: i128) -> ExprDyn<'vir> {
+        let abs = self.node(ExprKindGenData::Const(
+            self.vcx.alloc(ConstData::Int(v.unsigned_abs())),
+        ));
+        if v < 0 {
+            self.node(ExprKindGenData::UnOp(self.vcx.alloc(UnOpGenData {
+                kind: UnOpKind::Neg,
+                expr: abs.inner_cast_ty(),
+            })))
+        } else {
+            abs
+        }
+    }
+
     fn not(&mut self, e: ExprDyn<'vir>) -> ExprDyn<'vir> {
         self.build(ExprKindGenData::UnOp(self.vcx.alloc(UnOpGenData {
             kind: UnOpKind::Not,
@@ -374,14 +426,21 @@ fn same_arg_types(x: &FuncAppGenData<'_, (), !>, y: &FuncAppGenData<'_, (), !>) 
 }
 
 /// Syntactic equality of the expressions the equations compare (locals,
-/// constants, applications and field reads), `false` for anything else.
-fn syntactic_eq<'vir>(a: ExprDyn<'vir>, b: ExprDyn<'vir>) -> bool {
+/// constants, operations, applications and field reads), `false` for
+/// anything else.
+pub fn syntactic_eq<'vir>(a: ExprDyn<'vir>, b: ExprDyn<'vir>) -> bool {
     if std::ptr::eq(a.kind, b.kind) {
         return true;
     }
     match (a.kind, b.kind) {
         (ExprKindGenData::Local(x), ExprKindGenData::Local(y)) => x.name == y.name,
         (ExprKindGenData::Const(x), ExprKindGenData::Const(y)) => x == y,
+        (ExprKindGenData::UnOp(x), ExprKindGenData::UnOp(y)) => {
+            x.kind == y.kind && syntactic_eq(x.expr.as_dyn(), y.expr.as_dyn())
+        }
+        (ExprKindGenData::BinOp(x), ExprKindGenData::BinOp(y)) => {
+            x.kind == y.kind && syntactic_eq(x.lhs, y.lhs) && syntactic_eq(x.rhs, y.rhs)
+        }
         (ExprKindGenData::FuncApp(x), ExprKindGenData::FuncApp(y)) => {
             same_arg_types(x, y)
                 && x.result_ty == y.result_ty

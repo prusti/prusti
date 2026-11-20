@@ -28,3 +28,14 @@ struct Holder<'b> {
 fn through_struct<'a, 'b>(h: &'a mut Holder<'b>) {
     *h.r = 3;
 }
+
+struct Counted<'b> {
+    count: i32,
+    r: &'b mut i32,
+}
+
+// The key of `*c|'b` holds `count`, so it is updated by the write.
+#[ensures(c.count == 5)]
+fn write_data_next_to_ref<'a, 'b>(c: &'a mut Counted<'b>) {
+    c.count = 5;
+}

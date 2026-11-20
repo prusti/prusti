@@ -5,7 +5,10 @@ use vir::{CallableIdn, FunctionIdn, MethodIdn};
 
 use crate::encoders::{
     Impure, Pure, Purity,
-    ty::{RustTy, impure::TyImpureEnc, lifted::ty_constructor::TyConstructorEnc, pure::TyPureEnc},
+    ty::{
+        RustTy, impure::TyImpureEnc, indirect_pred::IndirectPredEnc,
+        lifted::ty_constructor::TyConstructorEnc, pure::TyPureEnc,
+    },
 };
 
 use super::{GenericParamsEnc, ParamTypEnc};
@@ -418,6 +421,197 @@ impl TaskEncoder for CastersEnc<Impure> {
             for method in output {
                 program.add_method(method);
             }
+        }
+    }
+}
+
+/// The casts between `p_X_ind(k, ts.., lo, hi)` and
+/// `p_Param_ind(make_generic_s_X(k, ts..), X_type(ts..), lo, hi)`.
+#[derive(Debug, Clone, Copy)]
+pub struct IndirectCasters<'vir> {
+    pub make_generic: IndirectCastIdn<'vir>,
+    pub make_concrete: IndirectCastIdn<'vir>,
+}
+
+pub type IndirectCastIdn<'vir> = MethodIdn<
+    'vir,
+    (
+        vir::Snap,
+        vir::ManyTyVal,
+        vir::ManyCSnap,
+        vir::Int,
+        vir::Int,
+    ),
+>;
+
+impl<'vir> task_encoder::OutputRefAny for IndirectCasters<'vir> {}
+
+/// Trusted methods exchanging a type's indirect predicate with that of a type parameter,
+/// which state that extending through the predicate gives the same result on both sides, and
+/// axioms stating the same for making any snapshot shallow and for grafting.
+pub struct IndirectCastersEnc;
+
+impl TaskEncoder for IndirectCastersEnc {
+    task_encoder::encoder_cache!(IndirectCastersEnc);
+    const ENCODER_NAME: &'static str = "indirect casters encoder";
+
+    type TaskDescription<'vir> = (RustTy<'vir>, RustTy<'vir>);
+    type OutputRef<'vir> = IndirectCasters<'vir>;
+    type OutputFullLocal<'vir> = ([vir::Method<'vir>; 2], vir::Domain<'vir>);
+
+    fn task_to_key<'vir>(task: &Self::TaskDescription<'vir>) -> Self::TaskKey<'vir> {
+        *task
+    }
+
+    fn do_encode_full<'vir>(
+        task_key: &Self::TaskKey<'vir>,
+        deps: &mut TaskEncoderDependencies<'vir, Self>,
+    ) -> EncodeFullResult<'vir, Self> {
+        let (param, concrete) = task_key;
+        assert!(param.specifics.is_param() && !concrete.specifics.is_param());
+        vir::with_vcx(|vcx| {
+            use vir::CastType;
+            let base_name = concrete.name();
+            let generics = deps.require_dep::<GenericParamsEnc>(concrete.params)?;
+            let snapshot = deps.require_ref::<TyPureEnc>(concrete)?.snapshot;
+            let args = (
+                snapshot,
+                generics.ty_args(),
+                generics.const_args(),
+                vir::TYPE_INT,
+                vir::TYPE_INT,
+            );
+            let make_generic_ident = MethodIdn::new(
+                vir::vir_format_identifier!(vcx, "make_generic_ind_{base_name}"),
+                args,
+            );
+            let make_concrete_ident = MethodIdn::new(
+                vir::vir_format_identifier!(vcx, "make_concrete_ind_{base_name}"),
+                args,
+            );
+            deps.emit_output_ref(
+                *task_key,
+                IndirectCasters {
+                    make_generic: make_generic_ident,
+                    make_concrete: make_concrete_ident,
+                },
+            )?;
+
+            let pure_casters = deps.require_ref::<CastersEnc<Pure>>(*task_key)?;
+            let ty_constructor = deps.require_ref::<TyConstructorEnc>(concrete)?;
+            let concrete_ind = deps.require_ref::<IndirectPredEnc>(*concrete)?;
+            let param_ind = deps.require_ref::<IndirectPredEnc>(*param)?;
+
+            let k_decl = vcx.mk_local_decl("k", snapshot);
+            let s_decl = vcx.mk_local_decl("s", snapshot);
+            let t_decl = vcx.mk_local_decl("t", snapshot);
+            let lo_decl = vcx.mk_local_decl("lo", vir::TYPE_INT);
+            let hi_decl = vcx.mk_local_decl("hi", vir::TYPE_INT);
+            let k: vir::ExprSnap<'vir> = vcx.mk_local_ex(k_decl);
+            let s: vir::ExprSnap<'vir> = vcx.mk_local_ex(s_decl);
+            let t: vir::ExprSnap<'vir> = vcx.mk_local_ex(t_decl);
+            let lo = vcx.mk_local_ex(lo_decl);
+            let hi = vcx.mk_local_ex(hi_decl);
+            let tys = generics.ty_exprs();
+            let consts = generics.const_exprs();
+            let ty = (ty_constructor.ty_constructor)(tys, consts);
+            let generic = |e: vir::ExprSnap<'vir>| -> vir::ExprSnap<'vir> {
+                pure_casters.make_generic.call()(e.downcast_ty(), tys, consts).upcast_ty()
+            };
+
+            let concrete_pred = vir::expr! { vcx;
+                acc([concrete_ind.predicate](k, [..[tys]], [..[consts]], lo, hi))
+            };
+            let generic_k = generic(k);
+            let no_consts: &[vir::ExprCSnap<'vir>] = &[];
+            // A container holds the predicate of a field of generic type only for a non-empty
+            // interval. For an empty one the concrete predicate holds nothing, since every
+            // conjunct of its body is guarded by a non-empty interval.
+            let generic_pred = vir::expr! { vcx;
+                acc([param_ind.predicate](generic_k, [..[&[ty]]], [..[no_consts]], lo, hi))
+            };
+            let generic_pred = vir::expr! { vcx; ((lo) < (hi)) ==> (generic_pred) };
+            // Likewise, the concrete predicate over an empty interval is not
+            // held, as its interval may come from a type parameter's.
+            let concrete_pred = vir::expr! { vcx; ((lo) < (hi)) ==> (concrete_pred) };
+            let concrete_extend = generic(concrete_ind.extend.call()(k, tys, consts, lo, hi));
+            let generic_extend = param_ind.extend.call()(generic_k, &[ty], no_consts, lo, hi);
+            // Making a snapshot shallow and grafting do not depend on the heap, so they are the
+            // same on both sides everywhere, not only after a cast. Making it shallow is related
+            // from either side: a key read from a value makes it shallow before the cast.
+            let concrete_shallow = concrete_ind.shallow.call()(s, tys, consts);
+            let generic_shallow = param_ind.shallow.call()(generic(s), &[ty], no_consts);
+            let same_shallow = generic(concrete_shallow);
+            let same_shallow = vir::expr! { vcx;
+                forall [s_decl], ..[generics.ty_decls()], ..[generics.const_decls()]
+                    :: { [generic_shallow] } { [same_shallow] }
+                    ([generic_shallow]) == ([same_shallow])
+            };
+            let shallow_axiom = vcx.mk_domain_axiom(
+                vir::vir_format_identifier!(vcx, "shallow_cast_{base_name}"),
+                same_shallow,
+            );
+            let concrete_graft = concrete_ind.graft.call()(s, tys, consts, t, lo, hi);
+            let generic_graft =
+                param_ind.graft.call()(generic(s), &[ty], no_consts, generic(t), lo, hi);
+            let same_graft = generic(concrete_graft);
+            let same_graft = vir::expr! { vcx;
+                forall [s_decl], [t_decl], [lo_decl], [hi_decl],
+                    ..[generics.ty_decls()], ..[generics.const_decls()]
+                    :: { [generic_graft] }
+                    ([generic_graft]) == ([same_graft])
+            };
+            let graft_axiom = vcx.mk_domain_axiom(
+                vir::vir_format_identifier!(vcx, "graft_cast_{base_name}"),
+                same_graft,
+            );
+            let domain = vcx.mk_domain(
+                vir::vir_format_identifier!(vcx, "IndirectCasts_{base_name}"),
+                &[],
+                vcx.alloc_slice(&[shallow_axiom, graft_axiom]),
+                &[],
+                None,
+            );
+
+            let decls = (
+                k_decl,
+                generics.ty_decls(),
+                generics.const_decls(),
+                lo_decl,
+                hi_decl,
+            );
+            let make_generic = vcx.mk_method(
+                make_generic_ident,
+                decls,
+                &[],
+                vcx.alloc_slice(&[concrete_pred]),
+                vcx.alloc_slice(&[
+                    generic_pred,
+                    vcx.mk_eq_expr(generic_extend, vcx.mk_old_expr(concrete_extend)),
+                ]),
+                None,
+            );
+            let make_concrete = vcx.mk_method(
+                make_concrete_ident,
+                decls,
+                &[],
+                vcx.alloc_slice(&[generic_pred]),
+                vcx.alloc_slice(&[
+                    concrete_pred,
+                    vcx.mk_eq_expr(concrete_extend, vcx.mk_old_expr(generic_extend)),
+                ]),
+                None,
+            );
+            Ok((([make_generic, make_concrete], domain), ()))
+        })
+    }
+
+    fn emit_outputs<'vir>(program: &mut task_encoder::Program<'vir>) {
+        for (methods, domain) in Self::all_outputs_local(program) {
+            for method in methods {
+                program.add_method(method);
+            }
+            program.add_domain(domain);
         }
     }
 }

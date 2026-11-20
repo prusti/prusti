@@ -356,6 +356,9 @@ impl TaskEncoder for MethodEnc {
 
                     current_stmts: None,
                     current_terminator: None,
+                    indirect_predicate_state: Default::default(),
+                    package_label: None,
+                    phase_start: None,
                     encoded_blocks,
                 };
                 // if we encountered an error/cycle during encoding, we don't
