@@ -4,9 +4,100 @@ use vir::{CastType, FunctionIdn, vir_format_identifier};
 
 use crate::encoders::ty::{
     RustParamData, RustTy, RustTyDecomposition, RustTySizedness, TySpecifics,
-    generics::{GParams, GenericParamsEnc, TyExprEnc, r#trait::TraitEnc},
+    generics::{GParams, GenericParams, GenericParamsEnc, TyExprEnc, r#trait::TraitEnc},
     lifted::TyConstructorEnc,
 };
+
+/// Encodes the facts of the compiler's builtin impls of a type constructor:
+/// its sizedness (`SizednessEnc`) and, once the `Pointee` trait is requested,
+/// its pointee metadata type (`PointeeMetadataEnc`), which is stated with that
+/// trait's `Metadata` function, so a program that never uses it does not get
+/// it. Called for every constructor `TyConstructorEnc` encodes.
+pub fn require_constructor_facts(constructor: RustTy<'_>) {
+    if matches!(constructor.sizedness, RustTySizedness::None) {
+        return;
+    }
+    // TODO: request the facts with the span of the type's definition (or of
+    // the field whose type is the tail), so that a failure is not reported
+    // without a location. `RustTy` carries neither.
+    let _ = SizednessEnc::encode(constructor, false, DUMMY_SP);
+    let pointee = vir::with_vcx(|vcx| {
+        vcx.tcx()
+            .require_lang_item(LangItem::PointeeTrait, DUMMY_SP)
+    });
+    TraitEnc::on_task_requested(pointee, move || {
+        let _ = PointeeMetadataEnc::encode(None, false, DUMMY_SP);
+        let _ = PointeeMetadataEnc::encode(Some(constructor), false, DUMMY_SP);
+    });
+}
+
+/// The `Metadata` function of the `Pointee` trait.
+pub(crate) fn pointee_metadata_fun<'vir, E: TaskEncoder + 'vir + ?Sized>(
+    deps: &mut TaskEncoderDependencies<'vir, E>,
+) -> Result<FunctionIdn<'vir, (vir::ManyTyVal, vir::ManyCSnap), vir::TyVal>, EncodeFullError<'vir, E>>
+{
+    vir::with_vcx(|vcx| {
+        let pointee = vcx
+            .tcx()
+            .require_lang_item(LangItem::PointeeTrait, DUMMY_SP);
+        let metadata = vcx.tcx().require_lang_item(LangItem::Metadata, DUMMY_SP);
+        Ok(deps.require_ref::<TraitEnc>(pointee)?.assoc_types[&metadata])
+    })
+}
+
+/// A type constructor applied to its own parameters, over which the facts of
+/// its builtin impls are quantified.
+struct ConstructorFacts<'vir> {
+    constructor: RustTy<'vir>,
+    params: GenericParams<'vir>,
+    /// The constructor applied to `params`.
+    ty: vir::ExprTyVal<'vir>,
+}
+
+impl<'vir> ConstructorFacts<'vir> {
+    fn new<E: TaskEncoder + 'vir + ?Sized>(
+        deps: &mut TaskEncoderDependencies<'vir, E>,
+        constructor: RustTy<'vir>,
+    ) -> Result<Self, EncodeFullError<'vir, E>> {
+        let params = deps.require_dep::<GenericParamsEnc>(constructor.params)?;
+        let ty_constructor = deps
+            .require_ref::<TyConstructorEnc>(constructor)?
+            .ty_constructor;
+        let ty = ty_constructor.call()(params.ty_exprs(), params.const_exprs());
+        Ok(Self {
+            constructor,
+            params,
+            ty,
+        })
+    }
+
+    /// The axiom `s_<constructor>_<fact>`: `body` for all parameters of the
+    /// constructor, triggered on `trigger`.
+    fn axiom(
+        &self,
+        vcx: &'vir vir::VirCtxt<'vir>,
+        fact: &str,
+        trigger: vir::Trigger<'vir>,
+        body: vir::ExprBool<'vir>,
+    ) -> vir::DomainAxiom<'vir> {
+        let base_name = self.constructor.name();
+        let decls = self.params.ty_decls().iter().map(|decl| decl.upcast_ty());
+        let decls = decls.chain(
+            self.params
+                .const_decls()
+                .iter()
+                .map(|decl| decl.upcast_ty()),
+        );
+        vcx.mk_domain_axiom(
+            vir_format_identifier!(vcx, "s_{base_name}_{fact}"),
+            vcx.mk_forall_expr(
+                vcx.alloc_slice(&decls.collect::<Vec<vir::LocalDeclDyn>>()),
+                vcx.alloc_slice(&[trigger]),
+                body,
+            ),
+        )
+    }
+}
 
 /// Encodes a type constructor's facts about the sizedness traits `Sized` and
 /// `MetaSized` (`PointeeSized` holds of every type, and bounds on it are
@@ -41,6 +132,7 @@ impl TaskEncoder for SizednessEnc {
         deps: &mut TaskEncoderDependencies<'vir, Self>,
     ) -> EncodeFullResult<'vir, Self> {
         deps.emit_output_ref(*task_key, ())?;
+        let facts = ConstructorFacts::new(deps, task_key)?;
         vir::with_vcx(|vcx| {
             let lang_items = vcx.tcx().lang_items();
             // For each trait, `None` if the constructor does not implement
@@ -54,43 +146,30 @@ impl TaskEncoder for SizednessEnc {
                 RustTySizedness::MetaSized => (None, Some(None)),
                 RustTySizedness::PointeeSized => (None, None),
             };
-            let facts = [
+            let traits = [
                 ("Sized", lang_items.sized_trait(), sized),
                 ("MetaSized", lang_items.meta_sized_trait(), meta_sized),
             ];
 
-            let params = deps.require_dep::<GenericParamsEnc>(task_key.params)?;
-            let constructor = deps.require_ref::<TyConstructorEnc>(*task_key)?;
-            let ty = constructor.ty_constructor.call()(params.ty_exprs(), params.const_exprs());
-            let base_name = task_key.name();
-
             let mut axioms = Vec::new();
-            for (trait_name, trait_did, fact) in facts {
+            for (trait_name, trait_did, fact) in traits {
                 let (Some(trait_did), Some(condition)) = (trait_did, fact) else {
                     continue;
                 };
                 let impl_fun = deps.require_ref::<TraitEnc>(trait_did)?.impl_fun;
-                let implemented = impl_fun(&[ty], &[]);
+                let implemented = impl_fun(&[facts.ty], &[]);
                 let body = match condition {
                     None => implemented,
                     Some(tail) => {
                         let tail = RustTyDecomposition::from_ty(tail, task_key.params);
-                        let tail_implemented = impl_fun(&[params.ty_expr(deps, tail)?], &[]);
+                        let tail_implemented = impl_fun(&[facts.params.ty_expr(deps, tail)?], &[]);
                         vir::expr! { (tail_implemented) ==> (implemented) }
                     }
                 };
-                let decls = params.ty_decls().iter().map(|decl| decl.upcast_ty());
-                let decls = decls.chain(params.const_decls().iter().map(|decl| decl.upcast_ty()));
-                axioms.push(vcx.mk_domain_axiom(
-                    vir_format_identifier!(vcx, "s_{base_name}_{trait_name}"),
-                    vcx.mk_forall_expr(
-                        vcx.alloc_slice(&decls.collect::<Vec<vir::LocalDeclDyn>>()),
-                        vcx.alloc_slice(&[vcx.mk_trigger(&[implemented])]),
-                        body,
-                    ),
-                ));
+                axioms.push(facts.axiom(vcx, trait_name, vcx.mk_trigger(&[implemented]), body));
             }
 
+            let base_name = task_key.name();
             let domain = vcx.mk_domain(
                 vir_format_identifier!(vcx, "sizedness_{base_name}"),
                 &[],
@@ -105,19 +184,6 @@ impl TaskEncoder for SizednessEnc {
     fn emit_outputs<'vir>(program: &mut task_encoder::Program<'vir>) {
         for domain in Self::all_outputs_local(program) {
             program.add_domain(domain);
-        }
-    }
-}
-
-impl SizednessEnc {
-    /// Encodes the facts of a type constructor. Called for every constructor
-    /// `TyConstructorEnc` encodes.
-    pub fn require(constructor: RustTy<'_>) {
-        if !matches!(constructor.sizedness, RustTySizedness::None) {
-            // TODO: request the facts with the span of the type's definition
-            // (or of the field whose type is the tail), so that a failure is
-            // not reported without a location. `RustTy` carries neither.
-            let _ = Self::encode(constructor, false, DUMMY_SP);
         }
     }
 }
@@ -149,7 +215,7 @@ impl TaskEncoder for PointeeMetadataEnc {
     const ENCODER_NAME: &'static str = "pointee metadata encoder";
 
     type TaskDescription<'vir> = Option<RustTy<'vir>>;
-    type OutputFullLocal<'vir> = vir::Domain<'vir>;
+    type OutputFullLocal<'vir> = vir::DomainAxiom<'vir>;
 
     fn task_to_key<'vir>(task: &Self::TaskDescription<'vir>) -> Self::TaskKey<'vir> {
         *task
@@ -166,48 +232,27 @@ impl TaskEncoder for PointeeMetadataEnc {
         }
     }
 
+    /// Emits the axioms of all tasks as one domain, sorted by name so that
+    /// the program does not depend on the order in which they were encoded.
     fn emit_outputs<'vir>(program: &mut task_encoder::Program<'vir>) {
-        for domain in Self::all_outputs_local(program) {
-            program.add_domain(domain);
+        let mut axioms = Self::all_outputs_local(program);
+        if axioms.is_empty() {
+            return;
         }
+        axioms.sort_by_key(|axiom| axiom.name);
+        vir::with_vcx(|vcx| {
+            program.add_domain(vcx.mk_domain(
+                vir::ViperIdent::new("PointeeMetadata"),
+                &[],
+                vcx.alloc_slice(&axioms),
+                &[],
+                None,
+            ))
+        });
     }
 }
 
 impl PointeeMetadataEnc {
-    /// Encodes the metadata type of a type constructor, and the fact for type
-    /// parameters, once the `Pointee` trait is requested. They are stated with
-    /// its `Metadata` function, so a program that never uses it does not get
-    /// them. Called for every constructor `TyConstructorEnc` encodes.
-    pub fn require(constructor: RustTy<'_>) {
-        if matches!(constructor.sizedness, RustTySizedness::None) {
-            return;
-        }
-        let pointee = vir::with_vcx(|vcx| {
-            vcx.tcx()
-                .require_lang_item(LangItem::PointeeTrait, DUMMY_SP)
-        });
-        TraitEnc::on_task_requested(pointee, move || {
-            // TODO: request the facts with a span (see `SizednessEnc::require`).
-            let _ = Self::encode(None, false, DUMMY_SP);
-            let _ = Self::encode(Some(constructor), false, DUMMY_SP);
-        });
-    }
-
-    fn metadata_fun<'vir>(
-        deps: &mut TaskEncoderDependencies<'vir, Self>,
-    ) -> Result<
-        FunctionIdn<'vir, (vir::ManyTyVal, vir::ManyCSnap), vir::TyVal>,
-        EncodeFullError<'vir, Self>,
-    > {
-        vir::with_vcx(|vcx| {
-            let pointee = vcx
-                .tcx()
-                .require_lang_item(LangItem::PointeeTrait, DUMMY_SP);
-            let metadata = vcx.tcx().require_lang_item(LangItem::Metadata, DUMMY_SP);
-            Ok(deps.require_ref::<TraitEnc>(pointee)?.assoc_types[&metadata])
-        })
-    }
-
     fn encode_sized<'vir>(
         deps: &mut TaskEncoderDependencies<'vir, Self>,
     ) -> EncodeFullResult<'vir, Self> {
@@ -215,7 +260,7 @@ impl PointeeMetadataEnc {
             RustTyDecomposition::from_ty(vcx.tcx().types.unit, GParams::empty())
         });
         let unit_ty = deps.require_dep::<TyExprEnc>(unit)?;
-        let metadata = Self::metadata_fun(deps)?;
+        let metadata = pointee_metadata_fun(deps)?;
         let sized = vir::with_vcx(|vcx| {
             let sized = vcx.tcx().require_lang_item(LangItem::Sized, DUMMY_SP);
             Ok(deps.require_ref::<TraitEnc>(sized)?.impl_fun)
@@ -230,15 +275,7 @@ impl PointeeMetadataEnc {
                     (sized) ==> ((metadata) == (unit_ty))
             };
             Ok((
-                vcx.mk_domain(
-                    vir::ViperIdent::new("PointeeMetadata"),
-                    &[],
-                    vcx.alloc_slice(&[
-                        vcx.mk_domain_axiom(vir::ViperIdent::new("pointee_metadata_sized"), axiom)
-                    ]),
-                    &[],
-                    None,
-                ),
+                vcx.mk_domain_axiom(vir::ViperIdent::new("pointee_metadata_sized"), axiom),
                 (),
             ))
         })
@@ -248,12 +285,8 @@ impl PointeeMetadataEnc {
         deps: &mut TaskEncoderDependencies<'vir, Self>,
         constructor: RustTy<'vir>,
     ) -> EncodeFullResult<'vir, Self> {
-        let params = deps.require_dep::<GenericParamsEnc>(constructor.params)?;
-        let ty_constructor = deps
-            .require_ref::<TyConstructorEnc>(constructor)?
-            .ty_constructor;
-        let ty = ty_constructor.call()(params.ty_exprs(), params.const_exprs());
-        let metadata_fun = Self::metadata_fun(deps)?;
+        let facts = ConstructorFacts::new(deps, constructor)?;
+        let metadata_fun = pointee_metadata_fun(deps)?;
         vir::with_vcx(|vcx| {
             // The metadata type over the constructor's parameters, `None`
             // for a trait object.
@@ -280,7 +313,7 @@ impl PointeeMetadataEnc {
                 RustTySizedness::PointeeSized => Some(vcx.tcx().types.unit),
             };
             let metadata = match metadata {
-                Some(metadata) => params.ty_expr(
+                Some(metadata) => facts.params.ty_expr(
                     deps,
                     RustTyDecomposition::from_ty(metadata, constructor.params),
                 )?,
@@ -294,32 +327,18 @@ impl PointeeMetadataEnc {
                     let dyn_metadata = deps.require_ref::<TyConstructorEnc>(
                         RustTyDecomposition::from_ty(dyn_metadata.skip_normalization(), did).ty,
                     )?;
-                    dyn_metadata.ty_constructor.call()(vcx.alloc_slice(&[ty]), &[])
+                    dyn_metadata.ty_constructor.call()(vcx.alloc_slice(&[facts.ty]), &[])
                 }
             };
 
-            let base_name = constructor.name();
-            let metadata_ty = metadata_fun(&[ty], &[]);
-            let decls = params.ty_decls().iter().map(|decl| decl.upcast_ty());
-            let decls = decls.chain(params.const_decls().iter().map(|decl| decl.upcast_ty()));
-            let axiom = vcx.mk_domain_axiom(
-                vir_format_identifier!(vcx, "s_{base_name}_Metadata"),
-                vcx.mk_forall_expr(
-                    vcx.alloc_slice(&decls.collect::<Vec<vir::LocalDeclDyn>>()),
-                    vcx.alloc_slice(&[vcx.mk_trigger(&[metadata_ty])]),
-                    vcx.mk_eq_expr(metadata_ty, metadata),
-                ),
+            let metadata_ty = metadata_fun(&[facts.ty], &[]);
+            let axiom = facts.axiom(
+                vcx,
+                "Metadata",
+                vcx.mk_trigger(&[metadata_ty]),
+                vcx.mk_eq_expr(metadata_ty, metadata),
             );
-            Ok((
-                vcx.mk_domain(
-                    vir_format_identifier!(vcx, "pointee_metadata_{base_name}"),
-                    &[],
-                    vcx.alloc_slice(&[axiom]),
-                    &[],
-                    None,
-                ),
-                (),
-            ))
+            Ok((axiom, ()))
         })
     }
 }

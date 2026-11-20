@@ -1,4 +1,3 @@
-use prusti_rustc_interface::{hir::attrs::LangItem, span::DUMMY_SP};
 use task_encoder::{EncodeFullResult, TaskEncoder, TaskEncoderDependencies};
 use vir::{CastType, FunctionIdn};
 
@@ -6,7 +5,7 @@ use crate::encoders::{
     Pure,
     ty::{
         RustTyDecomposition, RustTyNormalized,
-        generics::{GArgsCastEnc, GParams, TyExprEnc, r#trait::TraitEnc},
+        generics::{GArgsCastEnc, GParams, TyExprEnc, sizedness::pointee_metadata_fun},
         use_pure::TyUsePureEnc,
     },
 };
@@ -124,13 +123,7 @@ impl TaskEncoder for MetadataCastEnc {
         let unit_metadata = unit_caster
             .cast_to_callee_ctx(unit_snap.upcast_ty())
             .downcast_ty::<vir::PSnap>();
-        let pointee_metadata = vir::with_vcx(|vcx| {
-            let pointee = vcx
-                .tcx()
-                .require_lang_item(LangItem::PointeeTrait, DUMMY_SP);
-            let metadata = vcx.tcx().require_lang_item(LangItem::Metadata, DUMMY_SP);
-            Ok(deps.require_ref::<TraitEnc>(pointee)?.assoc_types[&metadata])
-        })?;
+        let pointee_metadata = pointee_metadata_fun(deps)?;
         vir::with_vcx(|vcx| {
             let domain_fn = vcx.mk_domain_function(fn_idn, false, None);
             let input_decl = vcx.mk_local_decl("input", vir::TYPE_PSNAP);

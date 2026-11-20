@@ -3,10 +3,7 @@ use vir::{CallableIdn, CastType, FunctionIdn, HasType};
 
 use crate::encoders::ty::{
     RustParamData, RustTy, TySpecifics,
-    generics::{
-        GenericParamsEnc,
-        sizedness::{PointeeMetadataEnc, SizednessEnc},
-    },
+    generics::{GenericParamsEnc, sizedness::require_constructor_facts},
 };
 
 #[derive(Debug, Clone)]
@@ -99,8 +96,7 @@ impl TaskEncoder for TyConstructorEnc {
                     const_param_accessors: vcx.alloc_slice(&const_accessor_functions),
                 },
             )?;
-            SizednessEnc::require(task_key);
-            PointeeMetadataEnc::require(task_key);
+            require_constructor_facts(task_key);
 
             let args = ty_accessor_functions
                 .iter()
