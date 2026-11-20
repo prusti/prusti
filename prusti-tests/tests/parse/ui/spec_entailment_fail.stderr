@@ -1,25 +1,25 @@
-error: expected `[`
-  --> $DIR/spec_entailment_fail.rs:10:14
+error: expected closure arguments
+  --> $DIR/spec_entailment_fail.rs:11:14
    |
-10 | #[requires(f |=)]
+11 | #[requires(f |=)]
    |              ^^
 
-error: expected `[`
-  --> $DIR/spec_entailment_fail.rs:13:17
+error: expected nested specification in brackets
+  --> $DIR/spec_entailment_fail.rs:14:14
    |
-13 | #[requires(f |= ||)]
-   |                 ^^
+14 | #[requires(f |= ||)]
+   |              ^^
 
-error: expected `[`
-  --> $DIR/spec_entailment_fail.rs:16:17
+error: expected nested specification in brackets
+  --> $DIR/spec_entailment_fail.rs:17:14
    |
-16 | #[requires(f |= || 0)]
-   |                 ^^
+17 | #[requires(f |= || 0)]
+   |              ^^
 
-error: expected expression
-  --> $DIR/spec_entailment_fail.rs:19:12
+error: unexpected operator
+  --> $DIR/spec_entailment_fail.rs:20:12
    |
-19 | #[requires(|= || [])]
+20 | #[requires(|= || [])]
    |            ^^
 
 error: aborting due to 4 previous errors

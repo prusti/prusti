@@ -1,40 +1,35 @@
-error: [Prusti: verification error] the asserted expression might not hold
-  --> $DIR/pure.rs:40:5
+error: [Prusti: verification error] precondition of `core::panicking::panic` (called by this macro expansion) might not hold
+  --> $DIR/pure.rs:41:5
    |
-40 |     assert!(z == 5);
+41 |     assert!(z == 5);
    |     ^^^^^^^^^^^^^^^
    |
-   = note: this error originates in the macro `assert` (in Nightly builds, run with -Z macro-backtrace for more info)
+note: the failing precondition is here
+  --> prusti-contracts/src/core_spec/panicking.rs:LL:COL
 
 error: [Prusti: verification error] postcondition might not hold.
-  --> $DIR/pure.rs:47:9
+  --> $DIR/pure.rs:48:9
    |
-47 |         result == 3     // test that we get correct span information
+48 |         result == 3     // test that we get correct span information
    |         ^^^^^^^^^^^
    |
 note: the error originates here
-  --> $DIR/pure.rs:55:1
+  --> $DIR/pure.rs:56:1
    |
-55 | / fn test_max3() -> i32 {
-56 | |     let a = 4;
-57 | |     let b = 3;
-58 | |     max(a, b)
-59 | | }
-   | |_^
+56 | fn test_max3() -> i32 {
+   | ^^^^^^^^^^^^^^^^^^^^^
 
 error: [Prusti: verification error] postcondition might not hold.
-  --> $DIR/pure.rs:68:11
+  --> $DIR/pure.rs:69:11
    |
-68 | #[ensures(result == max(a, b))]
+69 | #[ensures(result == max(a, b))]
    |           ^^^^^^^^^^^^^^^^^^^
    |
 note: the error originates here
-  --> $DIR/pure.rs:69:1
+  --> $DIR/pure.rs:70:1
    |
-69 | / fn test_max5(a: i32, b: i32) -> i32 {
-70 | |     a
-71 | | }
-   | |_^
+70 | fn test_max5(a: i32, b: i32) -> i32 {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 error: aborting due to 3 previous errors
 

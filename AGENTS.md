@@ -10,8 +10,9 @@ flags; this file collects working norms and pitfalls.
   repository root. It sets up the Java, Viper and Z3 environment that plain `cargo` lacks.
 - Run test files with `./x.py test --test main -- <paths>` (e.g. `tests/verify/pass/`). It
   builds the Prusti binaries it runs and the contracts, so it always tests the current code.
+  `./x.py verify-test prusti-tests/tests/<path>` runs one test file the same way.
 - For anything else that runs Prusti after a change, rebuild with `./x.py build` first.
-  `./x.py run --bin prusti-rustc`, `./x.py verify-test` and the tests of `prusti-launch` use
+  `./x.py run --bin prusti-rustc` and the tests of `prusti-launch` use
   `target/debug/prusti-driver`, the binary that `prusti-rustc` runs and that contains the
   encoder, but do not update it, so they silently use the old encoder.
 - Do not rebuild while tests or verification runs are in progress: processes started while
@@ -31,7 +32,8 @@ flags; this file collects working norms and pitfalls.
 
 - To reproduce a test outside the harness, use the environment and flags that
   `prusti-tests/tests/harnesses/compiletest.rs` sets, plus the file's `//@ compile-flags`
-  (and, to match CI, the variables set in `.github/workflows/test.yml`). Otherwise the
+  (and, to match CI, the variables set in `.github/workflows/test.yml` and the time limits
+  set in `.github/actions/time-limits`). Otherwise the
   results differ, e.g. overflow errors appear for checks the harness turns off.
 - Before writing a test, look at the existing tests of the feature. If one already covers
   the behaviour, don't add another. Otherwise add the case to an existing file where it

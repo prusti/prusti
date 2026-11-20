@@ -6,24 +6,13 @@ import csv
 import json
 import glob
 import os
+import re
 from reporting import (
     report, error
 )
 from helper_functions import (
-    get_env, run_command, extract_test_compile_flags
+    get_env, run_command
 )
-
-
-def select_newest_file(paths):
-    """Select a file that exists and has the newest modification timestamp."""
-    existing_paths = [
-        (os.path.getmtime(path), path)
-        for path in paths if os.path.exists(path)
-    ]
-    try:
-        return next(reversed(sorted(existing_paths)))[1]
-    except:
-        error("Could not select the newest file from {}", paths)
 
 
 def generate_launch_json(args_file, env_file):
@@ -115,20 +104,15 @@ def parse_args(args):
     return parser.parse_args(args)
 
 def verify_test(args):
-    """Runs prusti on the specified files."""
+    """Runs the specified test file through the test harness, which runs Prusti
+    on it with the flags and the environment of the test's group."""
     args = parse_args(args)
     current_path = os.path.abspath(os.path.curdir)
-    candidate_prusti_paths = [
-        os.path.join(current_path, 'target', 'release', 'prusti-rustc'),
-        os.path.join(current_path, 'target', 'debug', 'prusti-rustc')
-    ]
-    prusti_path = select_newest_file(candidate_prusti_paths)
-    report("Selected Prusti: {}", prusti_path)
     if args.test_file.startswith('prusti-tests/'):
         test_path = args.test_file
     else:
         candidate_test_paths = glob.glob(os.path.join(
-            current_path, "prusti-tests/tests*/*", args.test_file))
+            current_path, "prusti-tests/tests/*", args.test_file))
         if len(candidate_test_paths) == 0:
             error("Not tests found that match: {}", args.test_file)
         elif len(candidate_test_paths) > 1:
@@ -139,18 +123,35 @@ def verify_test(args):
                 candidate_test_paths[:5]
             )
         test_path = candidate_test_paths[0]
+    # The harness reports each test by its path relative to the repository
+    # root, which `--exact` compares with this one.
+    test_path = os.path.relpath(test_path, current_path).replace(os.sep, '/')
+    if (not os.path.isfile(test_path)
+            or not re.fullmatch(r'prusti-tests/tests/[^/]+/(fail|pass|ui)/.+\.rs', test_path)
+            or '/auxiliary/' in test_path):
+        error("Not a test file that the test harness runs: {}", test_path)
     report("Found test: {}", test_path)
-    compile_flags = extract_test_compile_flags(test_path)
     env = get_env()
-    if 'prusti-tests/tests/verify_overflow/' in test_path:
-        env['PRUSTI_CHECK_OVERFLOWS'] = 'true'
-    else:
-        env['PRUSTI_CHECK_OVERFLOWS'] = 'false'
-    report("env: PRUSTI_CHECK_OVERFLOWS={}", env['PRUSTI_CHECK_OVERFLOWS'])
     os.makedirs('log/config', exist_ok=True)
-    env['PRUSTI_ENCODE_UNSIGNED_NUM_CONSTRAINT'] = 'true'
-    env['PRUSTI_RUSTC_LOG_ARGS'] = 'log/config/prusti-rustc-args'
-    env['PRUSTI_RUSTC_LOG_ENV'] = 'log/config/prusti-rustc-env'
+    # Absolute, as the build of the contracts runs `prusti-rustc` in another
+    # directory.
+    args_file = os.path.abspath('log/config/prusti-rustc-args')
+    env_file = os.path.abspath('log/config/prusti-rustc-env')
+    # Each run of `prusti-rustc` overwrites these files, and the harness runs
+    # the test last, so the test ran if the last run's arguments contain its
+    # path. If no test matches the path, the harness runs none and succeeds.
+    for path in (args_file, env_file):
+        if os.path.exists(path):
+            os.remove(path)
+    def ran_test():
+        if not os.path.exists(args_file):
+            return False
+        with open(args_file) as fp:
+            # On Windows, the path ends in `\<file name>`.
+            logged_args = [arg.replace('\\', '/') for arg in fp.read().splitlines()]
+        return test_path in logged_args
+    env['PRUSTI_RUSTC_LOG_ARGS'] = args_file
+    env['PRUSTI_RUSTC_LOG_ENV'] = env_file
     if args.analyze_quantifiers:
         env['PRUSTI_USE_SMT_WRAPPER'] = 'true'
         env['PRUSTI_PRESERVE_SMT_TRACE_FILES'] = 'true'
@@ -158,15 +159,17 @@ def verify_test(args):
         env['PRUSTI_LOG_SMT_WRAPPER_INTERACTION'] = 'true'
         env['PRUSTI_NUMBER_OF_PARALLEL_VERIFIERS'] = '1'
     def verify_test_on_exit():
-        generate_launch_json(
-            'log/config/prusti-rustc-args',
-            'log/config/prusti-rustc-env'
-        )
+        if ran_test():
+            generate_launch_json(args_file, env_file)
         if args.analyze_quantifiers:
             analyze_quantifier_logs(test_path)
+    # The harness passes the variables set here on to Prusti, except those it
+    # sets itself in `compiletest.rs`.
     run_command(
-        [prusti_path, '--edition=2018', test_path] + compile_flags,
+        ['cargo', 'test', '--test', 'main', '--', '--exact', test_path],
         env,
         on_exit=verify_test_on_exit,
         report_time=True,
     )
+    if not ran_test():
+        error("The test harness ran no test for {}", test_path)

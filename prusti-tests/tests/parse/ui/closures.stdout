@@ -1,64 +1,52 @@
-// compile-flags: -Pprint_desugared_specs=true -Pprint_typeckd_specs=true -Pverify_mode=compile-only -Phide_uuids=true
-// normalize-stdout-test: "[a-z0-9]{32}" -> "$(NUM_UUID)"
-// normalize-stdout-test: "[a-z0-9]{8}-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{12}" -> "$(UUID)"
-// normalize-stdout-test: "/[[a-z0-9]{4}/]::" -> "[$(CRATE_ID)]::"
+//@ compile-flags: -Pprint_desugared_specs=true -Pprint_typeckd_specs=true -Pverify_mode=compile-only -Phide_uuids=true
+//@ normalize-stdout-test: "[a-z0-9]{32}" -> "$(NUM_UUID)"
+//@ normalize-stdout-test: "[a-z0-9]{8}-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{12}" -> "$(UUID)"
+//@ normalize-stdout-test: "\[[a-z0-9]{4}\]::" -> "[$(CRATE_ID)]::"
+//@ normalize-stdout-test: "#\[prusti::specs_version = \x22.+\x22\]" -> "#[prusti::specs_version = $(SPECS_VERSION)]"
 
 
 
+#![feature(stmt_expr_attributes)]
 #![feature(register_tool)]
 #![register_tool(prusti)]
-#[prelude_import]
-use std::prelude::rust_2018::*;
-#[macro_use]
 extern crate std;
+#[prelude_import]
+use std::prelude::rust_2021::*;
 /// Tests for closure macro parsing.
 use prusti_contracts::*;
 fn main() {
     let f1 =
         {
-            #[allow(unused_variables)]
+            #[allow(unused_variables, unused_braces, unused_parens)]
             #[prusti::closure]
-            #[prusti::pre_spec_id_ref = "$(NUM_UUID)"]
-            #[prusti::post_spec_id_ref = "$(NUM_UUID)"]
+            #[prusti::specs_version = $(SPECS_VERSION)]
             let _prusti_closure =
                 |i: i32| -> i32
                     {
 
-                        #[allow(unused_must_use)]
+                        #[allow(unused_must_use, unused_variables, unused_braces,
+                        unused_parens)]
                         if false {
-                            #[prusti::spec_only]
-                            #[prusti::spec_id =
-                              "$(NUM_UUID)"]
-                            #[prusti::assertion =
-                              "{/"kind/":{/"Expr/":{/"spec_id/":/"$(UUID)/",/"expr_id/":101}}}"]
-                            fn prusti_pre_closure_$(NUM_UUID)(i:
-                                                                                       i32) {
+                            return ::prusti_contracts::closure_spec_pre((i,),
+                                    #[prusti::spec_only] |i| -> bool { (i >= 0) });
+                        }
+                        let prusti_closure_args = ::core::marker::PhantomData;
 
-                                #[prusti::spec_only]
-                                #[prusti::expr_id =
-                                  "$(NUM_UUID)_101"]
-                                || -> bool { i >= 0 };
-                            }
+                        #[allow(unused_must_use, unused_braces, unused_parens)]
+                        if false {
+                            return ::prusti_contracts::closure_spec_args((i,
+                                        ::core::option::Option::None.unwrap()),
+                                    prusti_closure_args);
                         }
                         let result = { i + 1 };
 
-                        #[allow(unused_must_use)]
+                        #[allow(unused_must_use, unused_variables, unused_braces,
+                        unused_parens)]
                         if false {
-                            #[prusti::spec_only]
-                            #[prusti::spec_id =
-                              "$(NUM_UUID)"]
-                            #[prusti::assertion =
-                              "{/"kind/":{/"Expr/":{/"spec_id/":/"$(UUID)/",/"expr_id/":102}}}"]
-                            fn prusti_post_closure_$(NUM_UUID)(i:
-                                                                                        i32,
-                                                                                    result:
-                                                                                        i32) {
-
-                                #[prusti::spec_only]
-                                #[prusti::expr_id =
-                                  "$(NUM_UUID)_102"]
-                                || -> bool { result == i + 1 };
-                            }
+                            return ::prusti_contracts::closure_spec_post((::core::option::Option::None.unwrap(),
+                                        result), prusti_closure_args,
+                                    #[prusti::spec_only] |i, result: i32| -> bool
+                                        { (result == i + 1) });
                         }
                         result
                     };
@@ -66,34 +54,29 @@ fn main() {
         };
     let f2 =
         {
-            #[allow(unused_variables)]
+            #[allow(unused_variables, unused_braces, unused_parens)]
             #[prusti::closure]
-            #[prusti::post_spec_id_ref = "$(NUM_UUID)"]
+            #[prusti::specs_version = $(SPECS_VERSION)]
             let _prusti_closure =
                 |i: i32| -> i32
                     {
+                        let prusti_closure_args = ::core::marker::PhantomData;
 
-                        #[allow(unused_must_use)]
-                        if false {}
+                        #[allow(unused_must_use, unused_braces, unused_parens)]
+                        if false {
+                            return ::prusti_contracts::closure_spec_args((i,
+                                        ::core::option::Option::None.unwrap()),
+                                    prusti_closure_args);
+                        }
                         let result = { i + 1 };
 
-                        #[allow(unused_must_use)]
+                        #[allow(unused_must_use, unused_variables, unused_braces,
+                        unused_parens)]
                         if false {
-                            #[prusti::spec_only]
-                            #[prusti::spec_id =
-                              "$(NUM_UUID)"]
-                            #[prusti::assertion =
-                              "{/"kind/":{/"Expr/":{/"spec_id/":/"$(UUID)/",/"expr_id/":101}}}"]
-                            fn prusti_post_closure_$(NUM_UUID)(i:
-                                                                                        i32,
-                                                                                    result:
-                                                                                        i32) {
-
-                                #[prusti::spec_only]
-                                #[prusti::expr_id =
-                                  "$(NUM_UUID)_101"]
-                                || -> bool { result == i + 1 };
-                            }
+                            return ::prusti_contracts::closure_spec_post((::core::option::Option::None.unwrap(),
+                                        result), prusti_closure_args,
+                                    #[prusti::spec_only] |i, result: i32| -> bool
+                                        { (result == i + 1) });
                         }
                         result
                     };
@@ -101,110 +84,62 @@ fn main() {
         };
     let f3 =
         {
-            #[allow(unused_variables)]
+            #[allow(unused_variables, unused_braces, unused_parens)]
             #[prusti::closure]
-            #[prusti::pre_spec_id_ref = "$(NUM_UUID)"]
+            #[prusti::specs_version = $(SPECS_VERSION)]
             let _prusti_closure =
                 |i: i32| -> i32
                     {
 
-                        #[allow(unused_must_use)]
+                        #[allow(unused_must_use, unused_variables, unused_braces,
+                        unused_parens)]
                         if false {
-                            #[prusti::spec_only]
-                            #[prusti::spec_id =
-                              "$(NUM_UUID)"]
-                            #[prusti::assertion =
-                              "{/"kind/":{/"Expr/":{/"spec_id/":/"$(UUID)/",/"expr_id/":101}}}"]
-                            fn prusti_pre_closure_$(NUM_UUID)(i:
-                                                                                       i32) {
-
-                                #[prusti::spec_only]
-                                #[prusti::expr_id =
-                                  "$(NUM_UUID)_101"]
-                                || -> bool { i >= 0 };
-                            }
+                            return ::prusti_contracts::closure_spec_pre((i,),
+                                    #[prusti::spec_only] |i| -> bool { (i >= 0) });
                         }
-                        let result = { i + 1 };
-
-                        #[allow(unused_must_use)]
-                        if false {}
-                        result
+                        { i + 1 }
                     };
             _prusti_closure
         };
     let f4 =
         {
-            #[allow(unused_variables)]
+            #[allow(unused_variables, unused_braces, unused_parens)]
             #[prusti::closure]
-            let _prusti_closure =
-                |i: i32| -> i32
-                    {
-
-                        #[allow(unused_must_use)]
-                        if false {}
-                        let result = { i + 1 };
-
-                        #[allow(unused_must_use)]
-                        if false {}
-                        result
-                    };
+            #[prusti::specs_version = $(SPECS_VERSION)]
+            let _prusti_closure = |i: i32| -> i32 { { i + 1 } };
             _prusti_closure
         };
     let f5 =
         {
-            #[allow(unused_variables)]
+            #[allow(unused_variables, unused_braces, unused_parens)]
             #[prusti::closure]
-            let _prusti_closure =
-                || -> i32
-                    {
-
-                        #[allow(unused_must_use)]
-                        if false {}
-                        let result = { 1 };
-
-                        #[allow(unused_must_use)]
-                        if false {}
-                        result
-                    };
+            #[prusti::specs_version = $(SPECS_VERSION)]
+            let _prusti_closure = || -> i32 { { 1 } };
             _prusti_closure
         };
     let f6 =
         {
-            #[allow(unused_variables)]
+            #[allow(unused_variables, unused_braces, unused_parens)]
             #[prusti::closure]
-            let _prusti_closure =
-                |i: i32, j: i32| -> i32
-                    {
-
-                        #[allow(unused_must_use)]
-                        if false {}
-                        let result = { i + j };
-
-                        #[allow(unused_must_use)]
-                        if false {}
-                        result
-                    };
+            #[prusti::specs_version = $(SPECS_VERSION)]
+            let _prusti_closure = |i: i32, j: i32| -> i32 { { i + j } };
             _prusti_closure
         };
     let f7 =
         {
-            #[allow(unused_variables)]
+            #[allow(unused_variables, unused_braces, unused_parens)]
             #[prusti::closure]
+            #[prusti::specs_version = $(SPECS_VERSION)]
             let _prusti_closure =
-                |i: i32, j: i32, k: i32| -> i32
-                    {
-
-                        #[allow(unused_must_use)]
-                        if false {}
-                        let result = { i + j + k };
-
-                        #[allow(unused_must_use)]
-                        if false {}
-                        result
-                    };
+                |i: i32, j: i32, k: i32| -> i32 { { i + j + k } };
             _prusti_closure
         };
 }
-ProcedureSpecification { pres: [Assertion { kind: Expr(Expression { spec_id: SpecificationId($(UUID)), id: ExpressionId(101), expr: DefId(0:15 ~ closures[$(CRATE_ID)]::main::{closure#2}::prusti_pre_closure_$(NUM_UUID)::{closure#0}) }) }], posts: [], pledges: [], predicate_body: None, pure: false, trusted: false }
-ProcedureSpecification { pres: [], posts: [Assertion { kind: Expr(Expression { spec_id: SpecificationId($(UUID)), id: ExpressionId(101), expr: DefId(0:12 ~ closures[$(CRATE_ID)]::main::{closure#1}::prusti_post_closure_$(NUM_UUID)::{closure#0}) }) }], pledges: [], predicate_body: None, pure: false, trusted: false }
-ProcedureSpecification { pres: [Assertion { kind: Expr(Expression { spec_id: SpecificationId($(UUID)), id: ExpressionId(101), expr: DefId(0:7 ~ closures[$(CRATE_ID)]::main::{closure#0}::prusti_pre_closure_$(NUM_UUID)::{closure#0}) }) }], posts: [Assertion { kind: Expr(Expression { spec_id: SpecificationId($(UUID)), id: ExpressionId(102), expr: DefId(0:9 ~ closures[$(CRATE_ID)]::main::{closure#0}::prusti_post_closure_$(NUM_UUID)::{closure#0}) }) }], pledges: [], predicate_body: None, pure: false, trusted: false }
+pub extern crate prusti_contracts;
+ProcedureSpecification { source: DefId(0:13 ~ closures[$(CRATE_ID)]::main::{closure#3}), extern_spec: None, kind: Inherent(Impure), pres: Empty, posts: Empty, pledges: Empty, trusted: Inherent(false), terminates: Inherent(None), purity: Inherent(None) }
+ProcedureSpecification { source: DefId(0:14 ~ closures[$(CRATE_ID)]::main::{closure#4}), extern_spec: None, kind: Inherent(Impure), pres: Empty, posts: Empty, pledges: Empty, trusted: Inherent(false), terminates: Inherent(None), purity: Inherent(None) }
+ProcedureSpecification { source: DefId(0:15 ~ closures[$(CRATE_ID)]::main::{closure#5}), extern_spec: None, kind: Inherent(Impure), pres: Empty, posts: Empty, pledges: Empty, trusted: Inherent(false), terminates: Inherent(None), purity: Inherent(None) }
+ProcedureSpecification { source: DefId(0:16 ~ closures[$(CRATE_ID)]::main::{closure#6}), extern_spec: None, kind: Inherent(Impure), pres: Empty, posts: Empty, pledges: Empty, trusted: Inherent(false), terminates: Inherent(None), purity: Inherent(None) }
+ProcedureSpecification { source: DefId(0:9 ~ closures[$(CRATE_ID)]::main::{closure#1}), extern_spec: None, kind: Inherent(Impure), pres: Empty, posts: Inherent([DefId(0:10 ~ closures[$(CRATE_ID)]::main::{closure#1}::{closure#0})]), pledges: Empty, trusted: Inherent(false), terminates: Inherent(None), purity: Inherent(None) }
+ProcedureSpecification { source: DefId(0:11 ~ closures[$(CRATE_ID)]::main::{closure#2}), extern_spec: None, kind: Inherent(Impure), pres: Inherent([DefId(0:12 ~ closures[$(CRATE_ID)]::main::{closure#2}::{closure#0})]), posts: Empty, pledges: Empty, trusted: Inherent(false), terminates: Inherent(None), purity: Inherent(None) }
+ProcedureSpecification { source: DefId(0:6 ~ closures[$(CRATE_ID)]::main::{closure#0}), extern_spec: None, kind: Inherent(Impure), pres: Inherent([DefId(0:7 ~ closures[$(CRATE_ID)]::main::{closure#0}::{closure#0})]), posts: Inherent([DefId(0:8 ~ closures[$(CRATE_ID)]::main::{closure#0}::{closure#1})]), pledges: Empty, trusted: Inherent(false), terminates: Inherent(None), purity: Inherent(None) }

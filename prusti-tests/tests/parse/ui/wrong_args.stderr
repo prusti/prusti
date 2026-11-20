@@ -4,5 +4,5 @@ error: unexpected token
 3 | #[requires("too", "many", "args")]
   |                 ^
 
-error: aborting due to previous error
+error: aborting due to 1 previous error
 

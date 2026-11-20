@@ -7,24 +7,30 @@ on:
 
 env:
   RUST_BACKTRACE: 1
-  PRUSTI_ASSERT_TIMEOUT: 60000
 
 jobs:
   # Build and test in release mode
   build:
     strategy:
       matrix:
+        # `time-factor`: how much slower than the runners of `test.yml` each runner verifies the
+        # tests (see `.github/actions/time-limits`).
         include:
           - os: ubuntu-latest
             label: ubuntu-latest-x64
+            time-factor: 1.5
           - os: windows-latest
             label: windows-latest-x64
+            time-factor: 2
           - os: windows-11-arm
             label: windows-latest-arm64
+            time-factor: 6
           - os: macos-latest
             label: macos-latest-arm64
+            time-factor: 2
           - os: macos-15-intel
             label: macos-15-x64
+            time-factor: 4
       fail-fast: false
     runs-on: ${{ matrix.os }}
     steps:
@@ -43,6 +49,11 @@ jobs:
         with:
           # Not the `build` cache of the debug builds in test.yml.
           cache-shared-key: "release"
+
+      - name: Set the time limits of the tests
+        uses: ./.github/actions/time-limits
+        with:
+          factor: ${{ matrix.time-factor }}
 
       # So that the release build resolves the features of dependencies per selected package and
       # separately for normal, build and dev-dependencies, not as the development builds do.

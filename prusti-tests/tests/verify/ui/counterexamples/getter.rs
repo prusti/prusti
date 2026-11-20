@@ -1,6 +1,6 @@
 //@ compile-flags: -Pcounterexample=true
 
-// ignore-test
+//@ known-failure
 // TODO: the counterexample for `has_money` should show an account with a
 // non-positive balance, but it only shows "?". The issue is the indirection
 // through a function call.
