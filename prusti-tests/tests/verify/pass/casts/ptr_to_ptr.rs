@@ -95,3 +95,52 @@ fn tail_round_trip<T: ?Sized>(a: *const Tail<T>) -> *const Tail<T> {
 fn tail_round_trip_slice(a: *const Tail<[u8]>) {
     prusti_assert!(tail_round_trip(a) == a);
 }
+
+// The casts in bodies generic over `T: ?Sized` drop the metadata at unsized
+// instantiations too, whose metadata types are not `()`.
+#[pure]
+fn tail_thin<T: ?Sized>(a: *const Tail<T>) -> *const u8 {
+    a as *const u8
+}
+
+fn tail_thin_slice(a: *const Tail<[u8]>) {
+    prusti_assert!(tail_thin(a) == a as *const u8);
+}
+
+trait Tr {}
+
+fn tail_thin_dyn(a: *const Tail<dyn Tr>) {
+    prusti_assert!(tail_thin(a) == a as *const u8);
+}
+
+fn tail_thin_nested(a: *const Tail<Tail<str>>) {
+    prusti_assert!(tail_thin(a) == a as *const u8);
+}
+
+fn tail_thin_tuple(a: *const Tail<(u8, [u8])>) {
+    prusti_assert!(tail_thin(a) == a as *const u8);
+}
+
+// A thin cast after a cast to the tail, which keeps the metadata.
+#[pure]
+fn tail_thin_via_tail<T: ?Sized>(a: *const Tail<T>) -> *const u8 {
+    a as *const T as *const u8
+}
+
+fn tail_thin_via_tail_slice(a: *const Tail<[u8]>) {
+    prusti_assert!(tail_thin_via_tail(a) == a as *const u8);
+}
+
+// A thin cast of a pointer read from a field.
+struct H<T: ?Sized> {
+    p: *const T,
+}
+
+#[pure]
+fn field_thin<T: ?Sized>(h: &H<T>) -> *const u8 {
+    h.p as *const u8
+}
+
+fn field_thin_slice(h: &H<[u8]>) {
+    prusti_assert!(field_thin(h) == h.p as *const u8);
+}

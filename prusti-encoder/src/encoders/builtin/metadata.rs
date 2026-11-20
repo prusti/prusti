@@ -5,7 +5,7 @@ use crate::encoders::{
     Pure,
     ty::{
         RustTyDecomposition, RustTyNormalized,
-        generics::{GArgsCastEnc, GParams, TyExprEnc, sizedness::PointeeMetadataEnc},
+        generics::{GArgsCastEnc, GParams, TyExprEnc},
         use_pure::TyUsePureEnc,
     },
 };
@@ -123,9 +123,6 @@ impl TaskEncoder for MetadataCastEnc {
         let unit_metadata = unit_caster
             .cast_to_callee_ctx(unit_snap.upcast_ty())
             .downcast_ty::<vir::PSnap>();
-        // A raw pointer's metadata type is often only known to be `()` from its
-        // pointee being sized, e.g. in a body generic over `T: ?Sized`.
-        deps.require_dep::<PointeeMetadataEnc>(())?;
         vir::with_vcx(|vcx| {
             let domain_fn = vcx.mk_domain_function(fn_idn, false, None);
 
