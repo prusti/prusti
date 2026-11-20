@@ -188,7 +188,7 @@ where
     pub call_labels: FxHashMap<mir::BasicBlock, (&'vir str, &'vir str)>,
     /// Blocks whose call terminator created no wand to apply on expiry: it was
     /// not encoded as an impure method call (intrinsics, `prusti_contracts`
-    /// builtins), or it calls the stub of a trait method.
+    /// builtins).
     pub wandless_calls: FxHashSet<mir::BasicBlock>,
     pub from_to_vars: FromToVars<'vir>,
 
@@ -3906,12 +3906,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                         // type parameters cover a block of the caller's
                         // positions each, which may be empty or have several
                         // positions; they are adapted before and after the call.
-                        let adjust = if func_out.is_trait_stub() {
-                            // A trait method's stub has no wands in its
-                            // contract, so its call gives none to apply.
-                            self.wandless_calls.insert(self.current_block.unwrap());
-                            None
-                        } else {
+                        let adjust = {
                             let wands = self.deps.require_dep::<WandEnc>(WandEncTask {
                                 data: FunctionData::new(func_def_id),
                             })?;

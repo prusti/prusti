@@ -177,23 +177,27 @@ impl TaskEncoder for TraitFnEnc {
             // with a local body, trait methods with a default body included.
             // For the trait methods without one, they are reported here; the
             // stub does not use them, and each call reports its own failure.
+            // The stub's contract states the indirect predicates and wands, as
+            // a method's does (see `MethodEnc`); without them, it states none,
+            // and each call reports the failure.
             let has_body = is_function_with_body(tcx, def_id);
-            if !(def_id.is_local() && has_body) {
-                let wands_task = WandEncTask {
-                    data: FunctionData::new(def_id),
-                };
-                match deps.require_dep::<WandEnc>(wands_task) {
-                    Ok(_) => {}
-                    Err(EncodeFullError::AlreadyEncoded) => {
-                        return Err(EncodeFullError::AlreadyEncoded);
-                    }
-                    // The encoding goes on, so the proof that the error was
-                    // reported is not needed.
-                    Err(err) => {
+            let wands_task = WandEncTask {
+                data: FunctionData::new(def_id),
+            };
+            let wands = match deps.require_dep::<WandEnc>(wands_task) {
+                Ok(wands) => Some(wands),
+                Err(EncodeFullError::AlreadyEncoded) => {
+                    return Err(EncodeFullError::AlreadyEncoded);
+                }
+                // The encoding goes on, so the proof that the error was
+                // reported is not needed.
+                Err(err) => {
+                    if !(def_id.is_local() && has_body) {
                         let _ = WandEnc::report_failure(vcx, def_id, &err);
                     }
+                    None
                 }
-            }
+            };
             dom_funcs.push(vcx.mk_domain_function(pre_func, false, None));
             dom_funcs.push(vcx.mk_domain_function(post_func, false, None));
 
@@ -344,7 +348,11 @@ impl TaskEncoder for TraitFnEnc {
                     }
                 }
                 stub_posts.push(local_defs[mir::RETURN_PLACE].impure_pred);
-                // TODO: wands
+                if let Some(wands) = &wands {
+                    stub_pres.extend(wands.indirect_pres(vcx, &local_defs, deps));
+                    stub_posts.extend(wands.indirect_posts(vcx, &local_defs, deps));
+                    stub_posts.extend(wands.wand_posts(vcx, &local_defs, deps));
+                }
 
                 stub_pres.push(pre_func.call()(
                     vcx.alloc_slice(
