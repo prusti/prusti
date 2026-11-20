@@ -19,7 +19,7 @@ use prusti_interface::{PrustiError, specs::specifications::SpecQuery};
 use prusti_rustc_interface::{
     hir,
     middle::ty,
-    span::{DUMMY_SP, Span, def_id::DefId},
+    span::{Span, def_id::DefId},
 };
 use task_encoder::{
     DependencyErrorLink, EncodeFullError, ErrorKind, TaskEncoder, TaskEncoderDependencies,
@@ -196,7 +196,7 @@ pub fn encode_all_in_crate<'tcx>(tcx: ty::TyCtxt<'tcx>) {
                 .unwrap_or_default();
 
                 if !(is_trusted && is_pure) {
-                    let _ = method::MethodEnc::encode(def_id, false, DUMMY_SP);
+                    let _ = method::MethodEnc::encode(def_id, false, tcx.def_span(def_id));
                 }
             }
             unsupported_item_kind => {
