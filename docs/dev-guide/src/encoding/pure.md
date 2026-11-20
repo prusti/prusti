@@ -32,5 +32,4 @@ function hello(a: Int): Int
 }
 ```
 
-> - [`prusti-viper/src/encoder/mir_interpreter.rs` - `run_backward_interpretation`](https://github.com/prusti/prusti/blob/6e5d9e258c5d674bc0cd2f3d42c061ddf6409b1a/prusti-viper/src/encoder/mir_interpreter.rs#L35-L93) - backward state interpreter, used to determine if MIR has any loops.
-> - [`prusti-viper/src/encoder/pure_function_encoder.rs`](https://github.com/prusti/prusti/blob/6e5d9e258c5d674bc0cd2f3d42c061ddf6409b1a/prusti-viper/src/encoder/pure_function_encoder.rs)
+> - [`prusti-encoder/src/encoders/mir_pure.rs` - `MirPureEnc`](https://github.com/prusti/prusti/blob/main/prusti-encoder/src/encoders/mir_pure.rs)
