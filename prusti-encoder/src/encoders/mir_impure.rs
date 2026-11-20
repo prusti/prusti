@@ -1782,13 +1782,26 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             return Ok(());
         }
         let value = self.value_in(base.base(), state)?.downcast_ty();
+        let keys_of_base = keys.iter().map(|&(p, _)| p).collect::<Vec<_>>();
+        // The variant is that of the shallow snapshot, which, unlike the
+        // value, does not read the predicates of `base`, e.g. while they are
+        // folded.
+        let shallow =
+            match self.place_read_in(base.base(), &state.0, state.1.map(|point| point.at))? {
+                PlaceRead::Held(snap) => snap,
+                PlaceRead::Value(value) => nodes.shallow(value),
+            };
+        let shallow = self
+            .vcx
+            .maybe_apply_label(shallow, state.1.map(|point| point.label))
+            .downcast_ty();
         let variants = match pure.get_enumlike() {
             Some(enumlike) => enumlike
                 .variants
                 .iter()
                 .enumerate()
                 .map(|(v, variant)| {
-                    let discr = enumlike.snap_to_discr_snap(value);
+                    let discr = enumlike.snap_to_discr_snap(shallow);
                     (
                         Some(abi::VariantIdx::from_usize(v)),
                         Some(self.vcx.mk_eq_expr(discr, variant.data.discr)),
@@ -1806,29 +1819,38 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                     continue;
                 };
                 let field_idx = abi::FieldIdx::from_usize(idx);
-                let field_keys = match child_keys(Part::Field(field_idx)) {
-                    Some(keys) => keys,
-                    None => {
-                        // The field's type is a type parameter, whose
-                        // positions in `ty` are those of its argument.
-                        let arg = match ty.kind() {
-                            ty::Adt(adt, _) => {
-                                let field_def = &adt
-                                    .variant(variant.unwrap_or(abi::FIRST_VARIANT))
-                                    .fields[field_idx];
-                                let ty::Param(param) =
-                                    self.vcx.tcx().type_of(field_def.did).skip_binder().kind()
-                                else {
-                                    unreachable!(
-                                        "a field with indirect predicates has a type parameter's type"
-                                    )
-                                };
-                                param.index as usize
-                            }
-                            // A tuple's arguments are its fields' types.
-                            ty::Tuple(_) => idx,
-                            other => unreachable!("fields of generic type in {other:?}"),
+                // The field's type is a type parameter, whose positions in
+                // `ty` are those of its argument.
+                let arg = match ty.kind() {
+                    ty::Adt(adt, _) => {
+                        let field_def =
+                            &adt.variant(variant.unwrap_or(abi::FIRST_VARIANT)).fields[field_idx];
+                        let ty::Param(param) =
+                            self.vcx.tcx().type_of(field_def.did).skip_binder().kind()
+                        else {
+                            unreachable!(
+                                "a field with indirect predicates has a type parameter's type"
+                            )
                         };
+                        param.index as usize
+                    }
+                    // A tuple's arguments are its fields' types.
+                    ty::Tuple(_) => idx,
+                    other => unreachable!("fields of generic type in {other:?}"),
+                };
+                let arg_positions = nodes.arg_positions(arg);
+                let field_keys: Vec<_> = match child_keys(Part::Field(field_idx)) {
+                    // Only the field's positions that are `base`'s are cast;
+                    // the others belong to other nodes of the value.
+                    Some(keys) => keys
+                        .into_iter()
+                        .filter(|&(q, _)| {
+                            arg_positions
+                                .get(q.index())
+                                .is_some_and(|a| keys_of_base.contains(a))
+                        })
+                        .collect(),
+                    None => {
                         let field_ty =
                             mir::PlaceTy::field_ty(self.vcx.tcx(), ty, variant, field_idx)
                                 .skip_normalization();
@@ -1838,7 +1860,6 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                         )?
                         .in_ty(field_ty);
                         let field_value = pure_field.read(value);
-                        let arg_positions = nodes.arg_positions(arg);
                         keys.iter()
                             .filter_map(|&(p, _)| {
                                 let q = arg_positions.iter().position(|&a| a == p)?;
@@ -2106,12 +2127,30 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             // packed, and removing it splits them again.
             BorrowPcgEdgeKind::Aggregate(aggregate) => {
                 let target = aggregate.target();
+                // A labelled target was expanded since, and its parts' nodes
+                // already hold the predicates.
+                if edge_action.is_remove() && target.label().is_some() {
+                    return Ok(());
+                }
+                let is_array = target.base().place().ty(self.pcg_ctxt()).ty.is_array();
                 let sources = aggregate
-                    .sources()
-                    .iter()
-                    .filter_map(|source| {
-                        let node = local_node(*source)?;
-                        Child::of_place(target, node).or_else(|| Child::rest_of(target, node))
+                    .sources_with_operand_indices()
+                    .filter_map(|(source, operand_index)| {
+                        let node = local_node(source)?;
+                        // The operands of an assigned aggregate are the
+                        // fields, or for an array the elements, of its value.
+                        match operand_index {
+                            Some(index) if is_array => Some(Child {
+                                node,
+                                part: Part::Index(ArrayIndex::Constant(index as u64)),
+                            }),
+                            Some(index) => Some(Child {
+                                node,
+                                part: Part::Field(abi::FieldIdx::from_usize(index)),
+                            }),
+                            None => Child::of_place(target, node)
+                                .or_else(|| Child::rest_of(target, node)),
+                        }
                     })
                     .collect::<Vec<_>>();
                 self.fold_or_unfold_node(
