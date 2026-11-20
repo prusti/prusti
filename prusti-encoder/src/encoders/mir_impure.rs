@@ -3826,11 +3826,24 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             }
             mir::TerminatorKind::Return => {
                 let current_fpcs = self.current_fpcs.take().unwrap();
-                let borrows = current_fpcs.statements.last().unwrap().states
-                    [EvalStmtPhase::PostMain]
-                    .borrow_pcg();
-                let wand_packages = self.package_wands(borrows)?;
+                let state =
+                    &current_fpcs.statements.last().unwrap().states[EvalStmtPhase::PostMain];
+                // The package scripts read keys at the end of the block, the
+                // state the wands are packaged in.
+                let block = self.current_block.unwrap();
+                let label = self.block_end_label(block, self.current_block_pres.as_ref().unwrap());
+                self.stmt(self.vcx.mk_label_stmt(label));
+                self.phase_start = Some((
+                    state.clone(),
+                    ReadPoint {
+                        at: SnapshotLocation::After(block),
+                        label: vir::OldLabel::Label(label),
+                    },
+                ));
+                let wand_packages = self.package_wands(state.borrow_pcg());
+                self.phase_start = None;
                 self.current_fpcs = Some(current_fpcs);
+                let wand_packages = wand_packages?;
                 self.stmts(wand_packages);
 
                 self.vcx
