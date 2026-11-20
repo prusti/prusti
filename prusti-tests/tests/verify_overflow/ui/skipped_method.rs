@@ -1,11 +1,12 @@
-//@ compile-flags: -Pskip_unsupported_features=true
+//@ compile-flags: -Pskip_unsupported_features=true -Wwarnings
 use prusti_contracts::*;
 
 // Borrows in the result that expire separately but depend on a common argument
 // are not supported, so neither the function nor its caller is encoded. With
-// unsupported features skipped, both are only warnings, and the failure of the
-// function is not reported again as an error. The false assertions only pass
-// because the bodies are not verified: once the feature is supported, they fail.
+// unsupported features skipped, both are reported as warnings, and the failure
+// of the function is not reported again as an error. The false assertions only
+// pass because the bodies are not verified: once the feature is supported,
+// they fail.
 
 pub fn caller() {
     let mut a = 1;
