@@ -196,7 +196,13 @@ impl<'vir, E: TaskEncoder + 'vir + ?Sized> TaskEncoderDependencies<'vir, E> {
                 Some(
                     TaskEncoderCacheState::ReEncoding | TaskEncoderCacheState::Restarted { .. },
                 ) => TaskEncoderCacheState::Restarted { output_ref },
-                _ => std::panic!("output ref emitted for task not being encoded: {task_key:?}"),
+                None
+                | Some(
+                    TaskEncoderCacheState::Started { .. }
+                    | TaskEncoderCacheState::Encoded { .. }
+                    | TaskEncoderCacheState::ErrorEnqueue { .. }
+                    | TaskEncoderCacheState::ErrorEncode { .. },
+                ) => std::panic!("output ref emitted for task not being encoded: {task_key:?}"),
             };
             cache.insert(task_key, new_state);
         });
