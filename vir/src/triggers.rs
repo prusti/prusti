@@ -73,9 +73,8 @@ impl<'vir> Folder<'vir, (), !> for Inline<'vir, '_> {
                 // The `let` stays if its local is still used, under an
                 // `old(..)`; Silicon then evaluates the trigger on its own
                 // instead of finding it in the body. Otherwise the body takes
-                // its place, and keeps
-                // the `let`'s span: the verifier's warnings about a trigger
-                // point at the span of its root.
+                // its place, and keeps the `let`'s span: the verifier's
+                // warnings about a trigger point at the span of its root.
                 let (kind, debug_info) = if locals.contains(l.name) {
                     let l = LetGenData {
                         name: l.name,
