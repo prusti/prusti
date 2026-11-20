@@ -1,10 +1,10 @@
-use prusti_rustc_interface::span::DUMMY_SP;
+use prusti_rustc_interface::{hir::attrs::LangItem, span::DUMMY_SP};
 use task_encoder::{EncodeFullResult, TaskEncoder, TaskEncoderDependencies};
 use vir::{CastType, vir_format_identifier};
 
 use crate::encoders::ty::{
     RustTy, RustTyDecomposition, RustTySizedness,
-    generics::{GenericParamsEnc, r#trait::TraitEnc},
+    generics::{GParams, GenericParamsEnc, TyExprEnc, r#trait::TraitEnc},
     lifted::TyConstructorEnc,
 };
 
@@ -118,6 +118,78 @@ impl SizednessEnc {
             // (or of the field whose type is the tail), so that a failure is
             // not reported without a location. `RustTy` carries neither.
             let _ = Self::encode(constructor, false, DUMMY_SP);
+        }
+    }
+}
+
+/// Encodes the fact of the compiler's builtin `Pointee` impl that every sized
+/// type has the pointer metadata type `()`:
+///
+/// ```text
+/// axiom { forall T :: {Metadata(T)} Sized_impl(T) ==> Metadata(T) == () }
+/// ```
+///
+/// Like the sizedness facts, it has no impl to come from. It is needed where
+/// a metadata type stays a projection that is `()` only for a sized type, e.g.
+/// `<T as Pointee>::Metadata` in a body generic over `T: ?Sized`.
+pub struct PointeeMetadataEnc;
+
+impl TaskEncoder for PointeeMetadataEnc {
+    task_encoder::encoder_cache!(PointeeMetadataEnc);
+    const ENCODER_NAME: &'static str = "pointee metadata encoder";
+
+    type TaskDescription<'vir> = ();
+    type OutputFullLocal<'vir> = vir::Domain<'vir>;
+
+    fn task_to_key<'vir>(task: &Self::TaskDescription<'vir>) -> Self::TaskKey<'vir> {
+        *task
+    }
+
+    fn do_encode_full<'vir>(
+        task_key: &Self::TaskKey<'vir>,
+        deps: &mut TaskEncoderDependencies<'vir, Self>,
+    ) -> EncodeFullResult<'vir, Self> {
+        deps.emit_output_ref(*task_key, ())?;
+        let unit = vir::with_vcx(|vcx| {
+            RustTyDecomposition::from_ty(vcx.tcx().types.unit, GParams::empty())
+        });
+        let unit_ty = deps.require_dep::<TyExprEnc>(unit)?;
+        let (metadata, sized) = vir::with_vcx(|vcx| {
+            let pointee = vcx
+                .tcx()
+                .require_lang_item(LangItem::PointeeTrait, DUMMY_SP);
+            let metadata = vcx.tcx().require_lang_item(LangItem::Metadata, DUMMY_SP);
+            let sized = vcx.tcx().require_lang_item(LangItem::Sized, DUMMY_SP);
+            let metadata = deps.require_ref::<TraitEnc>(pointee)?.assoc_types[&metadata];
+            Ok((metadata, deps.require_ref::<TraitEnc>(sized)?.impl_fun))
+        })?;
+        vir::with_vcx(|vcx| {
+            let ty_decl = vcx.mk_local_decl("ty", vir::TYPE_TYVAL);
+            let ty = vcx.mk_local_ex(ty_decl);
+            let metadata = metadata(&[ty], &[]);
+            let sized = sized(&[ty], &[]);
+            let axiom = vir::expr! {
+                forall [ty_decl] :: { [metadata] }
+                    (sized) ==> ((metadata) == (unit_ty))
+            };
+            Ok((
+                vcx.mk_domain(
+                    vir::ViperIdent::new("PointeeMetadata"),
+                    &[],
+                    vcx.alloc_slice(&[
+                        vcx.mk_domain_axiom(vir::ViperIdent::new("pointee_metadata_sized"), axiom)
+                    ]),
+                    &[],
+                    None,
+                ),
+                (),
+            ))
+        })
+    }
+
+    fn emit_outputs<'vir>(program: &mut task_encoder::Program<'vir>) {
+        for domain in Self::all_outputs_local(program) {
+            program.add_domain(domain);
         }
     }
 }

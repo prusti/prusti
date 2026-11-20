@@ -1,15 +1,14 @@
 use prusti_rustc_interface::middle::mir;
 use task_encoder::{EncodeFullResult, TaskEncoder, TaskEncoderDependencies};
-use vir::FunctionIdn;
 
 use crate::encoders::{
     builtin::{
         MetadataCastAxiomEnc, ValueCastAxiomEnc,
-        cast::{MirBuiltinCastEnc, MirBuiltinCastOutput, MirBuiltinCastTask},
+        cast::{CastTyArgs, MirBuiltinCastEnc, MirBuiltinCastOutput, MirBuiltinCastTask},
     },
     ty::{
         RustTyDecomposition, RustTySpecial, TySpecifics,
-        generics::{GArgsTy, GArgsTyEnc},
+        generics::{GArgsTy, GArgsTyEnc, TyExprEnc},
     },
 };
 
@@ -49,21 +48,11 @@ impl<'vir> MirBuiltinUseCastTask<'vir> {
     }
 }
 
+/// A builtin cast with its type arguments at one use (see `CastTyArgs`).
 #[derive(Debug, Clone, Copy)]
-pub enum MirBuiltinUseCastOutput<'vir> {
-    Simple(FunctionIdn<'vir, vir::CSnap, vir::CSnap>),
-    Unsize(MirBuiltinUnsize<'vir>),
-}
-
-#[derive(Debug, Copy, Clone)]
-pub struct MirBuiltinUnsize<'vir> {
-    cast: FunctionIdn<'vir, (vir::CSnap, vir::ManyTyVal, vir::ManyCSnap), vir::CSnap>,
-    unsize: Option<vir::MethodIdn<'vir, (vir::CSnap, vir::ManyTyVal, vir::ManyCSnap)>>,
-    undo: Option<vir::MethodIdn<'vir, (vir::CSnap, vir::ManyTyVal, vir::ManyCSnap)>>,
-    /// The operand and result referent type values `[U, V]`, used by the `cast`
-    /// function (to construct the metadata) and by the `unsize`/`undo` methods (to
-    /// transfer the referent's `p_Param` predicate and value).
-    generics: GArgsTy<'vir>,
+pub struct MirBuiltinUseCastOutput<'vir> {
+    builtin: MirBuiltinCastOutput<'vir>,
+    ty_args: GArgsTy<'vir>,
 }
 
 impl<'vir> MirBuiltinUseCastOutput<'vir> {
@@ -71,38 +60,27 @@ impl<'vir> MirBuiltinUseCastOutput<'vir> {
         &self,
         input: vir::ExprGenCSnap<'vir, Curr, Next>,
     ) -> vir::ExprGenCSnap<'vir, Curr, Next> {
-        match self {
-            MirBuiltinUseCastOutput::Simple(f) => f.call()(input),
-            MirBuiltinUseCastOutput::Unsize(u) => {
-                u.cast.call()(input, u.generics.get_ty(), u.generics.get_const())
-            }
-        }
+        self.builtin.cast.call()(input, self.ty_args.get_ty(), self.ty_args.get_const())
     }
 
     pub fn unsize<Curr, Next>(
         &self,
         input: vir::ExprGenCSnap<'vir, Curr, Next>,
     ) -> Option<vir::StmtGen<'vir, Curr, Next>> {
-        match self {
-            MirBuiltinUseCastOutput::Simple(..) => None,
-            MirBuiltinUseCastOutput::Unsize(u) => u
-                .unsize
-                .map(|f| f.call()(input, u.generics.get_ty(), u.generics.get_const()))
-                .map(vir::StmtKindGenData::alloc),
-        }
+        self.builtin
+            .unsize
+            .map(|f| f.call()(input, self.ty_args.get_ty(), self.ty_args.get_const()))
+            .map(vir::StmtKindGenData::alloc)
     }
 
     pub fn undo<Curr, Next>(
         &self,
         input: vir::ExprGenCSnap<'vir, Curr, Next>,
     ) -> Option<vir::StmtGen<'vir, Curr, Next>> {
-        match self {
-            MirBuiltinUseCastOutput::Simple(..) => None,
-            MirBuiltinUseCastOutput::Unsize(u) => u
-                .undo
-                .map(|f| f.call()(input, u.generics.get_ty(), u.generics.get_const()))
-                .map(vir::StmtKindGenData::alloc),
-        }
+        self.builtin
+            .undo
+            .map(|f| f.call()(input, self.ty_args.get_ty(), self.ty_args.get_const()))
+            .map(vir::StmtKindGenData::alloc)
     }
 }
 
@@ -134,29 +112,27 @@ impl TaskEncoder for MirBuiltinUseCastEnc {
             operand_ty: operand_ty.ty,
         };
         let cast = deps.require_dep::<MirBuiltinCastEnc>(task)?;
-        match cast {
-            MirBuiltinCastOutput::Simple(fn_idn) => {
-                Ok(((), MirBuiltinUseCastOutput::Simple(fn_idn)))
+        let ty_args = match cast.ty_args {
+            CastTyArgs::None => &[],
+            CastTyArgs::PointeeMetadata => {
+                // The pointee metadata types, normalized in the body's context:
+                // this resolves e.g. `<T as Pointee>::Metadata` to `()` under a
+                // `T: Sized` bound, as rustc's typeck does when it checks the cast.
+                let metadata_ty = |ptr_ty: RustTyDecomposition<'vir>| {
+                    let metadata = ptr_ty.ty.ref_data().unwrap().metadata;
+                    metadata.decompose_normalize(ptr_ty.args)
+                };
+                let op_metadata = deps.require_dep::<TyExprEnc>(metadata_ty(operand_ty))?;
+                let result_metadata = deps.require_dep::<TyExprEnc>(metadata_ty(result_ty))?;
+                vir::with_vcx(|vcx| vcx.alloc_slice(&[op_metadata, result_metadata]))
             }
-            MirBuiltinCastOutput::Unsize { cast, undo, unsize } => {
+            CastTyArgs::Referents => {
                 // The cast function and the unsize/undo methods are all generic over
                 // the operand and result referent type values `[U, V]`. The referent
-                // is now index 0 of each reference's type args (the metadata type is
+                // is index 0 of each reference's type args (the metadata type is
                 // derived from the referent, and the lifetime is not a type arg).
                 let op_generics = deps.require_dep::<GArgsTyEnc>(operand_ty.args)?;
                 let result_generics = deps.require_dep::<GArgsTyEnc>(result_ty.args)?;
-                let generics = vir::with_vcx(|vcx| {
-                    GArgsTy::new(
-                        vcx.alloc_slice(&[op_generics.get_ty()[0], result_generics.get_ty()[0]]),
-                        &[],
-                    )
-                });
-                let unsize = MirBuiltinUnsize {
-                    cast,
-                    unsize,
-                    undo,
-                    generics,
-                };
                 // Recover the operand/result referent (`[T; N]` / `[T]`) structure by
                 // normalizing the reference's (generic `p_Param`) referent type
                 // against the reference's args.
@@ -174,7 +150,7 @@ impl TaskEncoder for MirBuiltinUseCastEnc {
                     {
                         (operand_ty.ty.box_value_ty(), result_ty.ty.box_value_ty())
                     }
-                    // `MirBuiltinCastOutput::Unsize` should only happen for
+                    // `CastTyArgs::Referents` should only happen for
                     // reference/pointer types, do not expect other types here.
                     _ => unreachable!(
                         "unexpected operand/result reference types for pointer cast: {operand_ty:?} / {result_ty:?}"
@@ -184,9 +160,18 @@ impl TaskEncoder for MirBuiltinUseCastEnc {
                 let res_inner = res_ref.decompose_normalize(result_ty.args);
                 deps.require_dep::<MetadataCastAxiomEnc>((op_inner.ty, res_inner.ty))?;
                 deps.require_dep::<ValueCastAxiomEnc>((op_inner.ty, res_inner.ty))?;
-                Ok(((), MirBuiltinUseCastOutput::Unsize(unsize)))
+                vir::with_vcx(|vcx| {
+                    vcx.alloc_slice(&[op_generics.get_ty()[0], result_generics.get_ty()[0]])
+                })
             }
-        }
+        };
+        Ok((
+            (),
+            MirBuiltinUseCastOutput {
+                builtin: cast,
+                ty_args: GArgsTy::new(ty_args, &[]),
+            },
+        ))
     }
 
     fn emit_outputs<'vir>(program: &mut task_encoder::Program<'vir>) {
