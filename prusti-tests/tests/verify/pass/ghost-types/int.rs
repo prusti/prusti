@@ -24,6 +24,16 @@ fn arithmetic() {
     prusti_assert!(-Int::from(9) == Int::from(0) - Int::from(9));
 }
 
+// Division and remainder are Euclidean: the remainder is never negative.
+fn euclidean_division() {
+    prusti_assert!(Int::from(-7) / Int::from(2) == Int::from(-4));
+    prusti_assert!(Int::from(-7) % Int::from(2) == Int::from(1));
+    prusti_assert!(Int::from(-7) / Int::from(-2) == Int::from(4));
+    prusti_assert!(Int::from(-7) % Int::from(-2) == Int::from(1));
+    prusti_assert!(Int::from(7) / Int::from(-2) == Int::from(-3));
+    prusti_assert!(Int::from(7) % Int::from(-2) == Int::from(1));
+}
+
 // Every comparison operator, on both sides of the truth value.
 fn comparisons() {
     prusti_assert!(Int::from(2) == Int::from(2));
