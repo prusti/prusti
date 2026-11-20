@@ -3335,6 +3335,77 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         Ok(expr)
     }
 
+    /// The snapshot of `place` in the state of `graph`, with the `&mut`s in it
+    /// holding their referents, as a spec block reads them: read from the
+    /// heap where the PCG has a referent expanded, and through the held
+    /// predicates of `place`'s nodes where it is folded into them.
+    fn deep_place_snap(
+        &mut self,
+        place: Place<'vir>,
+        graph: &BorrowsGraph<'vir>,
+    ) -> EncodeResult<'vir, vir::ExprSnap<'vir>, E> {
+        let mut snap = self.encode_place_with_snap(place)?.1;
+        let ty = place.ty(self.pcg_ctxt()).ty;
+        let current = MaybeLabelledPlace::Current(place);
+        let is_mut_ref = matches!(ty.kind(), ty::Ref(_, _, mir::Mutability::Mut));
+        let referent_expanded = is_mut_ref
+            && graph.edges().any(|edge| {
+                matches!(edge.kind(), BorrowPcgEdgeKind::Deref(deref) if deref.blocked_place() == current)
+            });
+        if referent_expanded {
+            let referent = self.deep_place_snap(place.project_deref(self.pcg_ctxt()), graph)?;
+            snap = self
+                .ty_use_pure(ty)
+                .expect_mutref()
+                .with_value(snap.downcast_ty(), referent)
+                .upcast_ty();
+        }
+        // A node expanded into the nodes of the place's parts holds no
+        // predicates itself. A reference's own position, which holds the
+        // referent, is folded with the reference's snapshot as key (see
+        // `fold_or_unfold`); it holds nothing while the referent is expanded.
+        let expanded = graph
+            .edges()
+            .filter_map(|edge| match edge.kind() {
+                BorrowPcgEdgeKind::BorrowPcgExpansion(expansion) => match expansion.base() {
+                    PcgNode::LifetimeProjection(base) => Some(base),
+                    PcgNode::Place(_) => None,
+                },
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let nodes = self
+            .indirect_predicate_state
+            .method_nodes()
+            .filter(|node| node.base() == current && node.label().is_none())
+            .filter(|node| !expanded.contains(node))
+            .collect::<Vec<_>>();
+        let own = LifetimePosition::new(0);
+        let mut keys = Vec::new();
+        if is_mut_ref && !referent_expanded {
+            keys.push((own, snap));
+        }
+        for node in nodes {
+            let (_, _, positions) = self.node_positions(node)?;
+            let vars = self.expect_node_vars(node)?;
+            for p in positions {
+                if is_mut_ref && p == own {
+                    continue;
+                }
+                if let Some(&key) = vars.keys.get(&p) {
+                    keys.push((p, key));
+                }
+            }
+        }
+        if !keys.is_empty() {
+            let predicates =
+                NodePredicates::new(RustTyDecomposition::from_ty(ty, self.def_id), self.deps)?
+                    .in_ty(ty);
+            snap = predicates.extend_with_keys(snap, &keys);
+        }
+        Ok(snap)
+    }
+
     fn encode_partial_place_snap(
         &mut self,
         place: Place<'vir>,
@@ -3408,7 +3479,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             return Ok(self.new_tmp(snapshot_ty));
         }
 
-        Ok(self.encode_place_with_snap(place)?.1)
+        self.deep_place_snap(place, pcg_state.borrow_pcg().graph())
     }
 
     fn visit_basic_block_data(
