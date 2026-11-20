@@ -21,3 +21,17 @@ fn test1(a: H) -> T {
     }
     a.g
 }
+
+// The loop reads a field behind the shared reference `a` while `r` borrows it.
+#[ensures(result >= 3)]
+fn test2(a: &H) -> u32 {
+    let r = &a.g.f;
+    let mut i = 0;
+    while i < 3 {
+        body_invariant!(*r == a.g.f);
+        let _x = *r;
+        let _y = a.g.f;
+        i += 1;
+    }
+    i
+}

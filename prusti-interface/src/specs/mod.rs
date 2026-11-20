@@ -509,7 +509,8 @@ pub fn is_spec_fn(tcx: ty::TyCtxt, def_id: DefId) -> bool {
 /// function or closure (marked `spec_only` or carrying a `spec_id`, e.g.
 /// the spec closures of `closure!` and the checker closure of `ghost!`),
 /// or a closure nested inside one (e.g. a closure used within a
-/// specification expression).
+/// specification expression), directly or inside an anonymous constant in it
+/// such as an array length.
 pub fn is_spec_item(tcx: ty::TyCtxt, def_id: DefId) -> bool {
     let mut def_id = def_id;
     loop {
@@ -520,7 +521,7 @@ pub fn is_spec_item(tcx: ty::TyCtxt, def_id: DefId) -> bool {
         {
             return true;
         }
-        if !tcx.is_closure_like(def_id) {
+        if !tcx.is_closure_like(def_id) && tcx.def_kind(def_id) != hir::def::DefKind::AnonConst {
             return false;
         }
         def_id = tcx.parent(def_id);
