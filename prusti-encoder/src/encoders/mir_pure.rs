@@ -1,5 +1,6 @@
 use crate::encoders::{
-    FunctionCallEnc, Mode, PrustiBuiltin, SpecBuiltin, ViperTupleEnc,
+    FunctionCallEnc, Mode, PrustiBuiltin, SpecBuiltin,
+    custom::{PairUse, PairUseEnc},
     mir_fn::{CallTaskDescription, RustSignature, SpecArms},
     mir_shared::{EncodeResult, PureRvalueEnc, RustcIntrinsic, unsupported_opaque},
     pure::spec::MirSpecEncMode,
@@ -279,7 +280,7 @@ struct Update<'vir> {
 #[derive(Debug)]
 enum UpdateBind<'vir> {
     Local(#[allow(dead_code)] mir::Local, Version<'vir>, ExprRet<'vir>),
-    Phi(Version<'vir>, ExprRet<'vir>),
+    Phi(vir::LocalDeclPair<'vir>, ExprRetAny<'vir, vir::Pair>),
 }
 
 impl<'vir> Update<'vir> {
@@ -386,7 +387,6 @@ impl Uses {
 struct Enc<'vir: 'enc, 'enc> {
     vcx: &'vir vir::VirCtxt<'vir>,
     encoding_depth: usize,
-    def_id: DefId,
     context: GParams<'vir>,
     /// The item that `context` holds the generic parameters of.
     context_def_id: DefId,
@@ -491,7 +491,6 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
         Self {
             vcx,
             encoding_depth,
-            def_id,
             context: gargs.context(),
             context_def_id: match kind {
                 PureKind::Closure { context } | PureKind::Spec { context, .. } => context,
@@ -547,20 +546,6 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
 
     fn mk_phi(&self, version: Version<'vir>) -> &'vir str {
         vir::vir_format!(self.vcx, "_{}_phi_{}", self.encoding_depth, version)
-    }
-
-    fn mk_phi_acc<T: vir::CompType>(
-        &mut self,
-        tuple_ref: &crate::encoders::ViperTupleEncOutput<'vir>,
-        phi_idx: Version<'vir>,
-        elem_idx: usize,
-        _ty: vir::Type<'vir, T>,
-    ) -> ExprRet<'vir> {
-        tuple_ref.mk_elem(
-            self.vcx,
-            self.vcx.mk_local_ex(phi_idx.initialised.unwrap()),
-            elem_idx,
-        )
     }
 
     fn bump_version(
@@ -634,20 +619,17 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                     self.vcx.mk_let_expr(decl, val, expr)
                 }
             }
-            UpdateBind::Phi(version, val) => {
-                self.vcx
-                    .mk_let_expr(version.initialised.unwrap(), val, expr)
-            }
+            UpdateBind::Phi(phi, val) => self.vcx.mk_let_expr(*phi, val, expr),
         })
     }
 
     fn reify_branch(
         &mut self,
-        tuple_ref: &crate::encoders::ViperTupleEncOutput<'vir>,
+        tuple_ref: &PairUse<'vir>,
         mod_locals: &[mir::Local],
         curr_ver: &FxHashMap<mir::Local, Version<'vir>>,
         update: Option<Update<'vir>>,
-    ) -> ExprRet<'vir> {
+    ) -> ExprRetAny<'vir, vir::Pair> {
         update
             .map(|update| {
                 let tuple_args = mod_locals
@@ -669,9 +651,23 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                         self.mk_local_ex(*local, version)
                     })
                     .collect::<Vec<_>>();
-                self.reify_binds(update, tuple_ref.mk_cons(self.vcx, tuple_args))
+                self.reify_binds(update, tuple_ref.mk_cons(&tuple_args))
             })
-            .unwrap_or_else(|| tuple_ref.mk_unreachable(self.vcx))
+            .unwrap_or_else(|| {
+                // A branch whose update is `None` cannot complete (it ends in
+                // `unreachable` or a diverging call, or is the failing side
+                // of an `Assert`). It merges the unreachable snapshots of the
+                // locals' types, which assume `false` where they are
+                // evaluated; with no locals to merge, nothing is assumed.
+                let unreachable = mod_locals
+                    .iter()
+                    .map(|local| {
+                        self.ty_use(self.body.local_decls[*local].ty)
+                            .unreachable_to_snap()
+                    })
+                    .collect::<Vec<_>>();
+                tuple_ref.mk_cons(&unreachable)
+            })
     }
 
     fn encode_common(
@@ -830,14 +826,11 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                 mod_locals.dedup();
                 let mod_tys = mod_locals
                     .iter()
-                    .map(|l| self.body.local_decls[*l].ty)
+                    .map(|l| self.get_ty_for_local(*l).as_dyn())
                     .collect();
 
                 // for each branch, create a Viper tuple of the updated locals
-                let tuple_ref = self
-                    .deps
-                    .require_dep::<ViperTupleEnc>((self.def_id, mod_tys))
-                    .unwrap();
+                let tuple_ref = self.deps.require_dep::<PairUseEnc>(mod_tys).unwrap();
                 let otherwise_update = updates.pop().unwrap();
                 let phi_expr = targets.iter().zip(updates).fold(
                     self.reify_branch(&tuple_ref, &mod_locals, &new_curr_ver, otherwise_update),
@@ -859,25 +852,23 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                 );
 
                 // assign tuple into a `phi` variable
-                let mut phi_idx = Version {
+                let phi_idx = Version {
                     index: self.phi_ctr,
                     location,
                     initialised: None,
                 };
-                phi_idx.initialised = Some(
-                    self.vcx
-                        .mk_local_decl(self.mk_phi(phi_idx), tuple_ref.snapshot()),
-                );
+                let phi = self.vcx.mk_local_decl(self.mk_phi(phi_idx), tuple_ref.ty);
                 self.phi_ctr += 1;
                 let mut phi_update = Update::new();
-                phi_update.binds.push(UpdateBind::Phi(phi_idx, phi_expr));
+                phi_update.binds.push(UpdateBind::Phi(phi, phi_expr));
 
                 // update locals by destructuring `phi` variable
                 // TODO: maybe this is unnecessary, we could instead use tuple
                 //   access directly instead of the locals going forward?
                 for (elem_idx, local) in mod_locals.iter().enumerate() {
-                    let ty = self.get_ty_for_local(*local);
-                    let expr = self.mk_phi_acc(&tuple_ref, phi_idx, elem_idx, ty);
+                    let expr = tuple_ref
+                        .mk_elem(self.vcx.mk_local_ex(phi), elem_idx)
+                        .downcast_ty();
                     self.bump_version(&mut phi_update, *local, expr, location);
                     new_curr_ver.insert(*local, phi_update.versions[local]);
                 }
@@ -922,14 +913,11 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                 mod_locals.dedup();
                 let mod_tys = mod_locals
                     .iter()
-                    .map(|l| self.body.local_decls[*l].ty)
+                    .map(|l| self.get_ty_for_local(*l).as_dyn())
                     .collect();
 
                 // create a Viper tuple of the updated locals
-                let tuple_ref = self
-                    .deps
-                    .require_dep::<ViperTupleEnc>((self.def_id, mod_tys))
-                    .unwrap();
+                let tuple_ref = self.deps.require_dep::<PairUseEnc>(mod_tys).unwrap();
                 let phi_expr = self.vcx.mk_ternary_expr(
                     self.vcx.mk_eq_expr(
                         cond_expr,
@@ -942,25 +930,23 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                 );
 
                 // assign tuple into a `phi` variable
-                let mut phi_idx = Version {
+                let phi_idx = Version {
                     index: self.phi_ctr,
                     location,
                     initialised: None,
                 };
-                phi_idx.initialised = Some(
-                    self.vcx
-                        .mk_local_decl(self.mk_phi(phi_idx), tuple_ref.snapshot()),
-                );
+                let phi = self.vcx.mk_local_decl(self.mk_phi(phi_idx), tuple_ref.ty);
                 self.phi_ctr += 1;
                 let mut phi_update = Update::new();
-                phi_update.binds.push(UpdateBind::Phi(phi_idx, phi_expr));
+                phi_update.binds.push(UpdateBind::Phi(phi, phi_expr));
 
                 // update locals by destructuring `phi` variable
                 // TODO: maybe this is unnecessary, we could instead use tuple
                 //   access directly instead of the locals going forward?
                 for (elem_idx, local) in mod_locals.iter().enumerate() {
-                    let ty = self.get_ty_for_local(*local);
-                    let expr = self.mk_phi_acc(&tuple_ref, phi_idx, elem_idx, ty);
+                    let expr = tuple_ref
+                        .mk_elem(self.vcx.mk_local_ex(phi), elem_idx)
+                        .downcast_ty();
                     self.bump_version(&mut phi_update, *local, expr, location);
                     new_curr_ver.insert(*local, phi_update.versions[local]);
                 }
