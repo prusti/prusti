@@ -34,3 +34,12 @@ pub fn max_by_key<A, B: Ord>(a: A, b: A, key: impl Fn(&A) -> B) -> A {
 fn higher_ranked_closure() {
     let _ = (0..1).filter(|_| true);
 }
+
+fn capture_generic<T: Copy>(x: T) -> impl Fn() -> T {
+    move || x
+}
+
+// The caller sees the closure type with `T` instantiated to `u32`.
+fn reveal_capture_generic() {
+    let _f = capture_generic(5u32);
+}

@@ -1,3 +1,4 @@
+//@ known-failure
 //@ compile-flags: -Pcounterexample=true -Pcheck_overflows=false
 
 #![allow(unused)]

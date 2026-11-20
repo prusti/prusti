@@ -78,7 +78,14 @@ impl TaskEncoder for MethodCallEnc {
                 method_ref: assoc_enc.call_stub_impure,
             }
         } else {
-            deps.require_ref::<MethodEnc>(task_key.callee)?
+            let method_ref = deps.require_ref::<MethodEnc>(task_key.callee)?;
+            // The method of a callee whose wands cannot be generated is not
+            // emitted (see `MethodEnc`), so a call to it cannot be encoded.
+            let wands_task = WandEncTask {
+                data: FunctionData::new(task_key.callee),
+            };
+            deps.require_dep::<WandEnc>(wands_task)?;
+            method_ref
         };
         let signature = RustSignature::new(callee_def_id);
         let ty_args = deps.require_dep::<GArgsTyEnc>(task_key.gargs)?;
@@ -126,12 +133,6 @@ pub(super) struct MethodEncOutput<'vir> {
     method: vir::Method<'vir>,
 }
 
-#[derive(Clone, Debug)]
-pub enum MethodEncError {
-    /// The method cannot be encoded; this was reported as an early error.
-    Reported,
-}
-
 impl TaskEncoder for MethodEnc {
     task_encoder::encoder_cache!(MethodEnc);
     const ENCODER_NAME: &'static str = "method encoder";
@@ -140,14 +141,8 @@ impl TaskEncoder for MethodEnc {
     type OutputRef<'vir> = MethodEncOutputRef<'vir>;
     type OutputFullLocal<'vir> = MethodEncOutput<'vir>;
 
-    type EncodingError = MethodEncError;
-
     fn task_to_key<'vir>(task: &Self::TaskDescription<'vir>) -> Self::TaskKey<'vir> {
         *task
-    }
-
-    fn error_reported(error: &Self::EncodingError) -> bool {
-        matches!(error, MethodEncError::Reported)
     }
 
     fn do_encode_full<'vir>(
@@ -210,20 +205,17 @@ impl TaskEncoder for MethodEnc {
                 span,
             )?;
             let function_data = FunctionData::new(def_id);
+            let wands_task = WandEncTask {
+                data: function_data,
+            };
             let wands = deps
-                .require_dep_spanned::<WandEnc>(
-                    WandEncTask {
-                        data: function_data,
-                    },
-                    span,
-                )
-                .map_err(|err| {
-                    // Without its wands, the method has no contract.
-                    vcx.emit_early_error(super::dep_error(&err).report(
-                        format!("method `{}`", vcx.tcx().def_path_str(def_id)),
-                        vcx.tcx().def_span(def_id),
-                    ));
-                    EncodeFullError::EncodingError(MethodEncError::Reported, None)
+                .require_dep_spanned::<WandEnc>(wands_task, span)
+                .map_err(|err| match err {
+                    EncodeFullError::AlreadyEncoded => err,
+                    // Without its wands, the method has no sound contract, so
+                    // it is not emitted. This is reported here, once; each call
+                    // to it reports its own failure (see `MethodCallEnc`).
+                    err => EncodeFullError::Reported(WandEnc::report_failure(vcx, def_id, &err)),
                 })?;
 
             // Add direct resources for inputs and outputs to the pre- and
@@ -416,15 +408,14 @@ impl TaskEncoder for MethodEnc {
                     }
                     Err(EncodeFullError::AlreadyEncoded) => None,
                     Err(err) => {
-                        let err = super::dep_error(&err);
-                        let span = err.span.unwrap_or_else(|| vcx.tcx().def_span(def_id));
-                        // Worded like `FunctionEnc`'s error, so that when both
-                        // encodings of a pure function's body fail in the same
-                        // way, rustc reports the identical error only once.
-                        vcx.emit_early_error(err.report(
-                            format!("function body `{}`", vcx.tcx().def_path_str(def_id)),
-                            span,
-                        ));
+                        super::report_dep_error(vcx, &err, |err| {
+                            let span = err.span.unwrap_or_else(|| vcx.tcx().def_span(def_id));
+                            // Worded like `FunctionEnc`'s error, so that when both
+                            // encodings of a pure function's body fail in the same
+                            // way, rustc reports the identical error only once.
+                            let name = vcx.tcx().def_path_str(def_id);
+                            err.report(format!("function body `{name}`"), span)
+                        });
                         None
                     }
                 }
@@ -461,7 +452,7 @@ impl TaskEncoder for MethodEnc {
     }
 
     fn emit_outputs<'vir>(program: &mut task_encoder::Program<'vir>) {
-        for output in Self::all_outputs_local_no_errors(program) {
+        for output in Self::all_outputs_local(program) {
             program.add_method(output.method);
         }
     }

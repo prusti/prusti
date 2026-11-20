@@ -4,6 +4,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
+use bincode::Options;
 use log::{error, info};
 
 use crate::verification_result::VerificationResult;
@@ -32,7 +33,7 @@ pub struct PersistentCache {
     data: FxHashMap<u64, VerificationResult>,
 }
 
-const RESULT_CACHE_VERSION: u64 = 4;
+const RESULT_CACHE_VERSION: u64 = 5;
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct ResultCache {
@@ -75,7 +76,19 @@ impl PersistentCache {
         let mut data_res: Option<ResultCache> = None;
         if !cache_loc.as_os_str().is_empty() {
             if let Ok(f) = fs::File::open(&cache_loc) {
-                match bincode::deserialize_from::<_, ResultCache>(&mut io::BufReader::new(f)) {
+                // The version comes after the data, so a cache of another
+                // layout is decoded before its version can be checked. Its
+                // lengths are then garbage; limiting what is read to the size
+                // of the file turns them into an error, rather than an
+                // allocation that aborts. The other options are those of
+                // `bincode::deserialize_from`, matching the
+                // `bincode::serialize_into` of `save_cache`.
+                let limit = f.metadata().map_or(0, |metadata| metadata.len());
+                let options = bincode::DefaultOptions::new()
+                    .with_fixint_encoding()
+                    .allow_trailing_bytes()
+                    .with_limit(limit);
+                match options.deserialize_from::<_, ResultCache>(&mut io::BufReader::new(f)) {
                     Ok(data) => {
                         if data.version != RESULT_CACHE_VERSION {
                             error!(

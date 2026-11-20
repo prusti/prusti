@@ -2,10 +2,7 @@ use std::borrow::Borrow;
 
 use prusti_interface::{
     PrustiError,
-    specs::{
-        specifications::find_trait_method_substs,
-        typed::{ExternSpecKind, Pledge},
-    },
+    specs::{specifications::find_trait_method_substs, typed::Pledge},
 };
 use prusti_rustc_interface::{
     middle::{mir, ty},
@@ -19,7 +16,7 @@ use vir::{CastType, HasType, Reify};
 use crate::encoders::{
     MirLocalDefEncTask, MirPureEnc,
     mir_pure::{ExprInput, MirPureEncOutput, PureKind},
-    ty::generics::{GArgs, GParams},
+    ty::generics::{GArgs, GParams, identity_params},
 };
 pub struct MirSpecEnc;
 
@@ -109,6 +106,13 @@ pub struct MirSpecEncOutput<'vir> {
     pub pre_args: &'vir FxHashMap<mir::Local, vir::ExprSnap<'vir>>,
     #[allow(dead_code)]
     pub post_args: &'vir FxHashMap<mir::Local, vir::ExprSnap<'vir>>,
+    /// Whether the specs were skipped because one could not be encoded, in
+    /// which case `pres`, `posts` and `pledges` are empty. Where the
+    /// preconditions are a hypothesis (e.g. "the trait's precondition holds if
+    /// these do"), the empty list must not stand for `true`: a consumer of
+    /// another mode, such as the function's method in impure mode, may have
+    /// them and assume them.
+    pub skipped: bool,
 }
 
 impl<'vir> MirSpecEncOutput<'vir> {
@@ -126,10 +130,38 @@ impl<'vir> MirSpecEncOutput<'vir> {
 /// State shared by every spec encoded within one `MirSpecEnc` task.
 #[derive(Clone, Copy)]
 struct SpecEncCtx<'vir> {
-    extern_spec: Option<ExternSpecKind>,
     enc_mode: MirSpecEncMode,
     context_def_id: DefId,
     substs: ty::GenericArgsRef<'vir>,
+}
+
+/// The generic arguments of the spec item `spec_def_id`, given the arguments
+/// `fn_args` of the function it specifies.
+///
+/// A spec item has the type and const parameters of its function in the same
+/// order, so they are matched by position. Lifetimes cannot be matched this
+/// way: only early-bound lifetimes get generic arguments (late-bound ones are
+/// bound in the function's signature instead), and whether a lifetime is early-
+/// or late-bound depends on the signature. A lifetime that only appears in the
+/// function's return type is early-bound, but it is late-bound in the
+/// postcondition item, which takes the result as an argument. So the spec
+/// item's lifetimes are erased.
+fn spec_args<'vir>(
+    vcx: &'vir vir::VirCtxt<'vir>,
+    fn_args: ty::GenericArgsRef<'vir>,
+    spec_def_id: DefId,
+) -> ty::GenericArgsRef<'vir> {
+    let mut fn_args = fn_args.iter().filter(|arg| arg.as_region().is_none());
+    vcx.tcx()
+        .mk_args_from_iter(identity_params(vcx.tcx(), spec_def_id).iter().map(|arg| {
+            if arg.as_region().is_some() {
+                vcx.tcx().lifetimes.re_erased.into()
+            } else {
+                fn_args.next().expect(
+                    "spec item with more type or const parameters than the function it specifies",
+                )
+            }
+        }))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -186,12 +218,7 @@ impl TaskEncoder for MirSpecEnc {
                 // if the spec is not inherited and we are currently building the spec for the actual function we're encoding,
                 // do not use substitution
                 if !inherited && def_id == context_def_id {
-                    vcx.tcx().mk_args_from_iter(
-                        context_params
-                            .rust_params()
-                            .iter()
-                            .filter(|arg| arg.as_region().is_none()),
-                    )
+                    context_params.rust_params()
                 } else {
                     substs
                 }
@@ -201,11 +228,7 @@ impl TaskEncoder for MirSpecEnc {
                 MirLocalDefEncTask::LocalSubsts {
                     def_id,
                     context_def_id,
-                    substs: if def_id == context_def_id {
-                        context_params.rust_params()
-                    } else {
-                        substs
-                    },
+                    substs: substs_for(false),
                     all_locals: false,
                 },
             )?;
@@ -215,19 +238,16 @@ impl TaskEncoder for MirSpecEnc {
             let (posts, posts_inherited) = crate::encoders::spec_items(&specs.posts);
             let (pledges, pledges_inherited) = crate::encoders::spec_items(&specs.pledges);
             let pre_ctx = SpecEncCtx {
-                extern_spec: specs.extern_spec,
                 enc_mode,
                 context_def_id,
                 substs: substs_for(pres_inherited),
             };
             let post_ctx = SpecEncCtx {
-                extern_spec: specs.extern_spec,
                 enc_mode,
                 context_def_id,
                 substs: substs_for(posts_inherited),
             };
             let pledge_ctx = SpecEncCtx {
-                extern_spec: specs.extern_spec,
                 enc_mode,
                 context_def_id,
                 substs: substs_for(pledges_inherited),
@@ -256,13 +276,12 @@ impl TaskEncoder for MirSpecEnc {
             let all_args = vcx.alloc(all_args);
             let pre_args = all_args; // it should be ok to provide more keys than required
 
-            // Encode each functional precondition; if one cannot be encoded (e.g.
-            // it uses an unsupported feature), report the error at *that spec's*
-            // span and skip only it, keeping the permission contract and the other
-            // specs intact.
-            let pres: Vec<(vir::ExprBool<'_>, Span)> = pres
+            // Encode each functional spec; one that cannot be encoded (e.g. it
+            // uses an unsupported feature) is reported at its own span and
+            // encoded as `None`.
+            let pres: Vec<Option<(vir::ExprBool<'_>, Span)>> = pres
                 .iter()
-                .filter_map(|spec_def_id| {
+                .map(|spec_def_id| {
                     let spec = Self::encode_pure(vcx, deps, pre_ctx, *spec_def_id, "precondition")?;
                     let expr = spec.expr.downcast_ty::<vir::Bool>();
                     let span = vcx.tcx().def_span(*spec_def_id);
@@ -290,9 +309,9 @@ impl TaskEncoder for MirSpecEnc {
                 }
                 MirSpecEncMode::PureWithResult | MirSpecEncMode::PureWithoutResult => all_args,
             };
-            let posts: Vec<(vir::ExprBool<'_>, Span)> = posts
+            let posts: Vec<Option<(vir::ExprBool<'_>, Span)>> = posts
                 .iter()
-                .filter_map(|spec_def_id| {
+                .map(|spec_def_id| {
                     let span = vcx.tcx().def_span(*spec_def_id);
                     vcx.with_span(span, |vcx| {
                         let spec =
@@ -312,14 +331,13 @@ impl TaskEncoder for MirSpecEnc {
                 .collect();
             let pledges = pledges
                 .iter()
-                .filter_map(
+                .map(
                     |Pledge {
                          lhs: lhs_def_id,
                          rhs: rhs_def_id,
                          ..
                      }| {
-                        // Optional expiry obligation (lhs). If it cannot be encoded,
-                        // report at its span and skip the whole pledge.
+                        // Optional expiry obligation (lhs).
                         let lhs_expr = match *lhs_def_id {
                             Some(lhs_def_id) => {
                                 let spec = Self::encode_pure(
@@ -359,12 +377,28 @@ impl TaskEncoder for MirSpecEnc {
             // re-entrant run already finished this task, and its result is
             // used instead of this one.
             deps.check_cycle()?;
+            // If a spec could not be encoded, all functional specs are skipped
+            // (see `encode_pure`): the remaining ones could mean something the
+            // user did not write, e.g. a postcondition that holds only under a
+            // missing precondition. This is decided per mode, so a spec that
+            // only some modes can encode (e.g. one reading through `&mut`,
+            // which the pure modes do not support) is skipped only where those
+            // modes are used (see `MirSpecEncOutput::skipped`).
+            let (pres, posts, pledges, skipped) = match (
+                pres.into_iter().collect(),
+                posts.into_iter().collect(),
+                pledges.into_iter().collect(),
+            ) {
+                (Some(pres), Some(posts), Some(pledges)) => (pres, posts, pledges, false),
+                _ => (Vec::new(), Vec::new(), Vec::new(), true),
+            };
             let data = MirSpecEncOutput {
                 pres,
                 posts,
                 pledges,
                 pre_args,
                 post_args,
+                skipped,
             };
             Ok(((), data))
         })
@@ -388,8 +422,8 @@ impl MirSpecEnc {
             },
             parent_def_id: def_id,
             gargs: GArgs::new(
-                GParams::new_maybe_extern(ctx.context_def_id, ctx.extern_spec),
-                ctx.substs,
+                GParams::from(ctx.context_def_id),
+                spec_args(vcx, ctx.substs, def_id),
             ),
         });
         spec.inspect_err(|err| {
@@ -397,9 +431,14 @@ impl MirSpecEnc {
             if matches!(err, EncodeFullError::AlreadyEncoded) {
                 return;
             }
-            let err = crate::encoders::mir_fn::dep_error(err);
-            let span = err.span.unwrap_or(span);
-            vcx.emit_early_error(err.report(type_.to_string(), span));
+            crate::encoders::mir_fn::report_dep_error(vcx, err, |err| {
+                let span = err.span.unwrap_or(span);
+                err.report(type_.to_string(), span).add_note(
+                    "all preconditions, postconditions and pledges of the function are skipped \
+                     where this spec cannot be encoded",
+                    None,
+                )
+            });
         })
         .ok()
     }

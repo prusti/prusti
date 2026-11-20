@@ -13,7 +13,14 @@ use prusti_rustc_interface::{
 /// Proof that an error, which fails the verification, has been reported to
 /// the user: only [VirCtxt::emit_early_error] creates one.
 #[derive(Clone, Copy, Debug)]
-pub struct ErrorGuaranteed(());
+struct ErrorGuaranteed(());
+
+/// Proof that a diagnostic has been reported to the user, as an error or as a
+/// warning (e.g. an unsupported feature when those are skipped). Only
+/// [VirCtxt::emit_early_error] creates one. Whatever the diagnostic describes
+/// must not be reported again.
+#[derive(Clone, Copy, Debug)]
+pub struct Reported(Option<ErrorGuaranteed>);
 
 /// Belongs to a part of the encoding that may stand in for one that could not
 /// be encoded, and is marked once that failure has been reported as an error.
@@ -27,9 +34,13 @@ pub struct ErrorGuaranteed(());
 pub struct ErrorTaint(std::cell::OnceCell<ErrorGuaranteed>);
 
 impl ErrorTaint {
-    pub fn mark(&self, error: ErrorGuaranteed) {
-        // Marking it once is enough to prove that an error was reported.
-        let _ = self.0.set(error);
+    /// Marks the taint if `reported` is an error; a warning does not fail the
+    /// verification.
+    pub fn mark(&self, reported: Reported) {
+        if let Some(error) = reported.0 {
+            // Marking it once is enough to prove that an error was reported.
+            let _ = self.0.set(error);
+        }
     }
 
     fn is_marked(&self) -> bool {
@@ -203,14 +214,13 @@ impl<'tcx> VirCtxt<'tcx> {
             .push(taint);
     }
 
-    /// Report `error` before verification. Returns a token if it is reported
-    /// as an error, which fails the verification, rather than as a warning
-    /// (e.g. an unsupported feature when those are skipped).
-    pub fn emit_early_error(&self, error: PrustiError) -> Option<ErrorGuaranteed> {
-        let guarantee = error.is_error().then_some(ErrorGuaranteed(()));
+    /// Reports `error` before verification and returns the proof that it was
+    /// reported.
+    pub fn emit_early_error(&self, error: PrustiError) -> Reported {
+        let reported = Reported(error.is_error().then_some(ErrorGuaranteed(())));
         let mut manager = self.spans.borrow_mut();
         manager.early_errors.push(error);
-        guarantee
+        reported
     }
 
     // TODO: eventually, this should not be an Option

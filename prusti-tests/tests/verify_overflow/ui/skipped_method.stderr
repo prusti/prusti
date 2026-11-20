@@ -1,0 +1,17 @@
+warning: [Prusti: unsupported feature] cannot encode method `two`: borrows in the result that expire separately but depend on a common argument are not supported
+  --> $DIR/skipped_method.rs:20:1
+   |
+20 | / pub fn two<'a, 'b, 'c>(x: &'a mut u32, y: &'b mut u32) -> (&'c mut u32, &'b mut u32)
+21 | | where
+22 | |     'a: 'c,
+23 | |     'b: 'c,
+   | |___________^
+
+warning: [Prusti: unsupported feature] cannot encode function body `caller`: borrows in the result that expire separately but depend on a common argument are not supported
+  --> $DIR/skipped_method.rs:14:20
+   |
+14 |     let (ra, rb) = two(&mut a, &mut b);
+   |                    ^^^^^^^^^^^^^^^^^^^
+
+warning: 2 warnings emitted
+

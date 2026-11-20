@@ -18,35 +18,24 @@ use std::{
     },
 };
 use ui_test::{
+    custom_flags::rustfix::RustfixMode,
     default_file_filter, default_per_file_config, run_tests_generic,
     spanned::Spanned,
     status_emitter::{Gha, StatusEmitter},
     AbortCheck, Args, Config,
 };
 
-/// Silicon's time limit (in seconds) per test file, so that a slow test cannot hold up the suite.
-const EXTRA_VERIFIER_ARGS: &str = "--timeout=90";
-
-/// The test groups, each with `fail` and `pass` tests in `prusti-tests/tests/<group>/`, and the
-/// environment that Prusti runs them in. The `ui` tests of each group are not run yet.
+/// The test groups, each with `fail`, `pass` and `ui` tests in `prusti-tests/tests/<group>/`, and
+/// the environment that Prusti runs them in.
 const GROUPS: [(&str, &[(&str, &str)]); 4] = [
     // Test the parsing of specifications. This doesn't run the verifier.
     ("parse", &[("PRUSTI_VERIFY_MODE", "compile-only")]),
     // Test the type-checking of specifications. This doesn't run the verifier.
     ("typecheck", &[("PRUSTI_VERIFY_MODE", "compile-only")]),
     // Test the verifier.
-    (
-        "verify",
-        &[
-            ("PRUSTI_CHECK_OVERFLOWS", "false"),
-            ("PRUSTI_EXTRA_VERIFIER_ARGS", EXTRA_VERIFIER_ARGS),
-        ],
-    ),
+    ("verify", &[("PRUSTI_CHECK_OVERFLOWS", "false")]),
     // Test the verifier with overflow checks enabled.
-    (
-        "verify_overflow",
-        &[("PRUSTI_EXTRA_VERIFIER_ARGS", EXTRA_VERIFIER_ARGS)],
-    ),
+    ("verify_overflow", &[]),
 ];
 
 type TestsResult = ui_test::color_eyre::Result<()>;
@@ -76,7 +65,7 @@ fn prusti_config(path: String, env: &[(&str, &str)], abort_check: &AbortCheck) -
     // `//@ known-failure` marks a test that should pass but currently fails
     // verification. Such a test succeeds as long as verification fails, and
     // fails once it verifies, so that the annotation gets removed. For
-    // `fail` tests, see `run`.
+    // `fail` and `ui` tests, see `run`.
     config
         .custom_comments
         .insert("known-failure", |parser, _args, span| {
@@ -91,9 +80,32 @@ fn prusti_config(path: String, env: &[(&str, &str)], abort_check: &AbortCheck) -
     config
 }
 
+fn per_file_config(config: &mut Config, file_contents: &Spanned<Vec<u8>>) {
+    default_per_file_config(config, file_contents);
+    // Expected outputs refer to the directory of the test file as `$DIR`. Not
+    // `Config::path_filter`, which canonicalizes the path, while the outputs show it relative.
+    if let Some(dir) = file_contents.span.file.parent() {
+        let dir = ui_test::Match::from(dir);
+        let comments = config.comment_defaults.base();
+        for normalize in [
+            &mut comments.normalize_stderr,
+            &mut comments.normalize_stdout,
+        ] {
+            normalize.push((dir.clone(), b"$DIR".into()));
+        }
+    }
+}
+
 pub(crate) fn run() -> TestsResult {
     // Run from the repository root, so that reported test paths are relative to it.
     env::set_current_dir(Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap())?;
+
+    // The server verifies in this process, which does not get the settings that `prusti-rustc`
+    // passes to the driver. Without this one, `PRUSTI_USE_SMT_WRAPPER` makes it panic.
+    env::set_var(
+        "PRUSTI_SMT_SOLVER_WRAPPER_PATH",
+        super::tested_bin("prusti-smt-solver"),
+    );
 
     // Spawn server process as child (so it stays around until main function terminates)
     let server_address = spawn_server_thread();
@@ -122,31 +134,70 @@ pub(crate) fn run() -> TestsResult {
         );
         pass.comment_defaults.base().exit_status = Spanned::dummy(0).into();
         pass.comment_defaults.base().require_annotations = Spanned::dummy(false).into();
-        configs.extend([fail, pass]);
+        // A `ui` test checks Prusti's output against its `.stderr` and `.stdout` files, whether
+        // or not it reports errors.
+        let mut ui = prusti_config(
+            format!("prusti-tests/tests/{group_name}/ui"),
+            env,
+            &abort_check,
+        );
+        ui.comment_defaults.base().exit_status = Default::default();
+        ui.comment_defaults.base().require_annotations = Spanned::dummy(false).into();
+        // The suggestions in a `ui` test's output are checked as part of its `.stderr` file, not
+        // applied.
+        ui.comment_defaults
+            .base()
+            .set_custom("rustfix", RustfixMode::Disabled);
+        // Locations in the sources of the contracts, e.g. of the specification of a panicking
+        // function, move whenever the contracts are edited, so the outputs show `LL:COL` in place
+        // of their line and column.
+        ui.filter(
+            r"(prusti-contracts/src/\S+\.rs):[0-9]+:[0-9]+",
+            "${1}:LL:COL",
+        );
+        // Unlike a `pass` test, a `ui` test marked `//@ known-failure` is still compared with its
+        // `.stderr` and `.stdout` files, and is run like a known-failing `fail` test (see below).
+        ui.custom_comments
+            .insert("known-failure", |_parser, _args, _span| {
+                KNOWN_FAILURES.fetch_add(1, Ordering::Relaxed);
+            });
+        configs.extend([fail, pass, ui]);
     }
     for config in &mut configs {
         config.with_args(&args);
+        // Only `ui` tests have expected output files; `--bless` would write empty ones next to
+        // the other tests.
+        if !config.root_dir.ends_with("ui") {
+            config.output_conflict_handling = ui_test::error_on_output_conflict;
+        }
     }
 
     // A `fail` test marked `//@ known-failure` does not report the errors it is annotated with
-    // yet. Such a test is run on its own afterwards and succeeds as long as it fails, and fails
-    // once it passes, so that the annotation gets removed.
+    // yet, and a `ui` test marked so does not produce the output in its `.stderr` and `.stdout`
+    // files yet. Such a test is run on its own afterwards and succeeds as long as it fails (for a
+    // `ui` test: its output differs from these files), and fails once it passes, so that the
+    // annotation gets removed.
     let is_known_failure = |path: &Path| {
         fs::read_to_string(path).is_ok_and(|contents| contents.contains("//@ known-failure"))
     };
-    let known_failing_fail_tests = Mutex::new(vec![]);
+    let known_failing_tests = Mutex::new(vec![]);
     let result = run_tests_generic(
         configs,
         |path, config| {
             let matched = default_file_filter(path, config)?;
-            if matched && config.root_dir.ends_with("fail") && is_known_failure(path) {
-                let test = (path.to_path_buf(), config.clone());
-                known_failing_fail_tests.lock().unwrap().push(test);
+            let rerun = config.root_dir.ends_with("fail") || config.root_dir.ends_with("ui");
+            if matched && rerun && is_known_failure(path) {
+                let mut config = config.clone();
+                // `--bless` must not replace the expected output of a known-failing `ui` test with
+                // the wrong output it produces.
+                config.output_conflict_handling = ui_test::error_on_output_conflict;
+                let test = (path.to_path_buf(), config);
+                known_failing_tests.lock().unwrap().push(test);
                 return Some(false);
             }
             Some(matched)
         },
-        default_per_file_config,
+        per_file_config,
         (
             Box::<dyn StatusEmitter>::from(args.format),
             Gha {
@@ -156,11 +207,11 @@ pub(crate) fn run() -> TestsResult {
         ),
     );
     let mut fixed = vec![];
-    for (path, config) in known_failing_fail_tests.into_inner().unwrap() {
+    for (path, config) in known_failing_tests.into_inner().unwrap() {
         let passed = run_tests_generic(
             vec![config],
             |candidate, _| Some(candidate == path),
-            default_per_file_config,
+            per_file_config,
             (),
         )
         .is_ok();

@@ -7,7 +7,7 @@ error: [Prusti: invalid specification] using predicate from non-specification co
 note: this is a specification-only predicate function
   --> $DIR/abstract-predicate-dont-call.rs:6:9
    |
-6  |         fn foo(&self) -> bool;
+ 6 |         fn foo(&self) -> bool;
    |         ^^^^^^^^^^^^^^^^^^^^^^
 
 error: [Prusti: invalid specification] using predicate from non-specification code is not allowed
@@ -19,7 +19,7 @@ error: [Prusti: invalid specification] using predicate from non-specification co
 note: this is a specification-only predicate function
   --> $DIR/abstract-predicate-dont-call.rs:6:9
    |
-6  |         fn foo(&self) -> bool;
+ 6 |         fn foo(&self) -> bool;
    |         ^^^^^^^^^^^^^^^^^^^^^^
 
 error: [Prusti: invalid specification] using predicate from non-specification code is not allowed
@@ -31,7 +31,7 @@ error: [Prusti: invalid specification] using predicate from non-specification co
 note: this is a specification-only predicate function
   --> $DIR/abstract-predicate-dont-call.rs:6:9
    |
-6  |         fn foo(&self) -> bool;
+ 6 |         fn foo(&self) -> bool;
    |         ^^^^^^^^^^^^^^^^^^^^^^
 
 error: aborting due to 3 previous errors

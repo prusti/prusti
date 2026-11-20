@@ -121,6 +121,8 @@ fn load_settings() -> Config {
     allowed_keys.insert("rustc_log_args".to_string());
     allowed_keys.insert("rustc_log_env".to_string());
     allowed_keys.insert("original_smt_solver_path".to_string());
+    allowed_keys.insert("smt_solver_manager_port".to_string());
+    allowed_keys.insert("log_smt_interaction".to_string());
 
     // TODO: reduce this to something more sensible:
     static MAX_CONFIG_LEN: usize = 40;

@@ -229,15 +229,11 @@ impl TaskEncoder for FunctionEnc {
                         Some(expr)
                     }
                     Err(err) => {
-                        let err = super::dep_error(&err);
-                        let span = err.span.unwrap_or_else(|| vcx.tcx().def_span(def_id));
-                        let error = vcx.emit_early_error(err.report(
-                            format!("function body `{}`", vcx.tcx().def_path_str(def_id)),
-                            span,
-                        ));
-                        if let Some(error) = error {
-                            body_taint.mark(error);
-                        }
+                        body_taint.mark(super::report_dep_error(vcx, &err, |err| {
+                            let span = err.span.unwrap_or_else(|| vcx.tcx().def_span(def_id));
+                            let name = vcx.tcx().def_path_str(def_id);
+                            err.report(format!("function body `{name}`"), span)
+                        }));
                         None
                     }
                 }
@@ -271,7 +267,7 @@ impl TaskEncoder for FunctionEnc {
     }
 
     fn emit_outputs<'vir>(program: &mut task_encoder::Program<'vir>) {
-        for output in Self::all_outputs_local_no_errors(program) {
+        for output in Self::all_outputs_local(program) {
             program.add_function(output.function);
         }
     }

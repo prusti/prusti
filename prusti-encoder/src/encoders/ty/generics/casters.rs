@@ -284,7 +284,7 @@ impl TaskEncoder for CastersEnc<Pure> {
     /// single declaration, so this is the one part that cannot be built per
     /// pair; each pair's axioms are emitted as built.
     fn emit_outputs<'vir>(program: &mut task_encoder::Program<'vir>) {
-        let outputs = Self::all_outputs_local_no_errors(program);
+        let outputs = Self::all_outputs_local(program);
         vir::with_vcx(|vcx| {
             let mut constructors = Vec::new();
             for pc in outputs {
@@ -465,7 +465,7 @@ impl TaskEncoder for CastersEnc<Impure> {
     }
 
     fn emit_outputs<'vir>(program: &mut task_encoder::Program<'vir>) {
-        for output in Self::all_outputs_local_no_errors(program) {
+        for output in Self::all_outputs_local(program) {
             for method in output {
                 program.add_method(method);
             }

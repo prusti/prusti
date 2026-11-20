@@ -17,7 +17,7 @@ use pcg::{
 };
 use prusti_rustc_interface::middle::{mir, ty};
 
-use task_encoder::TaskEncoder;
+use task_encoder::{EncodeFullError, TaskEncoder};
 use vir::Reify;
 
 use crate::encoders::{
@@ -184,9 +184,9 @@ impl<'vir: 'a, 'a, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             {
                 return Ok(IndirectPredicatesEncOutputRef::new(vec![]));
             }
-            return Err(self.unsupported(
+            return Err(EncodeFullError::unsupported(
                 format!("a closure capturing a reference (`{ty}`)"),
-                self.current_span(),
+                vec![self.current_span()],
             ));
         };
         self.deps.require_dep::<IndirectPredicatesEnc>(proj)

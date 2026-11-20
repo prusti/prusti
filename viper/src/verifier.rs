@@ -11,7 +11,7 @@ use crate::{
     silicon_counterexample::SiliconCounterexample,
     smt_manager::SmtManager,
     verification_backend::VerificationBackend,
-    verification_result::{VerificationError, VerificationResultKind},
+    verification_result::{VerificationError, VerificationResultKind, VerifierWarning},
     ConsistencyError,
 };
 use jni::{errors::Result, objects::JObject, JNIEnv};
@@ -402,12 +402,59 @@ impl<'a> Verifier<'a> {
             }
         })
     }
+
+    /// Takes the warnings still queued in the verifier's reporter, and drops
+    /// the other queued messages. A thread that polls the messages while the
+    /// verifier runs takes the warnings itself (see [`extract_warnings`]).
+    pub fn take_warnings(&self) -> Vec<VerifierWarning> {
+        let reporter = self
+            .jni
+            .unwrap_result(self.verifier_wrapper.call_reporter(self.verifier_instance));
+        let reporter_wrapper = silver::reporter::PollingReporter::with(self.env);
+        let mut warnings = vec![];
+        while self
+            .jni
+            .unwrap_result(reporter_wrapper.call_hasNewMessage(reporter))
+        {
+            let msg = self
+                .jni
+                .unwrap_result(reporter_wrapper.call_getNewMessage(reporter));
+            if self.jni.class_name(msg) == "viper.silver.reporter.WarningsDuringVerification" {
+                warnings.extend(extract_warnings(&self.jni, self.env, msg));
+            }
+        }
+        warnings
+    }
 }
 
 impl<'a, State> Verifier<'a, State> {
     pub fn verifier_instance(&self) -> &JObject<'a> {
         &self.verifier_instance
     }
+}
+
+/// The warnings of a `viper.silver.reporter.WarningsDuringVerification`
+/// message.
+pub fn extract_warnings(
+    jni_utils: &JniUtils<'_>,
+    env: &JNIEnv<'_>,
+    msg: JObject<'_>,
+) -> Vec<VerifierWarning> {
+    let msg_wrapper = silver::reporter::WarningsDuringVerification::with(env);
+    let warning_wrapper = silver::verifier::VerifierWarning::with(env);
+    jni_utils
+        .seq_to_vec(jni_utils.unwrap_result(msg_wrapper.call_warnings(msg)))
+        .into_iter()
+        .map(|warning| {
+            let message = jni_utils
+                .get_string(jni_utils.unwrap_result(warning_wrapper.call_message(warning)));
+            let pos = jni_utils.unwrap_result(warning_wrapper.call_pos(warning));
+            VerifierWarning {
+                message,
+                pos_id: extract_pos_id(jni_utils, env, pos),
+            }
+        })
+        .collect()
 }
 
 impl<State> Drop for Verifier<'_, State> {

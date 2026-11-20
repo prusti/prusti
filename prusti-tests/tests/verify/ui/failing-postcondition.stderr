@@ -1,54 +1,50 @@
 error: [Prusti: verification error] postcondition might not hold.
- --> $DIR/failing-postcondition.rs:8:31
-  |
-8 | #[ensures(something_true() && false)]
-  |                               ^^^^^
-  |
+  --> $DIR/failing-postcondition.rs:9:31
+   |
+ 9 | #[ensures(something_true() && false)]
+   |                               ^^^^^
+   |
 note: the error originates here
- --> $DIR/failing-postcondition.rs:9:1
-  |
-9 | fn client(a: u32) {}
-  | ^^^^^^^^^^^^^^^^^^^^
+  --> $DIR/failing-postcondition.rs:10:1
+   |
+10 | fn client(a: u32) {}
+   | ^^^^^^^^^^^^^^^^^
 
 error: [Prusti: verification error] postcondition might not hold.
-  --> $DIR/failing-postcondition.rs:12:11
+  --> $DIR/failing-postcondition.rs:13:11
    |
-12 | #[ensures(result)]
+13 | #[ensures(result)]
    |           ^^^^^^
    |
 note: the error originates here
-  --> $DIR/failing-postcondition.rs:13:1
+  --> $DIR/failing-postcondition.rs:14:1
    |
-13 | / fn test1() -> bool {
-14 | |     false
-15 | | }
-   | |_^
+14 | fn test1() -> bool {
+   | ^^^^^^^^^^^^^^^^^^
 
 error: [Prusti: verification error] postcondition might not hold.
-  --> $DIR/failing-postcondition.rs:18:11
+  --> $DIR/failing-postcondition.rs:19:11
    |
-18 | #[ensures(x)]
+19 | #[ensures(x)]
    |           ^
    |
 note: the error originates here
-  --> $DIR/failing-postcondition.rs:19:1
+  --> $DIR/failing-postcondition.rs:20:1
    |
-19 | / fn test2(x: bool) -> bool {
-20 | |     x
-21 | | }
-   | |_^
+20 | fn test2(x: bool) -> bool {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^
 
 error: [Prusti: verification error] postcondition might not hold.
-  --> $DIR/failing-postcondition.rs:23:11
+  --> $DIR/failing-postcondition.rs:24:11
    |
-23 | #[ensures(a === b)]
+24 | #[ensures(a === b)]
    |           ^^^^^^^
    |
 note: the error originates here
-  --> $DIR/failing-postcondition.rs:24:1
+  --> $DIR/failing-postcondition.rs:25:1
    |
-24 | fn test3<T>(a: T, b: T) {}
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^
+25 | fn test3<T>(a: T, b: T) {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^
 
 error: aborting due to 4 previous errors
 

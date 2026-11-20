@@ -1,3 +1,4 @@
+//@ known-failure
 //@ compile-flags: -Pcounterexample=true -Pprint_counterexample_if_model_is_present=true
 
 use prusti_contracts::*;

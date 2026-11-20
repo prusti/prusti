@@ -38,7 +38,7 @@ use prusti_rustc_interface::{
     span::{Span, Spanned, def_id::DefId},
 };
 use rustc_hash::{FxHashMap, FxHashSet};
-use task_encoder::{TaskEncoder, TaskEncoderDependencies};
+use task_encoder::{EncodeFullError, TaskEncoder, TaskEncoderDependencies};
 use vir::{CastType, CompType, LocalDeclData};
 
 use crate::encoders::{
@@ -46,7 +46,7 @@ use crate::encoders::{
     PureKind, TyUseImpureEnc, WandEnc, WandEncTask,
     impure::{WandOldOuter, assert_error_message},
     mir_fn::{CallTaskDescription, RustSignature, SpecBlockKind, SpecBlocks},
-    mir_shared::{EncodeResult, PureRvalueEnc, RustcIntrinsic},
+    mir_shared::{EncodeResult, PureRvalueEnc, RustcIntrinsic, unsupported_opaque},
     ty::{
         RustFieldAddress, RustTyDecomposition, RustTySpecial,
         generics::GParams,
@@ -444,7 +444,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 let place_ty = place.ty(self.local_decls, self.vcx.tcx());
                 let ty = self.ty_use_impure(place_ty.ty);
                 if ty.specifics.is_opaque() {
-                    return Err(self.unsupported_opaque(place_ty.ty, span));
+                    return Err(unsupported_opaque(place_ty.ty, span));
                 }
                 let place_expr = self.encode_place(Place::from(*place))?.expr;
 
@@ -520,7 +520,10 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                     .into())
             }
 
-            _ => Err(self.unsupported(format!("unsupported rvalue {rvalue:?}"), span)),
+            _ => Err(EncodeFullError::unsupported(
+                format!("unsupported rvalue {rvalue:?}"),
+                vec![span],
+            )),
         }
     }
 
@@ -654,7 +657,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             .maybe_apply_label(ref_p.expr.expect_predicate(), label);
         let data = self.ty_use_impure(place_ty.ty);
         if data.specifics.is_opaque() {
-            return Err(self.unsupported_opaque(place_ty.ty, self.current_span()));
+            return Err(unsupported_opaque(place_ty.ty, self.current_span()));
         }
 
         let index = expansion
@@ -1240,12 +1243,12 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             })
             .collect::<Vec<_>>();
         if removed_edges.is_empty() {
-            return Err(self.unsupported(
+            return Err(EncodeFullError::unsupported(
                 format!(
                     "`{place:?}` regains only write capability without the expiry of a \
                      borrow of it"
                 ),
-                self.current_span(),
+                vec![self.current_span()],
             ));
         }
         let place_ty = place.ty(self.pcg_ctxt());
@@ -1514,13 +1517,13 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                             comment!(self, "{repack_op:?}: performed at the variant")
                         }
                         None => {
-                            return Err(self.unsupported(
+                            return Err(EncodeFullError::unsupported(
                                 format!(
                                     "a place of type `{}` that holds no value cannot be \
                                      (un)packed, e.g. when moving out of a part of it",
                                     place_enc.ty.ty
                                 ),
-                                self.current_span(),
+                                vec![self.current_span()],
                             ));
                         }
                     }
@@ -1531,7 +1534,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 let place_enc = place_enc.expr.expect_predicate();
                 let data = self.ty_use_impure(place_ty.ty);
                 if data.specifics.is_opaque() {
-                    return Err(self.unsupported_opaque(place_ty.ty, self.current_span()));
+                    return Err(unsupported_opaque(place_ty.ty, self.current_span()));
                 }
                 // TODO: guide should be implemented on `RepackOp`
                 let guide = match repack_op {
@@ -1565,9 +1568,9 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                     )));
                     Ok(())
                 } else {
-                    Err(self.unsupported(
-                        format!("INTERNAL ERROR: unexpected PCG operation {other:?}"),
-                        self.current_span(),
+                    Err(EncodeFullError::internal(
+                        format!("unexpected PCG operation {other:?}"),
+                        vec![self.current_span()],
                     ))
                 }
             }
@@ -1854,7 +1857,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             mir::ProjectionElem::Field(field_idx, _) => {
                 let e_ty = self.ty_use_impure(place_ty.ty);
                 if e_ty.specifics.is_opaque() {
-                    return Err(self.unsupported_opaque(place_ty.ty, self.current_span()));
+                    return Err(unsupported_opaque(place_ty.ty, self.current_span()));
                 }
                 let field_access = e_ty.expect_variant_opt(place_ty.variant_index);
                 // Only the last field of a struct/tuple can be unsized (a DST's
@@ -1965,9 +1968,9 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                         }
                     }
                     ty::TyKind::RawPtr(..) => {
-                        return Err(self.unsupported(
+                        return Err(EncodeFullError::unsupported(
                             format!("dereference of the raw pointer `{}`", place_ty.ty),
-                            self.current_span(),
+                            vec![self.current_span()],
                         ));
                     }
                     _ => unreachable!(),
@@ -2430,9 +2433,9 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             // for other specblocks we take the owned capabilities
             let Some(capability) = pcg_state.computed_owned_capability(place, self.pcg_ctxt())
             else {
-                return Err(self.unsupported(
-                    format!("INTERNAL ERROR: no capability for `{place:?}` when encoding a specification"),
-                    self.current_span(),
+                return Err(EncodeFullError::internal(
+                    format!("no capability for `{place:?}` when encoding a specification"),
+                    vec![self.current_span()],
                 ));
             };
             capability.is_write()
@@ -2707,9 +2710,9 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 | mir::StatementKind::BackwardIncompatibleDropHint { .. } => {}
 
                 mir::StatementKind::Intrinsic(intrinsic_kind) => {
-                    return Err(self.unsupported(
+                    return Err(EncodeFullError::unsupported(
                         format!("unsupported intrinsic statement {intrinsic_kind:?}"),
-                        span,
+                        vec![span],
                     ));
                 }
                 mir::StatementKind::SetDiscriminant { .. } => unreachable!(
@@ -3022,18 +3025,28 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             }
 
             mir::TerminatorKind::TailCall { .. } => {
-                return Err(self.unsupported("tail calls are not supported".to_string(), span));
+                return Err(EncodeFullError::unsupported(
+                    "tail calls are not supported".to_string(),
+                    vec![span],
+                ));
             }
             mir::TerminatorKind::Yield { .. } => {
-                return Err(
-                    self.unsupported("yield statements are not supported".to_string(), span)
-                );
+                return Err(EncodeFullError::unsupported(
+                    "yield statements are not supported".to_string(),
+                    vec![span],
+                ));
             }
             mir::TerminatorKind::CoroutineDrop => {
-                return Err(self.unsupported("coroutines are not supported".to_string(), span));
+                return Err(EncodeFullError::unsupported(
+                    "coroutines are not supported".to_string(),
+                    vec![span],
+                ));
             }
             mir::TerminatorKind::InlineAsm { .. } => {
-                return Err(self.unsupported("inline assembly is not supported".to_string(), span));
+                return Err(EncodeFullError::unsupported(
+                    "inline assembly is not supported".to_string(),
+                    vec![span],
+                ));
             }
         };
         assert!(self.current_terminator.replace(terminator).is_none());
@@ -3070,11 +3083,11 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             if builtin.is_spec_only()
                 && (!in_ghost_code || matches!(builtin, PrustiBuiltin::Spec(_)))
             {
-                return Err(self.unsupported(
+                return Err(EncodeFullError::unsupported(
                     format!(
                         "`prusti_contracts` builtin {builtin:?} cannot be used in executable code"
                     ),
-                    span,
+                    vec![span],
                 ));
             }
             let expr = self
