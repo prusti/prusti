@@ -3,9 +3,13 @@
 
 // The quantifiers here have no triggers of their own: the verifier infers them
 // from the bodies, which hold the terms the user wrote for the snapshots of a
-// struct. They match the same terms whether or not the encoding is simplified.
+// struct and for the variables the quantifier captures. They match the same
+// terms whether or not the encoding is simplified.
 
 use prusti_contracts::*;
+// The builtin under another name, which the specification parser leaves alone,
+// to build a quantifier's closure as a `move` closure.
+use prusti_contracts::forall as quantify;
 
 #[derive(Clone, Copy)]
 pub struct W(u32);
@@ -37,4 +41,62 @@ fn constructor() {
 #[requires(forall(|i: u32| p(W(i).0)))]
 fn field_of_constructor() {
     prusti_assert!(p(W(3).0));
+}
+
+#[pure]
+#[trusted]
+fn at(n: u32, i: u32) -> u32 {
+    0
+}
+
+#[pure]
+#[trusted]
+fn at_ref(n: &u32, i: u32) -> u32 {
+    0
+}
+
+// A quantifier reads a variable it captures as the variable itself, so the
+// trigger `at(n, i)` matches `at(n, 5)`.
+#[requires(forall(|i: u32| at(n, i) == 0 ==> p(i)))]
+#[requires(at(n, 5) == 0)]
+fn capture(n: u32) {
+    prusti_assert!(p(5));
+}
+
+// The quantifier borrows the capture.
+#[requires(forall(|i: u32| at_ref(&n, i) == 0 ==> p(i)))]
+#[requires(at_ref(&n, 5) == 0)]
+fn capture_borrowed(n: u32) {
+    prusti_assert!(p(5));
+}
+
+// The quantifier captures the slice `*s`, whose length is in the metadata of
+// `s`.
+#[requires(forall(|i: usize| i < s.len() ==> s[i] == 0))]
+#[requires(s.len() == 3)]
+fn capture_unsized(s: &[u32]) {
+    prusti_assert!(s[1] == 0);
+}
+
+// A quantifier inside a `prusti_assert!` captures what that closure captured.
+#[requires(forall(|i: u32| at(n, i) == 0))]
+fn capture_nested(n: u32) {
+    prusti_assert!(forall(|i: u32| at(n, i) == 0));
+}
+
+// The quantifier reads a capture in `old`.
+#[ensures(forall(|i: u32| at(*x, i) == old(at(*x, i))))]
+fn frame(x: &mut u32) {}
+
+#[requires(at(*x, 4) == 7)]
+fn capture_old(x: &mut u32) {
+    frame(x);
+    prusti_assert!(at(*x, 4) == 7);
+}
+
+// A `move` closure captures the reference `r` by value.
+#[requires(quantify((), &(move |i: u32| (!(at(*r, i) == 0) || p(i)))))]
+#[requires(at(*r, 5) == 0)]
+fn capture_by_value(r: &u32) {
+    prusti_assert!(p(5));
 }

@@ -41,8 +41,10 @@ pub enum MirPureEncError {
 /// The values of an encoded body's inputs.
 pub type Inputs<'vir> = &'vir FxHashMap<mir::Local, vir::ExprSnap<'vir>>;
 /// The values of a spec closure's captures, in the modes its body reads them
-/// in (see `MirPureEncOutput::captures`).
-type Captures<'vir> = &'vir IndexSlice<abi::FieldIdx, FxHashMap<Modes, vir::ExprSnap<'vir>>>;
+/// in (see `MirPureEncOutput::captures`): the captured places, encoded by the
+/// enclosing body (see `Enc::encode_capture`).
+type Captures<'vir> =
+    &'vir IndexSlice<abi::FieldIdx, FxHashMap<Modes, EncodedPlaceGen<'vir, (), !>>>;
 /// What an encoded body is instantiated with: the body's `DefId`, the values
 /// of its inputs, the state `old` refers to, and, for a spec closure, the
 /// values of its captures.
@@ -407,16 +409,24 @@ struct Enc<'vir: 'enc, 'enc> {
     captures: Option<IndexVec<abi::FieldIdx, FxHashSet<Modes>>>,
 }
 
-struct EncodedPlace<'vir> {
-    snap: ExprRet<'vir>,
-    place_ref: Option<ExprRetRef<'vir>>,
+/// An encoded place, as expressions in the context `Curr`/`Next`: lazy ones
+/// while a body is encoded (`EncodedPlace`), and reified ones for the captures
+/// passed into a spec closure (`Captures`).
+struct EncodedPlaceGen<'vir, Curr, Next> {
+    snap: vir::ExprGenSnap<'vir, Curr, Next>,
+    place_ref: Option<vir::ExprGenRef<'vir, Curr, Next>>,
     /// The metadata for the pointed-to value. Set when going through a
     /// `ProjectionElem::Deref`.
-    metadata: Option<ExprRet<'vir>>,
+    metadata: Option<vir::ExprGenSnap<'vir, Curr, Next>>,
 }
 
-impl<'vir> EncodedPlace<'vir> {
-    fn new(expr: ExprRet<'vir>, place_ref: Option<ExprRetRef<'vir>>) -> Self {
+type EncodedPlace<'vir> = EncodedPlaceGen<'vir, ExprInput<'vir>, vir::ExprKind<'vir>>;
+
+impl<'vir, Curr, Next> EncodedPlaceGen<'vir, Curr, Next> {
+    fn new(
+        expr: vir::ExprGenSnap<'vir, Curr, Next>,
+        place_ref: Option<vir::ExprGenRef<'vir, Curr, Next>>,
+    ) -> Self {
         Self {
             snap: expr,
             place_ref,
@@ -424,7 +434,7 @@ impl<'vir> EncodedPlace<'vir> {
         }
     }
 
-    fn with_metadata(mut self, metadata: ExprRet<'vir>) -> Self {
+    fn with_metadata(mut self, metadata: vir::ExprGenSnap<'vir, Curr, Next>) -> Self {
         self.metadata = Some(metadata);
         self
     }
@@ -1127,28 +1137,14 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                         vec![self.current_span()],
                     ));
                 }
-                let encoded_place = self.encode_place_with_ref(curr_ver, (*place).into())?;
-                // We want to distinguish if `place` is a value that lives
-                // in pure code or not. If it lives in impure (the only way
-                // that this can happen is that we have a `&mut` argument)
-                // then we want to return the actual address in the
-                // snapshot. Otherwise we want to use `null` as this value
-                // should never escape pure code anyway. Thus `place_ref`
-                // will return `None` if this isn't a re-borrow, and if it's
-                // a re-borrow of created-in-pure reference then it will be
-                // field projections of `null` which is also `null`.
-                let place_ref = encoded_place
-                    .place_ref
-                    .unwrap_or_else(|| self.vcx.mk_null().lazy());
-                let metadata = encoded_place
-                    .metadata
-                    .unwrap_or_else(|| self.expect_thin_ptr_metadata(rvalue_ty));
+                let (value, place_ref, metadata) =
+                    self.encode_borrowed_place(curr_ver, (*place).into(), rvalue_ty)?;
                 let snap = if kind.mutability().is_mut() {
                     let e_rvalue_ty = rvalue_snapshot_encoding.expect_mutref();
-                    e_rvalue_ty.prim_to_snap(place_ref, metadata, encoded_place.snap)
+                    e_rvalue_ty.prim_to_snap(place_ref, metadata, value)
                 } else {
                     let e_rvalue_ty = rvalue_snapshot_encoding.expect_immref();
-                    e_rvalue_ty.prim_to_snap(place_ref, metadata, encoded_place.snap)
+                    e_rvalue_ty.prim_to_snap(place_ref, metadata, value)
                 };
                 Ok(snap.upcast_ty())
             }
@@ -1200,16 +1196,8 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                     .1)
             }
             mir::Rvalue::RawPtr(_, place) => {
-                let encoded_place = self.encode_place_with_ref(curr_ver, (*place).into())?;
-                // As for `Rvalue::Ref`: a raw pointer built in pure code never
-                // escapes, so its address is `null` unless it re-borrows the
-                // place of an impure `&mut` argument.
-                let place_ref = encoded_place
-                    .place_ref
-                    .unwrap_or_else(|| self.vcx.mk_null().lazy());
-                let metadata = encoded_place
-                    .metadata
-                    .unwrap_or_else(|| self.expect_thin_ptr_metadata(rvalue_ty));
+                let (_, place_ref, metadata) =
+                    self.encode_borrowed_place(curr_ver, (*place).into(), rvalue_ty)?;
                 let raw_ty = self.ty_use(rvalue_ty);
                 Ok(raw_ty
                     .expect_raw()
@@ -1357,10 +1345,36 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
         })
     }
 
-    fn in_mode(&self) -> bool {
-        !self.modes.is_empty()
+    /// The parts of a reference or raw pointer of type `ref_ty` to `place`:
+    /// the snapshot of `place`, its address and the pointer metadata.
+    fn encode_borrowed_place(
+        &mut self,
+        curr_ver: &FxHashMap<mir::Local, Version<'vir>>,
+        place: Place<'vir>,
+        ref_ty: ty::Ty<'vir>,
+    ) -> EncodeResult<'vir, (ExprRet<'vir>, ExprRetRef<'vir>, ExprRet<'vir>), MirPureEnc> {
+        let encoded_place = self.encode_place_with_ref(curr_ver, place)?;
+        // We want to distinguish if `place` is a value that lives
+        // in pure code or not. If it lives in impure (the only way
+        // that this can happen is that we have a `&mut` argument)
+        // then we want to return the actual address in the
+        // snapshot. Otherwise we want to use `null` as this value
+        // should never escape pure code anyway. Thus `place_ref`
+        // will return `None` if this isn't a re-borrow, and if it's
+        // a re-borrow of created-in-pure reference then it will be
+        // field projections of `null` which is also `null`.
+        let place_ref = encoded_place
+            .place_ref
+            .unwrap_or_else(|| self.vcx.mk_null().lazy());
+        let metadata = encoded_place
+            .metadata
+            .unwrap_or_else(|| self.expect_thin_ptr_metadata(ref_ty));
+        Ok((encoded_place.snap, place_ref, metadata))
     }
 
+    /// A read of `place` at the versions `curr_ver` of the locals, in the
+    /// current modes: its snapshot, with the address and pointer metadata
+    /// that the dereferences in `place` give it.
     fn encode_place_with_ref(
         &mut self,
         curr_ver: &FxHashMap<mir::Local, Version<'vir>>,
@@ -1369,57 +1383,137 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
         // TODO: remove (debug)
         assert!(curr_ver.contains_key(&place.local));
 
-        let mut place_ty = mir::PlaceTy::from_ty(self.body.local_decls[place.local].ty);
+        if self.captures.is_some() && place.local == ty::CAPTURE_STRUCT_LOCAL {
+            return self.encode_capture_read(curr_ver, place);
+        }
 
-        // A spec closure's capture `(*_1).k` is the value the enclosing body
-        // supplies for capture `k` in the modes of this read (see
-        // `Enc::encode_spec_closure`); the closure value itself is never read.
-        let (capture, projection): (_, &[mir::PlaceElem<'vir>]) = if let Some(captures) =
-            &mut self.captures
-            && place.local == ty::CAPTURE_STRUCT_LOCAL
-        {
-            let [
-                mir::ProjectionElem::Deref,
-                mir::ProjectionElem::Field(field, _),
-                ..,
-            ] = place.projection[..]
-            else {
-                unreachable!("an `Fn` closure body reads a capture `k` only as `(*_1).k`");
-            };
-            captures[field].insert(self.modes);
-            (Some(field), &place.projection[2..])
+        let local = place.local;
+        let version = curr_ver[&local];
+        self.uses.read(local, version.index);
+        // The modes change only a read of an argument or the result (see
+        // `Modes`).
+        let modes = match self.body.local_kind(local) {
+            mir::LocalKind::Arg | mir::LocalKind::ReturnPointer => self.modes,
+            mir::LocalKind::Temp => Modes::empty(),
+        };
+        let snap = if modes.is_empty() {
+            self.mk_local_ex(local, version)
         } else {
-            self.uses.read(place.local, curr_ver[&place.local].index);
-            (None, place.projection)
+            // A wrapper such as `old` only reinterprets the reads written
+            // inside it, and a variable keeps its value under it, so a read
+            // in a mode starts at the expression the body's inputs supply for
+            // the local rather than at the variable the body binds to it.
+            self.vcx.mk_lazy_expr(
+                vir::vir_format!(self.vcx, "wrapped in {local:?}"),
+                self.get_ty_for_local(local),
+                Box::new(move |_vcx, lctx: ExprInput<'vir>| lctx.1[&local].kind),
+            )
+        };
+        let local_ty = mir::PlaceTy::from_ty(self.body.local_decls[local].ty);
+        self.encode_projection(
+            curr_ver,
+            local_ty,
+            EncodedPlace::new(snap, None),
+            place.projection,
+            modes,
+        )
+    }
+
+    /// A read of `place` in the body of a spec closure, where `place` is
+    /// rooted at one of the closure's captures, `(*_1).k`. The closure value
+    /// `_1` itself is never read: the enclosing body supplies the value of
+    /// capture `k` in the modes of each read of it (see
+    /// `Enc::encode_spec_closure`), so this read records its modes for `k`
+    /// and is not wrapped in them here.
+    fn encode_capture_read(
+        &mut self,
+        curr_ver: &FxHashMap<mir::Local, Version<'vir>>,
+        place: Place<'vir>,
+    ) -> EncodeResult<'vir, EncodedPlace<'vir>, MirPureEnc> {
+        let [
+            mir::ProjectionElem::Deref,
+            mir::ProjectionElem::Field(field, field_ty),
+            ref rest @ ..,
+        ] = place.projection[..]
+        else {
+            unreachable!("an `Fn` closure body reads a capture `k` only as `(*_1).k`");
+        };
+        let modes = self.modes;
+        self.captures.as_mut().unwrap()[field].insert(modes);
+
+        // The enclosing body supplies a capture of a shared reference as the
+        // place it refers to, with the address and pointer metadata of the
+        // reference (see `Enc::encode_capture`), and any other capture as its
+        // value.
+        let shared_referent_ty = match *field_ty.kind() {
+            TyKind::Ref(_, referent_ty, ty::Mutability::Not) => Some(referent_ty),
+            _ => None,
+        };
+        let snap = self.vcx.mk_lazy_expr(
+            vir::vir_format!(self.vcx, "capture {field:?}"),
+            self.ty_use(shared_referent_ty.unwrap_or(field_ty)).snapshot,
+            Box::new(move |_vcx, lctx: ExprInput<'vir>| lctx.3[field][&modes].snap.kind),
+        );
+        let Some(referent_ty) = shared_referent_ty else {
+            let value = EncodedPlace::new(snap, None);
+            let value_ty = mir::PlaceTy::from_ty(field_ty);
+            return self.encode_projection(curr_ver, value_ty, value, rest, Modes::empty());
         };
 
-        let should_wrap = capture.is_none() && self.in_mode() && {
-            let local_kind = self.body.local_kind(place.local);
-            local_kind == mir::LocalKind::Arg || local_kind == mir::LocalKind::ReturnPointer
-        };
-
-        let expr = if let Some(field) = capture {
-            for elem in &place.projection[..2] {
-                place_ty = place_ty.projection_ty(self.vcx.tcx(), *elem);
+        let address = self.vcx.mk_lazy_expr(
+            vir::vir_format!(self.vcx, "address of capture {field:?}"),
+            vir::TYPE_REF,
+            Box::new(move |_vcx, lctx: ExprInput<'vir>| {
+                lctx.3[field][&modes].place_ref.unwrap().kind
+            }),
+        );
+        let metadata_ty = self
+            .context
+            .normalize(field_ty.pointee_metadata_ty_or_projection(self.vcx.tcx()));
+        let metadata = self.vcx.mk_lazy_expr(
+            vir::vir_format!(self.vcx, "metadata of capture {field:?}"),
+            self.ty_use(metadata_ty).snapshot,
+            Box::new(move |_vcx, lctx: ExprInput<'vir>| {
+                lctx.3[field][&modes].metadata.unwrap().kind
+            }),
+        );
+        let (base_ty, base, rest) = match rest {
+            [mir::ProjectionElem::Deref, rest @ ..] => {
+                let referent = EncodedPlace::new(snap, Some(address)).with_metadata(metadata);
+                (referent_ty, referent, rest)
             }
-            let modes = self.modes;
-            self.vcx.mk_lazy_expr(
-                vir::vir_format!(self.vcx, "capture {field:?}"),
-                self.ty_use(place_ty.ty).snapshot,
-                Box::new(move |_vcx, lctx: ExprInput<'vir>| lctx.3[field][&modes].kind),
-            )
-        } else if should_wrap {
-            self.vcx.mk_lazy_expr(
-                vir::vir_format!(self.vcx, "wrapped in {:?}", place.local),
-                self.get_ty_for_local(place.local),
-                Box::new(move |_vcx, lctx: ExprInput<'vir>| lctx.1[&place.local].kind),
-            )
-        } else {
-            self.mk_local_ex(place.local, curr_ver[&place.local])
+            // Only a `move` closure, which captures a reference by value,
+            // reads the reference itself; a capture by reference is only
+            // read through.
+            _ => {
+                let e_ty = self.ty_use(field_ty).expect_immref();
+                let reference = e_ty.prim_to_snap(address, metadata, snap);
+                (
+                    field_ty,
+                    EncodedPlace::new(reference.upcast_ty(), None),
+                    rest,
+                )
+            }
         };
-        let mut encoded_place = EncodedPlace::new(expr, None);
-        // TODO: factor this out (duplication with impure encoder)?
-        for elem in projection {
+        let base_ty = mir::PlaceTy::from_ty(base_ty);
+        self.encode_projection(curr_ver, base_ty, base, rest, Modes::empty())
+    }
+
+    /// Applies `projection` to `base`, an encoded place of type `base_ty`,
+    /// for a read in `modes`, which are empty unless the read is rooted at an
+    /// argument or the result.
+    // TODO: factor this out (duplication with impure encoder)?
+    fn encode_projection(
+        &mut self,
+        curr_ver: &FxHashMap<mir::Local, Version<'vir>>,
+        base_ty: mir::PlaceTy<'vir>,
+        base: EncodedPlace<'vir>,
+        projection: &[mir::PlaceElem<'vir>],
+        modes: Modes,
+    ) -> EncodeResult<'vir, EncodedPlace<'vir>, MirPureEnc> {
+        let mut place_ty = base_ty;
+        let mut encoded_place = base;
+        for &elem in projection {
             // The snapshots of the arguments and the result are pinned to a
             // state, so the only read of the heap is the dereference of a
             // mutable reference in an impure context; only that is wrapped.
@@ -1427,13 +1521,12 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
             // match with the callee's wand at a call site, where the `old` is
             // labelled. Silicon evaluates the heap-independent parts of a wand
             // when inhaling it, where `old[lhs]` is undefined.
-            let heap_read = should_wrap
-                && self.impure_context
+            let heap_read = self.impure_context
                 && matches!(elem, mir::ProjectionElem::Deref)
                 && matches!(place_ty.ty.kind(), TyKind::Ref(.., ty::Mutability::Mut));
-            encoded_place = self.encode_place_element(curr_ver, place_ty, *elem, encoded_place)?;
-            place_ty = place_ty.projection_ty(self.vcx.tcx(), *elem);
-            if heap_read && self.modes.contains(Modes::OLD) {
+            encoded_place = self.encode_place_element(curr_ver, place_ty, elem, encoded_place)?;
+            place_ty = place_ty.projection_ty(self.vcx.tcx(), elem);
+            if heap_read && modes.contains(Modes::OLD) {
                 let inner = encoded_place.snap;
                 encoded_place.snap = self.vcx.mk_lazy_expr(
                     "old_mode_wrap",
@@ -1445,22 +1538,20 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                     }),
                 );
             }
-            if heap_read && self.modes.contains(Modes::BEFORE_EXPIRY) {
+            if heap_read && modes.contains(Modes::BEFORE_EXPIRY) {
                 encoded_place.snap = self.vcx.mk_old_lhs_expr(encoded_place.snap);
             }
         }
-        // Can we ever have the use of a projected place?
+        // A downcast is always followed by a field of the variant, so no
+        // place that is read ends in one.
         assert!(place_ty.variant_index.is_none());
 
-        if should_wrap {
-            if self.modes.contains(Modes::REL0) {
-                encoded_place.snap = self.vcx.mk_rel_expr(encoded_place.snap, 0);
-            }
-            if self.modes.contains(Modes::REL1) {
-                encoded_place.snap = self.vcx.mk_rel_expr(encoded_place.snap, 1);
-            }
+        if modes.contains(Modes::REL0) {
+            encoded_place.snap = self.vcx.mk_rel_expr(encoded_place.snap, 0);
         }
-
+        if modes.contains(Modes::REL1) {
+            encoded_place.snap = self.vcx.mk_rel_expr(encoded_place.snap, 1);
+        }
         Ok(encoded_place)
     }
 
@@ -1644,7 +1735,14 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                     .map(|values| {
                         values
                             .iter()
-                            .map(|(&modes, value)| (modes, value.reify(vcx, lctx)))
+                            .map(|(&modes, value)| {
+                                let value = EncodedPlaceGen {
+                                    snap: value.snap.reify(vcx, lctx),
+                                    place_ref: value.place_ref.reify(vcx, lctx),
+                                    metadata: value.metadata.reify(vcx, lctx),
+                                };
+                                (modes, value)
+                            })
                             .collect()
                     })
                     .collect::<IndexVec<_, _>>();
@@ -1686,14 +1784,17 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
     /// read in `modes`, encoded in those modes and the modes this body is in
     /// at the builtin. MIR building passes a capture by reference as a
     /// temporary that it assigns the reference, such as `&*arr`; the capture is
-    /// encoded from that value, so that the modes reach the read of `arr`
-    /// inside it. A capture by value is the captured place itself.
+    /// encoded as the borrowed place `*arr`, so that the modes reach the read
+    /// of `arr`, together with the address and metadata of the reference. A
+    /// capture by value is the captured place itself, except that a shared
+    /// reference captured by value is supplied as the place it refers to, like
+    /// a capture by reference.
     fn encode_capture(
         &mut self,
         capture: &mir::Operand<'vir>,
         modes: Modes,
         curr_ver: &FxHashMap<mir::Local, Version<'vir>>,
-    ) -> EncodeResult<'vir, ExprRet<'vir>, MirPureEnc> {
+    ) -> EncodeResult<'vir, EncodedPlace<'vir>, MirPureEnc> {
         let temp = capture
             .place()
             .and_then(|place| place.as_local())
@@ -1706,8 +1807,28 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
         let outer_modes = self.modes;
         self.modes = outer_modes | modes;
         let res = match value {
-            Some(value) => self.encode_rvalue(curr_ver, value, self.current_span()),
-            None => self.encode_operand_snap(capture, curr_ver),
+            Some(value @ mir::Rvalue::Ref(_, _, place)) => {
+                let ref_ty = value.ty(self.body, self.vcx.tcx());
+                self.encode_borrowed_place(curr_ver, (*place).into(), ref_ty)
+                    .map(|(snap, place_ref, metadata)| {
+                        EncodedPlace::new(snap, Some(place_ref)).with_metadata(metadata)
+                    })
+            }
+            Some(value) => self
+                .encode_rvalue(curr_ver, value, self.current_span())
+                .map(|snap| EncodedPlace::new(snap, None)),
+            None if matches!(
+                capture.ty(self.body, self.vcx.tcx()).kind(),
+                TyKind::Ref(.., ty::Mutability::Not)
+            ) =>
+            {
+                let place = capture.place().unwrap();
+                let referent = place.project_deeper(&[mir::ProjectionElem::Deref], self.vcx.tcx());
+                self.encode_place_with_ref(curr_ver, referent.into())
+            }
+            None => self
+                .encode_operand_snap(capture, curr_ver)
+                .map(|snap| EncodedPlace::new(snap, None)),
         };
         self.modes = outer_modes;
         res
