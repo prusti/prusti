@@ -1148,10 +1148,13 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
     }
 
     /// Applies a PCG action's renames to `future_edges` and `deferred_folds`.
-    /// A node made current is folded from its `FromExpansion` sources at its next use.
+    /// A node made current is folded from its `FromExpansion` sources, at
+    /// once unless its contents still await a call (see
+    /// `contents_await_call`), else at its next use.
     fn track_future_node_renames(
         &mut self,
         renamed: &[NodeReplacement<'vir>],
+        graph: &BorrowsGraph<'vir>,
     ) -> EncodeResult<'vir, (), E> {
         let renamed = renamed
             .iter()
@@ -1180,12 +1183,73 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 }
             }
         }
+        let mut made_current = Vec::new();
         for &(from, to) in &renamed {
             if self.indirect_predicate_state.deferred_folds.remove(&from) {
                 self.indirect_predicate_state.deferred_folds.insert(to);
+                if to.label().is_none() && !self.contents_await_call(graph, to) {
+                    made_current.push(to);
+                }
             }
         }
+        // A node made current in the same action can be a part of another
+        // one, so the nodes of longer places are folded first.
+        made_current.sort_by_key(|node| std::cmp::Reverse(node.base().place().projection.len()));
+        for node in made_current {
+            self.fold_if_unfolded_current_node(node)?;
+        }
         Ok(())
+    }
+
+    /// Whether the contents of `node`, made current from a future node, are
+    /// not held yet: they come, through the `FromExpansion` edges of `graph`
+    /// (including a borrower's), from the result of a call whose edge is still
+    /// in `graph`. The encoder takes them from the borrower's predicates only
+    /// when that edge is removed. Without such edges in `graph`, e.g. if the
+    /// node is renamed again later in the phase, this is assumed too.
+    fn contents_await_call(&self, graph: &BorrowsGraph<'vir>, node: NodeLp<'vir>) -> bool {
+        let sources = |target: NodeLp<'vir>| {
+            graph
+                .edges()
+                .filter_map(move |edge| match edge.kind() {
+                    BorrowPcgEdgeKind::BorrowFlow(borrow_flow)
+                        if borrow_flow.kind().is_future_from_expansion()
+                            && borrow_flow.short() == target =>
+                    {
+                        local_node(borrow_flow.long())
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let is_call_result = |source: NodeLp<'vir>| {
+            graph.edges().any(|edge| {
+                matches!(
+                    edge.kind(),
+                    BorrowPcgEdgeKind::Coupled(PcgCoupledEdgeKind(
+                        FunctionCallOrLoop::FunctionCall(_)
+                    ))
+                ) && edge
+                    .kind()
+                    .blocked_by_nodes(self.pcg_ctxt())
+                    .any(|blocking| blocking == PcgNode::LifetimeProjection(source))
+            })
+        };
+        let mut stack = sources(node);
+        if stack.is_empty() {
+            return true;
+        }
+        let mut visited = FxHashSet::default();
+        while let Some(source) = stack.pop() {
+            if !visited.insert(source) {
+                continue;
+            }
+            if is_call_result(source) {
+                return true;
+            }
+            stack.extend(sources(source));
+        }
+        false
     }
 
     /// Folds the predicates of `node` if it was made current from a future
@@ -2440,7 +2504,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             _ => &[],
         };
         self.move_renamed_node_vars(renamed);
-        self.track_future_node_renames(renamed)?;
+        self.track_future_node_renames(renamed, pcg.borrow_pcg().graph())?;
         match action.kind() {
             //Restore(RestoreCapability<'tcx>),
             //MakePlaceOld(Place<'tcx>),
