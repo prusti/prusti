@@ -28,8 +28,8 @@ use pcg::{
     pcg::{CapabilityKind, EvalStmtPhase, Pcg, PcgNode, PcgSuccessor},
     results::{PcgBasicBlock, PcgLocation},
     utils::{
-        AnalysisLocation, CompilerCtxt, HasPlace, Place, PrefixRelation, SnapshotLocation,
-        display::DisplayWithCtxt, maybe_old::MaybeLabelledPlace, maybe_remote::MaybeRemotePlace,
+        CompilerCtxt, HasPlace, Place, PrefixRelation, SnapshotLocation, display::DisplayWithCtxt,
+        maybe_old::MaybeLabelledPlace, maybe_remote::MaybeRemotePlace,
     },
 };
 use prusti_interface::PrustiError;
@@ -2541,14 +2541,30 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         location: mir::Location,
         phase: EvalStmtPhase,
     ) -> EncodeResult<'vir, (), E> {
-        if phase == EvalStmtPhase::PostMain {
-            let label = self.post_main_label(location, self.current_block_pres.as_ref().unwrap());
+        let pres = self.current_block_pres.as_ref().unwrap();
+        // The label of `PreOperands` is emitted by the caller, at the start of
+        // the statement.
+        if phase != EvalStmtPhase::PreOperands {
+            let label = self.phase_start_label(location, phase, pres);
             self.stmt(self.vcx.mk_label_stmt(label));
         }
         let current_fpcs = self.current_fpcs.take().unwrap();
         let cfpcs = &current_fpcs.statements[location.statement_index];
         let result = self.pcg_actions(&cfpcs.states[phase], &cfpcs.actions(phase), false);
         self.current_fpcs = Some(current_fpcs);
+        // The effects are encoded right after the `PreOperands` and `PreMain`
+        // actions; the snapshots of the next phase are taken before them.
+        let next = match phase {
+            EvalStmtPhase::PreOperands => Some(EvalStmtPhase::PostOperands),
+            EvalStmtPhase::PreMain => Some(EvalStmtPhase::PostMain),
+            _ => None,
+        };
+        if result.is_ok()
+            && let Some(next) = next
+        {
+            let label = self.phase_label(location, next, self.current_block_pres.as_ref().unwrap());
+            self.stmt(self.vcx.mk_label_stmt(label));
+        }
         result
     }
 
@@ -3077,19 +3093,9 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 vir::OldLabel::Block(*self.vcx.mk_block_label(bb.as_usize(), pres))
             }
             SnapshotLocation::After(bb) => vir::OldLabel::Label(self.block_end_label(bb, &pres)),
-            // The values only change at the statement's effect, so the
-            // snapshots before the phases preceding it are those before the
-            // statement.
-            SnapshotLocation::Before(at)
-                if at == AnalysisLocation::new(at.location(), EvalStmtPhase::PostMain) =>
-            {
-                vir::OldLabel::Label(self.post_main_label(at.location(), &pres))
+            SnapshotLocation::Before(at) => {
+                vir::OldLabel::Label(self.phase_label(at.location(), at.eval_stmt_phase(), &pres))
             }
-            SnapshotLocation::Before(at) => vir::OldLabel::Label(self.location_label(
-                LocationLabelPrefix::Before,
-                at.location(),
-                &pres,
-            )),
             SnapshotLocation::BeforeRefReassignment(location) => vir::OldLabel::Label(
                 self.location_label(LocationLabelPrefix::BeforeRefReassignment, location, &pres),
             ),
@@ -3149,14 +3155,45 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         )
     }
 
-    /// The label after the effect of the statement at `location`, before its
-    /// `PostMain` actions.
-    fn post_main_label(&self, location: mir::Location, loop_pres: &[usize]) -> &'vir str {
-        vir::vir_format!(
-            self.vcx,
-            "{}_post_main",
-            self.location_label(LocationLabelPrefix::Before, location, loop_pres)
-        )
+    /// The label where the snapshots that the PCG labels `before phase` of
+    /// the statement at `location` are taken. A statement has two effects in
+    /// the encoding, the evaluation of its operands (between `PreOperands` and
+    /// `PostOperands`) and its main effect (between `PreMain` and `PostMain`).
+    /// The PCG's snapshots before the phase following an effect are those
+    /// before the effect (e.g. a moved operand's, a lender's at a borrow, the
+    /// arguments' at a call), so their label precedes the effect.
+    fn phase_label(
+        &self,
+        location: mir::Location,
+        phase: EvalStmtPhase,
+        loop_pres: &[usize],
+    ) -> &'vir str {
+        let before = self.location_label(LocationLabelPrefix::Before, location, loop_pres);
+        match phase {
+            EvalStmtPhase::PreOperands => before,
+            EvalStmtPhase::PostOperands => vir::vir_format!(self.vcx, "{before}_operands"),
+            EvalStmtPhase::PreMain => vir::vir_format!(self.vcx, "{before}_pre_main"),
+            EvalStmtPhase::PostMain => vir::vir_format!(self.vcx, "{before}_main"),
+        }
+    }
+
+    /// The label at the start of the actions of `phase` of the statement at
+    /// `location`. It differs from [Self::phase_label] for the phases
+    /// following an effect: it lies after the effect.
+    fn phase_start_label(
+        &self,
+        location: mir::Location,
+        phase: EvalStmtPhase,
+        loop_pres: &[usize],
+    ) -> &'vir str {
+        let before = self.location_label(LocationLabelPrefix::Before, location, loop_pres);
+        match phase {
+            EvalStmtPhase::PostOperands => vir::vir_format!(self.vcx, "{before}_post_operands"),
+            EvalStmtPhase::PostMain => vir::vir_format!(self.vcx, "{before}_post_main"),
+            EvalStmtPhase::PreOperands | EvalStmtPhase::PreMain => {
+                self.phase_label(location, phase, loop_pres)
+            }
+        }
     }
 
     fn new_before_label(&mut self, location: mir::Location) {
