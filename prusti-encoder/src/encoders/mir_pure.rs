@@ -796,6 +796,10 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
             !graph::is_cyclic(&self.body.basic_blocks),
             "MIR pure encoding does not support loops"
         );
+        if self.trigger {
+            let span = self.vcx.tcx().def_span(self.body.source.def_id());
+            trigger_checks::check_head(self.body, span)?;
+        }
         self.encode_common(
             mir::START_BLOCK,
             self.rev_doms.end,

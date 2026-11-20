@@ -82,8 +82,46 @@ fn old_in_trigger() {
     prusti_assert!(p(5));
 }
 
+#[trusted]
+#[ensures(forall(|i: usize| p(i), triggers = [(at(old(*x), i),)]))]
+fn establish_through(x: &mut usize) {}
+
+// `old` in a trigger reads a referent in the state before the call, though
+// the call may change it.
+#[requires(*x == 3 && at(3, 5) == 0)]
+fn old_of_referent_in_trigger(x: &mut usize) {
+    establish_through(x);
+    prusti_assert!(p(5));
+}
+
 // A trigger may contain a negative literal.
 #[requires(forall(|i: i32| s(i, -1), triggers = [(s(i, -1),)]))]
 fn negative_literal() {
     prusti_assert!(s(3, -1));
+}
+
+#[derive(Clone, Copy)]
+pub struct W(usize);
+
+// The simplifier keeps what the user writes: the constructor in `W(3).0`
+// stays a term the trigger matches, and so does the field read of a
+// constructor that is the trigger itself.
+#[requires(forall(|i: usize| p(i), triggers = [(W(i),)]))]
+fn constructor_trigger() {
+    prusti_assert!(p(W(3).0));
+}
+
+#[requires(forall(|i: usize| p(i), triggers = [(W(i).0,)]))]
+fn field_of_constructor_trigger() {
+    prusti_assert!(p(W(3).0));
+}
+
+#[pure]
+#[trusted]
+fn ps(s: Seq<i32>) -> bool { true }
+
+// A ghost collection operation can be a trigger.
+#[requires(forall(|x: i32| ps(Seq::single(x)), triggers = [(Seq::single(x),)]))]
+fn collection_literal() {
+    prusti_assert!(ps(Seq::single(3)));
 }

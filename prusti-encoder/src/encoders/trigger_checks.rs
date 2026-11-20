@@ -6,9 +6,145 @@
 //! `Real` are encoded as Viper's own operators, so it may not.
 
 use crate::encoders::{MirPureEnc, mir_shared::EncodeResult};
-use prusti_rustc_interface::span::{Span, Symbol, def_id::DefId};
+use prusti_rustc_interface::{
+    middle::mir,
+    span::{Span, Symbol, def_id::DefId},
+};
 use task_encoder::EncodeFullError;
 use vir::TriggerSetError;
+
+/// What the outermost operation of a trigger can be.
+const HEADS: &str = "a call, an operator, a constructor, a field access, an indexing or a cast";
+
+/// Checks that the outermost operation of the trigger that the closure
+/// `body` computes is one the user writes (see [`HEADS`]), reported at
+/// `span`. The simplifier folds away the borrows and dereferences that rustc
+/// and the encoding insert, but no application of what the user writes (see
+/// `task_encoder::Program::add_user_adt`), so only the latter is sure to
+/// remain a term the trigger can match. Dereferences are looked through:
+/// rustc inserts them for reads through references and for overloaded
+/// indexing, a call to `Index::index` whose result it dereferences.
+pub(super) fn check_head<'vir>(
+    body: &mir::Body<'vir>,
+    span: Span,
+) -> EncodeResult<'vir, (), MirPureEnc> {
+    let error = |message: String| Err(EncodeFullError::incorrect(message, span));
+    let variable = || {
+        error(format!(
+            "a trigger must be {HEADS}, not a bare variable or constant"
+        ))
+    };
+    let closure = mir::Local::from_u32(1);
+    let mut place = mir::Place::from(mir::RETURN_PLACE);
+    loop {
+        let mut projection = place.projection.as_slice();
+        while let [rest @ .., mir::ProjectionElem::Deref] = projection {
+            projection = rest;
+        }
+        match projection {
+            // A captured place (a variable, or e.g. the field of a variable
+            // read by value), a field of the closure.
+            [mir::ProjectionElem::Deref, mir::ProjectionElem::Field(..)]
+                if place.local == closure =>
+            {
+                return error(format!(
+                    "a trigger must be {HEADS}, not a value from outside the quantifier"
+                ));
+            }
+            [.., mir::ProjectionElem::Deref] => unreachable!("dereferences are stripped"),
+            [..] if !projection.is_empty() => return Ok(()),
+            [..] => {}
+        }
+        let Some(definition) = definition(body, place.local) else {
+            // An argument, the closure itself or a bound variable, or else a
+            // local after a call that never returns, which the encoding
+            // reports.
+            return if (1..=body.arg_count).contains(&place.local.as_usize()) {
+                variable()
+            } else {
+                Ok(())
+            };
+        };
+        let Definition::Assign(rvalue) = definition else {
+            // A call, or a local assigned in several places, which is a
+            // conditional the encoding reports.
+            return Ok(());
+        };
+        place = match rvalue {
+            mir::Rvalue::Use(mir::Operand::Copy(p) | mir::Operand::Move(p), _)
+            | mir::Rvalue::CopyForDeref(p) => *p,
+            // A reborrow `&*x` is inserted by rustc.
+            mir::Rvalue::Ref(_, _, p)
+                if p.projection.as_slice() == [mir::ProjectionElem::Deref] =>
+            {
+                mir::Place::from(p.local)
+            }
+            mir::Rvalue::Cast(
+                mir::CastKind::PointerCoercion(..) | mir::CastKind::Transmute,
+                mir::Operand::Copy(p) | mir::Operand::Move(p),
+                _,
+            ) => *p,
+            mir::Rvalue::Use(mir::Operand::Constant(_) | mir::Operand::RuntimeChecks(_), _) => {
+                return variable();
+            }
+            mir::Rvalue::Ref(..) | mir::Rvalue::RawPtr(..) => {
+                return error(format!(
+                    "a trigger cannot be a borrow: it must be {HEADS} (a borrow can be the \
+                     argument of a call)"
+                ));
+            }
+            // Rustc and Prusti build tuples and closures themselves (e.g.
+            // the arguments of a call to a closure), so the simplifier folds
+            // their constructors away too.
+            mir::Rvalue::Aggregate(
+                box (mir::AggregateKind::Tuple | mir::AggregateKind::Closure(..)),
+                _,
+            ) => {
+                return error(format!(
+                    "a trigger cannot be a tuple or a closure: it must be {HEADS}"
+                ));
+            }
+            _ => return Ok(()),
+        };
+    }
+}
+
+/// How a local of a trigger closure's body gets its value.
+enum Definition<'a, 'tcx> {
+    Assign(&'a mir::Rvalue<'tcx>),
+    Call,
+    /// Assigned in several places.
+    Several,
+}
+
+/// How the local `local` of `body` gets its value, `None` for an argument.
+fn definition<'a, 'tcx>(
+    body: &'a mir::Body<'tcx>,
+    local: mir::Local,
+) -> Option<Definition<'a, 'tcx>> {
+    let mut found = None;
+    let mut record = |definition| {
+        found = Some(match found {
+            None => definition,
+            Some(_) => Definition::Several,
+        });
+    };
+    for data in body.basic_blocks.iter() {
+        for statement in &data.statements {
+            if let mir::StatementKind::Assign(box (dest, rvalue)) = &statement.kind
+                && dest.as_local() == Some(local)
+            {
+                record(Definition::Assign(rvalue));
+            }
+        }
+        if let mir::TerminatorKind::Call { destination, .. } = &data.terminator().kind
+            && destination.as_local() == Some(local)
+        {
+            record(Definition::Call);
+        }
+    }
+    found
+}
 
 /// Checks a trigger set of a quantifier over `qvars`, whose terms are the
 /// bodies of the closures `closures`, with the shapes `shapes`. `span` is
@@ -33,9 +169,7 @@ pub(super) fn check_set<'vir>(
     let term_span = |idx: usize| vcx.tcx().def_span(closures[idx]);
     let (message, span) = match error {
         TriggerSetError::Head(idx) => (
-            "a trigger must be a function or method call, an operator, a field access or an \
-             indexing, not a bare variable or constant"
-                .to_string(),
+            format!("a trigger must be {HEADS}, not a bare variable or constant"),
             term_span(idx),
         ),
         TriggerSetError::Forbidden(idx) => (

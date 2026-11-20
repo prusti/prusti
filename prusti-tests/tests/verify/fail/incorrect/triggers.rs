@@ -18,8 +18,27 @@ fn p(i: usize) -> bool {
     true
 }
 
-#[requires(forall(|i: usize| p(i), triggers = [(i,)]))] //~ERROR: a trigger must be a function or method call, an operator, a field access or an indexing, not a bare variable or constant
+#[requires(forall(|i: usize| p(i), triggers = [(i,)]))] //~ERROR: a trigger must be a call, an operator, a constructor, a field access, an indexing or a cast, not a bare variable or constant
 fn bare_variable() {}
+
+// A value from outside the quantifier, also behind a reference or as the
+// field of a variable, which the closure captures by itself.
+#[requires(forall(|i: usize| p(i), triggers = [(n,)]))] //~ERROR: not a value from outside the quantifier
+fn captured_variable(n: usize) {}
+
+#[requires(forall(|i: usize| p(i), triggers = [(*r,)]))] //~ERROR: not a value from outside the quantifier
+fn dereferenced_capture(r: &usize) {}
+
+pub struct S {
+    pub len: usize,
+}
+
+#[requires(forall(|i: usize| p(i), triggers = [(s.len,)]))] //~ERROR: not a value from outside the quantifier
+fn captured_field(s: S) {}
+
+// The simplifier folds away borrows, so a trigger cannot be one.
+#[requires(forall(|i: usize| i < s.len() ==> p(i), triggers = [(&s[i],)]))] //~ERROR: a trigger cannot be a borrow
+fn borrow(s: &[usize]) {}
 
 #[requires(forall(|i: usize| p(i), triggers = [()]))] //~ERROR: a trigger set must contain at least one expression
 fn empty_set() {}

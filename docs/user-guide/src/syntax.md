@@ -204,7 +204,7 @@ There may be multiple trigger sets. Each trigger set is a tuple of expressions. 
 forall(|x: usize| foo(x) ==> bar(x), triggers=[(foo(x),), (bar(x),)])
 ```
 
-The verifier instantiates the quantifier for the values of the bound variables at which all expressions of one of its trigger sets occur in the terms it reasons about: in the example above, once `foo(5)` or `bar(5)` occurs, for `x = 5`. Each expression of a trigger set must be a function or method call, an operator, a field access or an indexing, and can contain `old`; it cannot be a bare variable or constant, as in `triggers=[(x,)]`. It cannot contain:
+The verifier instantiates the quantifier for the values of the bound variables at which all expressions of one of its trigger sets occur in the terms it reasons about: in the example above, once `foo(5)` or `bar(5)` occurs, for `x = 5`. The outermost operation of each expression of a trigger set must be a function or method call, an operator, a constructor, a field access, an indexing or a cast, and the expression can contain `old`; it cannot be a bare variable or constant, as in `triggers=[(x,)]`, or a borrow, as in `triggers=[(&v[x],)]`. It cannot contain:
 
 - conditionals (`if`, `match`, `&&` and `||`) or quantifiers,
 - the snapshot equality `===` or operations on Prusti's mathematical integers and reals (`Int`, `Real`),

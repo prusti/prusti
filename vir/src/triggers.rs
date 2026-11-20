@@ -192,6 +192,8 @@ pub fn trigger_term_shape<'vir>(e: ExprDyn<'vir>) -> TriggerTermShape<'vir> {
             | ExprKindGenData::AdtDestructor(..)
             | ExprKindGenData::Field(..)
             | ExprKindGenData::CollectionBinOp(_)
+            | ExprKindGenData::CollectionLiteral(_)
+            | ExprKindGenData::CollectionUpdate(_)
             | ExprKindGenData::CollectionLen(_)
             | ExprKindGenData::MapDomain(_)
             | ExprKindGenData::MapRange(_)
