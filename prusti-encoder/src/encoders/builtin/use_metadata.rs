@@ -19,8 +19,8 @@ use crate::encoders::{
 /// `RustTy`, shared by every `[T; N]`), so it is encoded once and is itself
 /// generic over the element type and length. The abstract `metadata_cast`
 /// function and its general axioms live in `MetadataCastEnc`; this encoder
-/// attaches only the array->slice specialization (so `MetadataCastEnc` no longer
-/// has to assume that array/slice types exist in the program).
+/// attaches only the array->slice specialization (so `MetadataCastEnc` does not
+/// assume that array/slice types exist in the program).
 pub struct MetadataCastAxiomEnc;
 
 impl TaskEncoder for MetadataCastAxiomEnc {
