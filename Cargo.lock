@@ -2182,6 +2182,7 @@ dependencies = [
 name = "prusti-encoder"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.9.4",
  "cfg-if",
  "ide",
  "itertools 0.14.0",
