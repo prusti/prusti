@@ -108,12 +108,6 @@ fn tail_thin_slice(a: *const Tail<[u8]>) {
     prusti_assert!(tail_thin(a) == a as *const [u8] as *const u8);
 }
 
-trait Tr {}
-
-fn tail_thin_dyn(a: *const Tail<dyn Tr>) {
-    prusti_assert!(tail_thin(a) == tail_thin_via_tail(a));
-}
-
 fn tail_thin_nested(a: *const Tail<Tail<str>>) {
     prusti_assert!(tail_thin(a) == a as *const str as *const u8);
 }
@@ -130,6 +124,14 @@ fn tail_thin_via_tail<T: ?Sized>(a: *const Tail<T>) -> *const u8 {
 
 fn tail_thin_via_tail_slice(a: *const Tail<[u8]>) {
     prusti_assert!(tail_thin_via_tail(a) == a as *const u8);
+}
+
+trait Tr {}
+
+// `a as *const dyn Tr` would be an unsizing coercion, so a trait object tail is
+// compared through the generic bodies only.
+fn tail_thin_dyn(a: *const Tail<dyn Tr>) {
+    prusti_assert!(tail_thin(a) == tail_thin_via_tail(a));
 }
 
 // A thin cast of a pointer read from a field.

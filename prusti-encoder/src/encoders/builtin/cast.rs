@@ -22,8 +22,9 @@ use crate::encoders::{
 /// Encodes the builtin MIR cast operations (e.g. `IntToInt`, `PointerCoercion`)
 /// as Viper functions with the correct semantics. The unsizing coercions and the
 /// casts between raw pointers are applied to generic refs (the inner type is a
-/// parameter) and thus the meaning for those is given by axioms for concrete
-/// types (e.g. `&[T; N] -> &[T]`, see `MetadataCastAxiomEnc`).
+/// parameter), so their meaning is given by axioms: the general ones of
+/// `MetadataCastEnc` and, for unsizing, those for concrete types in
+/// `MetadataCastAxiomEnc` (e.g. `&[T; N] -> &[T]`).
 /// Also returns a side-effecting `unsize`/`undo` method for coercing the inner
 /// referent (i.e. an `p_Param` to `p_Param` with different type).
 ///
@@ -38,8 +39,8 @@ pub(super) struct MirBuiltinCastTask<'vir> {
     pub(super) operand_ty: RustTy<'vir>,
 }
 
-/// The types, besides the operand and result types the task is keyed on, that
-/// a cast depends on. Its function and methods take them as type arguments,
+/// The types a cast depends on beyond the operand and result types that key
+/// its task. Its function and methods take them as type arguments,
 /// which `MirBuiltinUseCastEnc` supplies at each use.
 #[derive(Debug, Clone, Copy)]
 pub(super) enum CastTyArgs {
@@ -144,9 +145,9 @@ impl TaskEncoder for MirBuiltinCastEnc {
                 ));
             }
         };
-        // The pointee types are not part of the task key: a cast that needs
+        // The referent types are not part of the task key: a cast that needs
         // them takes them as type arguments (`CastTyArgs`), so the name only
-        // uses the pointer types and one task serves every pointee.
+        // uses the pointer types and one task serves every referent.
         let name = vir::with_vcx(|vcx| {
             vir::vir_format_identifier!(
                 vcx,

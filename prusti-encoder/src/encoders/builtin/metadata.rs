@@ -77,10 +77,10 @@ impl TaskEncoder for ValueCastEnc {
 /// types in `MetadataCastAxiomEnc`. Like rustc's `ptr_to_ptr`
 /// (`rustc_const_eval/src/interpret/cast.rs`), a cast keeps the metadata
 /// between pointees with the same metadata type and replaces it with `()` in a
-/// cast to a thin pointer; these are all raw-pointer casts rustc accepts (all
-/// trait objects are one Viper type). An unsizing coercion from a sized type
-/// changes the metadata type, so neither applies to it. A coercion between
-/// trait objects falls under the first: it keeps the vtable, also for an
+/// cast to a thin pointer; rustc accepts no other raw-pointer casts (all trait
+/// objects are one Viper type). An unsizing coercion from a sized type changes
+/// the metadata type, so neither axiom applies to it. A coercion between trait
+/// objects falls under `metadata_cast_eq`: it keeps the vtable, also for an
 /// upcast, where rustc replaces it.
 pub struct MetadataCastEnc;
 

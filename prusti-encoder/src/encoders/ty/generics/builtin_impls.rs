@@ -11,14 +11,16 @@ use crate::encoders::ty::{
 };
 
 /// Encodes the compiler's builtin impls of `Sized`, `MetaSized` and
-/// `Pointee`, which have no impls in the source: what the condition and the
-/// associated items of an ordinary impl state (see `TraitImplConditionEnc`
-/// and `TraitImplItemEnc`), stated per type constructor, each with an axiom
-/// triggered on the application at the constructor. The axioms of each trait
+/// `Pointee`. These traits have no impls in the source, so this encoder
+/// states per type constructor what `TraitImplConditionEnc` and
+/// `TraitImplItemEnc` state for an ordinary impl (that the trait is
+/// implemented, and its associated types), each as an axiom triggered on the
+/// application at the constructor. The axioms of each trait
 /// are emitted together, in the domain `trait_<Trait>_builtin`.
 ///
-/// A constructor implements `Sized` and `MetaSized` unless it is unsized,
-/// conditional on its tail if it has one (`PointeeSized` holds of every type,
+/// A sized constructor implements `Sized` and `MetaSized`, conditional on its
+/// tail if it has one; `str`, slices and trait objects implement only
+/// `MetaSized`, and extern types neither (`PointeeSized` holds of every type,
 /// and bounds on it are skipped, see `TraitImplEnc::context_bounds`):
 ///
 /// ```text
@@ -115,7 +117,7 @@ impl BuiltinImplEnc {
     /// Encodes the builtin impls of a type constructor: its sizedness, and,
     /// once the `Pointee` trait is requested, its pointee metadata type. The
     /// latter is stated with that trait's `Metadata` function, so a program
-    /// that never uses it does not get it. Called for every constructor
+    /// that never uses the trait does not get it. Called for every constructor
     /// `TyConstructorEnc` encodes.
     pub fn require(constructor: RustTy<'_>) {
         if matches!(constructor.sizedness, RustTySizedness::None) {
@@ -192,7 +194,8 @@ impl BuiltinImplEnc {
             // for a trait object.
             let metadata = match constructor.sizedness {
                 RustTySizedness::None => unreachable!(),
-                // rustc computes a pointee's metadata type from a pointer to it.
+                // `pointee_metadata_ty_or_projection` takes a pointer to the
+                // pointee whose metadata type it computes.
                 RustTySizedness::Sized { sized_if, .. } => {
                     Some(sized_if.map_or(vcx.tcx().types.unit, |tail| {
                         ty::Ty::new_imm_ptr(vcx.tcx(), tail)

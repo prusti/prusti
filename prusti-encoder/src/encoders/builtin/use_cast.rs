@@ -123,7 +123,8 @@ impl TaskEncoder for MirBuiltinUseCastEnc {
                 let result_generics = deps.require_dep::<GArgsTyEnc>(result_ty.args)?;
                 // Recover the operand/result referent (`[T; N]` / `[T]`) structure by
                 // normalizing the reference's (generic `p_Param`) referent type
-                // against the reference's args.
+                // against the reference's args. The axioms requested with it only
+                // apply to unsizing coercions.
                 let (op_ref, res_ref) = match (&operand_ty.ty.specifics, &result_ty.ty.specifics) {
                     (TySpecifics::ImmRef(od), TySpecifics::ImmRef(rd)) => {
                         (od.referent, rd.referent)
