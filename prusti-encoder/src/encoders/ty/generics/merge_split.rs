@@ -6,7 +6,7 @@ use crate::encoders::{
     Pure,
     ty::{
         RustTyDecomposition,
-        indirect_pred::{IndirectPredEnc, LifetimePositionBlock},
+        indirect_pred::{IndirectPredEnc, LifetimePositionBlock, if_nonempty},
         lifted::ty_constructor::TyConstructorEnc,
         pure::TyPureEnc,
     },
@@ -173,7 +173,7 @@ impl TaskEncoder for MergeSplitEnc {
                 .iter()
                 .map(|&p| {
                     let (lo, hi) = graph.interval(p);
-                    block.predicate(block.key(p), lo, hi)
+                    if_nonempty(block.nonempty(p), block.predicate(block.key(p), lo, hi))
                 })
                 .collect::<Vec<_>>();
             // An empty block's interval is empty, at its place among the
@@ -193,9 +193,15 @@ impl TaskEncoder for MergeSplitEnc {
                 (at, at)
             };
             let grafted = block.fold(&positions);
+            // The merged predicate holds anything if a position does: unless
+            // all are of type parameters, some interval is non-empty.
+            let merged_nonempty = positions
+                .iter()
+                .all(|&p| block.nonempty(p).is_some())
+                .then(|| vir::expr! { vcx; (lo) < (hi) });
             let (merged, extended, grafted) = match param_target {
                 None => (
-                    block.predicate(block.k, lo, hi),
+                    if_nonempty(merged_nonempty, block.predicate(block.k, lo, hi)),
                     ind.extend.call()(block.k, block.tys, block.consts, lo, hi),
                     grafted,
                 ),
@@ -216,6 +222,7 @@ impl TaskEncoder for MergeSplitEnc {
                             hi
                         ))
                     };
+                    let merged = if_nonempty(merged_nonempty, merged);
                     let extended =
                         param_ind.extend.call()(generic_k, &[param_ty], no_consts, lo, hi);
                     (merged, extended, generic(grafted))

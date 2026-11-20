@@ -14,7 +14,9 @@ use super::{
             EnclosureGraph, GeneralizedLifetime, LifetimePosition, LifetimePositionEnc,
         },
     },
-    indirect_pred::{IndirectPredEnc, IndirectPredRef, LifetimePositionBlock},
+    indirect_pred::{
+        IndirectPredEnc, IndirectPredRef, LifetimePositionBlock, if_nonempty, interval_nonempty,
+    },
 };
 
 /// The predicates of the nodes on places of a type: one `p_T_ind` per
@@ -89,7 +91,10 @@ impl<'vir> NodePredicates<'vir> {
             .filter(|&p| is_position_of(self.lifetimes[p], lifetime))
             .map(|p| {
                 let (lo, hi) = self.graph.interval(p);
-                block.predicate(in_state(block.key(p)), lo, hi)
+                if_nonempty(
+                    block.nonempty(p),
+                    block.predicate(in_state(block.key(p)), lo, hi),
+                )
             })
             .collect()
     }
@@ -157,6 +162,13 @@ impl<'vir> NodePredicates<'vir> {
         snap: vir::ExprSnap<'vir>,
     ) -> vir::PredicateApp<'vir> {
         self.predicate_with_key(p, self.key(p, snap))
+    }
+
+    /// The condition under which the predicate of position `p` holds
+    /// anything, `None` where it always does (see
+    /// [`interval_nonempty`](super::indirect_pred::interval_nonempty)).
+    pub fn nonempty(&self, p: LifetimePosition) -> Option<vir::ExprBool<'vir>> {
+        interval_nonempty(&self.graph, p)
     }
 
     /// The predicate of position `p` with key `key`.

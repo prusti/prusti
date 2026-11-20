@@ -183,6 +183,43 @@ impl<'vir> LifetimePositionBlock<'vir, '_> {
         let (tys, consts) = (self.tys, self.consts);
         vir::expr! { acc([pred](key, [..[tys]], [..[consts]], lo, hi)) }
     }
+
+    /// The condition under which the predicate of position `p` holds
+    /// anything (see [`interval_nonempty`]).
+    pub(crate) fn nonempty(&self, p: LifetimePosition) -> Option<vir::ExprBool<'vir>> {
+        interval_nonempty(self.graph, p)
+    }
+}
+
+/// The condition under which the predicate of position `p` of `graph` holds
+/// anything, `None` where it always does. Only the interval of the regions of
+/// a type parameter or alias may be empty, as its arity is not known. A
+/// predicate over an empty interval holds nothing, and is not held: the
+/// predicates of the types containing a type parameter hold its predicate only
+/// for a non-empty interval, so it is required, folded and unfolded only then.
+pub(crate) fn interval_nonempty<'vir>(
+    graph: &EnclosureGraph<'vir>,
+    p: LifetimePosition,
+) -> Option<vir::ExprBool<'vir>> {
+    match graph.lifetime(p) {
+        GeneralizedLifetime::Region(_) => None,
+        GeneralizedLifetime::RegionsIn(_) => {
+            let (lo, hi) = graph.interval(p);
+            Some(vir::with_vcx(|vcx| vir::expr! { vcx; (lo) < (hi) }))
+        }
+    }
+}
+
+/// `perm`, the permission to an indirect predicate, required only under
+/// `nonempty` (see [`interval_nonempty`]).
+pub(crate) fn if_nonempty<'vir>(
+    nonempty: Option<vir::ExprBool<'vir>>,
+    perm: vir::ExprBool<'vir>,
+) -> vir::ExprBool<'vir> {
+    match nonempty {
+        None => perm,
+        Some(nonempty) => vir::with_vcx(|vcx| vir::expr! { vcx; (nonempty) ==> (perm) }),
+    }
 }
 
 /// The part of a query `[lo, hi)` at one own position.
