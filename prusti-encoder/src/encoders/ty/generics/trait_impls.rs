@@ -127,6 +127,16 @@ impl TaskEncoder for TraitImplEnc {
                 // behavioral-subtyping error's hint at them.
                 let trait_pre_spans: Vec<_> =
                     trait_item_spec.pres.iter().map(|(_, s)| *s).collect();
+                // Skipped trait preconditions are no hypothesis to check the
+                // impl's against. Nor do they need one: a trait precondition
+                // that cannot be encoded here cannot be encoded in the trait
+                // axioms either, which then leave it out, so calls through the
+                // trait only rely on the impl's own preconditions.
+                let impl_pres_to_check = if trait_item_spec.skipped {
+                    &[][..]
+                } else {
+                    &impl_item_spec.pres[..]
+                };
 
                 // Both checks are only needed where the impl applies.
                 let bounds = Self::assume_context_bounds(vcx, deps, impl_item_context)?;
@@ -144,7 +154,7 @@ impl TaskEncoder for TraitImplEnc {
                         vcx.mk_cfg_block(
                             &vir::CfgBlockLabelData::Start,
                             &[],
-                            vcx.alloc_slice(&bounds.iter().copied().chain(impl_item_spec.pres.iter().copied()
+                            vcx.alloc_slice(&bounds.iter().copied().chain(impl_pres_to_check.iter().copied()
                                 .map(|(pre, pre_span)| vcx.with_span(pre_span, |vcx| {
                                     let trait_pre_spans = trait_pre_spans.clone();
                                     vcx.handle_error("exhale.failed:assertion.false", move |_| {
