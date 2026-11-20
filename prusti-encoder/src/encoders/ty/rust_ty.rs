@@ -75,6 +75,7 @@ impl<'tcx> RustTyDecomposition<'tcx> {
             params: GParams::empty_env(gty),
             special: RustTySpecial::None,
             sizedness: RustTySizedness::None,
+            user_level: false,
         };
         let specifics = TySpecifics::Param(RustParamData::Generic);
         TyData::<RustTyDatas>::new(data, specifics).alloc()
@@ -271,6 +272,10 @@ pub struct RustTyData<'tcx> {
     pub params: GParams<'tcx>,
     pub special: RustTySpecial,
     pub sizedness: RustTySizedness<'tcx>,
+    /// Whether this encodes something the user writes rather than something
+    /// rustc or the encoding adds, which the simplifier may fold away (see
+    /// `add_user_adt`).
+    pub user_level: bool,
 }
 
 /// Which of the sizedness traits (`Sized`, `MetaSized`, `PointeeSized`) the
@@ -430,6 +435,11 @@ impl<'tcx> TyData<'tcx, RustTyDatas> {
             params,
             special: RustTySpecial::from_ty(ty),
             sizedness: RustTySizedness::from_ty(ty),
+            user_level: match ty.kind() {
+                ty::TyKind::Adt(adt, _) => !adt.is_box(),
+                ty::TyKind::Array(..) | ty::TyKind::Slice(_) => true,
+                _ => false,
+            },
         };
         RustTyDecomposition::new(Self::new(data, specifics).alloc(), args)
     }
@@ -443,6 +453,7 @@ impl<'tcx> TyData<'tcx, RustTyDatas> {
             params,
             special: RustTySpecial::None,
             sizedness: RustTySizedness::from_ty(ty),
+            user_level: false,
         };
         let specifics = TySpecifics::from_prim_ty(ty);
         RustTyDecomposition::new(Self::new(data, specifics).alloc(), args)
