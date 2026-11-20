@@ -176,11 +176,11 @@ pub(crate) trait PureRvalueEnc<'vir> {
         let operand_ty = operand.ty(self.body(), self.vcx().tcx());
         let rvalue_ty = RustTyDecomposition::from_ty(rvalue_ty, self.context());
         let operand_ty = RustTyDecomposition::from_ty(operand_ty, self.context());
-        let cast_output =
-            self.deps()
-                .require_dep::<MirBuiltinUseCastEnc>(MirBuiltinUseCastTask::new(
-                    rvalue_ty, kind, operand_ty,
-                ))?;
+        let span = self.current_span();
+        let cast_output = self.deps().require_dep_spanned::<MirBuiltinUseCastEnc>(
+            MirBuiltinUseCastTask::new(rvalue_ty, kind, operand_ty),
+            span,
+        )?;
         let cast = cast_output.cast(encoded_operand).upcast_ty();
         let cast_stmt = cast_output.unsize(encoded_operand);
         Ok((cast_stmt, cast))

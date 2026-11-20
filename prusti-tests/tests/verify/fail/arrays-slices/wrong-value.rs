@@ -62,6 +62,12 @@ fn exhausted_inclusive_subslice_len(a: &[i32], r: core::ops::RangeInclusive<usiz
     }
 }
 
+// The closure is nested in the anonymous constant of the array length. It is
+// verified like any other closure in the function's body.
+fn closure_in_length() -> usize {
+    [0u8; { let _f = |x: u8| { assert!(false); x }; 3 }].len() //~ERROR: might not hold
+}
+
 #[requires(i < 4 && j < 3)]
 fn nested_borrow(a: &mut [[i32; 3]; 4], i: usize, j: usize) {
     let r = &mut a[i][j];

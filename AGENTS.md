@@ -113,6 +113,9 @@ flags; this file collects working norms and pitfalls.
   an enclosing one; backtranslation only follows span ancestors.
 - If the PCG's analysis result is wrong (e.g. a missing or misordered action), fix it in
   the PCG instead of compensating in the encoder.
+- The VIR simplifier (`vir::simplify`) is an optional pass for performance: the encoding
+  must be well-defined and verify the same without it. Never rely on it to remove
+  something, such as an unused `let` whose value is ill-defined.
 
 ## Design
 

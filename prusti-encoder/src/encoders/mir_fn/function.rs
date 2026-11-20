@@ -1,6 +1,6 @@
 use prusti_rustc_interface::span::def_id::DefId;
 use task_encoder::{EncodeFullResult, OutputRefAny, TaskEncoder, TaskEncoderDependencies};
-use vir::{CastType, FunctionIdn, Reify};
+use vir::{CastType, FunctionIdn};
 
 use crate::encoders::{
     MirLocalDefEnc, MirLocalDefEncTask, MirPureEnc, MirPureEncTask, MirSpecEnc, Pure, PureKind,
@@ -217,9 +217,7 @@ impl TaskEncoder for FunctionEnc {
                     gargs: params.identity_args(),
                 }) {
                     Ok(out) => {
-                        let expr = out
-                            .expr
-                            .reify(vcx, (def_id, spec.pre_args, vir::OldLabel::None));
+                        let expr = out.reify(spec.pre_args);
                         assert!(
                             expr.ty() == return_type,
                             "expected {:?}, got {:?}",

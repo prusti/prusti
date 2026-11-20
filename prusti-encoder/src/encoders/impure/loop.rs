@@ -36,7 +36,10 @@ pub(crate) enum WandOldOuter<'vir> {
 }
 
 impl<'vir: 'a, 'a, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
-    /// Calculate invariant at loop head
+    /// Calculate invariant at loop head, and the places whose permission it
+    /// holds, which are the places the body invariants may read. A place
+    /// behind a shared reference is held, and read, through the first shared
+    /// reference on its path.
     pub(crate) fn get_loop_inv(
         &mut self,
         cfpcs: &PcgBasicBlock<'_, 'vir>,
@@ -68,6 +71,7 @@ impl<'vir: 'a, 'a, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             }
         }
 
+        let mut held_places = FxHashMap::default();
         for (place, capability) in loop_invariant_place_capabilities.iter() {
             if self.spec_blocks.spec_arms.is_spec_only_local(place.local) {
                 continue;
@@ -75,6 +79,20 @@ impl<'vir: 'a, 'a, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             if capability.is_write() {
                 // A place without a value holds its `Uninit` token.
                 inv.push(self.place_uninit(*place)?);
+                continue;
+            }
+            // A place behind a shared reference has no predicate of its own: its value is
+            // part of the snapshot of the first shared reference on its path from the local.
+            // The invariant holds the predicate of that reference instead, only once even if
+            // the loop reads several places behind it.
+            let place = place
+                .iter_projections()
+                .find_map(|(base, _)| {
+                    let base = Place::from(base);
+                    base.is_shared_ref(ctxt).then_some(base)
+                })
+                .unwrap_or(*place);
+            if held_places.insert(place, *capability).is_some() {
                 continue;
             }
             let place = place.with_inherent_region(ctxt);
@@ -114,7 +132,7 @@ impl<'vir: 'a, 'a, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             inv.push(wand);
         }
 
-        Ok((inv, loop_invariant_place_capabilities.into_iter().collect()))
+        Ok((inv, held_places))
     }
 
     pub(crate) fn encode_pcg_node<T: PcgLifetimeProjectionBaseLike<'vir>>(

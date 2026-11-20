@@ -396,14 +396,9 @@ impl TaskEncoder for ConstEnc {
                             gargs: GParams::from(uneval.def).identity_args(),
                             kind: PureKind::Constant(promoted),
                         };
-                        let expr = deps.require_dep::<MirPureEnc>(task)?.expr;
-                        use vir::Reify;
+                        let out = deps.require_dep::<MirPureEnc>(task)?;
                         let args = Default::default();
-                        Ok((
-                            Vec::new(),
-                            expr.reify(vcx, (uneval.def, vcx.alloc(args), vir::OldLabel::None))
-                                .downcast_ty(),
-                        ))
+                        Ok((Vec::new(), out.reify(vcx.alloc(args)).downcast_ty()))
                     } else {
                         todo!("const too generic")
                     }

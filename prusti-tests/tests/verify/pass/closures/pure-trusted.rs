@@ -17,3 +17,14 @@ fn main() {
         |y: i32| -> i32 { y + y }
     );
 }
+
+// The body reads the capture `n` (the condition is there only for that): a
+// user closure reads its captures from the closure value, unlike a
+// quantifier's body.
+fn capturing(n: i32) {
+    let h = closure!(
+        #[pure]
+        #[ensures(result == y)]
+        |y: i32| -> i32 { if n == n { y } else { 0 } }
+    );
+}

@@ -64,11 +64,6 @@ pub(super) struct MirBuiltinCastLocal<'vir> {
     undo: Option<vir::Method<'vir>>,
 }
 
-#[derive(Clone, Debug)]
-pub enum MirBuiltinCastEncError {
-    Unsupported(#[allow(dead_code)] String),
-}
-
 impl TaskEncoder for MirBuiltinCastEnc {
     task_encoder::encoder_cache!(MirBuiltinCastEnc);
     const ENCODER_NAME: &'static str = "MIR builtin cast encoder";
@@ -77,8 +72,6 @@ impl TaskEncoder for MirBuiltinCastEnc {
 
     type OutputFullDependency<'vir> = MirBuiltinCastOutput<'vir>;
     type OutputFullLocal<'vir> = MirBuiltinCastLocal<'vir>;
-
-    type EncodingError = MirBuiltinCastEncError;
 
     fn task_to_key<'vir>(task: &Self::TaskDescription<'vir>) -> Self::TaskKey<'vir> {
         *task
@@ -111,7 +104,18 @@ impl TaskEncoder for MirBuiltinCastEnc {
                 ty::adjustment::PointerCoercion::MutToConstPointer,
                 ..,
             ) => "mut2const",
-            other => todo!("cast kind {other:?}"),
+            mir::CastKind::PointerCoercion(coercion, _) => {
+                return Err(EncodeFullError::unsupported(
+                    format!("the pointer coercion `{coercion:?}`"),
+                    Vec::new(),
+                ));
+            }
+            other => {
+                return Err(EncodeFullError::unsupported(
+                    format!("the cast `{other:?}`"),
+                    Vec::new(),
+                ));
+            }
         };
         // The unsize cast/methods don't depend on the pointee type (the methods
         // are generic over the input/output referent type values), so the name
@@ -362,12 +366,12 @@ impl TaskEncoder for MirBuiltinCastEnc {
                             (false, expr)
                         }
                         _ => {
-                            return Err(EncodeFullError::EncodingError(
-                                MirBuiltinCastEncError::Unsupported(format!(
+                            return Err(EncodeFullError::unsupported(
+                                format!(
                                     "unsizing of `{}` (only references and `Box` can be unsized)",
                                     operand_ty.name()
-                                )),
-                                None,
+                                ),
+                                Vec::new(),
                             ));
                         }
                     };
