@@ -1071,6 +1071,17 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 folds.push((base, children));
             }
         }
+        self.fold_outermost_first(ty, folds)
+    }
+
+    /// Folds the predicates of the `folds`' nodes, all of a place of type
+    /// `ty`, from those of their children: enclosing positions first, since
+    /// the keys of the enclosed ones read their predicates.
+    fn fold_outermost_first(
+        &mut self,
+        ty: ty::Ty<'vir>,
+        folds: Vec<(NodeLp<'vir>, Vec<Child<'vir>>)>,
+    ) -> EncodeResult<'vir, (), E> {
         if folds.is_empty() {
             return Ok(());
         }
@@ -1091,6 +1102,44 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             self.fold_or_unfold_node(base, &children, FoldOrUnfold::Fold)?;
         }
         Ok(())
+    }
+
+    /// Folds the predicates of the lifetime projections of `dest`, just
+    /// assigned, that no edge of `graph` involves: no part of the assigned
+    /// value brings them, e.g. for `None` or a value whose fields have no
+    /// lifetimes, so their predicates hold nothing that is not already held.
+    /// Their keys are read after the assignment (see `keys_state`).
+    fn fold_unproduced_nodes(
+        &mut self,
+        dest: Place<'vir>,
+        graph: &BorrowsGraph<'vir>,
+    ) -> EncodeResult<'vir, (), E> {
+        let ctxt = self.pcg_ctxt();
+        let ty = dest.ty(ctxt).ty;
+        // The predicates of a type parameter or alias are abstract, so they
+        // cannot be folded; a value of such a type comes with them.
+        if matches!(ty.kind(), ty::Param(_) | ty::Alias(..)) {
+            return Ok(());
+        }
+        let involved = graph
+            .frozen_graph()
+            .nodes(ctxt)
+            .iter()
+            .filter_map(|node| match node {
+                PcgNode::LifetimeProjection(node) => local_node(*node),
+                PcgNode::Place(_) => None,
+            })
+            .collect::<Vec<_>>();
+        let lifetimes: IndexVec<_, GeneralizedLifetime<'vir>> = ctxt.extract_regions(ty);
+        let folds = lifetimes
+            .into_iter()
+            .filter_map(|lifetime| {
+                LifetimeProjection::new(MaybeLabelledPlace::Current(dest), lifetime, None, ctxt)
+            })
+            .filter(|node| !involved.contains(node))
+            .map(|node| (node, Vec::new()))
+            .collect::<Vec<_>>();
+        self.fold_outermost_first(ty, folds)
     }
 
     /// The type of `node`'s place, the predicates of its type, and the
@@ -2412,7 +2461,23 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             label: vir::OldLabel::Label(label),
         };
         self.phase_start = Some((Self::phase_start_state(cfpcs, phase).clone(), point));
-        let result = self.pcg_actions(&cfpcs.states[phase], &cfpcs.actions(phase), false);
+        // The predicates an assignment creates without an edge are folded
+        // after its effect.
+        let unproduced = if phase == EvalStmtPhase::PostMain
+            && let Some(statement) = self.body[location.block]
+                .statements
+                .get(location.statement_index)
+            && let mir::StatementKind::Assign(box (dest, _)) = &statement.kind
+        {
+            self.fold_unproduced_nodes(
+                Place::from(*dest),
+                cfpcs.states[EvalStmtPhase::PostMain].borrow_pcg().graph(),
+            )
+        } else {
+            Ok(())
+        };
+        let result = unproduced
+            .and_then(|()| self.pcg_actions(&cfpcs.states[phase], &cfpcs.actions(phase), false));
         self.phase_start = None;
         self.current_fpcs = Some(current_fpcs);
         // The effects are encoded right after the `PreOperands` and `PreMain`
