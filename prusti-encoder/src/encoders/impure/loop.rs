@@ -126,15 +126,15 @@ impl<'vir: 'a, 'a, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                     .or_insert(*capability);
             }
         }
-        let mut held = held.into_iter().map(behind_shared_ref).fold(
-            Vec::new(),
-            |mut held, place| {
-                if !held.contains(&place) {
-                    held.push(place);
-                }
-                held
-            },
-        );
+        let mut held =
+            held.into_iter()
+                .map(behind_shared_ref)
+                .fold(Vec::new(), |mut held, place| {
+                    if !held.contains(&place) {
+                        held.push(place);
+                    }
+                    held
+                });
         // A place's predicate is stated before those of the places behind it,
         // whose addresses are read from its snapshot.
         held.sort_by_key(|place| place.projection.len());

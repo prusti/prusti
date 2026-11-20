@@ -604,7 +604,7 @@ impl TaskEncoder for IndirectCastersEnc {
     }
 
     fn emit_outputs<'vir>(program: &mut task_encoder::Program<'vir>) {
-        for (methods, domain) in Self::all_outputs_local_no_errors(program) {
+        for (methods, domain) in Self::all_outputs_local(program) {
             for method in methods {
                 program.add_method(method);
             }

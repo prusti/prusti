@@ -113,7 +113,7 @@ impl TaskEncoder for ArityEnc {
     }
 
     fn emit_outputs<'vir>(program: &mut task_encoder::Program<'vir>) {
-        let mut axioms = Self::all_outputs_local_no_errors(program)
+        let mut axioms = Self::all_outputs_local(program)
             .into_iter()
             .flatten()
             .collect::<Vec<_>>();
