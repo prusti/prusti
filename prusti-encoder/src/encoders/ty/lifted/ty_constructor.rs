@@ -135,9 +135,7 @@ impl TaskEncoder for TyConstructorEnc {
 
     fn emit_outputs<'vir>(program: &mut task_encoder::Program<'vir>) {
         let (mut constructors, rank_axioms): (Vec<_>, Vec<_>) =
-            Self::all_outputs_local_no_errors(program)
-                .into_iter()
-                .unzip();
+            Self::all_outputs_local(program).into_iter().unzip();
         vir::with_vcx(|vcx| {
             let args = vcx.alloc_array(&[vcx.mk_local_decl(Self::UNKNOWN_TYPE_ID, vir::TYPE_INT)]);
             let unknown = vcx.mk_adt_constructor(Self::UNKNOWN_TYPE_NAME, args);

@@ -276,11 +276,11 @@ impl TaskEncoder for MirSpecEnc {
             let pre_args = all_args; // it should be ok to provide more keys than required
 
             // Encode each functional spec; one that cannot be encoded (e.g. it
-            // uses an unsupported feature) is reported at its own span.
-            let spec_count = pres.len() + posts.len() + pledges.len();
-            let pres: Vec<(vir::ExprBool<'_>, Span)> = pres
+            // uses an unsupported feature) is reported at its own span and
+            // encoded as `None`.
+            let pres: Vec<Option<(vir::ExprBool<'_>, Span)>> = pres
                 .iter()
-                .filter_map(|spec_def_id| {
+                .map(|spec_def_id| {
                     let spec = Self::encode_pure(vcx, deps, pre_ctx, *spec_def_id, "precondition")?;
                     let expr = spec.expr.downcast_ty::<vir::Bool>();
                     let span = vcx.tcx().def_span(*spec_def_id);
@@ -308,9 +308,9 @@ impl TaskEncoder for MirSpecEnc {
                 }
                 MirSpecEncMode::PureWithResult | MirSpecEncMode::PureWithoutResult => all_args,
             };
-            let posts: Vec<(vir::ExprBool<'_>, Span)> = posts
+            let posts: Vec<Option<(vir::ExprBool<'_>, Span)>> = posts
                 .iter()
-                .filter_map(|spec_def_id| {
+                .map(|spec_def_id| {
                     let span = vcx.tcx().def_span(*spec_def_id);
                     vcx.with_span(span, |vcx| {
                         let spec =
@@ -330,7 +330,7 @@ impl TaskEncoder for MirSpecEnc {
                 .collect();
             let pledges = pledges
                 .iter()
-                .filter_map(
+                .map(
                     |Pledge {
                          lhs: lhs_def_id,
                          rhs: rhs_def_id,
@@ -383,11 +383,13 @@ impl TaskEncoder for MirSpecEnc {
             // only some modes can encode (e.g. one reading through `&mut`,
             // which the pure modes do not support) is skipped only where those
             // modes are used (see `MirSpecEncOutput::skipped`).
-            let skipped = pres.len() + posts.len() + pledges.len() != spec_count;
-            let (pres, posts, pledges) = if skipped {
-                Default::default()
-            } else {
-                (pres, posts, pledges)
+            let (pres, posts, pledges, skipped) = match (
+                pres.into_iter().collect(),
+                posts.into_iter().collect(),
+                pledges.into_iter().collect(),
+            ) {
+                (Some(pres), Some(posts), Some(pledges)) => (pres, posts, pledges, false),
+                _ => (Vec::new(), Vec::new(), Vec::new(), true),
             };
             let data = MirSpecEncOutput {
                 pres,

@@ -513,7 +513,7 @@ impl TaskEncoder for MirBuiltinCastEnc {
     }
 
     fn emit_outputs<'vir>(program: &mut task_encoder::Program<'vir>) {
-        for local in Self::all_outputs_local_no_errors(program) {
+        for local in Self::all_outputs_local(program) {
             program.add_function(local.cast);
             if let Some(unsize) = local.unsize {
                 program.add_method(unsize);

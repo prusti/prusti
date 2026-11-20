@@ -27,7 +27,7 @@ pub type EncodeFullResult<'vir, E /*: TaskEncoder + 'vir + ?Sized*/> = Result<
 /// the record. A dependent that reports a dependency error marks the records
 /// it refers to (see [EncodeFullError::mark_reported]). The final error
 /// collection reports each failure whose record is not marked (see
-/// [TaskEncoder::all_outputs_local_no_errors]), so a failure is only left out
+/// [TaskEncoder::all_outputs_local]), so a failure is only left out
 /// once it was reported, and a dependent that drops the error cannot hide it.
 #[derive(Clone, Debug, Default)]
 pub struct ErrorReport(std::rc::Rc<std::cell::OnceCell<vir::Reported>>);
@@ -50,71 +50,79 @@ impl ErrorReport {
     }
 }
 
+/// What kind of failure a dependency error is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ErrorKind {
+    /// A limitation of the encoder, e.g. an unsupported feature.
+    Unsupported,
+    /// A mistake in the user's program, such as a specification that calls an
+    /// impure function.
+    Incorrect,
+    /// An internal error (a panic, a cycle or an enqueueing error), which is
+    /// reported as such, also when unsupported features are only warnings.
+    Internal,
+}
+
 /// One link of a dependency error: the encoder, the task it was encoding (or,
-/// for the last link, the error itself), the spans involved, optionally
-/// advice for the user on how to avoid the error, and, for the last link,
-/// whether the error is a mistake in the user's program rather than a
-/// limitation of the encoder, and whether it is an internal error (a panic, a
-/// cycle or an enqueueing error), which is reported as such, also when
-/// unsupported features are only warnings. The link for the failed dependency
-/// itself, the first of the chain, refers to the record of that failure.
+/// for the last link, the error itself), the spans involved, the kind of the
+/// failure that the chain passes on, and optionally advice for the user on
+/// how to avoid the error. The link for the failed dependency itself, the
+/// first of the chain, refers to the record of that failure.
 #[derive(Clone)]
 pub struct DependencyErrorLink {
     pub encoder: &'static str,
     pub message: String,
     pub spans: Vec<Span>,
+    pub kind: ErrorKind,
     pub help: Option<String>,
-    pub incorrect: bool,
-    pub internal: bool,
     pub(crate) report: Option<ErrorReport>,
 }
 
-// Manual implementation, so that the record (whose state depends on what has
-// been reported so far) does not show up in error messages.
+// Manual implementation: errors are shown to users through `Debug` (e.g. the
+// encoder errors of the final collection, or a panic on an error), and whether
+// the record is marked depends on what has been reported so far, so it is left
+// out to keep these messages independent of the reporting order.
 impl std::fmt::Debug for DependencyErrorLink {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DependencyErrorLink")
             .field("encoder", &self.encoder)
             .field("message", &self.message)
             .field("spans", &self.spans)
+            .field("kind", &self.kind)
             .field("help", &self.help)
-            .field("incorrect", &self.incorrect)
-            .field("internal", &self.internal)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
 impl DependencyErrorLink {
-    pub fn new(encoder: &'static str, message: String, spans: Vec<Span>) -> Self {
+    pub fn new(encoder: &'static str, message: String, spans: Vec<Span>, kind: ErrorKind) -> Self {
         Self {
             encoder,
             message,
             spans,
+            kind,
             help: None,
-            incorrect: false,
-            internal: false,
             report: None,
         }
+    }
+
+    /// The link for a task whose encoding failed with the dependency error
+    /// `chain`, which it passes on: it has the kind of the chain's root.
+    pub(crate) fn passing_on(
+        encoder: &'static str,
+        task: String,
+        spans: Vec<Span>,
+        chain: &[Self],
+    ) -> Self {
+        let kind = chain
+            .last()
+            .map_or(ErrorKind::Unsupported, |root| root.kind);
+        Self::new(encoder, task, spans, kind)
     }
 
     #[must_use]
     pub fn with_help(mut self, help: String) -> Self {
         self.help = Some(help);
-        self
-    }
-
-    /// Marks the error as a mistake in the user's program, such as a
-    /// specification that calls an impure function.
-    #[must_use]
-    pub fn incorrect(mut self) -> Self {
-        self.incorrect = true;
-        self
-    }
-
-    /// Marks the error as an internal error.
-    #[must_use]
-    pub(crate) fn internal(mut self) -> Self {
-        self.internal = true;
         self
     }
 }
@@ -153,6 +161,7 @@ impl<'vir, E: TaskEncoder + 'vir + ?Sized> EncodeFullError<'vir, E> {
             E::ENCODER_NAME,
             message,
             spans,
+            ErrorKind::Unsupported,
         )])
     }
 

@@ -1540,7 +1540,7 @@ impl TaskEncoder for CollectionOpsEnc {
     fn emit_outputs<'vir>(program: &mut task_encoder::Program<'vir>) {
         let mut functions = Vec::new();
         let mut axioms = Vec::new();
-        for output in Self::all_outputs_local_no_errors(program) {
+        for output in Self::all_outputs_local(program) {
             match output {
                 CollectionOpOutput::DomainMember(function, axs) => {
                     functions.push(function);

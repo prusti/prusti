@@ -21,17 +21,17 @@ use prusti_rustc_interface::{
     middle::ty,
     span::{DUMMY_SP, Span, def_id::DefId},
 };
-use task_encoder::{EncodeFullError, TaskEncoder, TaskEncoderDependencies};
+use task_encoder::{
+    DependencyErrorLink, EncodeFullError, ErrorKind, TaskEncoder, TaskEncoderDependencies,
+};
 
 /// The cause of an encoding error, reported when a function or method body, a
 /// contract or one of its specs cannot be encoded (e.g. an unsupported
-/// feature).
+/// feature): the link of the error's chain that holds the actual error, and
+/// the innermost span of the chain.
 pub(crate) struct DepError {
-    pub message: String,
-    pub help: Option<String>,
+    pub cause: DependencyErrorLink,
     pub span: Option<Span>,
-    pub incorrect: bool,
-    pub internal: bool,
 }
 
 impl DepError {
@@ -43,20 +43,19 @@ impl DepError {
     /// anything else is an unsupported-feature error. The latter two also
     /// name `what`.
     pub(crate) fn report(self, what: String, span: Span) -> PrustiError {
-        let error = if self.incorrect {
-            PrustiError::incorrect(self.message, span.into())
-        } else if self.internal {
-            PrustiError::internal(
-                format!("cannot encode {what}: {}", self.message),
+        let cause = self.cause;
+        let error = match cause.kind {
+            ErrorKind::Incorrect => PrustiError::incorrect(cause.message, span.into()),
+            ErrorKind::Internal => PrustiError::internal(
+                format!("cannot encode {what}: {}", cause.message),
                 span.into(),
-            )
-        } else {
-            PrustiError::unsupported(
-                format!("cannot encode {what}: {}", self.message),
+            ),
+            ErrorKind::Unsupported => PrustiError::unsupported(
+                format!("cannot encode {what}: {}", cause.message),
                 span.into(),
-            )
+            ),
         };
-        match self.help {
+        match cause.help {
             Some(help) => error.set_help(help),
             None => error,
         }
@@ -81,35 +80,32 @@ pub(crate) fn report_dep_error<'vir, E: TaskEncoder + ?Sized>(
     }
 }
 
-/// Extracts the cause of an encoding error. For a dependency error, the
-/// message, the help, whether the user's program is at fault and whether the
-/// cause is an internal error come from the root cause (the last link of the
-/// chain), which holds the actual error, and the span is the innermost one in
-/// the chain.
+/// Extracts the cause of an encoding error. For a dependency error, the cause
+/// is the root (the last link of the chain), which holds the actual error.
 fn dep_error<'vir, E: TaskEncoder + ?Sized>(err: &EncodeFullError<'vir, E>) -> DepError {
     match err {
-        EncodeFullError::DependencyError(chain) => {
-            let root = chain.last();
-            DepError {
-                message: root.map_or_else(
-                    || "encoding dependency error".to_string(),
-                    |link| link.message.clone(),
-                ),
-                help: root.and_then(|link| link.help.clone()),
-                span: chain
-                    .iter()
-                    .rev()
-                    .find_map(|link| link.spans.first().copied()),
-                incorrect: root.is_some_and(|link| link.incorrect),
-                internal: root.is_some_and(|link| link.internal),
-            }
-        }
+        EncodeFullError::DependencyError(chain) => DepError {
+            cause: chain.last().cloned().unwrap_or_else(|| {
+                DependencyErrorLink::new(
+                    E::ENCODER_NAME,
+                    "encoding dependency error".to_string(),
+                    Vec::new(),
+                    ErrorKind::Unsupported,
+                )
+            }),
+            span: chain
+                .iter()
+                .rev()
+                .find_map(|link| link.spans.first().copied()),
+        },
         other => DepError {
-            message: format!("{other:?}"),
-            help: None,
+            cause: DependencyErrorLink::new(
+                E::ENCODER_NAME,
+                format!("{other:?}"),
+                Vec::new(),
+                ErrorKind::Unsupported,
+            ),
             span: None,
-            incorrect: false,
-            internal: false,
         },
     }
 }

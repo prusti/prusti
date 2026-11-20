@@ -257,7 +257,7 @@ impl TaskEncoder for TraitImplEnc {
     }
 
     fn emit_outputs<'vir>(program: &mut task_encoder::Program<'vir>) {
-        for methods in Self::all_outputs_local_no_errors(program) {
+        for methods in Self::all_outputs_local(program) {
             for method in methods {
                 program.add_method(method);
             }
@@ -330,7 +330,7 @@ impl TaskEncoder for TraitImplConditionEnc {
     }
 
     fn emit_outputs<'vir>(program: &mut task_encoder::Program<'vir>) {
-        for domain in Self::all_outputs_local_no_errors(program) {
+        for domain in Self::all_outputs_local(program) {
             program.add_domain(domain);
         }
     }
@@ -839,7 +839,7 @@ impl TaskEncoder for TraitImplItemEnc {
     }
 
     fn emit_outputs<'vir>(program: &mut task_encoder::Program<'vir>) {
-        for domain in Self::all_outputs_local_no_errors(program) {
+        for domain in Self::all_outputs_local(program) {
             program.add_domain(domain);
         }
     }
@@ -1226,7 +1226,7 @@ impl TaskEncoder for TraitImplDefaultFnEnc {
     }
 
     fn emit_outputs<'vir>(program: &mut task_encoder::Program<'vir>) {
-        for domain in Self::all_outputs_local_no_errors(program) {
+        for domain in Self::all_outputs_local(program) {
             program.add_domain(domain);
         }
     }

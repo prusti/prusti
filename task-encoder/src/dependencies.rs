@@ -21,14 +21,10 @@ impl<'vir, E: TaskEncoder + 'vir + ?Sized> TaskEncoderDependencies<'vir, E> {
     pub fn check_cycle(&self) -> Result<(), EncodeFullError<'vir, E>> {
         if let Some(task_key) = self.task_key.as_ref() {
             if E::with_cache(move |cache| {
-                matches!(
-                    cache.borrow().get(task_key),
-                    Some(
-                        TaskEncoderCacheState::Encoded { .. }
-                            | TaskEncoderCacheState::ErrorEncode { .. }
-                            | TaskEncoderCacheState::ErrorEnqueue { .. }
-                    ),
-                )
+                cache
+                    .borrow()
+                    .get(task_key)
+                    .is_some_and(TaskEncoderCacheState::is_finished)
             }) {
                 return Err(EncodeFullError::AlreadyEncoded);
             }
@@ -46,68 +42,61 @@ impl<'vir, E: TaskEncoder + 'vir + ?Sized> TaskEncoderDependencies<'vir, E> {
             let task_key = EOther::task_to_key(&task);
             EOther::with_cache(|cache| {
                 let mut cache = cache.borrow_mut();
-                match cache.get_mut(&task_key) {
+                if let Some(failure) = cache
+                    .get_mut(&task_key)
+                    .and_then(TaskEncoderCacheState::failure_mut)
+                {
                     // TODO: we might push duplicate spans here.
                     // It would be nice to reliably have one span per error location here.
-                    Some(TaskEncoderCacheState::ErrorEncode { spans, .. }) => spans.push(span),
-                    Some(TaskEncoderCacheState::ErrorEnqueue { spans, .. }) => spans.push(span),
-                    _ => {}
+                    failure.spans.push(span);
                 }
             });
         }
         res.map_err(|err| {
             let task_key = EOther::task_to_key(&task);
-            let mut chain = vec![DependencyErrorLink::new(
-                EOther::ENCODER_NAME,
-                EOther::describe_task(task),
-                span.into_iter().collect(),
-            )];
-            match err {
-                TaskEncoderError::EnqueueingError(_) => chain.push(
-                    DependencyErrorLink::new(
-                        EOther::ENCODER_NAME,
-                        "? EnqueueingError".to_string(),
-                        Vec::new(),
-                    )
-                    .internal(),
-                ),
-                TaskEncoderError::EncodingError(err) => chain.push(DependencyErrorLink::new(
+            let root = |message, kind| {
+                vec![DependencyErrorLink::new(
                     EOther::ENCODER_NAME,
-                    EOther::describe_error(err),
+                    message,
                     Vec::new(),
-                )),
+                    kind,
+                )]
+            };
+            let rest = match err {
+                TaskEncoderError::EnqueueingError(_) => {
+                    root("? EnqueueingError".to_string(), ErrorKind::Internal)
+                }
+                TaskEncoderError::EncodingError(err) => {
+                    root(EOther::describe_error(err), ErrorKind::Unsupported)
+                }
                 // Flatten the nested chain so the underlying root cause (e.g. an
                 // unsupported-feature message) is preserved instead of being
                 // collapsed to an opaque "? DependencyError".
-                TaskEncoderError::DependencyError(items) => chain.extend(items),
-                TaskEncoderError::CyclicError => chain.push(
-                    DependencyErrorLink::new(
-                        EOther::ENCODER_NAME,
-                        "? CyclicError".to_string(),
-                        Vec::new(),
-                    )
-                    .internal(),
-                ),
-                TaskEncoderError::PanicError(msg) => chain.push(
-                    DependencyErrorLink::new(
-                        EOther::ENCODER_NAME,
-                        format!("the encoder panicked: {msg}"),
-                        Vec::new(),
-                    )
-                    .internal(),
-                ),
+                TaskEncoderError::DependencyError(items) => items,
+                TaskEncoderError::CyclicError => {
+                    root("? CyclicError".to_string(), ErrorKind::Internal)
+                }
+                TaskEncoderError::PanicError(msg) => {
+                    root(format!("the encoder panicked: {msg}"), ErrorKind::Internal)
+                }
                 TaskEncoderError::Reported(reported) => return EncodeFullError::Reported(reported),
-            }
+            };
+            let mut link = DependencyErrorLink::passing_on(
+                EOther::ENCODER_NAME,
+                EOther::describe_task(task),
+                span.into_iter().collect(),
+                &rest,
+            );
             // A dependent that reports this error marks the linked record, so
             // that the final collection leaves the dependency's failure out.
-            chain[0].report = EOther::with_cache(|cache| match cache.borrow().get(&task_key) {
-                Some(
-                    TaskEncoderCacheState::ErrorEncode { report, .. }
-                    | TaskEncoderCacheState::ErrorEnqueue { report, .. },
-                ) => Some(report.clone()),
-                _ => None,
+            link.report = EOther::with_cache(|cache| {
+                let cache = cache.borrow();
+                let failure = cache
+                    .get(&task_key)
+                    .and_then(TaskEncoderCacheState::failure);
+                failure.map(|failure| failure.report.clone())
             });
-            EncodeFullError::DependencyError(chain)
+            EncodeFullError::DependencyError(std::iter::once(link).chain(rest).collect())
         })
         .and_then(|result| {
             self.check_cycle()?;
