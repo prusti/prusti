@@ -3,12 +3,16 @@ error: [Prusti: invalid specification] this trigger set does not mention the bou
    |
 12 | #[requires(forall(|n: usize, res: usize| count(n) == res ==> true, triggers=[(count(n),)]))]
    |                                                                               ^^^^^^^^
+   |
+   = note: all preconditions, postconditions and pledges of the function are skipped where this spec cannot be encoded
 
 error: [Prusti: invalid specification] a trigger cannot contain a conditional (`if`, `match`, `&&` or `||`)
   --> $DIR/forall_triggers.rs:15:82
    |
 15 | #[requires(forall(|n: usize, res: usize| count(n) == res ==> true, triggers=[(if res == 5 {count(n)} else {3},)]))]
    |                                                                                  ^^^^^^^^
+   |
+   = note: all preconditions, postconditions and pledges of the function are skipped where this spec cannot be encoded
 
 error: aborting due to 2 previous errors
 
