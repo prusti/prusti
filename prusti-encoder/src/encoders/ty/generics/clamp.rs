@@ -58,7 +58,7 @@ impl TaskEncoder for ClampEnc {
     }
 
     fn emit_outputs<'vir>(program: &mut task_encoder::Program<'vir>) {
-        for function in Self::all_outputs_local_no_errors(program) {
+        for function in Self::all_outputs_local(program) {
             program.add_function(function);
         }
     }

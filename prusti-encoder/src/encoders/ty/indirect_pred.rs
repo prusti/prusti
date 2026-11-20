@@ -1197,9 +1197,7 @@ impl TaskEncoder for IndirectPredEnc {
     }
 
     fn emit_outputs<'vir>(program: &mut task_encoder::Program<'vir>) {
-        for (predicate, extend, graft_shallow, element) in
-            Self::all_outputs_local_no_errors(program)
-        {
+        for (predicate, extend, graft_shallow, element) in Self::all_outputs_local(program) {
             program.add_predicate(predicate);
             if let Some(element) = element {
                 program.add_predicate(element);

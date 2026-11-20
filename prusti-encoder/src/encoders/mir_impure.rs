@@ -1174,12 +1174,12 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             None => None,
         };
         state.ok_or_else(|| {
-            self.unsupported(
+            EncodeFullError::unsupported(
                 format!(
                     "INTERNAL ERROR: no PCG state for the keys of {}",
                     node.to_short_string(self.pcg_ctxt())
                 ),
-                self.current_span(),
+                vec![self.current_span()],
             )
         })
     }
@@ -1299,15 +1299,15 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         };
         if self.is_expanded_in(current, pcg) {
             if ty.ty.is_box() || ty.ty.is_array() || ty.ty.is_enum() && ty.variant_index.is_none() {
-                return Err(self.unsupported(
+                return Err(EncodeFullError::unsupported(
                     format!("INTERNAL ERROR: the value of the expanded place `{current:?}`"),
-                    self.current_span(),
+                    vec![self.current_span()],
                 ));
             }
             let fields = current.expand_field(None, ctxt).map_err(|_| {
-                self.unsupported(
+                EncodeFullError::unsupported(
                     format!("INTERNAL ERROR: no fields of the expanded place `{current:?}`"),
-                    self.current_span(),
+                    vec![self.current_span()],
                 )
             })?;
             let mut values = Vec::with_capacity(fields.len());
@@ -1360,9 +1360,9 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 pure.expect_array().index(parent_value.downcast_ty(), index)
             }
             _ => {
-                return Err(self.unsupported(
+                return Err(EncodeFullError::unsupported(
                     format!("INTERNAL ERROR: reading `{current:?}` from its enclosing place"),
-                    self.current_span(),
+                    vec![self.current_span()],
                 ));
             }
         }))
@@ -1732,12 +1732,12 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         fold_or_unfold: FoldOrUnfold,
     ) -> EncodeResult<'vir, (), E> {
         if base.label() == Some(LifetimeProjectionLabel::Future) {
-            return Err(self.unsupported(
+            return Err(EncodeFullError::unsupported(
                 format!(
                     "INTERNAL ERROR: {} is folded or unfolded while it is a future node",
                     base.to_short_string(self.pcg_ctxt())
                 ),
-                self.current_span(),
+                vec![self.current_span()],
             ));
         }
         let place = base.base();
@@ -3176,12 +3176,18 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             if let Some(node) = disagreeing.first()
                 && !body[block].is_cleanup
             {
-                return Err(self.unsupported(
+                return Err(EncodeFullError::unsupported(
                     format!(
                         "INTERNAL ERROR: the predecessors of {block:?} disagree on where the predicates of {} were created",
                         node.to_short_string(self.pcg_ctxt())
                     ),
-                    body.source_info(mir::Location { block, statement_index: 0 }).span,
+                    vec![
+                        body.source_info(mir::Location {
+                            block,
+                            statement_index: 0,
+                        })
+                        .span,
+                    ],
                 ));
             }
             self.visit_basic_block_data(block, &body[block])?;
