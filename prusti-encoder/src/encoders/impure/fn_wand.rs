@@ -770,19 +770,24 @@ impl TaskEncoder for WandEnc {
                 .into_iter()
                 .filter_map(|hyper_edge| {
                     let (sources, mut targets) = hyper_edge.into_tuple();
-                    // We don't want to emit an identity wand, like P --* P. This can happen when
-                    // PCG returns self-edges, like for fn(x: &'a mut &'b i32) where 'b is in
-                    // invariant position and we therefore have an edge x|'b -> x|'b.
-                    // Currently, these edges also prevent us from emitting indirect postconditions.
+                    // The PCG gives an argument's lifetime projection in an
+                    // invariant position an edge to the argument's own
+                    // post-state (e.g. `x|'b -> x|'b` for `x: &'a mut &'b i32`,
+                    // or `x|RegionsIn(T) -> x|RegionsIn(T)` for `x: T`). The
+                    // encoding gives the post-state the predicate of the
+                    // pre-state, so such a target is the source the wand gives
+                    // back: requiring it on the left would make the wand
+                    // unappliable (the argument's predicate was given to the
+                    // callee, e.g. moved into the result). These targets are
+                    // left out, and a wand without other targets is not emitted.
                     // TODO: we might want to emit these identity wands in the future to attach functional
-                    // specifications to them. We still need to emit the resources on the wand's LHS.
-                    let mut sources_as_nodes = sources
+                    // specifications to them.
+                    let sources_as_nodes = sources
                         .iter()
                         .map(|&s| s.to_function_shape_node())
                         .collect::<Vec<_>>();
-                    sources_as_nodes.sort();
-                    targets.sort();
-                    if sources_as_nodes == targets {
+                    targets.retain(|target| !sources_as_nodes.contains(target));
+                    if targets.is_empty() {
                         return None;
                     }
                     Some(WandData::new(targets, sources, pledges.clone()))
