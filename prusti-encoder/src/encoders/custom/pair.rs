@@ -80,7 +80,7 @@ impl TaskEncoder for PairUseEnc {
 
 #[derive(Debug, Clone)]
 struct Pair<'vir> {
-    self_ty: vir::DomainIdn<'vir, vir::Pair>,
+    self_ty: vir::DomainIdnPair<'vir>,
     constructor: vir::AdtConstructor<'vir>,
 }
 
