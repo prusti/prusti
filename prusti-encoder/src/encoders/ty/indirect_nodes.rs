@@ -180,6 +180,24 @@ impl<'vir> NodePredicates<'vir> {
         self.graph.interval(p)
     }
 
+    /// `snap` extended at each position of `keys` through the predicate with
+    /// its key there, outermost first.
+    pub fn extend_with_keys(
+        &self,
+        mut snap: vir::ExprSnap<'vir>,
+        keys: &[(LifetimePosition, vir::ExprSnap<'vir>)],
+    ) -> vir::ExprSnap<'vir> {
+        for p in self.graph.positions_outermost_first() {
+            if let Some(&(_, key)) = keys.iter().find(|(q, _)| *q == p) {
+                let (lo, hi) = self.graph.interval(p);
+                snap = self
+                    .ind
+                    .extend_from(snap, key, self.tys, self.consts, lo, hi);
+            }
+        }
+        snap
+    }
+
     pub fn deep_snap(&self, snap: vir::ExprSnap<'vir>) -> vir::ExprSnap<'vir> {
         let block = self.block(snap);
         block.fold(&block.positions())

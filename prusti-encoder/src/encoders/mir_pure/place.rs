@@ -230,9 +230,13 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
             self.uses.read(local, 0);
             self.input(local)?
         };
-        // Only reads behind a `&mut` need the extension.
-        let in_deep_snap = self.has_deep_snap(local) && self.derefs_mut_ref(place);
-        let snap = if in_deep_snap {
+        // Only reads behind a `&mut` need the extension. A spec block's
+        // inputs are deep snapshots already (see the impure encoder's
+        // `deep_place_snap`).
+        let reads_mut_ref = self.derefs_mut_ref(place);
+        let in_deep_snap = reads_mut_ref
+            && (self.has_deep_snap(local) || matches!(self.kind, PureKind::SpecBlock(_)));
+        let snap = if in_deep_snap && self.has_deep_snap(local) {
             self.deep_snap(local, snap)?
         } else {
             snap
