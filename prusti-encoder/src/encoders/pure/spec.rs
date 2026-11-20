@@ -16,7 +16,7 @@ use vir::{CastType, HasType, Reify};
 use crate::encoders::{
     MirLocalDefEncTask, MirPureEnc,
     mir_pure::{ExprInput, MirPureEncOutput, PureKind},
-    ty::generics::{GArgs, GParams},
+    ty::generics::{GArgs, GParams, identity_params},
 };
 pub struct MirSpecEnc;
 
@@ -128,6 +128,35 @@ struct SpecEncCtx<'vir> {
     substs: ty::GenericArgsRef<'vir>,
 }
 
+/// The generic arguments of the spec item `spec_def_id`, given the arguments
+/// `fn_args` of the function it specifies.
+///
+/// A spec item has the type and const parameters of its function in the same
+/// order, so they are matched by position. Lifetimes cannot be matched this
+/// way: only early-bound lifetimes get generic arguments (late-bound ones are
+/// bound in the function's signature instead), and whether a lifetime is early-
+/// or late-bound depends on the signature. A lifetime that only appears in the
+/// function's return type is early-bound, but it is late-bound in the
+/// postcondition item, which takes the result as an argument. So the spec
+/// item's lifetimes are erased.
+fn spec_args<'vir>(
+    vcx: &'vir vir::VirCtxt<'vir>,
+    fn_args: ty::GenericArgsRef<'vir>,
+    spec_def_id: DefId,
+) -> ty::GenericArgsRef<'vir> {
+    let mut fn_args = fn_args.iter().filter(|arg| arg.as_region().is_none());
+    vcx.tcx()
+        .mk_args_from_iter(identity_params(vcx.tcx(), spec_def_id).iter().map(|arg| {
+            if arg.as_region().is_some() {
+                vcx.tcx().lifetimes.re_erased.into()
+            } else {
+                fn_args.next().expect(
+                    "spec item with more type or const parameters than the function it specifies",
+                )
+            }
+        }))
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum MirSpecEncMode {
     /// Assumes the arguments and the result are available in local variables
@@ -182,12 +211,7 @@ impl TaskEncoder for MirSpecEnc {
                 // if the spec is not inherited and we are currently building the spec for the actual function we're encoding,
                 // do not use substitution
                 if !inherited && def_id == context_def_id {
-                    vcx.tcx().mk_args_from_iter(
-                        context_params
-                            .rust_params()
-                            .iter()
-                            .filter(|arg| arg.as_region().is_none()),
-                    )
+                    context_params.rust_params()
                 } else {
                     substs
                 }
@@ -197,11 +221,7 @@ impl TaskEncoder for MirSpecEnc {
                 MirLocalDefEncTask::LocalSubsts {
                     def_id,
                     context_def_id,
-                    substs: if def_id == context_def_id {
-                        context_params.rust_params()
-                    } else {
-                        substs
-                    },
+                    substs: substs_for(false),
                     all_locals: false,
                 },
             )?;
@@ -380,7 +400,10 @@ impl MirSpecEnc {
                 mode: ctx.enc_mode,
             },
             parent_def_id: def_id,
-            gargs: GArgs::new(GParams::from(ctx.context_def_id), ctx.substs),
+            gargs: GArgs::new(
+                GParams::from(ctx.context_def_id),
+                spec_args(vcx, ctx.substs, def_id),
+            ),
         });
         spec.inspect_err(|err| {
             // Not a failure of the spec; see `check_cycle` in `do_encode_full`.
