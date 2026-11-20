@@ -1,5 +1,3 @@
-//@ known-failure
-
 #![allow(unused)]
 
 use prusti_contracts::*;
@@ -34,8 +32,17 @@ fn operations_equivalent2(x: i64, y: i64) {
     prusti_assert!(Int::from(x + y) == Int::from(x) + Int::from(y));
     prusti_assert!(Int::from(x - y) == Int::from(x) - Int::from(y));
     prusti_assert!(Int::from(x * y) == Int::from(x) * Int::from(y));
-    prusti_assert!(Int::from(x / y) == Int::from(x) / Int::from(y));
-    prusti_assert!(Int::from(x % y) == Int::from(x) % Int::from(y));
+    // `Int` division and remainder are Euclidean, while `/` and `%` on `i64`
+    // truncate towards zero: for the positive `y` here, they differ when `x`
+    // is negative and not a multiple of `y`.
+    prusti_assert!(x >= 0 ==> Int::from(x / y) == Int::from(x) / Int::from(y));
+    prusti_assert!(x >= 0 ==> Int::from(x % y) == Int::from(x) % Int::from(y));
+    prusti_assert!(
+        x < 0 && x % y != 0 ==> Int::from(x / y) == Int::from(x) / Int::from(y) + Int::from(1)
+    );
+    prusti_assert!(
+        x < 0 && x % y != 0 ==> Int::from(x % y) == Int::from(x) % Int::from(y) - Int::from(y)
+    );
 }
 
 fn neutral_elements(a: Int) {

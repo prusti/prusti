@@ -162,6 +162,12 @@ flags; this file collects working norms and pitfalls.
   Details that don't matter for the point can be simplified (elide unrelated statements,
   shorten incidental names), but keep the names of what the PR is about exactly as
   emitted, so readers can search for them in the code and in their own dumps.
+- A PR that changes a crate published from `prusti-contracts/` (`prusti-contracts`,
+  `prusti-contracts-proc-macros`, `prusti-specs`), even only a doc comment, bumps that
+  crate's patch version in its `Cargo.toml` and in every lock file that lists it
+  (`prusti-contracts/Cargo.lock`, and the root `Cargo.lock` for `prusti-specs`).
+  Otherwise the `publish` check (`.github/workflows/crates-io.yml`) fails; merging to
+  `main` publishes the new version to crates.io.
 - Review comments on someone else's PR may be about anything, however small, but each one
   must be right: a mistaken comment sends the author after a problem that does not exist
   and undermines trust in every other comment.

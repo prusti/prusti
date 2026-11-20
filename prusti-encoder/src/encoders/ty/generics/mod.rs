@@ -5,7 +5,7 @@ mod param_typ;
 mod args_ty;
 mod args;
 pub mod r#trait;
-pub mod sizedness;
+pub mod builtin_impls;
 pub mod trait_fn;
 pub mod trait_impls;
 mod ty_expr;

@@ -139,6 +139,13 @@ mod private_shared {
 
     /// A mathematical (unbounded) integer type.
     ///
+    /// Division and remainder are Euclidean: they behave like `div_euclid` and
+    /// `rem_euclid` on primitive integers, so the remainder is never negative.
+    /// Rust's `/` and `%` on primitive integers truncate instead, so the two
+    /// differ when the dividend is negative and not a multiple of the divisor:
+    /// `Int::from(-7) / Int::from(2)` is `-4` and `Int::from(-7) % Int::from(2)`
+    /// is `1`, whereas `-7 / 2` is `-3` and `-7 % 2` is `-1`.
+    ///
     /// It should not be constructed by executable Rust code, hence the
     /// private unit inside.
     #[derive(Clone, Copy)]
