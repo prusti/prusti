@@ -75,14 +75,14 @@ impl<'vir> ClosureBody<'vir> {
     fn embed(self, vcx: &'vir vir::VirCtxt<'vir>, name: &'vir str) -> ExprRet<'vir> {
         use vir::Reify;
         let ClosureBody {
-            def_id,
-            expr,
-            inputs,
+            def_id: cl_def_id,
+            expr: body,
+            inputs: reify_args,
             captures,
         } = self;
         vcx.mk_lazy_expr(
             name,
-            expr.ty(),
+            body.ty(),
             Box::new(move |vcx, lctx: ExprInput<'vir>| {
                 let captures = captures
                     .iter()
@@ -93,7 +93,7 @@ impl<'vir> ClosureBody<'vir> {
                             .collect()
                     })
                     .collect::<IndexVec<_, _>>();
-                expr.reify(vcx, (def_id, inputs, lctx.2, vcx.alloc(captures)))
+                body.reify(vcx, (cl_def_id, reify_args, lctx.2, vcx.alloc(captures)))
                     .kind
             }),
         )
@@ -885,7 +885,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                     return Err(EncodeFullError::incorrect(
                         "a trigger cannot contain a conditional (`if`, `match`, `&&` or `||`)"
                             .to_string(),
-                        term.source_info.span,
+                        vec![term.source_info.span],
                     ));
                 }
 
@@ -1077,7 +1077,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                             "a trigger cannot contain a call that never returns, such as \
                              `panic!()`"
                                 .to_string(),
-                            term.source_info.span,
+                            vec![term.source_info.span],
                         ));
                     }
                     // target is none if the call diverges (i.e. returns !), in
@@ -1144,7 +1144,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                                 "use of impure function `{}` in pure code is not allowed",
                                 self.vcx.tcx().def_path_str(def_id)
                             ),
-                            term.source_info.span,
+                            vec![term.source_info.span],
                         ))
                     }
                 });
@@ -1906,13 +1906,13 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                 SpecBuiltin::Forall | SpecBuiltin::Exists => {
                     return Err(EncodeFullError::incorrect(
                         "a trigger cannot contain a quantifier".to_string(),
-                        span,
+                        vec![span],
                     ));
                 }
                 SpecBuiltin::SpecBlock => {
                     return Err(EncodeFullError::incorrect(
                         "a trigger cannot contain a specification block".to_string(),
-                        span,
+                        vec![span],
                     ));
                 }
                 // Viper allows `old` in a trigger; the other states have no

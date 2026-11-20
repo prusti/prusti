@@ -7,7 +7,7 @@
 
 use crate::encoders::{MirPureEnc, mir_shared::EncodeResult};
 use prusti_rustc_interface::{
-    middle::mir,
+    middle::{mir, ty},
     span::{Span, Symbol, def_id::DefId},
 };
 use task_encoder::EncodeFullError;
@@ -28,13 +28,12 @@ pub(super) fn check_head<'vir>(
     body: &mir::Body<'vir>,
     span: Span,
 ) -> EncodeResult<'vir, (), MirPureEnc> {
-    let error = |message: String| Err(EncodeFullError::incorrect(message, span));
+    let error = |message: String| Err(EncodeFullError::incorrect(message, vec![span]));
     let variable = || {
         error(format!(
             "a trigger must be {HEADS}, not a bare variable or constant"
         ))
     };
-    let closure = mir::Local::from_u32(1);
     let mut place = mir::Place::from(mir::RETURN_PLACE);
     loop {
         let mut projection = place.projection.as_slice();
@@ -45,7 +44,7 @@ pub(super) fn check_head<'vir>(
             // A captured place (a variable, or e.g. the field of a variable
             // read by value), a field of the closure.
             [mir::ProjectionElem::Deref, mir::ProjectionElem::Field(..)]
-                if place.local == closure =>
+                if place.local == ty::CAPTURE_STRUCT_LOCAL =>
             {
                 return error(format!(
                     "a trigger must be {HEADS}, not a value from outside the quantifier"
@@ -159,7 +158,7 @@ pub(super) fn check_set<'vir>(
     let Some(&first) = closures.first() else {
         return Err(EncodeFullError::incorrect(
             "a trigger set must contain at least one expression".to_string(),
-            span,
+            vec![span],
         ));
     };
     let names = qvars.iter().map(|qvar| qvar.name).collect::<Vec<_>>();
@@ -194,7 +193,7 @@ pub(super) fn check_set<'vir>(
             term_span(0).to(term_span(closures.len() - 1)),
         ),
     };
-    Err(EncodeFullError::incorrect(message, span))
+    Err(EncodeFullError::incorrect(message, vec![span]))
 }
 
 /// The name of the quantified variable at position `idx` of the trigger
