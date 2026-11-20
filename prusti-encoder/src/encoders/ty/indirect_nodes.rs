@@ -137,6 +137,11 @@ impl<'vir> NodePredicates<'vir> {
     }
 
     /// `value` with every reference collapsed, the shallow snapshot.
+    /// Whether the predicates have a body (see `IndirectPredRef::has_body`).
+    pub fn has_body(&self) -> bool {
+        self.ind.has_body
+    }
+
     pub fn shallow(&self, value: vir::ExprSnap<'vir>) -> vir::ExprSnap<'vir> {
         if self.graph.is_empty() {
             return value;
