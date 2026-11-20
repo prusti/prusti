@@ -1116,9 +1116,11 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
     ) -> EncodeResult<'vir, (), E> {
         let ctxt = self.pcg_ctxt();
         let ty = dest.ty(ctxt).ty;
-        // The predicates of a type parameter or alias are abstract, so they
-        // cannot be folded; a value of such a type comes with them.
-        if matches!(ty.kind(), ty::Param(_) | ty::Alias(..)) {
+        // Abstract predicates, e.g. of a type parameter, cannot be folded; a
+        // value of such a type comes with them.
+        if !NodePredicates::new(RustTyDecomposition::from_ty(ty, self.def_id), self.deps)?
+            .has_body()
+        {
             return Ok(());
         }
         let involved = graph

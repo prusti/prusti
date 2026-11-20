@@ -65,6 +65,10 @@ pub struct IndirectPredRef<'vir> {
     /// element `v` at index `i`. The array's predicate holds one per element;
     /// the index makes them distinct even where elements are equal.
     pub element: Option<ElementPredIdn<'vir>>,
+    /// Whether the predicate has a body; that of a type parameter, or of a
+    /// type whose predicate is not defined yet (e.g. a raw pointer), is
+    /// abstract and can be neither folded nor unfolded.
+    pub has_body: bool,
 }
 
 pub type ElementPredIdn<'vir> = PredicateIdn<
@@ -759,6 +763,14 @@ impl TaskEncoder for IndirectPredEnc {
                 )),
                 _ => None,
             };
+            let has_body = match &ty.specifics {
+                TySpecifics::StructLike(_)
+                | TySpecifics::EnumLike(_)
+                | TySpecifics::MutRef(_)
+                | TySpecifics::ImmRef(_) => true,
+                TySpecifics::ArrayLike(data) => !data.slice,
+                _ => false,
+            };
             deps.emit_output_ref(
                 *task_key,
                 IndirectPredRef {
@@ -767,6 +779,7 @@ impl TaskEncoder for IndirectPredEnc {
                     graft,
                     shallow,
                     element,
+                    has_body,
                 },
             )?;
 
@@ -1121,6 +1134,7 @@ impl TaskEncoder for IndirectPredEnc {
                 _ => (None, None, None, None),
             };
 
+            debug_assert_eq!(body.is_some(), has_body);
             let predicate_decl = vcx.mk_predicate(
                 predicate,
                 (
