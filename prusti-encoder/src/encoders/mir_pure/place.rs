@@ -180,23 +180,86 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
         })
     }
 
-    /// The snapshot `snap` of `local`, extended through the local's indirect
-    /// predicates so that its `&mut`s hold their referents.
+    /// The snapshot `snap` of `place`'s local, extended through the local's
+    /// indirect predicates so that the `&mut`s that `place` reads hold their
+    /// referents. Only the positions the read needs are extended (see
+    /// `read_positions`): the others may not be held where it is read, e.g.
+    /// a field lent to the result in the post-state.
     fn deep_snap(
         &mut self,
-        local: mir::Local,
+        place: Place<'vir>,
         snap: ExprRet<'vir>,
     ) -> EncodeResult<'vir, ExprRet<'vir>, MirPureEnc> {
-        let ty = RustTyDecomposition::from_ty(self.body.local_decls[local].ty, self.context);
+        let ty = RustTyDecomposition::from_ty(self.body.local_decls[place.local].ty, self.context);
         let nodes = NodePredicates::new(ty, self.deps)?;
+        let positions = self.read_positions(nodes.clone(), place);
         Ok(self.vcx.mk_lazy_expr(
             "deep_snap",
             snap.ty(),
             Box::new(move |vcx, lctx: ExprInput<'vir>| {
                 use vir::Reify;
-                nodes.deep_snap(snap.reify(vcx, lctx)).kind
+                let snap = snap.reify(vcx, lctx);
+                match &positions {
+                    Some(positions) => nodes.deep_snap_at(snap, positions),
+                    None => nodes.deep_snap(snap),
+                }
+                .kind
             }),
         ))
+    }
+
+    /// The positions of `place`'s local whose predicates reading `place`
+    /// needs: those of the `&mut`s it dereferences and those in the type of
+    /// the value read. The regions come from the specification's signature,
+    /// since the body's are erased. `None` if they cannot be matched, in
+    /// which case all positions are read.
+    fn read_positions(
+        &self,
+        nodes: NodePredicates<'vir>,
+        place: Place<'vir>,
+    ) -> Option<Vec<LifetimePosition>> {
+        let tcx = self.vcx.tcx();
+        let arg = place.local.as_usize().checked_sub(1)?;
+        let mut ty = *self.arg_tys?.get(arg)?;
+        let nodes = nodes.in_ty(ty);
+        let mut variant = None;
+        let mut positions = Vec::new();
+        for elem in place.projection {
+            ty = match (*elem, ty.kind()) {
+                (mir::ProjectionElem::Deref, TyKind::Ref(region, inner, mutability)) => {
+                    if mutability.is_mut() {
+                        let region_positions =
+                            nodes.positions_of(PcgLifetime::Region((*region).into()));
+                        if region_positions.is_empty() {
+                            return None;
+                        }
+                        positions.extend(region_positions);
+                    }
+                    *inner
+                }
+                (mir::ProjectionElem::Deref, _) if ty.is_box() => ty.expect_boxed_ty(),
+                (mir::ProjectionElem::Field(field, _), TyKind::Adt(..) | TyKind::Tuple(_)) => {
+                    mir::PlaceTy::field_ty(tcx, ty, variant, field).skip_normalization()
+                }
+                (mir::ProjectionElem::Downcast(_, index), TyKind::Adt(..)) => {
+                    variant = Some(index);
+                    continue;
+                }
+                (
+                    mir::ProjectionElem::Index(_)
+                    | mir::ProjectionElem::ConstantIndex { .. }
+                    | mir::ProjectionElem::Subslice { .. },
+                    _,
+                ) => ty.builtin_index()?,
+                _ => return None,
+            };
+            variant = None;
+        }
+        let lifetimes: IndexVec<_, PcgLifetime<'vir>> = tcx.extract_regions(ty);
+        for lifetime in lifetimes {
+            positions.extend(nodes.positions_of(lifetime));
+        }
+        Some(positions)
     }
 
     /// A read of `place` at the versions `curr_ver` of the locals, in the
@@ -237,7 +300,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
         let in_deep_snap = reads_mut_ref
             && (self.has_deep_snap(local) || matches!(self.kind, PureKind::SpecBlock(_)));
         let snap = if in_deep_snap && self.has_deep_snap(local) {
-            self.deep_snap(local, snap)?
+            self.deep_snap(place, snap)?
         } else {
             snap
         };

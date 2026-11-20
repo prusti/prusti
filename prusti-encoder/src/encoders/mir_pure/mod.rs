@@ -26,17 +26,21 @@ use crate::encoders::{
     mir_shared::{EncodeResult, PureRvalueEnc, RustcIntrinsic, unsupported_opaque},
     ty::{
         RustTyDecomposition,
-        generics::{GArgs, GParams},
+        generics::{GArgs, GParams, lifetime_position::LifetimePosition},
         indirect_nodes::NodePredicates,
         use_pure::{TyUsePure, TyUsePureEnc},
     },
 };
 use itertools::Itertools;
-use pcg::utils::Place;
+use pcg::{
+    borrow_pcg::{GeneralizedLifetime as PcgLifetime, region_projection::ExtractRegionsCtxt},
+    utils::Place,
+};
 use prusti_interface::environment::body::MirBody;
 use prusti_rustc_interface::{
     abi,
     data_structures::graph::{self, Successors},
+    hir::def::DefKind,
     index::{IndexSlice, IndexVec},
     middle::{
         mir,
@@ -446,6 +450,9 @@ struct Enc<'vir: 'enc, 'enc> {
     /// The item that `context` holds the generic parameters of.
     context_def_id: DefId,
     body: &'enc mir::Body<'vir>,
+    /// For a specification, the types of its arguments with their regions,
+    /// which the body's types have erased (see `read_positions`).
+    arg_tys: Option<&'vir [ty::Ty<'vir>]>,
     rev_doms: rev_doms::ReverseDominators,
     /// The `ghost!` and `closure!` arms of the body (the same detection the
     /// impure encoder uses, via `SpecBlocks`).
@@ -584,6 +591,20 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
             context: gargs.context(),
             context_def_id,
             body,
+            arg_tys: match kind {
+                PureKind::Spec { .. }
+                    if matches!(vcx.tcx().def_kind(def_id), DefKind::Fn | DefKind::AssocFn) =>
+                {
+                    let tcx = vcx.tcx();
+                    let sig = tcx
+                        .fn_sig(def_id)
+                        .instantiate(tcx, tcx.mk_args(gargs.args()))
+                        .skip_normalization();
+                    let sig = tcx.liberate_late_bound_regions(def_id, sig);
+                    Some(vcx.alloc_slice(sig.inputs()))
+                }
+                _ => None,
+            },
             rev_doms,
             spec_arms: SpecArms::for_body(def_id, body),
             deps,

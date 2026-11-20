@@ -21,7 +21,7 @@ use super::{
 
 /// The predicates of the nodes on places of a type: one `p_T_ind` per
 /// occurrence of the node's generalized lifetime in the type.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct NodePredicates<'vir> {
     graph: EnclosureGraph<'vir>,
     /// The lifetime of each position, against which the PCG's lifetimes are
@@ -219,6 +219,26 @@ impl<'vir> NodePredicates<'vir> {
     pub fn deep_snap(&self, snap: vir::ExprSnap<'vir>) -> vir::ExprSnap<'vir> {
         let block = self.block(snap);
         block.fold(&block.positions())
+    }
+
+    /// `snap` extended through the predicates of `positions` and of the
+    /// positions enclosing them, outermost first.
+    pub fn deep_snap_at(
+        &self,
+        snap: vir::ExprSnap<'vir>,
+        positions: &[LifetimePosition],
+    ) -> vir::ExprSnap<'vir> {
+        let block = self.block(snap);
+        let included = block
+            .positions()
+            .into_iter()
+            .filter(|p| {
+                positions
+                    .iter()
+                    .any(|q| q == p || self.graph.ancestors(*q).contains(p))
+            })
+            .collect::<Vec<_>>();
+        block.fold(&included)
     }
 
     /// `snap` extended through the predicates of its positions other than
