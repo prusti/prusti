@@ -1612,6 +1612,67 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         preds
     }
 
+    /// The snapshot and keys of `base` with the parts of the fields of its
+    /// place that have no lifetimes, and so no node, read from the place: in
+    /// the state of `base`'s label, or, if it is current, in the current
+    /// state. A write to such a field while `base` is unfolded changes them.
+    fn with_current_data_fields(
+        &mut self,
+        base: NodeLp<'vir>,
+        base_ty: ty::Ty<'vir>,
+        mut snap: vir::ExprSnap<'vir>,
+        mut keys: Vec<(LifetimePosition, vir::ExprSnap<'vir>)>,
+    ) -> EncodeResult<
+        'vir,
+        (
+            vir::ExprSnap<'vir>,
+            Vec<(LifetimePosition, vir::ExprSnap<'vir>)>,
+        ),
+        E,
+    > {
+        let place = base.base().place();
+        let place_ty = place.ty(self.pcg_ctxt());
+        let has_fields = match place_ty.ty.kind() {
+            ty::Adt(adt, _) => {
+                !adt.is_box() && (place_ty.variant_index.is_some() || adt.is_struct())
+            }
+            ty::Tuple(_) => true,
+            _ => false,
+        };
+        if !has_fields {
+            return Ok((snap, keys));
+        }
+        let label = match base.base() {
+            MaybeLabelledPlace::Labelled(place) => Some(self.get_location_label(place.at())),
+            MaybeLabelledPlace::Current(_) => self.package_label.map(vir::OldLabel::Label),
+        };
+        let field_places = place.expand_field(None, self.pcg_ctxt()).map_err(|_| {
+            self.unsupported(
+                "INTERNAL ERROR: no fields for the place of a node".to_string(),
+                self.current_span(),
+            )
+        })?;
+        for (field, field_place) in field_places.into_iter().enumerate() {
+            let field_ty = field_place.ty(self.pcg_ctxt()).ty;
+            let lifetimes: IndexVec<_, GeneralizedLifetime<'vir>> =
+                self.pcg_ctxt().extract_regions(field_ty);
+            if !lifetimes.is_empty() {
+                continue;
+            }
+            let value = self.encode_place_with_snap(field_place)?.1;
+            let value = self.vcx.maybe_apply_label(value, label);
+            let child = Child {
+                node: base,
+                part: Part::Field(abi::FieldIdx::from_usize(field)),
+            };
+            snap = self.with_child_part(base, base_ty, snap, child, value)?;
+            for (_, key) in &mut keys {
+                *key = self.with_child_part(base, base_ty, key, child, value)?;
+            }
+        }
+        Ok((snap, keys))
+    }
+
     /// The snapshot and keys of `base` with each child's part replaced by the
     /// child's current one. A child's key changes while `base` is unfolded
     /// when what encloses it changes, e.g. a callee redirects a reference.
@@ -1619,8 +1680,8 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         &mut self,
         base: NodeLp<'vir>,
         base_ty: ty::Ty<'vir>,
-        mut snap: vir::ExprSnap<'vir>,
-        mut keys: Vec<(LifetimePosition, vir::ExprSnap<'vir>)>,
+        snap: vir::ExprSnap<'vir>,
+        keys: Vec<(LifetimePosition, vir::ExprSnap<'vir>)>,
         children: &[Child<'vir>],
     ) -> EncodeResult<
         'vir,
@@ -1630,6 +1691,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         ),
         E,
     > {
+        let (mut snap, mut keys) = self.with_current_data_fields(base, base_ty, snap, keys)?;
         // The rest is the whole, into which the other children's parts go. A
         // part without keys, e.g. an element whose contents were moved in,
         // then has its part of the current state, which `snap` and `keys`
