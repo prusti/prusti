@@ -1,6 +1,6 @@
-use std::collections::BTreeMap;
-
-use prusti_rustc_interface::{hir::attrs::LangItem, middle::ty, span::DUMMY_SP};
+use prusti_rustc_interface::{
+    data_structures::fx::FxIndexMap, hir::attrs::LangItem, middle::ty, span::DUMMY_SP,
+};
 use task_encoder::{EncodeFullError, EncodeFullResult, TaskEncoder, TaskEncoderDependencies};
 use vir::{CastType, FunctionIdn, ViperIdent, vir_format_identifier};
 
@@ -85,21 +85,15 @@ impl TaskEncoder for BuiltinImplEnc {
         vir::with_vcx(|vcx| Ok((vcx.alloc_slice(&axioms), ())))
     }
 
-    /// Emits the axioms of each trait as one domain, sorted by name so that
-    /// the program does not depend on the order in which they were encoded.
+    /// Emits the axioms of each trait as one domain.
     fn emit_outputs<'vir>(program: &mut task_encoder::Program<'vir>) {
-        let mut traits: BTreeMap<&str, (ViperIdent, Vec<vir::DomainAxiom>)> = BTreeMap::new();
+        let mut traits = FxIndexMap::<_, Vec<_>>::default();
         for axioms in Self::all_outputs_local(program) {
             for &(trait_name, axiom) in axioms {
-                traits
-                    .entry(trait_name.to_str())
-                    .or_insert((trait_name, Vec::new()))
-                    .1
-                    .push(axiom);
+                traits.entry(trait_name).or_default().push(axiom);
             }
         }
-        for (trait_name, mut axioms) in traits.into_values() {
-            axioms.sort_by_key(|axiom| axiom.name);
+        for (trait_name, axioms) in traits {
             vir::with_vcx(|vcx| {
                 program.add_domain(vcx.mk_domain(
                     vir_format_identifier!(vcx, "trait_{trait_name}_builtin"),
