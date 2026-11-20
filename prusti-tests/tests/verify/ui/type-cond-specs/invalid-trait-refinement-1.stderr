@@ -1,15 +1,14 @@
-error: [Prusti: verification error] the method's precondition may not be a valid weakening of the trait's precondition.
-  --> $DIR/invalid-trait-refinement-1.rs:16:31
+error: [Prusti: verification error] the implementation's precondition may be stronger than the trait method's
+  --> $DIR/invalid-trait-refinement-1.rs:25:16
    |
-16 |       #[refine_spec(where Self: HasContract, [
-   |  _______________________________^
-17 | |         requires(self.pre()), ensures(self.post())
-   | |___________________________^
-...
-28 |       #[requires(self.x >= 15)]
-   |                  ^^^^^^^^^^^^
+25 |     #[requires(self.x >= 15)]
+   |                ^^^^^^^^^^^^
    |
-   = help: The trait's precondition should imply the implemented method's precondition.
+note: the trait method's precondition is declared here
+  --> $DIR/invalid-trait-refinement-1.rs:14:18
+   |
+14 |         requires(self.pre()), ensures(self.post())
+   |                  ^^^^^^^^^^
 
-error: aborting due to previous error
+error: aborting due to 1 previous error
 

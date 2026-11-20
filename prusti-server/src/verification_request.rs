@@ -55,6 +55,7 @@ impl ServerVerificationRequest {
         let mut result = VerificationResult {
             item_name: "program".to_string(),
             kind: VerificationResultKind::Success,
+            warnings: vec![],
             cached: false,
             time_ms: 0,
         };
@@ -79,7 +80,7 @@ impl ServerVerificationRequest {
                     ),
                 };
                 stopwatch.start_next("backend verification");
-                result.kind = backend.verify(procedures, sender.clone());
+                (result.kind, result.warnings) = backend.verify(procedures, sender.clone());
                 result.time_ms = stopwatch.finish().as_millis();
             }
         }

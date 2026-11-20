@@ -77,9 +77,9 @@ pub struct TyPureRawData<'vir> {
 #[derive(Debug, Clone, Copy)]
 pub struct TyPureArrayData<'vir> {
     /// Function to access the value at the given index.
-    pub(super) index_access: FunctionIdn<'vir, (vir::CSnap, vir::Int), vir::PSnap>,
+    pub(super) index_access: FunctionIdn<'vir, (vir::CSnap, vir::CSnap), vir::PSnap>,
     /// Function to access the ref at the given index.
-    pub ref_to_index_ref: vir::FunctionIdn<'vir, (vir::Ref, vir::Int, vir::ManyTyVal), vir::Ref>,
+    pub ref_to_index_ref: vir::FunctionIdn<'vir, (vir::Ref, vir::CSnap, vir::ManyTyVal), vir::Ref>,
     /// Function to build the array-like with the elements of a sequence.
     pub(super) from_seq: FunctionIdn<'vir, vir::Seq, vir::CSnap>,
 }
@@ -348,7 +348,7 @@ impl TaskEncoder for TyPureEnc {
     }
 
     fn emit_outputs<'vir>(program: &mut task_encoder::Program<'vir>) {
-        for output in Self::all_outputs_local_no_errors(program) {
+        for output in Self::all_outputs_local(program) {
             let Some(output) = output else {
                 continue;
             };

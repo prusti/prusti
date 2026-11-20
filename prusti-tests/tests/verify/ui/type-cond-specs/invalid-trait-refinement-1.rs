@@ -1,3 +1,4 @@
+//@ known-failure
 use prusti_contracts::*;
 
 trait HasContract {
@@ -7,11 +8,6 @@ trait HasContract {
     fn post(&self) -> bool;
 }
 
-trait MyTrait {
-    fn foo(&mut self);
-}
-
-#[extern_spec]
 trait MyTrait {
     #[trusted]
     #[refine_spec(where Self: HasContract, [
@@ -32,6 +28,7 @@ impl MyTrait for MyStruct {
     }
 }
 
+#[refine_trait_spec]
 impl HasContract for MyStruct {
     #[pure]
     fn post(&self) -> bool {

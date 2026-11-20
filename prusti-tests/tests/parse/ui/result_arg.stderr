@@ -4,5 +4,5 @@ error: it is not allowed to use the keyword `result` as a function argument
 4 | pub fn test1(result: u32) -> u32 { result }
   |              ^^^^^^^^^^^
 
-error: aborting due to previous error
+error: aborting due to 1 previous error
 

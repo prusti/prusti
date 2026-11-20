@@ -10,8 +10,9 @@ flags; this file collects working norms and pitfalls.
   repository root. It sets up the Java, Viper and Z3 environment that plain `cargo` lacks.
 - Run test files with `./x.py test --test main -- <paths>` (e.g. `tests/verify/pass/`). It
   builds the Prusti binaries it runs and the contracts, so it always tests the current code.
+  `./x.py verify-test prusti-tests/tests/<path>` runs one test file the same way.
 - For anything else that runs Prusti after a change, rebuild with `./x.py build` first.
-  `./x.py run --bin prusti-rustc`, `./x.py verify-test` and the tests of `prusti-launch` use
+  `./x.py run --bin prusti-rustc` and the tests of `prusti-launch` use
   `target/debug/prusti-driver`, the binary that `prusti-rustc` runs and that contains the
   encoder, but do not update it, so they silently use the old encoder.
 - Do not rebuild while tests or verification runs are in progress: processes started while
@@ -22,15 +23,17 @@ flags; this file collects working norms and pitfalls.
   `./x.py clippy -- --no-deps -D warnings`; format with `./x.py fmt-all`.
 - Prusti panics on an unknown, non-empty `PRUSTI_*` environment variable, so give ad-hoc
   debugging variables a different prefix.
-- `prusti-rustc` runs `prusti-driver` as a child process. Ctrl-C stops both, but a
-  `timeout` or `kill` aimed at `prusti-rustc` leaves the driver and its Z3 processes
-  running.
+- `prusti-rustc` runs `prusti-driver` as a child process. Ctrl-C, `timeout` and `kill`
+  aimed at a launcher (`prusti-rustc`, `cargo-prusti`, `prusti-server`) stop everything
+  that launcher started, but `kill -9` (SIGKILL) sent to the launcher's pid alone cannot
+  be passed on, so it leaves the driver and its Z3 processes running.
 
 ## Tests
 
 - To reproduce a test outside the harness, use the environment and flags that
   `prusti-tests/tests/harnesses/compiletest.rs` sets, plus the file's `//@ compile-flags`
-  (and, to match CI, the variables set in `.github/workflows/test.yml`). Otherwise the
+  (and, to match CI, the variables set in `.github/workflows/test.yml` and the time limits
+  set in `.github/actions/time-limits`). Otherwise the
   results differ, e.g. overflow errors appear for checks the harness turns off.
 - Before writing a test, look at the existing tests of the feature. If one already covers
   the behaviour, don't add another. Otherwise add the case to an existing file where it
@@ -110,6 +113,9 @@ flags; this file collects working norms and pitfalls.
   an enclosing one; backtranslation only follows span ancestors.
 - If the PCG's analysis result is wrong (e.g. a missing or misordered action), fix it in
   the PCG instead of compensating in the encoder.
+- The VIR simplifier (`vir::simplify`) is an optional pass for performance: the encoding
+  must be well-defined and verify the same without it. Never rely on it to remove
+  something, such as an unused `let` whose value is ill-defined.
 
 ## Design
 
@@ -156,6 +162,12 @@ flags; this file collects working norms and pitfalls.
   Details that don't matter for the point can be simplified (elide unrelated statements,
   shorten incidental names), but keep the names of what the PR is about exactly as
   emitted, so readers can search for them in the code and in their own dumps.
+- A PR that changes a crate published from `prusti-contracts/` (`prusti-contracts`,
+  `prusti-contracts-proc-macros`, `prusti-specs`), even only a doc comment, bumps that
+  crate's patch version in its `Cargo.toml` and in every lock file that lists it
+  (`prusti-contracts/Cargo.lock`, and the root `Cargo.lock` for `prusti-specs`).
+  Otherwise the `publish` check (`.github/workflows/crates-io.yml`) fails; merging to
+  `main` publishes the new version to crates.io.
 - Review comments on someone else's PR may be about anything, however small, but each one
   must be right: a mistaken comment sends the author after a problem that does not exist
   and undermines trust in every other comment.

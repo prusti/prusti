@@ -66,7 +66,7 @@ impl TaskEncoder for ParamTypEnc {
     }
 
     fn emit_outputs<'vir>(program: &mut task_encoder::Program<'vir>) {
-        for domain in Self::all_outputs_local_no_errors(program) {
+        for domain in Self::all_outputs_local(program) {
             program.add_domain(domain);
         }
     }

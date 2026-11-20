@@ -76,3 +76,10 @@ fn symbolic_in_range(x: f32) -> u8 {
 fn symbolic_saturating(x: f64) -> i8 {
     x as i8
 }
+
+#[requires(a as f32 as i32 == 0)]
+fn cast_in_spec(a: i64) {}
+
+fn call_cast_in_spec() {
+    cast_in_spec(0);
+}

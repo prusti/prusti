@@ -1,5 +1,6 @@
 use crate::encoders::{
     EncodeResult, ImpureEncVisitor, MirLocalDefEncOutput, MirSpecEnc,
+    mir_fn::report_dep_error,
     pure::spec::{EncodedPledge, MirSpecEncMode, PledgeArgs, PledgeExpr},
     ty::{
         RustTyDecomposition,
@@ -23,9 +24,19 @@ use vir::{CastType, HasType};
 /// Encodes the magic wands given a function signature.
 pub struct WandEnc;
 
-#[derive(Clone, Debug)]
-pub enum WandEncError {
-    Unsupported(String),
+impl WandEnc {
+    /// Reports the failure `err` to generate the wands of the function
+    /// `def_id` at the function, and returns the proof that it was reported.
+    pub(crate) fn report_failure<'vir, E: TaskEncoder + ?Sized>(
+        vcx: &'vir vir::VirCtxt<'vir>,
+        def_id: DefId,
+        err: &EncodeFullError<'vir, E>,
+    ) -> vir::Reported {
+        let name = vcx.tcx().def_path_str(def_id);
+        report_dep_error(vcx, err, |err| {
+            err.report(format!("method `{name}`"), vcx.tcx().def_span(def_id))
+        })
+    }
 }
 
 impl<'vir, E: TaskEncoder> ImpureEncVisitor<'vir, '_, E> {
@@ -150,7 +161,6 @@ impl<'vir> WandEncOutput<'vir> {
             None => GParams::new(
                 self.function_data.identity_substs(vcx.tcx()),
                 self.function_data.param_env(vcx.tcx()),
-                false,
             ),
         }
     }
@@ -436,18 +446,10 @@ impl TaskEncoder for WandEnc {
 
     type OutputFullDependency<'vir> = WandEncOutput<'vir>;
 
-    type EncodingError = WandEncError;
-
     const ENCODER_NAME: &'static str = "wand encoder";
 
     fn task_to_key<'vir>(task: &Self::TaskDescription<'vir>) -> Self::TaskKey<'vir> {
         task.clone()
-    }
-
-    fn describe_error(error: Self::EncodingError) -> String {
-        match error {
-            WandEncError::Unsupported(message) => message,
-        }
     }
 
     fn do_encode_full<'vir>(
@@ -459,10 +461,7 @@ impl TaskEncoder for WandEnc {
             let def_id = task_key.def_id();
 
             let shape = task_key.function_shape(vcx).map_err(|e| {
-                EncodeFullError::EncodingError(
-                    WandEncError::Unsupported(format!("function shape: {e:?}")),
-                    None,
-                )
+                EncodeFullError::unsupported(format!("function shape: {e:?}"), Vec::new())
             })?;
 
             let coupled_edges = shape.coupled_edges();
@@ -513,7 +512,7 @@ impl TaskEncoder for WandEnc {
             };
             output.wands = output
                 .select_wands(wands, !pledges.is_empty(), &edges, vcx, deps)
-                .map_err(|err| EncodeFullError::EncodingError(err, None))?;
+                .map_err(|message| EncodeFullError::unsupported(message, Vec::new()))?;
             Ok(((), output))
         })
     }
@@ -521,7 +520,8 @@ impl TaskEncoder for WandEnc {
 
 impl<'vir> WandEncOutput<'vir> {
     /// Selects the wands to emit among those of the coupled edges, rejecting
-    /// the shapes that cannot be encoded precisely.
+    /// the shapes that cannot be encoded precisely. Pledges that cannot be
+    /// attached to one wand are reported and left out.
     fn select_wands<E: TaskEncoder>(
         &self,
         wands: Vec<WandData<'vir>>,
@@ -529,7 +529,7 @@ impl<'vir> WandEncOutput<'vir> {
         edges: &FxHashSet<(WandRhsKey, WandLhsKey)>,
         vcx: &'vir vir::VirCtxt<'vir>,
         deps: &mut TaskEncoderDependencies<'vir, E>,
-    ) -> Result<Vec<WandData<'vir>>, WandEncError> {
+    ) -> Result<Vec<WandData<'vir>>, String> {
         let mut has_resources = |g: FunctionShapeNode<Generalized>| {
             self.predicates_for_function_shape_node(vcx, deps, g, None)
                 .is_some()
@@ -558,23 +558,34 @@ impl<'vir> WandEncOutput<'vir> {
                 targets.all(|target| edges.contains(&(**source, **target)))
             });
             if !precise {
-                return Err(WandEncError::Unsupported(
+                return Err(
                     "borrows in the result that expire separately but depend on a common \
                      argument are not supported"
                         .to_string(),
-                ));
+                );
             }
         }
         if has_pledges {
             if wands.is_empty() {
                 wands.extend(resourceless.into_iter().take(1));
             } else if wands.len() > 1 {
-                // It is unclear which expiry the pledges refer to.
-                return Err(WandEncError::Unsupported(
-                    "pledges on a function whose result contains borrows that expire \
-                     separately are not supported"
-                        .to_string(),
-                ));
+                // It is unclear which expiry the pledges refer to. They are
+                // left out, each with its expiry obligation: then neither the
+                // function nor its callers rely on any of them, so both are
+                // still encoded. The encoding goes on, so the proof that the
+                // error was reported is not needed.
+                let span = wands[0].pledges[0].expiry_postcondition.span();
+                let _ = vcx.emit_early_error(
+                    PrustiError::unsupported(
+                        "pledges on a function whose result contains borrows that expire \
+                         separately are not supported",
+                        span.into(),
+                    )
+                    .add_note("the pledges of the function are skipped", None),
+                );
+                for wand in &mut wands {
+                    wand.pledges.clear();
+                }
             }
         }
         Ok(wands)

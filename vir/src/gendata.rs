@@ -453,18 +453,6 @@ impl<'vir, Curr, Next, T: CompType> ExprGenData<'vir, Curr, Next, T> {
     pub fn ty(&self) -> Type<'vir, T> {
         self.ty
     }
-
-    pub fn lift<Prev>(&'vir self) -> ExprGen<'vir, Prev, ExprKindGen<'vir, Curr, Next>, T> {
-        match self.kind {
-            ExprKindGenData::Lazy(_) => panic!("cannot lift lazy expression"),
-            _ => unsafe {
-                std::mem::transmute::<
-                    &ExprGenData<'vir, Curr, Next, T>,
-                    &ExprGenData<'vir, Prev, ExprKindGen<'vir, Curr, Next>, T>,
-                >(self)
-            },
-        }
-    }
 }
 
 impl<'vir, T: CompType> ExprGenData<'vir, (), !, T> {

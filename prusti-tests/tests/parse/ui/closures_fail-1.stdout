@@ -1,0 +1,59 @@
+//@ known-failure
+//@ compile-flags: -Pprint_desugared_specs=true -Pprint_typeckd_specs=true -Pverify_mode=compile-only -Phide_uuids=true
+//@ normalize-stdout-test: "[a-z0-9]{32}" -> "$(NUM_UUID)"
+//@ normalize-stdout-test: "[a-z0-9]{8}-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{12}" -> "$(UUID)"
+//@ normalize-stdout-test: "\[[a-z0-9]{4}\]::" -> "[$(CRATE_ID)]::"
+//@ normalize-stdout-test: "#\[prusti::specs_version = \x22.+\x22\]" -> "#[prusti::specs_version = $(SPECS_VERSION)]"
+
+
+
+// TODO: the error is reported with an indicator next to `i` below, but the
+// error is not very clear overall.
+#![feature(stmt_expr_attributes)]
+#![feature(register_tool)]
+#![register_tool(prusti)]
+extern crate std;
+#[prelude_import]
+use std::prelude::rust_2021::*;
+/// Failure case for closure macro parsing: missing argument type.
+use prusti_contracts::*;
+fn main() {
+    let f =
+        {
+            #[allow(unused_variables, unused_braces, unused_parens)]
+            #[prusti::closure]
+            #[prusti::specs_version = $(SPECS_VERSION)]
+            let _prusti_closure =
+                |i| -> i32
+                    {
+
+                        #[allow(unused_must_use, unused_variables, unused_braces,
+                        unused_parens)]
+                        if false {
+                            return ::prusti_contracts::closure_spec_pre((i,),
+                                    #[prusti::spec_only] |i| -> bool { (i >= 0) });
+                        }
+                        let prusti_closure_args = ::core::marker::PhantomData;
+
+                        #[allow(unused_must_use, unused_braces, unused_parens)]
+                        if false {
+                            return ::prusti_contracts::closure_spec_args((i,
+                                        ::core::option::Option::None.unwrap()),
+                                    prusti_closure_args);
+                        }
+                        let result = { i + 1 };
+
+                        #[allow(unused_must_use, unused_variables, unused_braces,
+                        unused_parens)]
+                        if false {
+                            return ::prusti_contracts::closure_spec_post((::core::option::Option::None.unwrap(),
+                                        result), prusti_closure_args,
+                                    #[prusti::spec_only] |i, result: i32| -> bool
+                                        { (result == i + 1) });
+                        }
+                        result
+                    };
+            _prusti_closure
+        };
+}
+pub extern crate prusti_contracts;

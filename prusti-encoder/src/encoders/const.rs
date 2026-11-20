@@ -130,6 +130,10 @@ impl<'enc, 'vir: 'enc> Enc<'enc, 'vir> {
                     let ty_array = ty.ty.expect_array();
                     let elem_ty = ty_array.data.decompose_normalize(ty.args);
                     let elem_len = val.len(self.ecx).unwrap();
+                    let usize_use = self.deps.require_dep::<TyUsePureEnc>(
+                        RustTyDecomposition::from_prim_ty(vcx.tcx().types.usize),
+                    )?;
+                    let usize_prim = usize_use.expect_primitive();
                     let mut posts = Vec::new();
                     let result = vcx.mk_result(ty_enc.snapshot.downcast_ty());
                     for idx in 0..elem_len {
@@ -137,9 +141,8 @@ impl<'enc, 'vir: 'enc> Enc<'enc, 'vir> {
                             self.ecx.project_index(&val, idx).unwrap(),
                             elem_ty,
                         )?;
-                        let index = vcx
-                            .mk_const_expr(vir::ConstData::Int(idx as u128))
-                            .downcast_ty();
+                        let index = usize_prim
+                            .prim_to_snap(vcx.mk_const_expr(vir::ConstData::Int(idx as u128)));
                         let index_ex = array_data.index(result, index);
                         posts.push(vcx.mk_eq_expr(snap.upcast_ty(), index_ex));
                     }
@@ -349,7 +352,7 @@ impl TaskEncoder for ConstEnc {
     }
 
     fn emit_outputs<'vir>(program: &mut task_encoder::Program<'vir>) {
-        for output in Self::all_outputs_local_no_errors(program) {
+        for output in Self::all_outputs_local(program) {
             for fun in output {
                 program.add_function(fun);
             }
@@ -393,14 +396,9 @@ impl TaskEncoder for ConstEnc {
                             gargs: GParams::from(uneval.def).identity_args(),
                             kind: PureKind::Constant(promoted),
                         };
-                        let expr = deps.require_dep::<MirPureEnc>(task)?.expr;
-                        use vir::Reify;
+                        let out = deps.require_dep::<MirPureEnc>(task)?;
                         let args = Default::default();
-                        Ok((
-                            Vec::new(),
-                            expr.reify(vcx, (uneval.def, vcx.alloc(args), vir::OldLabel::None))
-                                .downcast_ty(),
-                        ))
+                        Ok((Vec::new(), out.reify(vcx.alloc(args)).downcast_ty()))
                     } else {
                         todo!("const too generic")
                     }

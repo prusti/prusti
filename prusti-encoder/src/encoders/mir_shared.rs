@@ -1,5 +1,7 @@
 use pcg::utils::Place;
-use task_encoder::{DependencyErrorLink, EncodeFullError, TaskEncoder, TaskEncoderDependencies};
+use task_encoder::{
+    DependencyErrorLink, EncodeFullError, ErrorKind, TaskEncoder, TaskEncoderDependencies,
+};
 use vir::CastType;
 
 use crate::encoders::{
@@ -27,6 +29,31 @@ type ExprOutput<'vir, Enc: PureRvalueEnc<'vir>> =
     vir::ExprGenSnap<'vir, Enc::ExprCurr, Enc::ExprNext>;
 
 pub(crate) type EncodeResult<'vir, T, E> = Result<T, EncodeFullError<'vir, E>>;
+
+/// Build an error for using the fields or variant of `ty`, which its
+/// opaque encoding does not have.
+pub(crate) fn unsupported_opaque<'vir, E: TaskEncoder + 'vir>(
+    ty: ty::Ty<'vir>,
+    span: Span,
+) -> EncodeFullError<'vir, E> {
+    EncodeFullError::DependencyError(vec![
+        DependencyErrorLink::new(
+            E::ENCODER_NAME,
+            format!(
+                "Prusti does not look inside `{ty}`, as it does not support unions yet \
+                 and keeps the contents of `#[trusted]` types hidden"
+            ),
+            vec![span],
+            ErrorKind::Unsupported,
+        )
+        .with_help(
+            "move this code into a `#[trusted]` function (also marked `#[pure]` if \
+             pure code or specifications call it), and describe what it does with \
+             pre- and postconditions"
+                .to_string(),
+        ),
+    ])
+}
 
 #[allow(type_alias_bounds)]
 type ExprResult<'vir, Enc: PureRvalueEnc<'vir>> =
@@ -101,6 +128,18 @@ pub(crate) trait PureRvalueEnc<'vir> {
             .upcast_ty()
     }
 
+    /// The snapshot of the `usize` constant `value`, e.g. the index of a
+    /// `ConstantIndex` projection.
+    fn usize_const_snap(
+        &mut self,
+        value: u64,
+    ) -> vir::ExprGenCSnap<'vir, Self::ExprCurr, Self::ExprNext> {
+        let usize_ty = self.ty_use_pure(self.vcx().tcx().types.usize);
+        usize_ty
+            .expect_primitive()
+            .prim_to_snap(self.vcx().mk_const_expr(vir::ConstData::Int(value as u128)))
+    }
+
     /// The source position currently being encoded under: the MIR statement
     /// or terminator (or, in a pure body, the expression) whose encoding is
     /// in progress. Falls back to the body when no span is on the stack.
@@ -109,40 +148,6 @@ pub(crate) trait PureRvalueEnc<'vir> {
         vcx.top_span()
             .and_then(|span| vcx.get_span_from_id(span.id))
             .unwrap_or_else(|| self.body().span)
-    }
-
-    /// Build an error for an unsupported feature at `span`.
-    fn unsupported(&self, message: String, span: Span) -> EncodeFullError<'vir, Self::Encoder> {
-        EncodeFullError::DependencyError(vec![DependencyErrorLink::new(
-            <Self::Encoder as TaskEncoder>::ENCODER_NAME,
-            message,
-            vec![span],
-        )])
-    }
-
-    /// Build an error for using the fields or variant of `ty`, which its
-    /// opaque encoding does not have.
-    fn unsupported_opaque(
-        &self,
-        ty: ty::Ty<'vir>,
-        span: Span,
-    ) -> EncodeFullError<'vir, Self::Encoder> {
-        EncodeFullError::DependencyError(vec![
-            DependencyErrorLink::new(
-                <Self::Encoder as TaskEncoder>::ENCODER_NAME,
-                format!(
-                    "Prusti does not look inside `{ty}`, as it does not support unions yet \
-                     and keeps the contents of `#[trusted]` types hidden"
-                ),
-                vec![span],
-            )
-            .with_help(
-                "move this code into a `#[trusted]` function (also marked `#[pure]` if \
-                 pure code or specifications call it), and describe what it does with \
-                 pre- and postconditions"
-                    .to_string(),
-            ),
-        ])
     }
 
     /// Encodes the snapshot of an operand. In an impure context this may
@@ -171,11 +176,11 @@ pub(crate) trait PureRvalueEnc<'vir> {
         let operand_ty = operand.ty(self.body(), self.vcx().tcx());
         let rvalue_ty = RustTyDecomposition::from_ty(rvalue_ty, self.context());
         let operand_ty = RustTyDecomposition::from_ty(operand_ty, self.context());
-        let cast_output =
-            self.deps()
-                .require_dep::<MirBuiltinUseCastEnc>(MirBuiltinUseCastTask::new(
-                    rvalue_ty, kind, operand_ty,
-                ))?;
+        let span = self.current_span();
+        let cast_output = self.deps().require_dep_spanned::<MirBuiltinUseCastEnc>(
+            MirBuiltinUseCastTask::new(rvalue_ty, kind, operand_ty),
+            span,
+        )?;
         let cast = cast_output.cast(encoded_operand).upcast_ty();
         let cast_stmt = cast_output.unsize(encoded_operand);
         Ok((cast_stmt, cast))
@@ -304,7 +309,7 @@ pub(crate) trait PureRvalueEnc<'vir> {
     ) -> ExprResult<'vir, Self> {
         let e_rvalue_ty = self.ty_use_pure(rvalue_ty);
         if e_rvalue_ty.specifics.is_opaque() {
-            return Err(self.unsupported_opaque(rvalue_ty, self.current_span()));
+            return Err(unsupported_opaque(rvalue_ty, self.current_span()));
         }
         let encoded_fields = fields
             .iter()
@@ -382,14 +387,14 @@ pub(crate) trait PureRvalueEnc<'vir> {
                 assert_eq!(args.len(), 1);
                 let enum_ty = arg_tys[0].expect_ty();
                 let Some(place) = args[0].node.place() else {
-                    return Err(self.unsupported(
+                    return Err(EncodeFullError::unsupported(
                         "`discriminant_value` of a constant operand".to_string(),
-                        args[0].span,
+                        vec![args[0].span],
                     ));
                 };
                 let e_enum_ty = self.ty_use_pure(enum_ty);
                 if e_enum_ty.specifics.is_opaque() {
-                    return Err(self.unsupported_opaque(enum_ty, args[0].span));
+                    return Err(unsupported_opaque(enum_ty, args[0].span));
                 }
                 let deref_place = self.vcx().tcx().mk_place_deref(place);
                 let snap = self.encode_place_snap(deref_place.into(), ctxt)?;
@@ -397,9 +402,9 @@ pub(crate) trait PureRvalueEnc<'vir> {
                     Some(e_enum_ty) => {
                         Ok(e_enum_ty.snap_to_discr_snap(snap.downcast_ty()).upcast_ty())
                     }
-                    None => Err(self.unsupported(
+                    None => Err(EncodeFullError::unsupported(
                         format!("`discriminant_value` of `{enum_ty}`, which has no discriminant"),
-                        args[0].span,
+                        vec![args[0].span],
                     )),
                 }
             }

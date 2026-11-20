@@ -262,7 +262,7 @@ impl TaskEncoder for HrtbEnc {
     }
 
     fn emit_outputs<'vir>(program: &mut task_encoder::Program<'vir>) {
-        for domain in HrtbEnc::all_outputs_local_no_errors(program) {
+        for domain in Self::all_outputs_local(program) {
             program.add_domain(domain);
         }
     }
@@ -343,10 +343,7 @@ impl TaskEncoder for HrtbImplEnc {
     }
 
     fn emit_outputs<'vir>(program: &mut task_encoder::Program<'vir>) {
-        for domain in HrtbImplEnc::all_outputs_local_no_errors(program)
-            .into_iter()
-            .flatten()
-        {
+        for domain in Self::all_outputs_local(program).into_iter().flatten() {
             program.add_domain(domain);
         }
     }
@@ -545,7 +542,7 @@ fn match_impl<'tcx>(skeleton: HrtbSkeleton<'tcx>, impl_did: DefId) -> Option<Mat
             }
             let env = ty::ParamEnv::new(vcx.tcx().mk_clauses(&clauses));
             Some(Matched {
-                context: GParams::new(vcx.tcx().mk_args(&generalize.params), env, false),
+                context: GParams::new(vcx.tcx().mk_args(&generalize.params), env),
                 args,
             })
         })

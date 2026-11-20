@@ -7,7 +7,6 @@ on:
 
 env:
   RUST_BACKTRACE: 1
-  PRUSTI_ASSERT_TIMEOUT: 60000
   # The /mnt disk has 66 GB of free space; more than the working directory
   COVERAGE_PATH: /mnt/prusti-coverage
 
@@ -22,6 +21,12 @@ jobs:
 
       - name: Set up the build environment
         uses: ./.github/actions/setup
+
+      - name: Set the time limits of the tests
+        uses: ./.github/actions/time-limits
+        with:
+          # The instrumented build verifies more slowly.
+          factor: 2
 
       - name: Enable collection of source-based coverage
         run: |

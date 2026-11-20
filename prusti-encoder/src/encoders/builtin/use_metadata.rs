@@ -18,9 +18,9 @@ use crate::encoders::{
 /// `ValueCastAxiomEnc`, it is keyed on the *generic* array/slice shapes (the
 /// `RustTy`, shared by every `[T; N]`), so it is encoded once and is itself
 /// generic over the element type and length. The abstract `metadata_cast`
-/// function and its identity axiom live in `MetadataCastEnc`; this encoder
-/// attaches only the array->slice specialization (so `MetadataCastEnc` no longer
-/// has to assume that array/slice types exist in the program).
+/// function and its general axioms live in `MetadataCastEnc`; this encoder
+/// attaches only the array->slice specialization (so `MetadataCastEnc` does not
+/// assume that array/slice types exist in the program).
 pub struct MetadataCastAxiomEnc;
 
 impl TaskEncoder for MetadataCastAxiomEnc {
@@ -98,7 +98,7 @@ impl TaskEncoder for MetadataCastAxiomEnc {
     }
 
     fn emit_outputs<'vir>(program: &mut task_encoder::Program<'vir>) {
-        for domain in Self::all_outputs_local_no_errors(program) {
+        for domain in Self::all_outputs_local(program) {
             let Some(domain) = domain else {
                 continue;
             };
@@ -158,6 +158,9 @@ impl TaskEncoder for ValueCastAxiomEnc {
         );
 
         let value_cast = deps.require_dep::<ValueCastEnc>(())?;
+        let usize_use = deps.require_dep::<TyUsePureEnc>(RustTyDecomposition::from_prim_ty(
+            vir::with_vcx(|vcx| vcx.tcx().types.usize),
+        ))?;
         let array_use = deps.require_dep::<TyUsePureEnc>(array_inner)?;
         let slice_use = deps.require_dep::<TyUsePureEnc>(slice_inner)?;
         let array_ctor = deps.require_ref::<TyConstructorEnc>(array_ty)?;
@@ -193,7 +196,7 @@ impl TaskEncoder for ValueCastAxiomEnc {
                 .cast_to_caller_ctx(arr_vc.upcast_ty())
                 .downcast_ty::<vir::CSnap>();
 
-            let idx_decl = vcx.mk_local_decl("idx", vir::TYPE_INT);
+            let idx_decl = vcx.mk_local_decl("idx", usize_use.snapshot.downcast_ty());
             let idx = vcx.mk_local_ex(idx_decl);
             // Compare the elements in their generic (`p_Param`) form: the array and
             // slice share the same element type, so the concrete element conversion
@@ -226,7 +229,7 @@ impl TaskEncoder for ValueCastAxiomEnc {
     }
 
     fn emit_outputs<'vir>(program: &mut task_encoder::Program<'vir>) {
-        for domain in Self::all_outputs_local_no_errors(program) {
+        for domain in Self::all_outputs_local(program) {
             let Some(domain) = domain else {
                 continue;
             };

@@ -2,12 +2,11 @@ use prusti_interface::PrustiError;
 use prusti_rustc_interface::{
     data_structures::fx::{FxHashSet, FxIndexMap},
     errors::MultiSpan,
+    hir::attrs::LangItem,
     middle::{mir, traits::specialization_graph, ty},
     span::def_id::DefId,
 };
-use task_encoder::{
-    DependencyErrorLink, EncodeFullError, EncodeFullResult, TaskEncoder, TaskEncoderDependencies,
-};
+use task_encoder::{EncodeFullError, EncodeFullResult, TaskEncoder, TaskEncoderDependencies};
 use vir::{CastType, Domain, Method, MethodIdn, ViperIdent, vir_format_identifier};
 
 use crate::{
@@ -131,6 +130,18 @@ impl TaskEncoder for TraitImplEnc {
                 // behavioral-subtyping error's hint at them.
                 let trait_pre_spans: Vec<_> =
                     trait_item_spec.pres.iter().map(|(_, s)| *s).collect();
+                // If the trait method's preconditions were skipped, the impl's
+                // are not checked against them. The trait axioms then leave
+                // the trait's preconditions out too, so calls through the
+                // trait rely only on the impl's preconditions. This assumes
+                // that a trait precondition that cannot be encoded here (in
+                // impure mode) cannot be encoded for the trait axioms (in a
+                // pure mode) either, as the pure modes support less.
+                let impl_pres_to_check = if trait_item_spec.skipped {
+                    &[][..]
+                } else {
+                    &impl_item_spec.pres[..]
+                };
 
                 // Both checks are only needed where the impl applies.
                 let bounds = Self::assume_context_bounds(vcx, deps, impl_item_context)?;
@@ -148,7 +159,7 @@ impl TaskEncoder for TraitImplEnc {
                         vcx.mk_cfg_block(
                             &vir::CfgBlockLabelData::Start,
                             &[],
-                            vcx.alloc_slice(&bounds.iter().copied().chain(impl_item_spec.pres.iter().copied()
+                            vcx.alloc_slice(&bounds.iter().copied().chain(impl_pres_to_check.iter().copied()
                                 .map(|(pre, pre_span)| vcx.with_span(pre_span, |vcx| {
                                     let trait_pre_spans = trait_pre_spans.clone();
                                     vcx.handle_error("exhale.failed:assertion.false", move |_| {
@@ -261,7 +272,7 @@ impl TaskEncoder for TraitImplEnc {
     }
 
     fn emit_outputs<'vir>(program: &mut task_encoder::Program<'vir>) {
-        for methods in Self::all_outputs_local_no_errors(program) {
+        for methods in Self::all_outputs_local(program) {
             for method in methods {
                 program.add_method(method);
             }
@@ -334,7 +345,7 @@ impl TaskEncoder for TraitImplConditionEnc {
     }
 
     fn emit_outputs<'vir>(program: &mut task_encoder::Program<'vir>) {
-        for domain in Self::all_outputs_local_no_errors(program) {
+        for domain in Self::all_outputs_local(program) {
             program.add_domain(domain);
         }
     }
@@ -444,30 +455,26 @@ impl TraitImplEnc {
         // regions (stated below) follows from it and binds the parameters
         // its projections determine. The predicate of `HrtbEnc` states the
         // clause itself, which impl guards need, since the erased instance is
-        // weaker; `HrtbSkeleton::of` says which clauses get it. Sizedness
-        // clauses are skipped: they do not depend on regions, so their
-        // erased instance is exact, and their facts come from `SizednessEnc`
-        // rather than from impls.
+        // weaker; `HrtbSkeleton::of` says which clauses get it. Clauses on
+        // `Sized`, `MetaSized` and `Pointee` are skipped: they do not depend
+        // on regions, so their erased instance is exact, and their facts come
+        // from `BuiltinImplEnc` rather than from impls.
         for clause in caller_bounds.iter() {
             let kind = clause.kind();
-            let relevant = match kind.skip_binder() {
-                ty::ClauseKind::Trait(pred) => {
-                    pred.polarity == ty::PredicatePolarity::Positive
-                        && !tcx.is_sizedness_trait(pred.def_id())
+            let trait_did = match kind.skip_binder() {
+                ty::ClauseKind::Trait(pred) if pred.polarity == ty::PredicatePolarity::Positive => {
+                    pred.def_id()
                 }
-                ty::ClauseKind::Projection(_) => true,
-                _ => false,
+                ty::ClauseKind::Projection(pred) => pred.trait_def_id(tcx),
+                _ => continue,
             };
-            if !relevant {
+            if tcx.is_sizedness_trait(trait_did)
+                || tcx.is_lang_item(trait_did, LangItem::PointeeTrait)
+            {
                 continue;
             }
-            let skeleton = HrtbSkeleton::of(ctx, kind).map_err(|msg| {
-                EncodeFullError::DependencyError(vec![DependencyErrorLink::new(
-                    <E as TaskEncoder>::ENCODER_NAME,
-                    msg,
-                    vec![],
-                )])
-            })?;
+            let skeleton = HrtbSkeleton::of(ctx, kind)
+                .map_err(|msg| EncodeFullError::unsupported(msg, vec![]))?;
             if let Some((skeleton, args)) = skeleton {
                 let holds = deps.require_ref::<HrtbEnc>(skeleton)?.holds;
                 let args = deps.require_dep::<GArgsTyEnc>(GArgs::new(ctx, args))?;
@@ -480,7 +487,7 @@ impl TraitImplEnc {
             .filter_map(ty::Clause::as_trait_clause)
             .map(ty::Binder::skip_binder)
             .filter(|pred| pred.polarity == ty::PredicatePolarity::Positive)
-            // Holds of every type (see `SizednessEnc`).
+            // Holds of every type (see `BuiltinImplEnc`).
             .filter(|pred| Some(pred.def_id()) != tcx.lang_items().pointee_sized_trait());
         for trait_pred in trait_preds {
             let trait_ = deps.require_ref::<TraitEnc>(trait_pred.def_id())?;
@@ -502,20 +509,17 @@ impl TraitImplEnc {
                 None => Some(0),
             };
             let Some(next) = next else {
-                return Err(EncodeFullError::DependencyError(vec![
-                    DependencyErrorLink::new(
-                        <E as TaskEncoder>::ENCODER_NAME,
-                        format!(
-                            "these projection bounds mention generics that are never bound: {}",
-                            proj_preds
-                                .iter()
-                                .map(ToString::to_string)
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        ),
-                        vec![],
+                return Err(EncodeFullError::unsupported(
+                    format!(
+                        "these projection bounds mention generics that are never bound: {}",
+                        proj_preds
+                            .iter()
+                            .map(ToString::to_string)
+                            .collect::<Vec<_>>()
+                            .join(", ")
                     ),
-                ]));
+                    vec![],
+                ));
             };
             let proj_pred = proj_preds.remove(next);
             let trait_did = proj_pred.trait_def_id(tcx);
@@ -899,7 +903,7 @@ impl TaskEncoder for TraitImplItemEnc {
     }
 
     fn emit_outputs<'vir>(program: &mut task_encoder::Program<'vir>) {
-        for domain in Self::all_outputs_local_no_errors(program) {
+        for domain in Self::all_outputs_local(program) {
             program.add_domain(domain);
         }
     }
@@ -1071,18 +1075,22 @@ impl TaskEncoder for TraitImplItemEnc {
                         .iter()
                         .map(|arg| arg.upcast_ty())
                         .collect::<Vec<vir::LocalDeclDyn>>();
-                    axioms.push(vcx.mk_domain_axiom(
-                        vir_format_identifier!(vcx, "{impl_name}_fn_pre_{item_name}"),
-                        TraitImplEnc::guarded_forall(
-                            vcx,
-                            deps,
-                            impl_did,
-                            impl_item_def_id,
-                            &arg_decls,
-                            pre_func_call.upcast_ty(),
-                            guard_inherited(vir::expr! { (pres) ==> (pre_func_call) }),
-                        )?,
-                    ));
+                    // Skipped preconditions establish nothing: the impl's
+                    // method may still assume them.
+                    if !impl_item_spec.skipped {
+                        axioms.push(vcx.mk_domain_axiom(
+                            vir_format_identifier!(vcx, "{impl_name}_fn_pre_{item_name}"),
+                            TraitImplEnc::guarded_forall(
+                                vcx,
+                                deps,
+                                impl_did,
+                                impl_item_def_id,
+                                &arg_decls,
+                                pre_func_call.upcast_ty(),
+                                guard_inherited(vir::expr! { (pres) ==> (pre_func_call) }),
+                            )?,
+                        ));
+                    }
                     let mut posts = impl_item_spec.post_exprs().collect::<Vec<_>>();
                     if impl_item_has_body && impl_item_is_pure {
                         let pure_func = deps.require_dep::<FunctionCallEnc>(
@@ -1282,7 +1290,7 @@ impl TaskEncoder for TraitImplDefaultFnEnc {
     }
 
     fn emit_outputs<'vir>(program: &mut task_encoder::Program<'vir>) {
-        for domain in Self::all_outputs_local_no_errors(program) {
+        for domain in Self::all_outputs_local(program) {
             program.add_domain(domain);
         }
     }

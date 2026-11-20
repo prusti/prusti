@@ -7,9 +7,9 @@ error: [Prusti: invalid specification] using predicate from non-specification co
 note: this is a specification-only predicate function
   --> $DIR/dont-call.rs:6:5
    |
-6  | /     fn pred_id(x: bool) -> bool {
-7  | |         x
-8  | |     }
+ 6 | /     fn pred_id(x: bool) -> bool {
+ 7 | |         x
+ 8 | |     }
    | |_____^
 
 error: [Prusti: invalid specification] using predicate from non-specification code is not allowed
@@ -35,9 +35,9 @@ error: [Prusti: invalid specification] using predicate from non-specification co
 note: this is a specification-only predicate function
   --> $DIR/dont-call.rs:6:5
    |
-6  | /     fn pred_id(x: bool) -> bool {
-7  | |         x
-8  | |     }
+ 6 | /     fn pred_id(x: bool) -> bool {
+ 7 | |         x
+ 8 | |     }
    | |_____^
 
 error: aborting due to 3 previous errors

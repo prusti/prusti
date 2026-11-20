@@ -42,3 +42,17 @@ impl MyWrapper {
 fn test(x: MyWrapper) -> u32 {
     x.unwrap()
 }
+
+/// A local that one branch leaves unchanged keeps its value from before.
+#[pure]
+fn keep_or_set(a: u32, c: bool) -> u32 {
+    let mut x = a + 1;
+    if c {
+        x = 5
+    }
+    x
+}
+
+#[requires(a < 100)]
+#[ensures(!c ==> keep_or_set(a, c) == a + 1)]
+fn keep_or_set_spec(a: u32, c: bool) {}

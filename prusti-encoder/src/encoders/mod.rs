@@ -35,12 +35,7 @@ pub use spec::{
     SpecEnc, SpecEncTask, is_function_pure, is_function_trusted, is_type_trusted, kind_is_pure,
     report_kind_refinement_error, spec_is_trusted, spec_items,
 };
-pub use ty::{
-    TyInhabitedEnc,
-    use_impure::TyUseImpureEnc,
-    use_pure::TyUsePureEnc,
-    viper_tuple::{ViperTupleEnc, ViperTupleEncOutput},
-};
+pub use ty::{TyInhabitedEnc, use_impure::TyUseImpureEnc, use_pure::TyUsePureEnc};
 
 /// Some encoders work for both pure and impure encodings, though might output
 /// something slightly different for the two. This allows them to be generic in

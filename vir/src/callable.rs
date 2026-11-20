@@ -22,6 +22,7 @@ macro_rules! typed_wrapper {
 }
 typed_wrapper!(Many; Bool => ManyBool, Int => ManyInt, Ref => ManyRef, Perm => ManyPerm);
 typed_wrapper!(Many; CSnap => ManyCSnap, PSnap => ManyPSnap, TyVal => ManyTyVal);
+typed_wrapper!(Many; Pair => ManyPair);
 typed_wrapper!(Many; Prim => ManyPrim, Snap => ManySnap, Dyn => ManyDyn);
 
 // A domain identifier
@@ -34,6 +35,7 @@ pub struct DomainIdn<'vir, R: CompType> {
     _p: core::marker::PhantomData<R>,
 }
 typed_wrapper!(DomainIdn; CSnap => DomainIdnCSnap<'vir>, PSnap => DomainIdnPSnap<'vir>, TyVal => DomainIdnTyVal<'vir>);
+typed_wrapper!(DomainIdn; Pair => DomainIdnPair<'vir>);
 typed_wrapper!(DomainIdn; Prim => DomainIdnPrim<'vir>, Snap => DomainIdnSnap<'vir>, Dyn => DomainIdnDyn<'vir>);
 
 impl<'vir, R: CompType> DomainIdn<'vir, R> {

@@ -489,10 +489,7 @@ impl TaskEncoder for FloatLitEnc {
 
     fn emit_outputs<'vir>(program: &mut task_encoder::Program<'vir>) {
         let mut by_type = std::collections::BTreeMap::<_, Vec<_>>::new();
-        for (float, axiom) in Self::all_outputs_local_no_errors(program)
-            .into_iter()
-            .flatten()
-        {
+        for (float, axiom) in Self::all_outputs_local(program).into_iter().flatten() {
             by_type.entry(float.name_str()).or_default().push(axiom);
         }
         vir::with_vcx(|vcx| {

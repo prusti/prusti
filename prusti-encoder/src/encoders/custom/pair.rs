@@ -1,14 +1,32 @@
 use task_encoder::TaskEncoder;
+use vir::CastType;
 
+/// Instantiates the `PairN` ADT of `PairEnc` at the element types given as
+/// the task.
 pub struct PairUseEnc;
 
-// TODO: remove this once used
-#[allow(unused)]
 #[derive(Debug, Clone)]
 pub struct PairUse<'vir> {
     pub ty: vir::TypePair<'vir>,
     pub constructor: vir::FunctionIdn<'vir, vir::ManyDyn, vir::Pair>,
     pub destructors: Vec<vir::AdtDestructor<'vir, vir::Pair, vir::Dyn>>,
+}
+
+impl<'vir> PairUse<'vir> {
+    pub fn mk_cons<Curr, Next, T: vir::CompType>(
+        &self,
+        elems: &[vir::ExprGen<'vir, Curr, Next, T>],
+    ) -> vir::ExprGenPair<'vir, Curr, Next> {
+        self.constructor.call()(elems.as_dyn())
+    }
+
+    pub fn mk_elem<Curr, Next>(
+        &self,
+        pair: vir::ExprGenPair<'vir, Curr, Next>,
+        elem: usize,
+    ) -> vir::ExprGenDyn<'vir, Curr, Next> {
+        self.destructors[elem].call()(pair)
+    }
 }
 
 impl TaskEncoder for PairUseEnc {
@@ -52,14 +70,27 @@ impl TaskEncoder for PairUseEnc {
             ))
         })
     }
+
+    /// `PairEnc` is private to this module, so its ADTs are emitted from
+    /// here, which `lib.rs` calls.
+    fn emit_outputs<'vir>(program: &mut task_encoder::Program<'vir>) {
+        PairEnc::emit_outputs(program);
+    }
 }
 
 #[derive(Debug, Clone)]
 struct Pair<'vir> {
-    self_ty: vir::DomainIdn<'vir, vir::Pair>,
+    self_ty: vir::DomainIdnPair<'vir>,
     constructor: vir::AdtConstructor<'vir>,
 }
 
+/// Encodes, for the arity N given as the task, the generic ADT
+/// `PairN[Ty0, ..]` with one constructor `TN` of N elements. It groups values
+/// that stand for no Rust value, such as the pure encoder's merges of the
+/// locals that the branches of a conditional modify. Unlike the snapshots of
+/// Rust tuples, which box their elements into `s_Param`, it keeps the
+/// elements' types, and it never stands for a Rust tuple, so these groupings
+/// stay apart from the tuples the user writes.
 struct PairEnc;
 
 impl TaskEncoder for PairEnc {
@@ -117,7 +148,7 @@ impl TaskEncoder for PairEnc {
     }
 
     fn emit_outputs<'vir>(program: &mut task_encoder::Program<'vir>) {
-        let outputs = Self::all_outputs_local_no_errors(program);
+        let outputs = Self::all_outputs_local(program);
         for output in outputs {
             program.add_adt(output);
         }

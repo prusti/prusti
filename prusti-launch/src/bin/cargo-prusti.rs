@@ -21,6 +21,8 @@ fn process<I>(args: I) -> Result<(), i32>
 where
     I: Iterator<Item = String>,
 {
+    let _setup = launch::job::setup().unwrap(); // Terminate all subprocesses on kill or Ctrl-C
+
     let mut prusti_rustc_path = env::current_exe()
         .expect("current executable path invalid")
         .with_file_name("prusti-rustc");
@@ -67,13 +69,14 @@ where
         .iter()
         .any(|arg| arg == "-V" || arg == "-vV" || arg == "--version")
     {
-        let exit_status = Command::new(cargo_path)
-            .args(args)
-            .env("RUSTUP_TOOLCHAIN", launch::get_rust_toolchain_channel())
-            .env("RUSTC", prusti_rustc_path)
-            .env("CARGO_TARGET_DIR", &cargo_target)
-            .status()
-            .expect("could not run cargo");
+        let exit_status = launch::job::status(
+            Command::new(cargo_path)
+                .args(args)
+                .env("RUSTUP_TOOLCHAIN", launch::get_rust_toolchain_channel())
+                .env("RUSTC", prusti_rustc_path)
+                .env("CARGO_TARGET_DIR", &cargo_target),
+        )
+        .expect("could not run cargo");
         return if exit_status.success() {
             Ok(())
         } else {
@@ -103,7 +106,7 @@ where
     //   `CARGO_MANIFEST_DIR`. As a result, `Prusti.toml` is read from the CWD
     //   even though the `Cargo.toml` is elsewhere.
 
-    let exit_status = cargo_command
+    cargo_command
         // Category B flags (update the docs if any more are added):
         .env("PRUSTI_BE_RUSTC", config::be_rustc().to_string())
         .env(
@@ -118,9 +121,8 @@ where
         .env("DEFAULT_PRUSTI_QUIET", "true")
         .env("DEFAULT_PRUSTI_FULL_COMPILATION", "true")
         .env("DEFAULT_PRUSTI_LOG_DIR", cargo_target.join("log"))
-        .env("DEFAULT_PRUSTI_CACHE_PATH", cargo_target.join("cache.bin"))
-        .status()
-        .expect("could not run cargo");
+        .env("DEFAULT_PRUSTI_CACHE_PATH", cargo_target.join("cache.bin"));
+    let exit_status = launch::job::status(&mut cargo_command).expect("could not run cargo");
 
     if exit_status.success() {
         if command == "build" {
@@ -156,7 +158,7 @@ fn clean_if_stale_specs(
         if let Some(manifest_path) = manifest_path {
             clean_command.args(["--manifest-path", manifest_path]);
         }
-        let exit_status = clean_command.status().expect("could not run cargo");
+        let exit_status = launch::job::status(&mut clean_command).expect("could not run cargo");
         if !exit_status.success() {
             return Err(exit_status.code().unwrap_or(-1));
         }
