@@ -4,6 +4,7 @@ use crate::encoders::{
     mir_fn::{CallTaskDescription, RustSignature, SpecArms},
     mir_shared::{EncodeResult, PureRvalueEnc, RustcIntrinsic, unsupported_opaque},
     pure::spec::MirSpecEncMode,
+    trigger_checks,
     ty::{
         RustTyDecomposition,
         generics::{GArgs, GParams},
@@ -24,10 +25,7 @@ use prusti_rustc_interface::{
 };
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::fmt;
-use task_encoder::{
-    DependencyErrorLink, EncodeFullError, EncodeFullResult, ErrorKind, TaskEncoder,
-    TaskEncoderDependencies,
-};
+use task_encoder::{EncodeFullError, EncodeFullResult, TaskEncoder, TaskEncoderDependencies};
 use vir::{CastType, CompType, add_debug_note};
 
 pub struct MirPureEnc;
@@ -56,6 +54,76 @@ type SpecClosure<'vir> = (
     &'vir [vir::LocalDeclSnap<'vir>],
     ExprRetAny<'vir, vir::Bool>,
 );
+
+/// The encoded body of a spec closure, with what it is instantiated with
+/// (see `Enc::encode_closure_body`).
+#[derive(Clone, Copy)]
+struct ClosureBody<'vir> {
+    def_id: DefId,
+    expr: ExprRet<'vir>,
+    /// The values of the closure's arguments after the closure itself, the
+    /// quantified variables.
+    inputs: Inputs<'vir>,
+    /// The values of the closure's captures in the modes its body reads them
+    /// in, encoded in the body that builds the closure.
+    captures: &'vir IndexVec<abi::FieldIdx, FxHashMap<Modes, ExprRet<'vir>>>,
+}
+
+impl<'vir> ClosureBody<'vir> {
+    /// The body as part of the expression the closure is built in, in that
+    /// expression's state, named `name` for debugging.
+    fn embed(self, vcx: &'vir vir::VirCtxt<'vir>, name: &'vir str) -> ExprRet<'vir> {
+        use vir::Reify;
+        let ClosureBody {
+            def_id: cl_def_id,
+            expr: body,
+            inputs: reify_args,
+            captures,
+        } = self;
+        vcx.mk_lazy_expr(
+            name,
+            body.ty(),
+            Box::new(move |vcx, lctx: ExprInput<'vir>| {
+                let captures = captures
+                    .iter()
+                    .map(|values| {
+                        values
+                            .iter()
+                            .map(|(&modes, value)| (modes, value.reify(vcx, lctx)))
+                            .collect()
+                    })
+                    .collect::<IndexVec<_, _>>();
+                body.reify(vcx, (cl_def_id, reify_args, lctx.2, vcx.alloc(captures)))
+                    .kind
+            }),
+        )
+    }
+
+    /// The body as a term of its own, whose shape decides whether it is a
+    /// valid trigger: the state of `old` is left open, and each capture is a
+    /// local. That is what a capture is to the shape, a value from outside
+    /// the quantifier, which mentions none of its variables.
+    fn shape_term(self, vcx: &'vir vir::VirCtxt<'vir>) -> vir::ExprDyn<'vir> {
+        use vir::Reify;
+        let captures = self
+            .captures
+            .iter_enumerated()
+            .map(|(field, values)| {
+                values
+                    .iter()
+                    .map(|(&modes, value)| {
+                        let name = vir::vir_format!(vcx, "capture_{}", field.as_usize());
+                        (modes, vcx.mk_local_ex(vcx.mk_local_decl(name, value.ty())))
+                    })
+                    .collect()
+            })
+            .collect::<IndexVec<_, _>>();
+        let captures: Captures<'vir> = vcx.alloc(captures);
+        let input = (self.def_id, self.inputs, vir::OldLabel::None, captures);
+        self.expr.reify(vcx, input).as_dyn()
+    }
+}
+type TriggerRet<'vir> = vir::TriggerGen<'vir, ExprInput<'vir>, vir::ExprKind<'vir>>;
 
 #[derive(Clone, Debug)]
 pub struct MirPureEncOutput<'vir> {
@@ -102,6 +170,15 @@ pub enum PureKind {
     /// of the expression that contains it, in the generic context of the item
     /// `context`.
     Closure {
+        context: DefId,
+    },
+    /// A closure holding a trigger of a quantifier, encoded like `Closure`. A
+    /// trigger is a pattern, whose value never becomes a fact, so the runtime
+    /// checks of MIR (bounds, overflow, division by zero) are not encoded:
+    /// Silicon evaluates a trigger that is not part of the body without the
+    /// body's conditions, where the failing branch of a check would assume
+    /// `false`.
+    Trigger {
         context: DefId,
     },
     /// A specification, attached to the item `context` specifies. That is
@@ -171,12 +248,13 @@ impl TaskEncoder for MirPureEnc {
         let (inputs, expr, captures) = vir::with_vcx(move |vcx| {
             // A specification is instantiated with the arguments of the
             // encoding, which differ from its own when a trait's specification
-            // is encoded for an `impl` of that trait. So is the closure of a
-            // quantifier or `spec_block`, which is encoded in the context of
-            // the expression it is part of. The other bodies are encoded
-            // generically, so they are taken as stored.
+            // is encoded for an `impl` of that trait. So are the closures of a
+            // quantifier's body and triggers and of `spec_block`, which are
+            // encoded in the context of the expression they are part of. The
+            // other bodies are encoded generically, so they are taken as
+            // stored.
             let body = match kind {
-                PureKind::Closure { context } => {
+                PureKind::Closure { context } | PureKind::Trigger { context } => {
                     let substs = vcx.tcx().mk_args(gargs.args());
                     vcx.body_mut().get_closure_body(def_id, substs, context)
                 }
@@ -405,6 +483,8 @@ struct Enc<'vir: 'enc, 'enc> {
     /// For a spec closure, the modes its body reads each capture in (see
     /// [`MirPureEncOutput::captures`]); `None` for other bodies.
     captures: Option<IndexVec<abi::FieldIdx, FxHashSet<Modes>>>,
+    /// Whether the body is a trigger (see `PureKind::Trigger`).
+    trigger: bool,
 }
 
 struct EncodedPlace<'vir> {
@@ -493,7 +573,9 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
             encoding_depth,
             context: gargs.context(),
             context_def_id: match kind {
-                PureKind::Closure { context } | PureKind::Spec { context, .. } => context,
+                PureKind::Closure { context }
+                | PureKind::Trigger { context }
+                | PureKind::Spec { context, .. } => context,
                 PureKind::Pure | PureKind::Constant(_) | PureKind::SpecBlock(_) => def_id,
             },
             body,
@@ -516,13 +598,16 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                     ..
                 } | PureKind::SpecBlock(..)
             ),
-            captures: matches!(kind, PureKind::Closure { .. }).then(|| {
-                let closure_ty = body.local_decls[ty::CAPTURE_STRUCT_LOCAL].ty.peel_refs();
-                let TyKind::Closure(_, args) = closure_ty.kind() else {
-                    unreachable!("a closure body takes its closure first");
-                };
-                IndexVec::from_elem_n(FxHashSet::default(), args.as_closure().upvar_tys().len())
-            }),
+            captures: matches!(kind, PureKind::Closure { .. } | PureKind::Trigger { .. }).then(
+                || {
+                    let closure_ty = body.local_decls[ty::CAPTURE_STRUCT_LOCAL].ty.peel_refs();
+                    let TyKind::Closure(_, args) = closure_ty.kind() else {
+                        unreachable!("a closure body takes its closure first");
+                    };
+                    IndexVec::from_elem_n(FxHashSet::default(), args.as_closure().upvar_tys().len())
+                },
+            ),
+            trigger: matches!(kind, PureKind::Trigger { .. }),
         }
     }
 
@@ -711,6 +796,10 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
             !graph::is_cyclic(&self.body.basic_blocks),
             "MIR pure encoding does not support loops"
         );
+        if self.trigger {
+            let span = self.vcx.tcx().def_span(self.body.source.def_id());
+            trigger_checks::check_head(self.body, span)?;
+        }
         self.encode_common(
             mir::START_BLOCK,
             self.rev_doms.end,
@@ -791,6 +880,13 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                 if let Some(live) = self.spec_arms.switches.get(&curr) {
                     let rest_update = self.encode_cfg(&new_curr_ver, *live, join_point)?;
                     return Ok(stmt_update.merge(rest_update));
+                }
+                if self.trigger {
+                    return Err(EncodeFullError::incorrect(
+                        "a trigger cannot contain a conditional (`if`, `match`, `&&` or `||`)"
+                            .to_string(),
+                        vec![term.source_info.span],
+                    ));
                 }
 
                 // encode the discriminant operand
@@ -885,6 +981,13 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                 target,
                 ..
             } => {
+                // A trigger does not contain the checks (see
+                // `PureKind::Trigger`).
+                if self.trigger {
+                    let rest_update = self.encode_cfg(&new_curr_ver, *target, join_point)?;
+                    return Ok(stmt_update.merge(rest_update));
+                }
+
                 // encode the condition operand
                 let cond_ty = cond.ty(self.body, self.vcx.tcx());
                 assert_eq!(*cond_ty.kind(), TyKind::Bool);
@@ -969,6 +1072,14 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                 ..
             } => {
                 let Some(target) = *target else {
+                    if self.trigger {
+                        return Err(EncodeFullError::incorrect(
+                            "a trigger cannot contain a call that never returns, such as \
+                             `panic!()`"
+                                .to_string(),
+                            vec![term.source_info.span],
+                        ));
+                    }
                     // target is none if the call diverges (i.e. returns !), in
                     // this case treat it just like an unreachable terminator.
                     return Ok(None);
@@ -1028,17 +1139,13 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                             .collect::<Result<Vec<_>, _>>()?;
                         Ok(pure_func.call_pure(snap_args))
                     } else {
-                        Err(EncodeFullError::DependencyError(vec![
-                            DependencyErrorLink::new(
-                                MirPureEnc::ENCODER_NAME,
-                                format!(
-                                    "use of impure function `{}` in pure code is not allowed",
-                                    self.vcx.tcx().def_path_str(def_id)
-                                ),
-                                vec![term.source_info.span],
-                                ErrorKind::Incorrect,
+                        Err(EncodeFullError::incorrect(
+                            format!(
+                                "use of impure function `{}` in pure code is not allowed",
+                                self.vcx.tcx().def_path_str(def_id)
                             ),
-                        ]))
+                            vec![term.source_info.span],
+                        ))
                     }
                 });
 
@@ -1568,6 +1675,34 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                 .collect::<Vec<_>>(),
         );
 
+        let kind = PureKind::Closure {
+            context: self.context_def_id,
+        };
+        let body =
+            self.encode_closure_body(name, kind, cl_def_id, cl_args, qvars, block, curr_ver)?;
+        let body = body.embed(
+            self.vcx,
+            vir::vir_format!(self.vcx, "spec closure body ({name})"),
+        );
+        Ok((qvars, body.downcast_ty::<vir::Bool>()))
+    }
+
+    /// Encodes the body of the spec closure `cl_def_id` with the generic
+    /// arguments `cl_args`, as a body of `kind` whose arguments after the
+    /// closure itself are the quantified variables `qvars`, together with its
+    /// captures (see [`Self::encode_spec_closure`]). `name` is the builtin's
+    /// `prusti_contracts` name, for error reporting.
+    #[allow(clippy::too_many_arguments)]
+    fn encode_closure_body(
+        &mut self,
+        name: &str,
+        kind: PureKind,
+        cl_def_id: DefId,
+        cl_args: ty::GenericArgsRef<'vir>,
+        qvars: &'vir [vir::LocalDeclSnap<'vir>],
+        block: mir::BasicBlock,
+        curr_ver: &FxHashMap<mir::Local, Version<'vir>>,
+    ) -> EncodeResult<'vir, ClosureBody<'vir>, MirPureEnc> {
         let mut reify_args = FxHashMap::default();
         // The arguments to the closure are the closure itself, which gets no
         // value as the body reads it only through its captures, and the
@@ -1579,12 +1714,9 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                 .map(|(idx, qvar)| ((idx + 2).into(), self.vcx.mk_local_ex(qvar))),
         );
 
-        use vir::Reify;
         let out = self.deps.require_dep::<MirPureEnc>(MirPureEncTask {
             encoding_depth: self.encoding_depth + 1,
-            kind: PureKind::Closure {
-                context: self.context_def_id,
-            },
+            kind,
             parent_def_id: cl_def_id,
             // The body becomes part of this expression, so it is encoded
             // in this context, in which `cl_args` are expressed.
@@ -1632,27 +1764,70 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
             }
             captures.push(values);
         }
-        let captures = self.vcx.alloc(captures);
-        let body = out.expr;
-        let reify_args = self.vcx.alloc(reify_args);
-        let body = self.vcx.mk_lazy_expr(
-            vir::vir_format!(self.vcx, "spec closure body ({name})"),
-            body.ty(),
-            Box::new(move |vcx, lctx: ExprInput<'vir>| {
-                let captures = captures
-                    .iter()
-                    .map(|values| {
-                        values
-                            .iter()
-                            .map(|(&modes, value)| (modes, value.reify(vcx, lctx)))
-                            .collect()
-                    })
-                    .collect::<IndexVec<_, _>>();
-                body.reify(vcx, (cl_def_id, reify_args, lctx.2, vcx.alloc(captures)))
-                    .kind
-            }),
-        );
-        Ok((qvars, body.downcast_ty::<vir::Bool>()))
+        Ok(ClosureBody {
+            def_id: cl_def_id,
+            expr: out.expr,
+            inputs: self.vcx.alloc(reify_args),
+            captures: self.vcx.alloc(captures),
+        })
+    }
+
+    /// Encodes the trigger sets of a quantifier builtin over `qvars`, whose
+    /// type `sets_ty` is a tuple of trigger sets, each itself a tuple of
+    /// references to spec closures whose arguments are the quantified
+    /// variables and whose body is one trigger expression. Like the body
+    /// closure, the trigger closures are built in `block` and get their
+    /// captures from it (see [`Self::encode_spec_closure`]). Reports a term or
+    /// a set that is not a valid trigger (see `trigger_checks`).
+    fn encode_trigger_sets(
+        &mut self,
+        name: &str,
+        sets_ty: ty::Ty<'vir>,
+        qvars: &'vir [vir::LocalDeclSnap<'vir>],
+        block: mir::BasicBlock,
+        curr_ver: &FxHashMap<mir::Local, Version<'vir>>,
+    ) -> EncodeResult<'vir, &'vir [TriggerRet<'vir>], MirPureEnc> {
+        let TyKind::Tuple(set_tys) = sets_ty.kind() else {
+            panic!("illegal prusti::{name}: expected a trigger-set tuple, got {sets_ty:?}")
+        };
+        let mut sets = Vec::with_capacity(set_tys.len());
+        for set_ty in set_tys.iter() {
+            let TyKind::Tuple(cl_tys) = set_ty.kind() else {
+                panic!("illegal prusti::{name}: expected a trigger tuple, got {set_ty:?}")
+            };
+            let mut exprs = Vec::with_capacity(cl_tys.len());
+            let mut shapes = Vec::with_capacity(cl_tys.len());
+            let mut closures = Vec::with_capacity(cl_tys.len());
+            for cl_ty in cl_tys.iter() {
+                let &TyKind::Ref(_, cl_ty, _) = cl_ty.kind() else {
+                    panic!("illegal prusti::{name}: expected a trigger closure, got {cl_ty:?}")
+                };
+                let &TyKind::Closure(cl_def_id, cl_args) = cl_ty.kind() else {
+                    panic!("illegal prusti::{name}: expected a trigger closure, got {cl_ty:?}")
+                };
+                let cl_span = self.vcx.tcx().def_span(cl_def_id);
+                let kind = PureKind::Trigger {
+                    context: self.context_def_id,
+                };
+                let body = self
+                    .encode_closure_body(name, kind, cl_def_id, cl_args, qvars, block, curr_ver)?;
+                shapes.push(vir::trigger_term_shape(vir::inline_lets(
+                    self.vcx,
+                    body.shape_term(self.vcx),
+                )));
+                // Created under the trigger's span, so that the reified term
+                // carries it and the verifier's warnings about the trigger
+                // point at it.
+                let trigger = self.vcx.with_span(cl_span, |vcx| {
+                    body.embed(vcx, vir::vir_format!(vcx, "trigger ({name})"))
+                });
+                exprs.push(trigger);
+                closures.push(cl_def_id);
+            }
+            trigger_checks::check_set(self.vcx, qvars, &closures, &shapes, self.current_span())?;
+            sets.push(self.vcx.mk_trigger(&exprs));
+        }
+        Ok(self.vcx.alloc_slice(&sets))
     }
 
     /// The assignment statements of this body, as destination and value.
@@ -1725,6 +1900,37 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
         block: mir::BasicBlock,
         curr_ver: &FxHashMap<mir::Local, Version<'vir>>,
     ) -> EncodeResult<'vir, ExprRet<'vir>, MirPureEnc> {
+        if self.trigger {
+            let span = self.current_span();
+            match builtin {
+                SpecBuiltin::Forall | SpecBuiltin::Exists => {
+                    return Err(EncodeFullError::incorrect(
+                        "a trigger cannot contain a quantifier".to_string(),
+                        vec![span],
+                    ));
+                }
+                SpecBuiltin::SpecBlock => {
+                    return Err(EncodeFullError::incorrect(
+                        "a trigger cannot contain a specification block".to_string(),
+                        vec![span],
+                    ));
+                }
+                // Viper allows `old` in a trigger; the other states have no
+                // encoding in a trigger yet.
+                SpecBuiltin::ModeStart(Mode::Old) | SpecBuiltin::ModeEnd(Mode::Old) => {}
+                SpecBuiltin::ModeStart(mode) | SpecBuiltin::ModeEnd(mode) => {
+                    let keyword = match mode {
+                        Mode::Rel(execution) => format!("rel{execution}"),
+                        Mode::BeforeExpiry => "before_expiry".to_string(),
+                        Mode::Old => unreachable!("`old` is supported in a trigger"),
+                    };
+                    return Err(EncodeFullError::unsupported(
+                        format!("`{keyword}` in a trigger"),
+                        vec![span],
+                    ));
+                }
+            }
+        }
         let mk_bool = |prim: vir::ExprGenBool<'vir, _, _>| prim.upcast_ty::<vir::CSnap>();
         Ok(match builtin {
             SpecBuiltin::Forall | SpecBuiltin::Exists => {
@@ -1739,11 +1945,12 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                 };
                 let (qvars, body) =
                     self.encode_spec_closure(name, arg_tys[2].expect_ty(), block, curr_ver)?;
-                // TODO: triggers
+                let triggers =
+                    self.encode_trigger_sets(name, arg_tys[0].expect_ty(), qvars, block, curr_ver)?;
                 let res = if builtin == SpecBuiltin::Forall {
-                    self.vcx.mk_forall_expr(qvars, &[], body)
+                    self.vcx.mk_forall_expr(qvars, triggers, body)
                 } else {
-                    self.vcx.mk_exists_expr(qvars, &[], body)
+                    self.vcx.mk_exists_expr(qvars, triggers, body)
                 };
                 mk_bool(res)
             }

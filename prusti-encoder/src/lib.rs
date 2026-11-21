@@ -143,6 +143,9 @@ pub fn test_entrypoint<'tcx>(
     TraitImplItemEnc::emit_outputs(&mut program);
     TraitImplDefaultFnEnc::emit_outputs(&mut program);
 
+    // Silicon finds a trigger among the terms of its quantifier's body, and
+    // so evaluates it under the body's conditions, only if it has no `let`s.
+    program.inline_trigger_lets();
     if config::simplify_encoding() {
         program.simplify();
     }

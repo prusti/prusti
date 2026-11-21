@@ -824,9 +824,12 @@ impl Quantifier {
         let trigger_sets = triggers
             .into_iter()
             .map(|set| {
+                // Each trigger closure is passed by reference, like the body
+                // closure: the encoder takes that reference as the closure's
+                // first argument, through which its body reads the captures.
                 let triggers = TokenStream::from_iter(set.into_iter().map(|trigger| {
                     quote_spanned! { trigger.span() =>
-                    #[prusti::spec_only] | #args | ( #trigger ), }
+                    &( #[prusti::spec_only] | #args | ( #trigger ) ), }
                 }));
                 quote_spanned! { full_span => ( #triggers ) }
             })
@@ -1176,7 +1179,7 @@ mod tests {
         );
         assert_eq!(
             parse_prusti("forall(|x: i32| a ==> b, triggers = [(c,), (d, e)])".parse().unwrap()).unwrap().to_string(),
-            ":: prusti_contracts :: forall (((# [prusti :: spec_only] | x : i32 | (c) ,) , (# [prusti :: spec_only] | x : i32 | (d) , # [prusti :: spec_only] | x : i32 | (e) ,) ,) , & (# [prusti :: spec_only] | x : i32 | -> bool { ! (a) || (b) }) ,)",
+            ":: prusti_contracts :: forall (((& (# [prusti :: spec_only] | x : i32 | (c)) ,) , (& (# [prusti :: spec_only] | x : i32 | (d)) , & (# [prusti :: spec_only] | x : i32 | (e)) ,) ,) , & (# [prusti :: spec_only] | x : i32 | -> bool { ! (a) || (b) }) ,)",
         );
         assert_eq!(
             parse_prusti("assert!(a === b ==> b)".parse().unwrap())

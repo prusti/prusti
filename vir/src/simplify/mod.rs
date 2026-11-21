@@ -14,7 +14,10 @@
 //!    not values whose locals a binder (a quantifier or `let`) rebinds,
 //!  - the span of the root of an expression tree is kept, since Prusti
 //!    backtranslates Viper errors through it,
-//!  - quantifier triggers and magic wands are left as encoded.
+//!  - quantifier triggers are simplified like the body, so that they become
+//!    the same terms as the body contains, unless that would make them
+//!    invalid triggers,
+//!  - magic wands are left as encoded.
 //!
 //! Equations may drop subexpressions together with their well-definedness
 //! checks: Prusti checks all side conditions explicitly in impure code.
@@ -109,8 +112,8 @@ impl<'vir> SimplifyCtx<'vir> {
     }
 }
 
-/// Simplifies the expressions of a program item (a domain, predicate,
-/// function or method).
+/// Simplifies the expressions of a program, or of one of its items (a
+/// domain, predicate, function or method).
 pub fn simplify<'vir, 'tcx, T: Foldable<'vir, (), !> + Copy>(
     vcx: &'vir VirCtxt<'tcx>,
     ctx: &SimplifyCtx<'vir>,
