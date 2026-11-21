@@ -57,6 +57,16 @@ fn keep_or_set(a: u32, c: bool) -> u32 {
 #[ensures(!c ==> keep_or_set(a, c) == a + 1)]
 fn keep_or_set_spec(a: u32, c: bool) {}
 
+/// `r` is assigned in one branch only; the other returns.
+#[pure]
+fn assigned_in_one_branch(c: bool) -> u32 {
+    let r = if c { 1 } else { return 0 };
+    r
+}
+
+#[ensures(assigned_in_one_branch(true) == 1 && assigned_in_one_branch(false) == 0)]
+fn assigned_in_one_branch_client() {}
+
 /// Nothing after the bounds check of `a[i]` completes.
 #[pure]
 #[requires(false)]

@@ -136,6 +136,27 @@ bitflags::bitflags! {
     }
 }
 
+impl Modes {
+    fn of(mode: Mode) -> Self {
+        match mode {
+            Mode::Old => Self::OLD,
+            Mode::Rel(0) => Self::REL0,
+            Mode::Rel(_) => Self::REL1,
+            Mode::BeforeExpiry => Self::BEFORE_EXPIRY,
+        }
+    }
+
+    /// The modes that a read in `self` cannot be nested in: `self`, and for
+    /// a `rel`, either execution.
+    fn conflicting(self) -> Self {
+        if self.intersects(Self::REL0 | Self::REL1) {
+            Self::REL0 | Self::REL1
+        } else {
+            self
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum PureKind {
     /// The closure passed to a quantifier or to `spec_block`, encoded as part
@@ -512,7 +533,12 @@ impl<'vir: 'enc, 'enc> PureRvalueEnc<'vir> for Enc<'vir, 'enc> {
             mir::Operand::Constant(box constant) => {
                 self.encode_constant_snap(constant)?.upcast_ty().lazy()
             }
-            mir::Operand::RuntimeChecks(_) => todo!(),
+            mir::Operand::RuntimeChecks(_) => {
+                return Err(EncodeFullError::unsupported(
+                    format!("operand `{operand:?}` in pure code"),
+                    vec![self.current_span()],
+                ));
+            }
         })
     }
 }

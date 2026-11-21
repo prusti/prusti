@@ -348,49 +348,28 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                 mk_bool(body)
             }
             SpecBuiltin::ModeStart(mode) => {
-                match mode {
-                    Mode::Old => {
-                        assert!(!self.modes.contains(Modes::OLD));
-                        self.modes.insert(Modes::OLD);
-                    }
-                    Mode::Rel(0) => {
-                        assert!(!self.modes.contains(Modes::REL0));
-                        assert!(!self.modes.contains(Modes::REL1));
-                        self.modes.insert(Modes::REL0);
-                    }
-                    Mode::Rel(_) => {
-                        assert!(!self.modes.contains(Modes::REL1));
-                        assert!(!self.modes.contains(Modes::REL0));
-                        self.modes.insert(Modes::REL1);
-                    }
-                    Mode::BeforeExpiry => {
-                        assert!(!self.modes.contains(Modes::BEFORE_EXPIRY));
-                        self.modes.insert(Modes::BEFORE_EXPIRY);
-                    }
+                let modes = Modes::of(mode);
+                if self.modes.intersects(modes.conflicting()) {
+                    let name = match mode {
+                        Mode::Old => "old",
+                        Mode::Rel(_) => "rel",
+                        Mode::BeforeExpiry => "before_expiry",
+                    };
+                    return Err(EncodeFullError::unsupported(
+                        format!("`{name}` nested in `{name}`"),
+                        vec![self.current_span()],
+                    ));
                 }
+                self.modes.insert(modes);
                 mk_bool(self.vcx.mk_bool::<true>().lazy()) // TODO: what value do we return?
             }
             SpecBuiltin::ModeEnd(mode) => {
-                match mode {
-                    Mode::Old => {
-                        assert!(self.modes.contains(Modes::OLD));
-                        self.modes.remove(Modes::OLD);
-                    }
-                    Mode::Rel(0) => {
-                        assert!(self.modes.contains(Modes::REL0));
-                        assert!(!self.modes.contains(Modes::REL1));
-                        self.modes.remove(Modes::REL0);
-                    }
-                    Mode::Rel(_) => {
-                        assert!(!self.modes.contains(Modes::REL0));
-                        assert!(self.modes.contains(Modes::REL1));
-                        self.modes.remove(Modes::REL1);
-                    }
-                    Mode::BeforeExpiry => {
-                        assert!(self.modes.contains(Modes::BEFORE_EXPIRY));
-                        self.modes.remove(Modes::BEFORE_EXPIRY);
-                    }
-                }
+                let modes = Modes::of(mode);
+                assert!(
+                    self.modes.contains(modes),
+                    "a mode ends that was not entered"
+                );
+                self.modes.remove(modes);
                 mk_bool(self.vcx.mk_bool::<true>().lazy()) // TODO: what value do we return?
             }
         }

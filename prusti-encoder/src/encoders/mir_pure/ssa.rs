@@ -159,6 +159,12 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
             .collect::<Vec<_>>();
         mod_locals.sort();
         mod_locals.dedup();
+        // A local that some completing branch leaves without a value (declared
+        // by `StorageLive` but not assigned) is not merged: MIR reads no local
+        // after a join that some path to it leaves uninitialised.
+        mod_locals.retain(|local| {
+            completing().all(|branch| branch.versions[local].initialised.is_some())
+        });
         let mod_tys = mod_locals
             .iter()
             .map(|l| self.get_ty_for_local(*l).as_dyn())

@@ -133,7 +133,12 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                 EncodedPlace::new(proj_app, place_ref)
             }
             mir::ProjectionElem::Downcast(..) => encoded_place,
-            _ => todo!("Unsupported ProjectionElem {:?}", elem),
+            _ => {
+                return Err(EncodeFullError::unsupported(
+                    format!("projection `{elem:?}` in pure code"),
+                    vec![self.current_span()],
+                ));
+            }
         })
     }
 

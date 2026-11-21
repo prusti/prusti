@@ -33,10 +33,12 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
     }
 
     pub(super) fn encode_body(&mut self) -> EncodeResult<'vir, ExprRet<'vir>, MirPureEnc> {
-        assert!(
-            !graph::is_cyclic(&self.body.basic_blocks),
-            "MIR pure encoding does not support loops"
-        );
+        if graph::is_cyclic(&self.body.basic_blocks) {
+            return Err(EncodeFullError::unsupported(
+                "a loop in pure code".to_string(),
+                vec![self.body.span],
+            ));
+        }
         self.encode_common(
             mir::START_BLOCK,
             self.rev_doms.end,
@@ -222,7 +224,10 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                 self.encode_cfg(fragment, target, join_point)
             }
 
-            k => todo!("terminator kind {k:?}"),
+            k => Err(EncodeFullError::unsupported(
+                format!("terminator `{k:?}` in pure code"),
+                vec![term.source_info.span],
+            )),
         }
     }
 
@@ -318,7 +323,12 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                     let version = fragment.versions[&dest.local].index;
                     self.uses.assigned(dest.local, version, reads);
                 }
-                k => todo!("statement kind {k:?}"),
+                k => {
+                    return Err(EncodeFullError::unsupported(
+                        format!("statement `{k:?}` in pure code"),
+                        vec![stmt.source_info.span],
+                    ));
+                }
             }
             Ok(())
         })
