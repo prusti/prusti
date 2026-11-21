@@ -47,8 +47,10 @@ pub enum MirPureEncError {
 /// The values of an encoded body's inputs.
 pub type Inputs<'vir> = &'vir FxHashMap<mir::Local, vir::ExprSnap<'vir>>;
 /// The values of a spec closure's captures, in the modes its body reads them
-/// in (see `MirPureEncOutput::captures`).
-type Captures<'vir> = &'vir IndexSlice<abi::FieldIdx, FxHashMap<Modes, vir::ExprSnap<'vir>>>;
+/// in (see `MirPureEncOutput::captures`): the captured places, encoded by the
+/// enclosing body (see `Enc::encode_capture`).
+type Captures<'vir> =
+    &'vir IndexSlice<abi::FieldIdx, FxHashMap<Modes, EncodedPlaceGen<'vir, (), !>>>;
 /// What an encoded body is instantiated with: the body's `DefId`, the values
 /// of its inputs, the state `old` refers to, and, for a spec closure, the
 /// values of its captures.
@@ -413,16 +415,24 @@ struct Enc<'vir: 'enc, 'enc> {
     captures: Option<IndexVec<abi::FieldIdx, FxHashSet<Modes>>>,
 }
 
-struct EncodedPlace<'vir> {
-    snap: ExprRet<'vir>,
-    place_ref: Option<ExprRetRef<'vir>>,
+/// An encoded place, as expressions in the context `Curr`/`Next`: lazy ones
+/// while a body is encoded (`EncodedPlace`), and reified ones for the captures
+/// passed into a spec closure (`Captures`).
+struct EncodedPlaceGen<'vir, Curr, Next> {
+    snap: vir::ExprGenSnap<'vir, Curr, Next>,
+    place_ref: Option<vir::ExprGenRef<'vir, Curr, Next>>,
     /// The metadata for the pointed-to value. Set when going through a
     /// `ProjectionElem::Deref`.
-    metadata: Option<ExprRet<'vir>>,
+    metadata: Option<vir::ExprGenSnap<'vir, Curr, Next>>,
 }
 
-impl<'vir> EncodedPlace<'vir> {
-    fn new(expr: ExprRet<'vir>, place_ref: Option<ExprRetRef<'vir>>) -> Self {
+type EncodedPlace<'vir> = EncodedPlaceGen<'vir, ExprInput<'vir>, vir::ExprKind<'vir>>;
+
+impl<'vir, Curr, Next> EncodedPlaceGen<'vir, Curr, Next> {
+    fn new(
+        expr: vir::ExprGenSnap<'vir, Curr, Next>,
+        place_ref: Option<vir::ExprGenRef<'vir, Curr, Next>>,
+    ) -> Self {
         Self {
             snap: expr,
             place_ref,
@@ -430,7 +440,7 @@ impl<'vir> EncodedPlace<'vir> {
         }
     }
 
-    fn with_metadata(mut self, metadata: ExprRet<'vir>) -> Self {
+    fn with_metadata(mut self, metadata: vir::ExprGenSnap<'vir, Curr, Next>) -> Self {
         self.metadata = Some(metadata);
         self
     }
