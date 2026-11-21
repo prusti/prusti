@@ -1,3 +1,4 @@
+use prusti_interface::specs::typed::PureMode;
 use prusti_rustc_interface::span::def_id::DefId;
 use task_encoder::{EncodeFullResult, OutputRefAny, TaskEncoder, TaskEncoderDependencies};
 use vir::{CastType, FunctionIdn};
@@ -22,13 +23,19 @@ pub struct FunctionCallEncOutput<'vir> {
     function: FunctionEncOutputRef<'vir>,
     ty_args: GArgsTy<'vir>,
     /// The (instantiated) types of the arguments the callee declares as
-    /// shared references, whose addresses are dummied.
+    /// shared references, whose addresses are dummied. `None` throughout for
+    /// a callee in [`PureMode::Memory`], which may depend on the addresses.
     shared_ref_args: Vec<Option<TyUsePureImmRef<'vir>>>,
     inputs: Vec<GArgCaster<'vir, Pure>>,
     output: GArgCaster<'vir, Pure>,
 }
 
 impl<'vir> FunctionCallEncOutput<'vir> {
+    /// Whether calls dummy the address of some argument.
+    pub fn dummies_addresses(&self) -> bool {
+        self.shared_ref_args.iter().any(Option::is_some)
+    }
+
     /// Calls the definitional function `f_`. In impure code a pure function
     /// is called as a method (its `MethodEnc`), whose postcondition ties the
     /// result to this application.
@@ -103,11 +110,13 @@ impl TaskEncoder for FunctionCallEnc {
         // of a type parameter instantiated with a reference: the dummying
         // must agree with the callee's (generic) contract, which ties its
         // result to `f_` on the same dummied arguments.
+        let keeps_addresses =
+            crate::encoders::pure_mode(callee_def_id, task_key.gargs) == Some(PureMode::Memory);
         let shared_ref_args = signature
             .inputs
             .iter()
             .map(|ty| {
-                if !ty.is_immref() {
+                if keeps_addresses || !ty.is_immref() {
                     return Ok(None);
                 }
                 let ty_task = ty.decompose_normalize(task_key.gargs);

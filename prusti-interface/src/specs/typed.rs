@@ -252,10 +252,38 @@ impl ProcedureSpecification {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, TyEncodable, TyDecodable)]
 pub enum ProcedureSpecificationKind {
     Impure,
-    Pure,
+    Pure(PureMode),
     /// The specification is a predicate with the enclosed body.
     /// The body can be None to account for abstract predicates.
     Predicate(Option<DefId>),
+}
+
+/// What the result of a pure function may depend on: `#[pure]` without an
+/// argument for `Value`, `#[pure(memory)]` for `Memory`. The modes are ordered
+/// from the most to the least
+/// restrictive: a function in a mode also satisfies every later mode, so an
+/// implementation of a trait method may use the trait method's mode or an
+/// earlier one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, TyEncodable, TyDecodable)]
+pub enum PureMode {
+    /// `#[pure]`: the result depends only on the values of the arguments, not
+    /// on the addresses of memory locations (in particular, not on where
+    /// shared references point).
+    Value,
+    /// `#[pure(memory)]`: the result may also depend on the addresses of the
+    /// memory locations reachable from the arguments, e.g. because it is a
+    /// reference into an argument.
+    Memory,
+}
+
+impl PureMode {
+    /// The annotation declaring a pure function in this mode, for messages.
+    pub fn attribute(self) -> &'static str {
+        match self {
+            PureMode::Value => "#[pure]",
+            PureMode::Memory => "#[pure(memory)]",
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, TyEncodable, TyDecodable)]
@@ -267,7 +295,8 @@ impl Display for ProcedureSpecificationKind {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             ProcedureSpecificationKind::Impure => write!(f, "Impure"),
-            ProcedureSpecificationKind::Pure => write!(f, "Pure"),
+            ProcedureSpecificationKind::Pure(PureMode::Value) => write!(f, "Pure"),
+            ProcedureSpecificationKind::Pure(PureMode::Memory) => write!(f, "Pure(memory)"),
             ProcedureSpecificationKind::Predicate(_) => write!(f, "Predicate"),
         }
     }
@@ -469,7 +498,7 @@ impl SpecGraph<ProcedureSpecification> {
             Some(constraint) => {
                 let constrained_spec = self.get_constrained_spec_mut(constraint);
                 constrained_spec.kind =
-                    SpecificationItem::Inherent(ProcedureSpecificationKind::Pure);
+                    SpecificationItem::Inherent(ProcedureSpecificationKind::Pure(PureMode::Value));
                 // need to store this as well, since without pres or posts we couldn't find any def id with the trait bounds
                 constrained_spec.purity.set(Some(purity.to_def_id()));
             }
@@ -683,6 +712,7 @@ pub enum ProcedureSpecificationKindError {
     /// Occurs whenever the relation between [ProcedureSpecificationKind]s is violated.
     /// The relation is: predicates ⊂ pure functions ⊂ impure functions
     /// However, we can not refine a non-predicate to a predicate, since predicates are not callable.
+    /// A pure function's mode may only be refined to the same or an earlier [PureMode].
     /// This validation is not automatically performed during refinement. It needs to be invoked
     /// manually with [SpecificationItem<ProcedureSpecificationKind>::validate]
     InvalidSpecKindRefinement(ProcedureSpecificationKind, ProcedureSpecificationKind),
@@ -694,8 +724,21 @@ impl SpecificationItem<ProcedureSpecificationKind> {
 
         Ok(matches!(
             self.extract_with_selective_replacement(),
-            Some(ProcedureSpecificationKind::Pure) | Some(ProcedureSpecificationKind::Predicate(_))
+            Some(ProcedureSpecificationKind::Pure(_))
+                | Some(ProcedureSpecificationKind::Predicate(_))
         ))
+    }
+
+    /// The mode of a pure function, `None` for an impure one. Predicates only
+    /// depend on values.
+    pub fn pure_mode(&self) -> Result<Option<PureMode>, ProcedureSpecificationKindError> {
+        self.validate()?;
+
+        Ok(match self.extract_with_selective_replacement() {
+            Some(ProcedureSpecificationKind::Pure(mode)) => Some(*mode),
+            Some(ProcedureSpecificationKind::Predicate(_)) => Some(PureMode::Value),
+            _ => None,
+        })
     }
 
     pub fn is_impure(&self) -> Result<bool, ProcedureSpecificationKindError> {
@@ -722,9 +765,8 @@ impl SpecificationItem<ProcedureSpecificationKind> {
         use ProcedureSpecificationKind::*;
         if let SpecificationItem::Refined(base, refined) = self {
             match (base, refined) {
-                (Impure, Impure) | (Impure, Pure) | (Pure, Pure) | (Predicate(_), Predicate(_)) => {
-                    Ok(())
-                }
+                (Impure, Impure) | (Impure, Pure(_)) | (Predicate(_), Predicate(_)) => Ok(()),
+                (Pure(base), Pure(refined)) if refined <= base => Ok(()),
                 _ => Err(ProcedureSpecificationKindError::InvalidSpecKindRefinement(
                     *base, *refined,
                 )),
@@ -997,6 +1039,7 @@ mod tests {
     mod specification_item_kind {
         use super::*;
         use ProcedureSpecificationKind::*;
+        use PureMode::*;
         use SpecificationItem::*;
 
         mod invalid_refinements {
@@ -1014,7 +1057,7 @@ mod tests {
 
             #[test]
             fn refine_pure_with_impure() {
-                let item = Refined(Pure, Impure);
+                let item = Refined(Pure(Value), Impure);
                 let result = item.validate().expect_err("Expected error");
                 assert!(matches!(
                     result,
@@ -1024,7 +1067,7 @@ mod tests {
 
             #[test]
             fn refine_pure_with_predicate() {
-                let item = Refined(Pure, Predicate(None));
+                let item = Refined(Pure(Value), Predicate(None));
                 let result = item.validate().expect_err("Expected error");
                 assert!(matches!(
                     result,
@@ -1034,7 +1077,17 @@ mod tests {
 
             #[test]
             fn refine_predicate_with_pure() {
-                let item = Refined(Predicate(None), Pure);
+                let item = Refined(Predicate(None), Pure(Value));
+                let result = item.validate().expect_err("Expected error");
+                assert!(matches!(
+                    result,
+                    ProcedureSpecificationKindError::InvalidSpecKindRefinement(_, _)
+                ));
+            }
+
+            #[test]
+            fn refine_pure_value_with_pure_memory() {
+                let item = Refined(Pure(Value), Pure(Memory));
                 let result = item.validate().expect_err("Expected error");
                 assert!(matches!(
                     result,
@@ -1050,6 +1103,22 @@ mod tests {
                     result,
                     ProcedureSpecificationKindError::InvalidSpecKindRefinement(_, _)
                 ));
+            }
+        }
+
+        mod pure_mode {
+            use super::*;
+
+            #[test]
+            fn refined_mode_wins() {
+                let item = Refined(Pure(Memory), Pure(Value));
+                assert_eq!(item.pure_mode().expect("Expected valid"), Some(Value));
+            }
+
+            #[test]
+            fn predicate_is_value() {
+                let item = Inherent(Predicate(None));
+                assert_eq!(item.pure_mode().expect("Expected valid"), Some(Value));
             }
         }
 
@@ -1073,14 +1142,14 @@ mod tests {
             impure_checks!(
                     empty: (Empty, true),
                     inherent_impure: (Inherent(Impure), true),
-                    inherent_pure: (Inherent(Pure), false),
+                    inherent_pure: (Inherent(Pure(Value)), false),
                     inherent_predicate: (Inherent(Predicate(None)), false),
                     inherited_impure: (Inherited(Impure), true),
-                    inherited_pure: (Inherited(Pure), false),
+                    inherited_pure: (Inherited(Pure(Value)), false),
                     inherited_predicate: (Inherited(Predicate(None)), false),
                     refined_impure_parent_impure_child: (Refined(Impure, Impure), true),
-                    refined_impure_parent_pure_child: (Refined(Impure, Pure), false),
-                    refined_pure_parent_with_pure_child: (Refined(Pure, Pure), false),
+                    refined_impure_parent_pure_child: (Refined(Impure, Pure(Value)), false),
+                    refined_pure_parent_with_pure_child: (Refined(Pure(Value), Pure(Value)), false),
                     refined_predicate_parent_with_predicate_child: (Refined(Predicate(None), Predicate(None)), false),
             );
         }
@@ -1105,14 +1174,15 @@ mod tests {
             pure_checks!(
                     empty: (Empty, false),
                     inherent_impure: (Inherent(Impure), false),
-                    inherent_pure: (Inherent(Pure), true),
+                    inherent_pure: (Inherent(Pure(Value)), true),
                     inherent_predicate: (Inherent(Predicate(None)), true),
                     inherited_impure: (Inherited(Impure), false),
-                    inherited_pure: (Inherited(Pure), true),
+                    inherited_pure: (Inherited(Pure(Value)), true),
                     inherited_predicate: (Inherited(Predicate(None)), true),
                     refined_impure_parent_impure_child: (Refined(Impure, Impure), false),
-                    refined_impure_parent_pure_child: (Refined(Impure, Pure), true),
-                    refined_pure_parent_with_pure: (Refined(Pure, Pure), true),
+                    refined_impure_parent_pure_child: (Refined(Impure, Pure(Value)), true),
+                    refined_pure_parent_with_pure: (Refined(Pure(Value), Pure(Value)), true),
+                    refined_pure_memory_parent_with_pure: (Refined(Pure(Memory), Pure(Value)), true),
                     refined_predicate_parent_with_predicate_child: (Refined(Predicate(None), Predicate(None)), true),
             );
         }
