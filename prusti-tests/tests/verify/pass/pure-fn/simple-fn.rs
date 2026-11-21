@@ -56,3 +56,11 @@ fn keep_or_set(a: u32, c: bool) -> u32 {
 #[requires(a < 100)]
 #[ensures(!c ==> keep_or_set(a, c) == a + 1)]
 fn keep_or_set_spec(a: u32, c: bool) {}
+
+/// Nothing after the bounds check of `a[i]` completes.
+#[pure]
+#[requires(false)]
+fn index_then_diverge(a: [u32; 3], i: usize) -> u32 {
+    let _x = a[i];
+    unreachable!()
+}

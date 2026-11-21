@@ -131,82 +131,38 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                 let discr_ty = discr.ty(self.body, self.vcx.tcx());
                 let discr_ty_out = self.ty_use(discr_ty).expect_primitive();
 
-                // walk `curr` -> `targets[i]` -> `join` for each target. The
-                // join point the bb which is an immediate reverse dominator of
-                // the branch point.
-                // TODO: indexvec?
+                // Each target is walked up to the join point of the switch,
+                // the immediate reverse dominator of `curr`, where its
+                // branch is merged with the others.
                 let new_join_point = self.rev_doms.immediate_dominator(curr);
                 let mut updates = targets
                     .all_targets()
                     .iter()
                     .map(|target| self.encode_cfg(&new_curr_ver, *target, new_join_point))
                     .collect::<Result<Vec<_>, _>>()?;
-
-                // find locals updated in any of the results, which were also
-                // defined before the branch
-                let mut mod_locals = updates
-                    .iter()
-                    .flat_map(|update| update.iter().flat_map(|v| v.versions.keys()))
-                    .filter(|local| new_curr_ver.contains_key(local))
-                    .copied()
-                    .collect::<Vec<_>>();
-                mod_locals.sort();
-                mod_locals.dedup();
-                let mod_tys = mod_locals
-                    .iter()
-                    .map(|l| self.get_ty_for_local(*l).as_dyn())
-                    .collect();
-
-                // for each branch, create a Viper tuple of the updated locals
-                let tuple_ref = self.deps.require_dep::<PairUseEnc>(mod_tys).unwrap();
                 let otherwise_update = updates.pop().unwrap();
-                let phi_expr = targets.iter().zip(updates).fold(
-                    self.reify_branch(&tuple_ref, &mod_locals, &new_curr_ver, otherwise_update),
-                    |expr, ((cond_val, _target), branch_update)| {
-                        self.vcx.mk_ternary_expr(
-                            self.vcx.mk_eq_expr(
-                                discr_ty_out.snap_to_prim(discr_expr),
-                                discr_ty_out.expr_from_bits(discr_ty, cond_val).lazy(),
-                            ),
-                            self.reify_branch(
-                                &tuple_ref,
-                                &mod_locals,
-                                &new_curr_ver,
-                                branch_update,
-                            ),
-                            expr,
-                        )
-                    },
-                );
-
-                // assign tuple into a `phi` variable
-                let phi_idx = Version {
-                    index: self.phi_ctr,
-                    location,
-                    initialised: None,
+                let branches = targets
+                    .iter()
+                    .zip(updates)
+                    .map(|((cond_val, _target), update)| {
+                        let cond = self.vcx.mk_eq_expr(
+                            discr_ty_out.snap_to_prim(discr_expr),
+                            discr_ty_out.expr_from_bits(discr_ty, cond_val).lazy(),
+                        );
+                        (cond, update)
+                    })
+                    .collect();
+                let Some(phi_update) =
+                    self.merge(&mut new_curr_ver, location, branches, otherwise_update)
+                else {
+                    return Ok(None);
                 };
-                let phi = self.vcx.mk_local_decl(self.mk_phi(phi_idx), tuple_ref.ty);
-                self.phi_ctr += 1;
-                let mut phi_update = Update::new();
-                phi_update.binds.push(UpdateBind::Phi(phi, phi_expr));
-
-                // update locals by destructuring `phi` variable
-                // TODO: maybe this is unnecessary, we could instead use tuple
-                //   access directly instead of the locals going forward?
-                for (elem_idx, local) in mod_locals.iter().enumerate() {
-                    let expr = tuple_ref
-                        .mk_elem(self.vcx.mk_local_ex(phi), elem_idx)
-                        .downcast_ty();
-                    self.bump_version(&mut phi_update, *local, expr, location);
-                    new_curr_ver.insert(*local, phi_update.versions[local]);
-                }
 
                 // walk `join` -> `end`
                 let end_update = self.encode_cfg(&new_curr_ver, new_join_point, join_point)?;
                 Ok(stmt_update.merge(phi_update.merge(end_update)))
             }
 
-            // TODO: there is some code duplication between here and SwitchInt
             mir::TerminatorKind::Assert {
                 cond,
                 expected,
@@ -223,63 +179,24 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                     })?
                     .downcast_ty::<vir::Bool>();
 
-                // if cond == expected: walk the rest of the CFG
+                // The rest of the region is the branch taken if the condition
+                // has the expected value; the other one fails the assertion
+                // and does not complete. As the success branch reaches the end
+                // of the region, nothing follows the merge.
                 let ok_update = self.encode_cfg(&new_curr_ver, *target, join_point)?;
-
-                // find locals updated in the "ok" branch, which were also
-                // defined before the branch
-                // TODO: is the unwrap here ok? can ok_update also be None?
-                let mut mod_locals = ok_update
-                    .as_ref()
-                    .unwrap()
-                    .versions
-                    .keys()
-                    .filter(|local| new_curr_ver.contains_key(local))
-                    .copied()
-                    .collect::<Vec<_>>();
-                mod_locals.sort();
-                mod_locals.dedup();
-                let mod_tys = mod_locals
-                    .iter()
-                    .map(|l| self.get_ty_for_local(*l).as_dyn())
-                    .collect();
-
-                // create a Viper tuple of the updated locals
-                let tuple_ref = self.deps.require_dep::<PairUseEnc>(mod_tys).unwrap();
-                let phi_expr = self.vcx.mk_ternary_expr(
-                    self.vcx.mk_eq_expr(
-                        cond_expr,
-                        self.vcx
-                            .mk_const_expr(vir::ConstData::Bool(*expected))
-                            .downcast_ty(),
-                    ),
-                    self.reify_branch(&tuple_ref, &mod_locals, &new_curr_ver, ok_update),
-                    self.reify_branch(&tuple_ref, &mod_locals, &new_curr_ver, None),
+                let ok_cond = self.vcx.mk_eq_expr(
+                    cond_expr,
+                    self.vcx
+                        .mk_const_expr(vir::ConstData::Bool(*expected))
+                        .downcast_ty(),
                 );
-
-                // assign tuple into a `phi` variable
-                let phi_idx = Version {
-                    index: self.phi_ctr,
+                let phi_update = self.merge(
+                    &mut new_curr_ver,
                     location,
-                    initialised: None,
-                };
-                let phi = self.vcx.mk_local_decl(self.mk_phi(phi_idx), tuple_ref.ty);
-                self.phi_ctr += 1;
-                let mut phi_update = Update::new();
-                phi_update.binds.push(UpdateBind::Phi(phi, phi_expr));
-
-                // update locals by destructuring `phi` variable
-                // TODO: maybe this is unnecessary, we could instead use tuple
-                //   access directly instead of the locals going forward?
-                for (elem_idx, local) in mod_locals.iter().enumerate() {
-                    let expr = tuple_ref
-                        .mk_elem(self.vcx.mk_local_ex(phi), elem_idx)
-                        .downcast_ty();
-                    self.bump_version(&mut phi_update, *local, expr, location);
-                    new_curr_ver.insert(*local, phi_update.versions[local]);
-                }
-
-                Ok(stmt_update.merge(Some(phi_update)))
+                    vec![(ok_cond, ok_update)],
+                    None,
+                );
+                Ok(stmt_update.merge(phi_update))
             }
 
             mir::TerminatorKind::Return => Ok(Some(stmt_update)),
