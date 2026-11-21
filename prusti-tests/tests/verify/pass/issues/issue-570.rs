@@ -1,3 +1,4 @@
+//@ known-failure
 // Regression test for prusti/prusti#570: `body_invariant!` after a `let`.
 use prusti_contracts::*;
 

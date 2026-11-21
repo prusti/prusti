@@ -56,13 +56,30 @@ impl<'vir: 'a, 'a, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         let mut inv = Vec::new();
         let start = &cfpcs.statements[0];
         let state = &start.states[EvalStmtPhase::PreOperands];
-        let loop_invariant_place_capabilities =
+        let mut loop_invariant_place_capabilities =
             cfpcs.loop_invariant_place_capabilities(loop_place_usages, ctxt);
+        // A place the loop writes has write capability in the loop, but the
+        // PCG drops its value only right before the write, so at the loop head
+        // it still has the capability it had before the loop. The invariant
+        // uses that capability.
+        for (place, capability) in loop_invariant_place_capabilities.iter_mut() {
+            if capability.is_write()
+                && let Some(held) = state.place_capability(*place, self.pcg_ctxt())
+            {
+                assert!(held >= CapabilityKind::Write, "{place:?} held at {held:?}");
+                *capability = held;
+            }
+        }
 
         let mut held_places = FxHashMap::default();
         for (place, capability) in loop_invariant_place_capabilities.iter() {
+            if self.spec_blocks.spec_arms.is_spec_only_local(place.local) {
+                continue;
+            }
             if capability.is_write() {
-                continue; // No permissions are encoded for places with write capabilities currently
+                // A place without a value holds its `Uninit` token.
+                inv.push(self.place_uninit(*place)?);
+                continue;
             }
             // A place behind a shared reference has no predicate of its own: its value is
             // part of the snapshot of the first shared reference on its path from the local.
