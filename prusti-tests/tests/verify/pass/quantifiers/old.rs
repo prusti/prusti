@@ -75,13 +75,18 @@ fn nested_frame(arr: &mut VecI32) {
     prusti_assert!(arr.lookup(0) == x);
 }
 
-/// `old` around nested quantifiers reads both bodies in the pre-state.
+/// `old` around nested quantifiers reads both bodies in the pre-state. The
+/// outer trigger is `i < arr.len()`: with `arr.lookup(i)`, Z3 may fail to
+/// learn `j == i` in `old_around_quantifier`, since the definition of `==` on
+/// `usize` holds only where Silicon's facts of the body are instantiated,
+/// which the trigger then does only for a term Z3 may not consider
+/// (prusti/prusti#1687).
 #[trusted]
 #[requires(0 < arr.len())]
 #[ensures(arr.len() == old(arr.len()))]
 #[ensures(old(forall(|i: usize| forall(|j: usize| (i < arr.len() && j == i) ==> arr.lookup(i) == 5 && arr.lookup(j) == 5,
                                        triggers = [(arr.lookup(j),)]),
-                     triggers = [(arr.lookup(i),)])) ==> arr.lookup(0) == 7)]
+                     triggers = [(i < arr.len(),)])) ==> arr.lookup(0) == 7)]
 fn set_if_all_five(arr: &mut VecI32) {}
 
 #[requires(0 < arr.len())]
