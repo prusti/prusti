@@ -210,73 +210,12 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                     return Ok(None);
                 };
 
-                let func_ty = func.ty(self.body, self.vcx.tcx());
-                let (def_id, arg_tys) = RustSignature::get_def_id_and_caller_substs(func_ty);
+                let span = term.source_info.span;
                 let curr_ver = &fragment.versions;
-                let expr = self.vcx.with_span(term.source_info.span, |_| {
-                    // Diverging calls were handled above; every other call
-                    // must be to an intrinsic, a Prusti builtin or a pure
-                    // function.
-                    let is_pure = crate::encoders::is_function_pure(def_id, self.gargs(arg_tys));
-
-                    // The bodiless `ptr_metadata` intrinsic is only lowered to
-                    // `UnOp::PtrMetadata` in optimized MIR; do the lowering here.
-                    let intrinsic = self.vcx.tcx().intrinsic(def_id);
-                    let intrinsic = intrinsic.and_then(RustcIntrinsic::from_intrinsic);
-                    if let Some(intrinsic) = intrinsic {
-                        self.encode_intrinsic(intrinsic, arg_tys, args, curr_ver)
-                    } else if let Some(builtin) = PrustiBuiltin::new(def_id, self.gargs(arg_tys)) {
-                        match self.encode_prusti_builtin(
-                            builtin,
-                            def_id,
-                            self.gargs(arg_tys),
-                            args,
-                            term.source_info.span,
-                            curr_ver,
-                        )? {
-                            Some(expr) => Ok(expr),
-                            // The pure-only builtins (quantifiers, spec blocks,
-                            // mode markers).
-                            None => {
-                                let PrustiBuiltin::Spec(builtin) = builtin else {
-                                    // Operand-based builtins are handled by
-                                    // `PureRvalueEnc::encode_prusti_builtin` before this is reached.
-                                    unreachable!(
-                                        "operand-based builtin in the pure-only handler: {builtin:?}"
-                                    )
-                                };
-                                self.encode_pure_only_builtin(
-                                    builtin, arg_tys, args, curr, curr_ver,
-                                )
-                            }
-                        }
-                    } else if is_pure {
-                        let pure_func = self.deps.require_dep_spanned::<FunctionCallEnc>(
-                            CallTaskDescription::new(self.context, arg_tys, def_id),
-                            term.source_info.span,
-                        )?;
-                        let snap_args = args
-                            .iter()
-                            .map(|arg| self.encode_operand_snap(&arg.node, curr_ver))
-                            .collect::<Result<Vec<_>, _>>()?;
-                        Ok(pure_func.call_pure(snap_args))
-                    } else {
-                        Err(EncodeFullError::DependencyError(vec![
-                            DependencyErrorLink::new(
-                                MirPureEnc::ENCODER_NAME,
-                                format!(
-                                    "use of impure function `{}` in pure code is not allowed",
-                                    self.vcx.tcx().def_path_str(def_id)
-                                ),
-                                vec![term.source_info.span],
-                                ErrorKind::Incorrect,
-                            ),
-                        ]))
-                    }
-                });
-
-                let expr =
-                    self.encode_place_update(curr_ver, *destination, expr?, term.source_info.span)?;
+                let expr = self
+                    .vcx
+                    .with_span(span, |_| self.encode_call(curr_ver, func, args, curr, span));
+                let expr = self.encode_place_update(curr_ver, *destination, expr?, span)?;
                 self.bump_version(&mut fragment, destination.local, expr, location);
 
                 // walk rest of CFG
@@ -284,6 +223,62 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
             }
 
             k => todo!("terminator kind {k:?}"),
+        }
+    }
+
+    /// The value of the returning call of `func` with `args` that ends
+    /// `block`: of an intrinsic, a Prusti builtin or a pure function.
+    fn encode_call(
+        &mut self,
+        curr_ver: &Versions<'vir>,
+        func: &mir::Operand<'vir>,
+        args: &[Spanned<mir::Operand<'vir>>],
+        block: mir::BasicBlock,
+        span: Span,
+    ) -> EncodeResult<'vir, ExprRet<'vir>, MirPureEnc> {
+        let func_ty = func.ty(self.body, self.vcx.tcx());
+        let (def_id, arg_tys) = RustSignature::get_def_id_and_caller_substs(func_ty);
+        // The bodiless `ptr_metadata` intrinsic is only lowered to
+        // `UnOp::PtrMetadata` in optimized MIR; do the lowering here.
+        let intrinsic = self.vcx.tcx().intrinsic(def_id);
+        if let Some(intrinsic) = intrinsic.and_then(RustcIntrinsic::from_intrinsic) {
+            return self.encode_intrinsic(intrinsic, arg_tys, args, curr_ver);
+        }
+        match PrustiBuiltin::new(def_id, self.gargs(arg_tys)) {
+            // The pure-only builtins: quantifiers, spec blocks, mode markers.
+            Some(PrustiBuiltin::Spec(builtin)) => {
+                self.encode_pure_only_builtin(builtin, arg_tys, args, block, curr_ver)
+            }
+            Some(builtin) => self.encode_prusti_builtin(
+                builtin,
+                def_id,
+                self.gargs(arg_tys),
+                args,
+                span,
+                curr_ver,
+            ),
+            None if crate::encoders::is_function_pure(def_id, self.gargs(arg_tys)) => {
+                let pure_func = self.deps.require_dep_spanned::<FunctionCallEnc>(
+                    CallTaskDescription::new(self.context, arg_tys, def_id),
+                    span,
+                )?;
+                let snap_args = args
+                    .iter()
+                    .map(|arg| self.encode_operand_snap(&arg.node, curr_ver))
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(pure_func.call_pure(snap_args))
+            }
+            None => Err(EncodeFullError::DependencyError(vec![
+                DependencyErrorLink::new(
+                    MirPureEnc::ENCODER_NAME,
+                    format!(
+                        "use of impure function `{}` in pure code is not allowed",
+                        self.vcx.tcx().def_path_str(def_id)
+                    ),
+                    vec![span],
+                    ErrorKind::Incorrect,
+                ),
+            ])),
         }
     }
 

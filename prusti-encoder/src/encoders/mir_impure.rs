@@ -2532,17 +2532,14 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                     vec![span],
                 ));
             }
-            let expr = self
-                .encode_prusti_builtin(
-                    builtin,
-                    func_def_id,
-                    self.gargs(caller_substs),
-                    args,
-                    span,
-                    &None,
-                )?
-                .unwrap();
-            Some(expr)
+            Some(self.encode_prusti_builtin(
+                builtin,
+                func_def_id,
+                self.gargs(caller_substs),
+                args,
+                span,
+                &None,
+            )?)
         } else {
             None
         })
