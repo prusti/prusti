@@ -1,3 +1,24 @@
+//! The encoding of MIR bodies as Viper expressions: of pure functions,
+//! specifications, promoted constants, spec blocks, and the closures of
+//! quantifiers and spec blocks.
+//!
+//! A body becomes one expression, a chain of `let`s in static single
+//! assignment form: each assignment to a local binds a new version of it
+//! (see `Version`), whose variable the later reads of the local refer to. The
+//! walk over the control flow graph builds the chain region by region (see
+//! `Fragment`). A conditional is a merge: its branches are encoded up to
+//! their join point, the locals that some branch changes are bound as one
+//! pair chosen by the branch conditions, and the locals continue as its
+//! elements (see `Enc::merge`). An assertion is a merge whose branch for the
+//! expected value is the rest of the region and whose other branch cannot
+//! complete.
+//!
+//! The expression is built lazily: the values of its inputs (version 0 of
+//! the arguments), the state `old` refers to, and a spec closure's captures
+//! are supplied when it is instantiated (see `ExprInput`). The bindings of
+//! versions that nothing reads, directly or through other bindings, are left
+//! out (see `Uses`).
+
 use crate::encoders::{
     FunctionCallEnc, Mode, PrustiBuiltin, SpecBuiltin,
     custom::{PairUse, PairUseEnc},
@@ -286,21 +307,34 @@ impl TaskEncoder for MirPureEnc {
     }
 }
 
+/// The current version of each local.
+type Versions<'vir> = FxHashMap<mir::Local, Version<'vir>>;
+
+/// A part of the `let` chain that encodes a body: the bindings that a region
+/// of the body adds, in order, and the version of each local at the end of
+/// the region. The walk over a region extends the fragment it starts with
+/// (see `Enc::encode_cfg`); a region that cannot complete has none.
 #[derive(Debug, Default)]
-struct Update<'vir> {
-    binds: Vec<UpdateBind<'vir>>,
-    versions: FxHashMap<mir::Local, Version<'vir>>,
+struct Fragment<'vir> {
+    binds: Vec<Bind<'vir>>,
+    versions: Versions<'vir>,
 }
 
+/// A binding of the `let` chain: of a version of a local, or of the pair that
+/// merges the branches of a conditional (see `Enc::merge`).
 #[derive(Debug)]
-enum UpdateBind<'vir> {
+enum Bind<'vir> {
     Local(mir::Local, Version<'vir>, ExprRet<'vir>),
     Phi(vir::LocalDeclPair<'vir>, ExprRetAny<'vir, vir::Pair>),
 }
 
-impl<'vir> Update<'vir> {
-    fn new() -> Self {
-        Self::default()
+impl<'vir> Fragment<'vir> {
+    /// The empty fragment of a branch that starts at `versions`.
+    fn starting_at(versions: &Versions<'vir>) -> Self {
+        Self {
+            binds: Vec::new(),
+            versions: versions.clone(),
+        }
     }
 
     fn mk_local(
@@ -325,25 +359,8 @@ impl<'vir> Update<'vir> {
             expr.ty(),
         );
         version.initialised = Some(decl);
-        self.binds.push(UpdateBind::Local(local, version, expr));
+        self.binds.push(Bind::Local(local, version, expr));
         self.versions.insert(local, version);
-    }
-
-    fn merge(self, newer: Option<Self>) -> Option<Self> {
-        Some(self.merge_inner(newer?))
-    }
-
-    fn merge_inner(self, newer: Self) -> Self {
-        Self {
-            binds: self.binds.into_iter().chain(newer.binds).collect(),
-            versions: self.versions.into_iter().chain(newer.versions).collect(),
-        }
-    }
-
-    fn add_to_map(&self, curr_ver: &mut FxHashMap<mir::Local, Version<'vir>>) {
-        for (local, ver) in &self.versions {
-            curr_ver.insert(*local, *ver);
-        }
     }
 }
 

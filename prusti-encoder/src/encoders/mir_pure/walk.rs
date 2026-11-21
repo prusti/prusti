@@ -10,7 +10,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
         local_count: usize,
         result_local: mir::Local,
     ) -> EncodeResult<'vir, ExprRet<'vir>, MirPureEnc> {
-        let mut init = Update::new();
+        let mut init = Fragment::default();
         let v0 = Version::default();
         // TODO: what about locals which never have StorageLive (i.e. always_live)?
         init.versions.insert(mir::RETURN_PLACE, v0);
@@ -19,11 +19,9 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
             self.bump_version_init(&mut init, local.into(), local_ex, v0.location);
         }
 
-        let update = self.encode_cfg(&init.versions, start, end)?;
-
         // The body may unconditionally terminate with `unreachable` (e.g. a
         // `match` on an uninhabited type): its result is the unreachable snapshot.
-        let Some(res) = init.merge(update) else {
+        let Some(res) = self.encode_cfg(init, start, end)? else {
             let result_ty = self.body.local_decls[result_local].ty;
             return Ok(self.ty_use(result_ty).unreachable_to_snap());
         };
@@ -67,29 +65,27 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
         )
     }
 
+    /// Extends `fragment` with the region from `curr` up to `join_point`
+    /// (not included), or returns `None` if the region cannot complete.
     fn encode_cfg(
         &mut self,
-        curr_ver: &FxHashMap<mir::Local, Version<'vir>>,
+        mut fragment: Fragment<'vir>,
         curr: mir::BasicBlock,
         join_point: mir::BasicBlock,
-    ) -> EncodeResult<'vir, Option<Update<'vir>>, MirPureEnc> {
+    ) -> EncodeResult<'vir, Option<Fragment<'vir>>, MirPureEnc> {
         if curr == join_point {
             // We are done with the current fragment of the CFG, the rest is
             // handled in a parent call.
-            return Ok(Some(Update::new()));
+            return Ok(Some(fragment));
         }
 
         // walk block statements first
-        let mut new_curr_ver = curr_ver.clone();
-        let mut stmt_update = Update::new();
         for (statement_index, stmt) in self.body[curr].statements.iter().enumerate() {
             let location = mir::Location {
                 block: curr,
                 statement_index,
             };
-            let newer = self.encode_stmt(&new_curr_ver, stmt, location)?;
-            newer.add_to_map(&mut new_curr_ver);
-            stmt_update = stmt_update.merge_inner(newer);
+            self.encode_stmt(&mut fragment, stmt, location)?;
         }
 
         // then walk terminator. Its operands and call are encoded under its
@@ -107,8 +103,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                 ..
             }
             | &mir::TerminatorKind::Drop { target, .. } => {
-                let rest_update = self.encode_cfg(&new_curr_ver, target, join_point)?;
-                Ok(stmt_update.merge(rest_update))
+                self.encode_cfg(fragment, target, join_point)
             }
 
             mir::TerminatorKind::SwitchInt { discr, targets } => {
@@ -117,15 +112,14 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                 // inline ghost body, or the continuation); the other arm is
                 // skipped.
                 if let Some(live) = self.spec_arms.switches.get(&curr) {
-                    let rest_update = self.encode_cfg(&new_curr_ver, *live, join_point)?;
-                    return Ok(stmt_update.merge(rest_update));
+                    return self.encode_cfg(fragment, *live, join_point);
                 }
 
                 // encode the discriminant operand
                 let discr_expr = self
                     .vcx
                     .with_span(term.source_info.span, |_| {
-                        self.encode_operand_snap(discr, &new_curr_ver)
+                        self.encode_operand_snap(discr, &fragment.versions)
                     })?
                     .downcast_ty();
                 let discr_ty = discr.ty(self.body, self.vcx.tcx());
@@ -135,32 +129,32 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                 // the immediate reverse dominator of `curr`, where its
                 // branch is merged with the others.
                 let new_join_point = self.rev_doms.immediate_dominator(curr);
-                let mut updates = targets
+                let mut branches = targets
                     .all_targets()
                     .iter()
-                    .map(|target| self.encode_cfg(&new_curr_ver, *target, new_join_point))
+                    .map(|target| {
+                        let branch = Fragment::starting_at(&fragment.versions);
+                        self.encode_cfg(branch, *target, new_join_point)
+                    })
                     .collect::<Result<Vec<_>, _>>()?;
-                let otherwise_update = updates.pop().unwrap();
+                let otherwise = branches.pop().unwrap();
                 let branches = targets
                     .iter()
-                    .zip(updates)
-                    .map(|((cond_val, _target), update)| {
+                    .zip(branches)
+                    .map(|((cond_val, _target), branch)| {
                         let cond = self.vcx.mk_eq_expr(
                             discr_ty_out.snap_to_prim(discr_expr),
                             discr_ty_out.expr_from_bits(discr_ty, cond_val).lazy(),
                         );
-                        (cond, update)
+                        (cond, branch)
                     })
                     .collect();
-                let Some(phi_update) =
-                    self.merge(&mut new_curr_ver, location, branches, otherwise_update)
-                else {
+                if !self.merge(&mut fragment, location, branches, otherwise) {
                     return Ok(None);
-                };
+                }
 
                 // walk `join` -> `end`
-                let end_update = self.encode_cfg(&new_curr_ver, new_join_point, join_point)?;
-                Ok(stmt_update.merge(phi_update.merge(end_update)))
+                self.encode_cfg(fragment, new_join_point, join_point)
             }
 
             mir::TerminatorKind::Assert {
@@ -175,7 +169,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                 let cond_expr = self
                     .vcx
                     .with_span(term.source_info.span, |_| {
-                        self.encode_operand_snap(cond, &new_curr_ver)
+                        self.encode_operand_snap(cond, &fragment.versions)
                     })?
                     .downcast_ty::<vir::Bool>();
 
@@ -183,23 +177,20 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                 // has the expected value; the other one fails the assertion
                 // and does not complete. As the success branch reaches the end
                 // of the region, nothing follows the merge.
-                let ok_update = self.encode_cfg(&new_curr_ver, *target, join_point)?;
+                let ok_branch = Fragment::starting_at(&fragment.versions);
+                let ok_branch = self.encode_cfg(ok_branch, *target, join_point)?;
                 let ok_cond = self.vcx.mk_eq_expr(
                     cond_expr,
                     self.vcx
                         .mk_const_expr(vir::ConstData::Bool(*expected))
                         .downcast_ty(),
                 );
-                let phi_update = self.merge(
-                    &mut new_curr_ver,
-                    location,
-                    vec![(ok_cond, ok_update)],
-                    None,
-                );
-                Ok(stmt_update.merge(phi_update))
+                let completes =
+                    self.merge(&mut fragment, location, vec![(ok_cond, ok_branch)], None);
+                Ok(completes.then_some(fragment))
             }
 
-            mir::TerminatorKind::Return => Ok(Some(stmt_update)),
+            mir::TerminatorKind::Return => Ok(Some(fragment)),
 
             mir::TerminatorKind::Unreachable => {
                 // will result in generating an unreachable phi merge
@@ -221,6 +212,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
 
                 let func_ty = func.ty(self.body, self.vcx.tcx());
                 let (def_id, arg_tys) = RustSignature::get_def_id_and_caller_substs(func_ty);
+                let curr_ver = &fragment.versions;
                 let expr = self.vcx.with_span(term.source_info.span, |_| {
                     // Diverging calls were handled above; every other call
                     // must be to an intrinsic, a Prusti builtin or a pure
@@ -232,7 +224,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                     let intrinsic = self.vcx.tcx().intrinsic(def_id);
                     let intrinsic = intrinsic.and_then(RustcIntrinsic::from_intrinsic);
                     if let Some(intrinsic) = intrinsic {
-                        self.encode_intrinsic(intrinsic, arg_tys, args, &new_curr_ver)
+                        self.encode_intrinsic(intrinsic, arg_tys, args, curr_ver)
                     } else if let Some(builtin) = PrustiBuiltin::new(def_id, self.gargs(arg_tys)) {
                         match self.encode_prusti_builtin(
                             builtin,
@@ -240,7 +232,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                             self.gargs(arg_tys),
                             args,
                             term.source_info.span,
-                            &new_curr_ver,
+                            curr_ver,
                         )? {
                             Some(expr) => Ok(expr),
                             // The pure-only builtins (quantifiers, spec blocks,
@@ -254,11 +246,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                                     )
                                 };
                                 self.encode_pure_only_builtin(
-                                    builtin,
-                                    arg_tys,
-                                    args,
-                                    curr,
-                                    &new_curr_ver,
+                                    builtin, arg_tys, args, curr, curr_ver,
                                 )
                             }
                         }
@@ -269,7 +257,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                         )?;
                         let snap_args = args
                             .iter()
-                            .map(|arg| self.encode_operand_snap(&arg.node, &new_curr_ver))
+                            .map(|arg| self.encode_operand_snap(&arg.node, curr_ver))
                             .collect::<Result<Vec<_>, _>>()?;
                         Ok(pure_func.call_pure(snap_args))
                     } else {
@@ -287,20 +275,12 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                     }
                 });
 
-                let expr = self.encode_place_update(
-                    &new_curr_ver,
-                    *destination,
-                    expr?,
-                    term.source_info.span,
-                )?;
-                let mut term_update = Update::new();
-                self.bump_version(&mut term_update, destination.local, expr, location);
-                term_update.add_to_map(&mut new_curr_ver);
+                let expr =
+                    self.encode_place_update(curr_ver, *destination, expr?, term.source_info.span)?;
+                self.bump_version(&mut fragment, destination.local, expr, location);
 
                 // walk rest of CFG
-                let end_update = self.encode_cfg(&new_curr_ver, target, join_point)?;
-
-                Ok(stmt_update.merge_inner(term_update).merge(end_update))
+                self.encode_cfg(fragment, target, join_point)
             }
 
             k => todo!("terminator kind {k:?}"),
@@ -309,20 +289,19 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
 
     fn encode_stmt(
         &mut self,
-        curr_ver: &FxHashMap<mir::Local, Version<'vir>>,
+        fragment: &mut Fragment<'vir>,
         stmt: &mir::Statement<'vir>,
         location: mir::Location,
-    ) -> EncodeResult<'vir, Update<'vir>, MirPureEnc> {
+    ) -> EncodeResult<'vir, (), MirPureEnc> {
         // Encoded under the statement's span: expressions pick up the ambient
         // span at creation, which makes error positions inside pure/spec
         // bodies point at the originating source (e.g. the failing conjunct
         // of a spec).
         self.vcx.with_span(stmt.source_info.span, |_| {
-            let mut update = Update::new();
             match &stmt.kind {
                 &mir::StatementKind::StorageLive(local) => {
                     let new_version = self.bump_version_no_assign(local, location);
-                    update.versions.insert(local, new_version);
+                    fragment.versions.insert(local, new_version);
                 }
                 mir::StatementKind::StorageDead(..)
                 | mir::StatementKind::FakeRead(..)
@@ -334,18 +313,19 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                 | mir::StatementKind::BackwardIncompatibleDropHint { .. } => {} // nop
                 mir::StatementKind::Assign(box (dest, rvalue)) => {
                     let span = stmt.source_info.span;
+                    let curr_ver = &fragment.versions;
                     self.uses.start_assignment();
                     let expr = self
                         .encode_rvalue(curr_ver, rvalue, span)
                         .and_then(|expr| self.encode_place_update(curr_ver, *dest, expr, span));
                     let reads = self.uses.end_assignment();
-                    self.bump_version(&mut update, dest.local, expr?, location);
-                    let version = update.versions[&dest.local].index;
+                    self.bump_version(fragment, dest.local, expr?, location);
+                    let version = fragment.versions[&dest.local].index;
                     self.uses.assigned(dest.local, version, reads);
                 }
                 k => todo!("statement kind {k:?}"),
             }
-            Ok(update)
+            Ok(())
         })
     }
 }

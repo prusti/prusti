@@ -13,7 +13,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
 
     pub(super) fn bump_version(
         &mut self,
-        update: &mut Update<'vir>,
+        fragment: &mut Fragment<'vir>,
         local: mir::Local,
         expr: ExprRet<'vir>,
         location: mir::Location,
@@ -35,18 +35,18 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
         }
 
         let new_version = self.bump_version_no_assign(local, location);
-        update.assign(self.vcx, self.encoding_depth, local, new_version, expr);
+        fragment.assign(self.vcx, self.encoding_depth, local, new_version, expr);
     }
 
     pub(super) fn bump_version_init(
         &mut self,
-        update: &mut Update<'vir>,
+        fragment: &mut Fragment<'vir>,
         local: mir::Local,
         expr: ExprRet<'vir>,
         location: mir::Location,
     ) {
         let new_version = self.bump_version_no_assign(local, location);
-        update.assign(self.vcx, self.encoding_depth, local, new_version, expr);
+        fragment.assign(self.vcx, self.encoding_depth, local, new_version, expr);
     }
 
     pub(super) fn bump_version_no_assign(
@@ -65,11 +65,11 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
 
     pub(super) fn reify_binds<T: CompType>(
         &self,
-        update: Update<'vir>,
+        fragment: Fragment<'vir>,
         expr: ExprRetAny<'vir, T>,
     ) -> ExprRetAny<'vir, T> {
-        update.binds.iter().rfold(expr, |expr, bind| match bind {
-            UpdateBind::Local(local, version, val) => {
+        fragment.binds.iter().rfold(expr, |expr, bind| match bind {
+            Bind::Local(local, version, val) => {
                 // skip bindings which were not used
                 // TODO: this might optimise away some function calls which
                 //   can act as triggers for quantifiers
@@ -80,7 +80,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                     self.vcx.mk_let_expr(decl, val, expr)
                 }
             }
-            UpdateBind::Phi(phi, val) => self.vcx.mk_let_expr(*phi, val, expr),
+            Bind::Phi(phi, val) => self.vcx.mk_let_expr(*phi, val, expr),
         })
     }
 
@@ -88,31 +88,26 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
         &mut self,
         tuple_ref: &PairUse<'vir>,
         mod_locals: &[mir::Local],
-        curr_ver: &FxHashMap<mir::Local, Version<'vir>>,
-        update: Option<Update<'vir>>,
+        branch: Option<Fragment<'vir>>,
     ) -> ExprRetAny<'vir, vir::Pair> {
-        update
-            .map(|update| {
+        branch
+            .map(|branch| {
                 let tuple_args = mod_locals
                     .iter()
                     .map(|local| {
-                        let version = update
-                            .versions
-                            .get(local)
-                            .copied()
-                            .unwrap_or_else(|| curr_ver[local]);
+                        let version = branch.versions[local];
                         self.uses.read(*local, version.index);
                         self.mk_local_ex(version)
                     })
                     .collect::<Vec<_>>();
-                self.reify_binds(update, tuple_ref.mk_cons(&tuple_args))
+                self.reify_binds(branch, tuple_ref.mk_cons(&tuple_args))
             })
             .unwrap_or_else(|| {
-                // A branch whose update is `None` cannot complete (it ends in
-                // `unreachable` or a diverging call, or is the failing side
-                // of an `Assert`). It merges the unreachable snapshots of the
-                // locals' types, which assume `false` where they are
-                // evaluated; with no locals to merge, nothing is assumed.
+                // A branch that cannot complete (it ends in `unreachable` or
+                // a diverging call, or is the failing side of an `Assert`)
+                // merges the unreachable snapshots of the locals' types,
+                // which assume `false` where they are evaluated; with no
+                // locals to merge, nothing is assumed.
                 let unreachable = mod_locals
                     .iter()
                     .map(|local| {
@@ -124,37 +119,43 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
             })
     }
 
-    /// Merges the branches of a conditional at `location`, which `curr_ver`
-    /// enters: each of `branches` is taken if its condition holds and none
-    /// before it does, `otherwise` if no condition holds. A branch is the
-    /// update of the locals it changes, or `None` if it cannot complete. The
-    /// changed locals' values, chosen by the conditions, are bound as one
-    /// pair, and the locals continue as its elements in `curr_ver`. Returns
-    /// `None` if no branch completes.
+    /// Merges the branches of a conditional at `location` into `fragment`,
+    /// the fragment before the conditional: each of `branches` is taken if
+    /// its condition holds, `otherwise` if none holds; the conditions exclude
+    /// each other. A branch is the fragment of its region, or `None` if
+    /// it cannot complete. The values of the locals that some branch changes,
+    /// chosen by the conditions, are bound as one pair, and the locals
+    /// continue as its elements. Returns whether some branch completes;
+    /// otherwise `fragment` is unchanged.
     pub(super) fn merge(
         &mut self,
-        curr_ver: &mut FxHashMap<mir::Local, Version<'vir>>,
+        fragment: &mut Fragment<'vir>,
         location: mir::Location,
-        branches: Vec<(ExprRetAny<'vir, vir::Bool>, Option<Update<'vir>>)>,
-        otherwise: Option<Update<'vir>>,
-    ) -> Option<Update<'vir>> {
-        let updates = || {
+        branches: Vec<(ExprRetAny<'vir, vir::Bool>, Option<Fragment<'vir>>)>,
+        otherwise: Option<Fragment<'vir>>,
+    ) -> bool {
+        let completing = || {
             branches
                 .iter()
-                .map(|(_, update)| update)
+                .map(|(_, branch)| branch)
                 .chain([&otherwise])
+                .flatten()
         };
-        if updates().all(Option::is_none) {
-            return None;
+        if completing().next().is_none() {
+            return false;
         }
 
-        // The merged locals are those changed by some branch that were
+        // The merged locals are those that some branch changes and that were
         // defined before the conditional.
-        let mut mod_locals = updates()
-            .flatten()
-            .flat_map(|update| update.versions.keys())
-            .filter(|local| curr_ver.contains_key(local))
-            .copied()
+        let mut mod_locals = completing()
+            .flat_map(|branch| &branch.versions)
+            .filter(|(local, version)| {
+                fragment
+                    .versions
+                    .get(local)
+                    .is_some_and(|before| before.index != version.index)
+            })
+            .map(|(local, _)| *local)
             .collect::<Vec<_>>();
         mod_locals.sort();
         mod_locals.dedup();
@@ -164,11 +165,11 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
             .collect();
         let tuple_ref = self.deps.require_dep::<PairUseEnc>(mod_tys).unwrap();
 
-        let otherwise = self.reify_branch(&tuple_ref, &mod_locals, curr_ver, otherwise);
+        let otherwise = self.reify_branch(&tuple_ref, &mod_locals, otherwise);
         let phi_expr = branches
             .into_iter()
-            .fold(otherwise, |expr, (cond, update)| {
-                let branch = self.reify_branch(&tuple_ref, &mod_locals, curr_ver, update);
+            .fold(otherwise, |expr, (cond, branch)| {
+                let branch = self.reify_branch(&tuple_ref, &mod_locals, branch);
                 self.vcx.mk_ternary_expr(cond, branch, expr)
             });
 
@@ -179,17 +180,15 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
         };
         let phi = self.vcx.mk_local_decl(self.mk_phi(phi_idx), tuple_ref.ty);
         self.phi_ctr += 1;
-        let mut phi_update = Update::new();
-        phi_update.binds.push(UpdateBind::Phi(phi, phi_expr));
+        fragment.binds.push(Bind::Phi(phi, phi_expr));
         // TODO: maybe this is unnecessary, we could instead use tuple
         //   access directly instead of the locals going forward?
         for (elem_idx, local) in mod_locals.iter().enumerate() {
             let expr = tuple_ref
                 .mk_elem(self.vcx.mk_local_ex(phi), elem_idx)
                 .downcast_ty();
-            self.bump_version(&mut phi_update, *local, expr, location);
-            curr_ver.insert(*local, phi_update.versions[local]);
+            self.bump_version(fragment, *local, expr, location);
         }
-        Some(phi_update)
+        true
     }
 }
