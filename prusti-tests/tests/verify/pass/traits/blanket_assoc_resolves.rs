@@ -190,3 +190,199 @@ mod forward_to_projection {
         take(&mut r)
     }
 }
+
+// Higher-ranked where-clauses that hold for every region (see
+// `verify/fail/traits/blanket_impl_overlap.rs` for ones that do not): through
+// an impl generic in the region, through a blanket impl whose own
+// where-clause becomes higher-ranked there, as a projection, and in generic
+// code that has the clause itself.
+mod higher_ranked {
+    use prusti_contracts::*;
+
+    pub trait Tr {}
+    impl<'x> Tr for &'x u8 {}
+    pub trait Base {}
+    impl Base for u16 {}
+    pub trait Wrap {}
+    impl<'x, T: Base> Wrap for &'x T {}
+    impl<X: Wrap> Tr for X {}
+    pub trait Pr {
+        type A;
+    }
+    impl<'x> Pr for &'x u8 {
+        type A = &'x u8;
+    }
+
+    pub struct W<U>(pub U);
+    pub struct V<U>(pub U);
+    pub trait Get {
+        #[pure]
+        fn get() -> u32;
+    }
+    #[refine_trait_spec]
+    impl<U> Get for W<U>
+    where
+        for<'a> &'a U: Tr,
+    {
+        #[pure]
+        #[ensures(result == 2)]
+        fn get() -> u32 {
+            2
+        }
+    }
+    #[refine_trait_spec]
+    impl<U> Get for V<U>
+    where
+        for<'a> &'a U: Pr<A = &'a u8>,
+    {
+        #[pure]
+        #[ensures(result == 3)]
+        fn get() -> u32 {
+            3
+        }
+    }
+
+    #[pure]
+    pub fn get<T: Get>() -> u32 {
+        T::get()
+    }
+
+    pub fn concrete() {
+        prusti_assert!(get::<W<u8>>() == 2);
+        prusti_assert!(get::<W<u16>>() == 2);
+        prusti_assert!(get::<V<u8>>() == 3);
+    }
+
+    pub fn generic<T>()
+    where
+        for<'a> &'a Vec<T>: Tr,
+    {
+        prusti_assert!(get::<W<Vec<T>>>() == 2);
+    }
+
+    // The impls that make these clauses hold have, respectively, an impl
+    // parameter determined only by a projection bound, a where-clause to
+    // normalize, and a const parameter.
+    pub trait Pj {
+        type A;
+    }
+    impl Pj for u8 {
+        type A = u16;
+    }
+    pub trait ByProj {}
+    impl<'x, F, R> ByProj for &'x F where F: Pj<A = R> {}
+    pub trait Id {
+        type Out;
+    }
+    impl<T> Id for T {
+        type Out = T;
+    }
+    pub trait Normalized {}
+    impl<'x, Y> Normalized for &'x Y where for<'b> <&'b Y as Id>::Out: Tr {}
+    pub trait Len<const N: usize> {}
+    impl<'x, T, const N: usize> Len<N> for &'x T {}
+
+    pub struct X<U>(pub U);
+    pub struct Y<U>(pub U);
+    pub struct Z<U>(pub U);
+    #[refine_trait_spec]
+    impl<U> Get for X<U>
+    where
+        for<'a> &'a U: ByProj,
+    {
+        #[pure]
+        #[ensures(result == 4)]
+        fn get() -> u32 {
+            4
+        }
+    }
+    #[refine_trait_spec]
+    impl<U> Get for Y<U>
+    where
+        for<'a> &'a U: Normalized,
+    {
+        #[pure]
+        #[ensures(result == 5)]
+        fn get() -> u32 {
+            5
+        }
+    }
+    #[refine_trait_spec]
+    impl<U> Get for Z<U>
+    where
+        for<'a> &'a U: Len<3>,
+    {
+        #[pure]
+        #[ensures(result == 6)]
+        fn get() -> u32 {
+            6
+        }
+    }
+
+    // A clause whose subject is a projection over its bound region is stated
+    // only at erased regions (see `HrtbSkeleton::of`), which suffices here.
+    pub trait Lend<'a> {
+        type Item;
+    }
+    pub struct Lender;
+    impl<'a> Lend<'a> for Lender {
+        type Item = &'a u8;
+    }
+    pub struct L<U>(pub U);
+    #[refine_trait_spec]
+    impl<U> Get for L<U>
+    where
+        U: for<'a> Lend<'a>,
+        for<'a> <U as Lend<'a>>::Item: Tr,
+    {
+        #[pure]
+        #[ensures(result == 9)]
+        fn get() -> u32 {
+            9
+        }
+    }
+
+    pub fn matched() {
+        prusti_assert!(get::<X<u8>>() == 4);
+        prusti_assert!(get::<Y<u8>>() == 5);
+        prusti_assert!(get::<Z<u8>>() == 6);
+        prusti_assert!(get::<L<Lender>>() == 9);
+    }
+
+    // A higher-ranked clause with a const parameter is encoded.
+    pub fn with_const<T, const N: usize>()
+    where
+        for<'a> &'a T: Len<N>,
+    {
+    }
+
+    // Distinct types with the same printed path give distinct clauses.
+    pub struct Q1<U>(pub U);
+    pub struct Q2<U>(pub U);
+    const _: () = {
+        struct Same<'a, T>(&'a T);
+        #[refine_trait_spec]
+        impl<U> Get for Q1<U>
+        where
+            for<'a> Same<'a, U>: Tr,
+        {
+            #[pure]
+            fn get() -> u32 {
+                7
+            }
+        }
+    };
+    const _: () = {
+        struct Same<'a, T>(&'a T);
+        #[refine_trait_spec]
+        impl<U> Get for Q2<U>
+        where
+            for<'a> Same<'a, U>: Tr,
+        {
+            #[pure]
+            fn get() -> u32 {
+                8
+            }
+        }
+    };
+}
