@@ -3,7 +3,6 @@ use crate::encoders::{
     custom::{PairUse, PairUseEnc},
     mir_fn::{CallTaskDescription, RustSignature, SpecArms},
     mir_shared::{EncodeResult, PureRvalueEnc, RustcIntrinsic, unsupported_opaque},
-    pure::spec::MirSpecEncMode,
     ty::{
         RustTyDecomposition,
         generics::{GArgs, GParams},
@@ -131,22 +130,25 @@ pub enum PureKind {
     /// instantiated accordingly.
     Spec {
         context: DefId,
-        /// How the arguments are supplied, which decides whether their
-        /// snapshots are deep (see `Enc::impure_context`).
-        mode: MirSpecEncMode,
+        /// Whether the specification belongs to an impure function (see
+        /// `Enc::impure_context`).
+        impure: bool,
     },
     Pure,
     Constant(mir::Promoted),
     SpecBlock(mir::BasicBlock),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct MirPureEncTask<'vir> {
     // TODO: depth of encoding should be in the lazy context rather than here;
     //   can we integrate the lazy context into the identifier system?
     pub encoding_depth: usize,
     pub kind: PureKind,
-    pub parent_def_id: DefId, // ID of the function
+    /// The item whose MIR holds the body: the pure function, specification
+    /// or closure itself, the item a constant is promoted from, or the
+    /// function a spec block is in.
+    pub def_id: DefId,
     /// The generic arguments the body is encoded with, together with the
     /// context whose parameters give them meaning.
     pub gargs: GArgs<'vir>,
@@ -158,24 +160,14 @@ impl TaskEncoder for MirPureEnc {
 
     type TaskDescription<'vir> = MirPureEncTask<'vir>;
 
-    type TaskKey<'vir> = (
-        usize,       // encoding depth
-        PureKind,    // encoding a pure function?
-        DefId,       // ID of the function
-        GArgs<'vir>, // the generic arguments and their context
-    );
+    type TaskKey<'vir> = MirPureEncTask<'vir>;
 
     type OutputFullDependency<'vir> = MirPureEncOutput<'vir>;
 
     type EncodingError = MirPureEncError;
 
     fn task_to_key<'vir>(task: &Self::TaskDescription<'vir>) -> Self::TaskKey<'vir> {
-        (
-            task.encoding_depth,
-            task.kind,
-            task.parent_def_id,
-            task.gargs,
-        )
+        *task
     }
 
     fn do_encode_full<'vir>(
@@ -184,7 +176,12 @@ impl TaskEncoder for MirPureEnc {
     ) -> EncodeFullResult<'vir, Self> {
         deps.emit_output_ref(*task_key, ())?;
 
-        let (_, kind, def_id, gargs) = *task_key;
+        let MirPureEncTask {
+            encoding_depth,
+            kind,
+            def_id,
+            gargs,
+        } = *task_key;
 
         tracing::debug!("encoding {def_id:?}");
         let (inputs, expr, captures) = vir::with_vcx(move |vcx| {
@@ -223,7 +220,7 @@ impl TaskEncoder for MirPureEnc {
             } else {
                 body.span
             };
-            let mut enc = Enc::new(vcx, task_key.0, def_id, kind, gargs, &body, deps);
+            let mut enc = Enc::new(vcx, encoding_depth, def_id, kind, gargs, &body, deps);
             let expr_inner = vcx.with_span(body_span, |_| {
                 if let PureKind::SpecBlock(block) = kind {
                     enc.encode_spec_block(block)
@@ -536,10 +533,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
             // snapshots but cannot get the value behind `&mut`s.
             impure_context: matches!(
                 kind,
-                PureKind::Spec {
-                    mode: MirSpecEncMode::Impure,
-                    ..
-                } | PureKind::SpecBlock(..)
+                PureKind::Spec { impure: true, .. } | PureKind::SpecBlock(..)
             ),
             captures: matches!(kind, PureKind::Closure { .. }).then(|| {
                 let closure_ty = body.local_decls[ty::CAPTURE_STRUCT_LOCAL].ty.peel_refs();

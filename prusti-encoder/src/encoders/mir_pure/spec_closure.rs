@@ -137,7 +137,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
             kind: PureKind::Closure {
                 context: self.context_def_id,
             },
-            parent_def_id: cl_def_id,
+            def_id: cl_def_id,
             // The body becomes part of this expression, so it is encoded
             // in this context, in which `cl_args` are expressed.
             gargs: GArgs::new(self.context, cl_args),
