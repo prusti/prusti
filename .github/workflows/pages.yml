@@ -22,14 +22,35 @@ jobs:
           path: "repo"
           submodules: recursive
 
+      # A link to a commit, a line or an anchor keeps resolving after the code it describes
+      # has changed, so links to files of this repository must be plain `main` links
+      # (no `#` or `?`), which the link check below verifies against the checkout.
+      - name: Check links to repository files
+        run: |
+          if git -C repo grep -noE 'github\.com/prusti/prusti/(blob|tree)/[^])>" ]*' \
+            -- '*.md' '*.html' \
+            | grep -vE 'github\.com/prusti/prusti/(blob|tree)/main/[^#?]*$'
+          then
+            echo "::error::Link files of this repository as .../blob/main/<path>, without '#' or '?'."
+            exit 1
+          fi
+
       - name: Check for broken links
-        uses: lycheeverse/lychee-action@v1.5.1
+        uses: lycheeverse/lychee-action@v2.9.0
         with:
           fail: true
-          # Check all Markdown and HTML files (the action's default inputs), except in the
-          # `pcg` submodule, a separate project with its own (generated) pages. The option
-          # must come last, since it takes all values that follow it.
-          args: --verbose --no-progress './**/*.md' './**/*.html' --exclude-path repo/pcg
+          # Check all Markdown and HTML files, except in the `pcg` submodule, a separate
+          # project with its own (generated) pages. Links to files of this repository on
+          # `main` are checked against the checkout, so that a pull request that moves a
+          # linked file fails here, before the links break on GitHub. Root-relative links,
+          # which GitHub resolves against the repository root, are resolved against the
+          # checkout too.
+          args: >-
+            --verbose --no-progress
+            --exclude-path repo/pcg
+            --root-dir ${{ github.workspace }}/repo
+            --remap '^https://github\.com/prusti/prusti/(blob|tree)/main/(.*)$ file://${{ github.workspace }}/repo/$2'
+            './**/*.md' './**/*.html'
 
       - name: Prepare output directory
         run: |
