@@ -2,7 +2,7 @@
 use prusti_contracts::*;
 
 #[extern_spec]
-impl<T: PartialEq> std::option::Option<T> {
+impl<T> std::option::Option<T> {
     #[trusted]
     #[pure]
     #[ensures(matches!(*self, Some(_)) == result)]

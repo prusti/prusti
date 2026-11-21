@@ -52,7 +52,7 @@ impl<T> SliceIndex<[T]> for RangeToInclusive<usize> {
 }
 
 #[extern_spec]
-trait RangeBounds<T> {
+trait RangeBounds<T: ?Sized> {
     #[trusted]
     #[pure]
     fn start_bound(&self) -> Bound<&T>;
