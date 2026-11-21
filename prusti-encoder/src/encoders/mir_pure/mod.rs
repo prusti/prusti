@@ -48,10 +48,20 @@ pub type Inputs<'vir> = &'vir FxHashMap<mir::Local, vir::ExprSnap<'vir>>;
 /// enclosing body (see `Enc::encode_capture`).
 type Captures<'vir> =
     &'vir IndexSlice<abi::FieldIdx, FxHashMap<Modes, EncodedPlaceGen<'vir, (), !>>>;
-/// What an encoded body is instantiated with: the body's `DefId`, the values
-/// of its inputs, the state `old` refers to, and, for a spec closure, the
-/// values of its captures.
-type ExprInput<'vir> = (DefId, Inputs<'vir>, vir::OldLabel<'vir>, Captures<'vir>);
+/// What an encoded body is instantiated with (see
+/// `MirPureEncOutput::reify_at`).
+#[derive(Clone, Copy)]
+struct ExprInput<'vir> {
+    /// The body being instantiated; the encoded body checks that it is its
+    /// own.
+    def_id: DefId,
+    /// The values of the body's inputs.
+    inputs: Inputs<'vir>,
+    /// The state `old` refers to.
+    old: vir::OldLabel<'vir>,
+    /// For a spec closure, the values of its captures.
+    captures: Captures<'vir>,
+}
 type ExprRet<'vir> = vir::ExprGenSnap<'vir, ExprInput<'vir>, vir::ExprKind<'vir>>;
 type ExprRetRef<'vir> = vir::ExprGenRef<'vir, ExprInput<'vir>, vir::ExprKind<'vir>>;
 type ExprRetAny<'vir, T> = vir::ExprGen<'vir, ExprInput<'vir>, vir::ExprKind<'vir>, T>;
@@ -83,7 +93,12 @@ impl<'vir> MirPureEncOutput<'vir> {
     /// Like `reify`, with `old(..)` in the body referring to the state `old`.
     pub fn reify_at(&self, inputs: Inputs<'vir>, old: vir::OldLabel<'vir>) -> vir::ExprSnap<'vir> {
         use vir::Reify;
-        let input = (self.def_id, inputs, old, IndexSlice::empty());
+        let input = ExprInput {
+            def_id: self.def_id,
+            inputs,
+            old,
+            captures: IndexSlice::empty(),
+        };
         vir::with_vcx(|vcx| self.expr.reify(vcx, input))
     }
 }
@@ -247,12 +262,12 @@ impl TaskEncoder for MirPureEnc {
                     Box::new(move |vcx, lctx: ExprInput<'_>| {
                         // check: are we actually providing inputs for the
                         //   correct `DefId`?
-                        assert_eq!(lctx.0, def_id);
+                        assert_eq!(lctx.def_id, def_id);
 
                         // check: are we providing the expected number of inputs?
                         // TODO: check that the expected inputs are present; this
                         //   check is not precise
-                        assert!(lctx.1.len() >= inputs_expected);
+                        assert!(lctx.inputs.len() >= inputs_expected);
 
                         use vir::Reify;
                         expr_inner.kind.reify(vcx, lctx)
@@ -548,6 +563,16 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
             .require_ref::<TyUsePureEnc>(ty_task)
             .unwrap()
             .snapshot
+    }
+
+    /// The value that the body's inputs supply for `local` (see
+    /// `ExprInput::inputs`).
+    fn input(&mut self, local: mir::Local) -> ExprRet<'vir> {
+        self.vcx.mk_lazy_expr(
+            vir::vir_format!(self.vcx, "input {local:?}"),
+            self.get_ty_for_local(local),
+            Box::new(move |_vcx, lctx: ExprInput<'vir>| lctx.inputs[&local].kind),
+        )
     }
 }
 

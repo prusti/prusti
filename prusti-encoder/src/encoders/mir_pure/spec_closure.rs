@@ -36,7 +36,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
         let snap = self.vcx.mk_lazy_expr(
             vir::vir_format!(self.vcx, "capture {field:?}"),
             self.ty_use(shared_referent_ty.unwrap_or(field_ty)).snapshot,
-            Box::new(move |_vcx, lctx: ExprInput<'vir>| lctx.3[field][&modes].snap.kind),
+            Box::new(move |_vcx, lctx: ExprInput<'vir>| lctx.captures[field][&modes].snap.kind),
         );
         let Some(referent_ty) = shared_referent_ty else {
             let value = EncodedPlace::new(snap, None);
@@ -48,7 +48,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
             vir::vir_format!(self.vcx, "address of capture {field:?}"),
             vir::TYPE_REF,
             Box::new(move |_vcx, lctx: ExprInput<'vir>| {
-                lctx.3[field][&modes].place_ref.unwrap().kind
+                lctx.captures[field][&modes].place_ref.unwrap().kind
             }),
         );
         let metadata_ty = self
@@ -58,7 +58,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
             vir::vir_format!(self.vcx, "metadata of capture {field:?}"),
             self.ty_use(metadata_ty).snapshot,
             Box::new(move |_vcx, lctx: ExprInput<'vir>| {
-                lctx.3[field][&modes].metadata.unwrap().kind
+                lctx.captures[field][&modes].metadata.unwrap().kind
             }),
         );
         // Only a `move` closure, which captures a reference by value, reads the
@@ -207,8 +207,13 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                             .collect()
                     })
                     .collect::<IndexVec<_, _>>();
-                body.reify(vcx, (cl_def_id, reify_args, lctx.2, vcx.alloc(captures)))
-                    .kind
+                let input = ExprInput {
+                    def_id: cl_def_id,
+                    inputs: reify_args,
+                    old: lctx.old,
+                    captures: vcx.alloc(captures),
+                };
+                body.reify(vcx, input).kind
             }),
         );
         Ok((qvars, body.downcast_ty::<vir::Bool>()))

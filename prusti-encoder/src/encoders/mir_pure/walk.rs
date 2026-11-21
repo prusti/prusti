@@ -15,11 +15,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
         // TODO: what about locals which never have StorageLive (i.e. always_live)?
         init.versions.insert(mir::RETURN_PLACE, v0);
         for local in 1..local_count {
-            let local_ex = self.vcx.mk_lazy_expr(
-                vir::vir_format!(self.vcx, "pure in _{local}"),
-                self.get_ty_for_local(local.into()),
-                Box::new(move |_vcx, lctx: ExprInput<'vir>| lctx.1[&local.into()].kind),
-            );
+            let local_ex = self.input(local.into());
             self.bump_version_init(&mut init, local.into(), local_ex, v0.location);
         }
 

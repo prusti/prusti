@@ -192,11 +192,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
             // inside it, and a variable keeps its value under it, so a read
             // in a mode starts at the expression the body's inputs supply for
             // the local rather than at the variable the body binds to it.
-            self.vcx.mk_lazy_expr(
-                vir::vir_format!(self.vcx, "wrapped in {local:?}"),
-                self.get_ty_for_local(local),
-                Box::new(move |_vcx, lctx: ExprInput<'vir>| lctx.1[&local].kind),
-            )
+            self.input(local)
         };
         let local_ty = mir::PlaceTy::from_ty(self.body.local_decls[local].ty);
         self.encode_projection(
@@ -243,7 +239,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                     Box::new(move |vcx, lctx: ExprInput<'vir>| {
                         use vir::Reify;
                         let reified = inner.reify(vcx, lctx);
-                        vcx.mk_old(reified, lctx.2).kind
+                        vcx.mk_old(reified, lctx.old).kind
                     }),
                 );
             }
