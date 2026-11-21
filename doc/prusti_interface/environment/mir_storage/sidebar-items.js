@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["SHARED_STATE_WITH_FACTS"],"fn":["store_mir_body"]};

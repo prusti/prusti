@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["RepackGuide","RepackOp"],"struct":["IndexLocal","RegainedCapability","RepackCollapse","RepackExpand"],"type":["CapabilityKind"]};
