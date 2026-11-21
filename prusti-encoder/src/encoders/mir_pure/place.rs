@@ -172,9 +172,6 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
         curr_ver: &FxHashMap<mir::Local, Version<'vir>>,
         place: Place<'vir>,
     ) -> EncodeResult<'vir, EncodedPlace<'vir>, MirPureEnc> {
-        // TODO: remove (debug)
-        assert!(curr_ver.contains_key(&place.local));
-
         if self.captures.is_some() && place.local == ty::CAPTURE_STRUCT_LOCAL {
             return self.encode_capture_read(curr_ver, place);
         }
@@ -189,7 +186,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
             mir::LocalKind::Temp => Modes::empty(),
         };
         let snap = if modes.is_empty() {
-            self.mk_local_ex(local, version)
+            self.mk_local_ex(version)
         } else {
             // A wrapper such as `old` only reinterprets the reads written
             // inside it, and a variable keeps its value under it, so a read

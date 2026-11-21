@@ -39,10 +39,7 @@ mod walk;
 pub struct MirPureEnc;
 
 #[derive(Clone, Debug)]
-pub enum MirPureEncError {
-    // UnsupportedStatement,
-    // UnsupportedTerminator,
-}
+pub enum MirPureEncError {}
 
 /// The values of an encoded body's inputs.
 pub type Inputs<'vir> = &'vir FxHashMap<mir::Local, vir::ExprSnap<'vir>>;
@@ -159,7 +156,6 @@ impl TaskEncoder for MirPureEnc {
 
     fn task_to_key<'vir>(task: &Self::TaskDescription<'vir>) -> Self::TaskKey<'vir> {
         (
-            // TODO
             task.encoding_depth,
             task.kind,
             task.parent_def_id,
@@ -226,7 +222,6 @@ impl TaskEncoder for MirPureEnc {
                 .into_iter()
                 .filter(|(l, v)| *l != mir::RETURN_PLACE && *v == 0)
                 .map(|(l, _v)| l)
-                .unique()
                 .sorted()
                 .collect::<Vec<_>>();
             let inputs_expected = inputs.len();
@@ -287,7 +282,7 @@ struct Update<'vir> {
 
 #[derive(Debug)]
 enum UpdateBind<'vir> {
-    Local(#[allow(dead_code)] mir::Local, Version<'vir>, ExprRet<'vir>),
+    Local(mir::Local, Version<'vir>, ExprRet<'vir>),
     Phi(vir::LocalDeclPair<'vir>, ExprRetAny<'vir, vir::Pair>),
 }
 
@@ -468,7 +463,7 @@ impl<'vir: 'enc, 'enc> PureRvalueEnc<'vir> for Enc<'vir, 'enc> {
         self.ty_use(ty)
     }
 
-    fn encode_place_snap<'slf>(
+    fn encode_place_snap(
         &mut self,
         place: Place<'vir>,
         curr_ver: &Self::EncodePlaceCtxt,
@@ -516,7 +511,6 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
             rev_doms,
             spec_arms: SpecArms::for_body(def_id, body),
             deps,
-            // visited: IndexVec::from_elem_n(false, body.basic_blocks.len()),
             version_ctr: IndexVec::from_elem_n(0, body.local_decls.len()),
             uses: Default::default(),
             phi_ctr: 0,

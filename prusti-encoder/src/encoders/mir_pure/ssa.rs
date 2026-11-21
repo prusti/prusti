@@ -3,11 +3,7 @@
 use super::*;
 
 impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
-    pub(super) fn mk_local_ex(
-        &mut self,
-        _local: mir::Local,
-        version: Version<'vir>,
-    ) -> ExprRet<'vir> {
+    pub(super) fn mk_local_ex(&mut self, version: Version<'vir>) -> ExprRet<'vir> {
         self.vcx.mk_local_ex(version.initialised.unwrap())
     }
 
@@ -39,7 +35,6 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
         }
 
         let new_version = self.bump_version_no_assign(local, location);
-        // check that `local` and `expr` type correspond
         update.assign(self.vcx, self.encoding_depth, local, new_version, expr);
     }
 
@@ -51,7 +46,6 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
         location: mir::Location,
     ) {
         let new_version = self.bump_version_no_assign(local, location);
-        // check that `local` and `expr` type correspond
         update.assign(self.vcx, self.encoding_depth, local, new_version, expr);
     }
 
@@ -102,20 +96,13 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                 let tuple_args = mod_locals
                     .iter()
                     .map(|local| {
-                        let version = update.versions.get(local).copied().unwrap_or_else(|| {
-                            // TODO: remove (debug)
-                            if !curr_ver.contains_key(local) {
-                                tracing::error!("unknown version of local! {}", local.as_usize());
-                                return Version {
-                                    index: 0xff,
-                                    ..Default::default()
-                                };
-                            }
-                            curr_ver[local]
-                        });
-
+                        let version = update
+                            .versions
+                            .get(local)
+                            .copied()
+                            .unwrap_or_else(|| curr_ver[local]);
                         self.uses.read(*local, version.index);
-                        self.mk_local_ex(*local, version)
+                        self.mk_local_ex(version)
                     })
                     .collect::<Vec<_>>();
                 self.reify_binds(update, tuple_ref.mk_cons(&tuple_args))

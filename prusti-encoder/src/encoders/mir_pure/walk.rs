@@ -20,7 +20,6 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                 self.get_ty_for_local(local.into()),
                 Box::new(move |_vcx, lctx: ExprInput<'vir>| lctx.1[&local.into()].kind),
             );
-            // check that `local` and `expr` type correspond
             self.bump_version_init(&mut init, local.into(), local_ex, v0.location);
         }
 
@@ -35,7 +34,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
         let ret_version = res.versions.get(&result_local).copied().unwrap_or(v0);
         self.uses.read(result_local, ret_version.index);
 
-        let ex = self.mk_local_ex(result_local, ret_version);
+        let ex = self.mk_local_ex(ret_version);
         Ok(self.reify_binds(res, ex))
     }
 

@@ -13,7 +13,6 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
         match rvalue {
             mir::Rvalue::Use(op, _) => self.encode_operand_snap(op, curr_ver),
             mir::Rvalue::Ref(_, kind, place) => {
-                let rvalue_snapshot_encoding = self.ty_use(rvalue_ty);
                 // Reading a mutable reference's referent needs an address
                 // holding a predicate, which pure-created mutrefs don't have.
                 if kind.mutability().is_mut() {
@@ -28,14 +27,10 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                 }
                 let (value, place_ref, metadata) =
                     self.encode_borrowed_place(curr_ver, (*place).into(), rvalue_ty)?;
-                let snap = if kind.mutability().is_mut() {
-                    let e_rvalue_ty = rvalue_snapshot_encoding.expect_mutref();
-                    e_rvalue_ty.prim_to_snap(place_ref, metadata, value)
-                } else {
-                    let e_rvalue_ty = rvalue_snapshot_encoding.expect_immref();
-                    e_rvalue_ty.prim_to_snap(place_ref, metadata, value)
-                };
-                Ok(snap.upcast_ty())
+                let e_rvalue_ty = self.ty_use(rvalue_ty).expect_immref();
+                Ok(e_rvalue_ty
+                    .prim_to_snap(place_ref, metadata, value)
+                    .upcast_ty())
             }
             mir::Rvalue::BinaryOp(op, box (l, r)) => {
                 self.encode_binop_snap(rvalue_ty, *op, l, r, curr_ver, span)
