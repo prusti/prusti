@@ -1,8 +1,13 @@
-use syn::parse::{Parse, ParseStream};
+use crate::{prusti_attribute_kind, require_argument, unwrap_argument, SpecAttributeKind};
+use proc_macro2::TokenStream;
+use syn::{
+    parse::{Parse, ParseStream},
+    spanned::Spanned,
+};
 
 pub(crate) struct ClosureWithSpec {
-    pub pres: Vec<syn::Expr>,
-    pub posts: Vec<syn::Expr>,
+    pub pres: Vec<TokenStream>,
+    pub posts: Vec<TokenStream>,
     pub cl: syn::ExprClosure,
 }
 
@@ -11,22 +16,18 @@ impl Parse for ClosureWithSpec {
         let mut attrs = input.call(syn::Attribute::parse_outer)?;
         let mut cl: syn::ExprClosure = input.parse()?;
 
-        let mut pres: Vec<syn::Result<syn::Expr>> = vec![];
-        let mut posts: Vec<syn::Result<syn::Expr>> = vec![];
+        let mut pres: Vec<syn::Result<TokenStream>> = vec![];
+        let mut posts: Vec<syn::Result<TokenStream>> = vec![];
 
         // collect and remove any specification attributes
         // leave other attributes intact
         attrs.retain(|attr| {
-            if let Some(id) = attr.path.get_ident() {
-                match id.to_string().as_ref() {
-                    "requires" => pres.push(syn::parse2(attr.tokens.clone())),
-                    "ensures" => posts.push(syn::parse2(attr.tokens.clone())),
-                    _ => return true,
-                }
-                false
-            } else {
-                true
+            match prusti_attribute_kind(attr) {
+                Some(SpecAttributeKind::Requires) => pres.push(spec_argument(attr)),
+                Some(SpecAttributeKind::Ensures) => posts.push(spec_argument(attr)),
+                _ => return true,
             }
+            false
         });
         cl.attrs = attrs;
 
@@ -36,4 +37,12 @@ impl Parse for ClosureWithSpec {
             cl,
         })
     }
+}
+
+/// The argument of the specification attribute `attr`, which is parsed later
+/// as a Prusti assertion.
+fn spec_argument(attr: &syn::Attribute) -> syn::Result<TokenStream> {
+    let argument = unwrap_argument(attr)?;
+    require_argument(attr.span(), &argument)?;
+    Ok(argument)
 }

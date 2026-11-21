@@ -432,6 +432,23 @@ pub(crate) fn merge_generics<T: HasGenerics>(target: &mut T, source: &T) {
     }
 }
 
+/// An inherent `impl` block holding `items` for the type `ident` declared with
+/// `generics`. It repeats all parameters and the where-clause of the
+/// declaration, so it covers every instance of the type.
+pub(crate) fn inherent_impl(
+    span: proc_macro2::Span,
+    ident: &Ident,
+    generics: &syn::Generics,
+    items: impl quote::ToTokens,
+) -> syn::ItemImpl {
+    let (impl_generics, type_generics, where_clause) = generics.split_for_impl();
+    syn::parse_quote_spanned! {span=>
+        impl #impl_generics #ident #type_generics #where_clause {
+            #items
+        }
+    }
+}
+
 /// Add `PhantomData` markers for each type parameter to silence errors
 /// about unused type parameters. Works for structs with named or unnamed fields
 /// Given
