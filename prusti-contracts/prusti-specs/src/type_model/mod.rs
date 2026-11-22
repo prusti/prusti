@@ -77,7 +77,7 @@ impl ModelStruct {
         let model_struct_ident = &idents.model_struct_ident;
         let mut model_struct: syn::ItemStruct = parse_quote_spanned! {item_struct.span()=>
             #[derive(Copy, Clone)]
-            #[allow(non_camel_case_types)]
+            #[allow(non_camel_case_types, dead_code)]
             struct #model_struct_ident {}
         };
 
@@ -141,7 +141,7 @@ impl ToModelTrait {
 
         let to_model_trait_ident = &idents.to_model_trait_ident;
         let item = parse_quote_spanned! {item_struct.span()=>
-            #[allow(non_camel_case_types)]
+            #[allow(non_camel_case_types, dead_code)]
             trait #to_model_trait_ident<#(#generic_params),*> {
                 #[pure]
                 #[trusted]
@@ -344,7 +344,7 @@ mod tests {
         let model_ident = check_model_ident(&model, "PrustiFooModel");
         let expected: syn::ItemStruct = syn::parse_quote!(
             #[derive(Copy, Clone)]
-            #[allow(non_camel_case_types)]
+            #[allow(non_camel_case_types, dead_code)]
             struct #model_ident {
                 fld1: usize,
                 fld2: i32,
@@ -365,7 +365,7 @@ mod tests {
 
         let expected: syn::ItemStruct = parse_quote!(
             #[derive(Copy, Clone)]
-            #[allow(non_camel_case_types)]
+            #[allow(non_camel_case_types, dead_code)]
             struct #model_ident(i32, u32, usize);
         );
         assert_eq_tokenizable(model.model_struct, expected);
@@ -412,7 +412,7 @@ mod tests {
 
         let expected_struct: syn::ItemStruct = parse_quote!(
             #[derive(Copy, Clone)]
-            #[allow(non_camel_case_types)]
+            #[allow(non_camel_case_types, dead_code)]
             struct #model_ident(i32, u32, usize);
         );
         let expected_impl: syn::ItemImpl = parse_quote!(
@@ -446,12 +446,12 @@ mod tests {
 
         let expected_struct: syn::ItemStruct = parse_quote!(
             #[derive(Copy, Clone)]
-            #[allow(non_camel_case_types)]
+            #[allow(non_camel_case_types, dead_code)]
             struct #model_ident<T, U> (i32,::core::marker::PhantomData<T> , ::core::marker::PhantomData<U>);
         );
 
         let expected_trait: syn::ItemTrait = parse_quote!(
-            #[allow(non_camel_case_types)]
+            #[allow(non_camel_case_types, dead_code)]
             trait #trait_ident<T, U> {
                 #[pure]
                 #[trusted]
@@ -492,7 +492,7 @@ mod tests {
 
         let actual = model.to_model_trait;
         let expected: syn::ItemTrait = parse_quote!(
-            #[allow(non_camel_case_types)]
+            #[allow(non_camel_case_types, dead_code)]
             trait #trait_ident {
                 #[pure]
                 #[trusted]

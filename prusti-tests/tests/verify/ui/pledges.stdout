@@ -14,6 +14,7 @@
 #![feature(stmt_expr_attributes)]
 #![feature(register_tool)]
 #![register_tool(prusti)]
+#![allow(unused_features)]
 extern crate std;
 #[prelude_import]
 use std::prelude::rust_2021::*;
