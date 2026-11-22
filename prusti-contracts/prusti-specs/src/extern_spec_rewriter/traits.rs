@@ -24,7 +24,7 @@ use syn::{parse_quote, spanned::Spanned, TypeParam};
 ///     // phantom data for TSelf, T
 /// }
 /// ```
-/// whose `TSelf` also has the supertraits of `SomeTrait` as bounds, and a
+/// whose `TSelf` also has the supertraits declared in the spec as bounds, and a
 /// corresponding impl block with methods of `SomeTrait`.
 ///
 pub fn rewrite_extern_spec(

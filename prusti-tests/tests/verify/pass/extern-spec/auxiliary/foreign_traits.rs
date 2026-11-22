@@ -23,3 +23,11 @@ pub trait Pair {
 pub trait Wrapped {
     fn wrapped(x: Cell<Self>) -> bool;
 }
+
+pub trait Other {
+    type A: ?Sized;
+}
+
+pub trait Projected<T: ?Sized>: Other<A = T> {
+    fn take(&self, x: <Self as Other>::A);
+}

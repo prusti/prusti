@@ -58,12 +58,13 @@ pub enum ExternSpecResolverError {
     /// Occurs when a trait impl extern spec resolves to the trait method.
     ResolvedToDefault(DefId, Span),
 
-    /// Occurs when the extern spec declares trait bounds that do not follow
+    /// Occurs when the extern spec declares a trait bound that does not follow
     /// from the target definition's. The spec would otherwise be applied at
     /// every use of the target, including instantiations where the extra
-    /// bounds do not hold (and the spec expressions are not even well-formed).
-    /// The strings render the (sorted) bounds: the declared ones that do not
-    /// follow, and the target's.
+    /// bound does not hold (and the spec expressions are not even well-formed).
+    /// The span is the bound's, and the strings render the bound and the
+    /// (sorted) bounds of the target. A bound of an impl block or a trait is
+    /// checked for each of its methods but reported once.
     MismatchedBounds(DefId, Span, String, String),
 }
 
@@ -218,6 +219,7 @@ impl<'tcx> ExternSpecResolver<'tcx> {
                     let target = non_regions(resolved_substs);
                     if declared != target {
                         let render = |args: Vec<ty::GenericArg<'tcx>>| {
+                            let _trimmed_paths = ty::print::ForceTrimmedGuard::new();
                             args.into_iter()
                                 .map(|arg| arg.to_string())
                                 .collect::<Vec<_>>()
@@ -229,15 +231,17 @@ impl<'tcx> ExternSpecResolver<'tcx> {
                             render(declared),
                             render(target),
                         ));
-                    } else if let Some((declared, target)) =
-                        self.bounds_mismatch(current_def_id, resolved_def_id, resolved_substs)
+                    } else if let Some((unimplied, target)) =
+                        self.bounds_mismatch(current_def_id, span, resolved_def_id, resolved_substs)
                     {
-                        self.errors.push(ExternSpecResolverError::MismatchedBounds(
-                            resolved_def_id,
-                            span,
-                            declared,
-                            target,
-                        ));
+                        for (bound_span, bound) in unimplied {
+                            self.errors.push(ExternSpecResolverError::MismatchedBounds(
+                                resolved_def_id,
+                                bound_span,
+                                bound,
+                                target.clone(),
+                            ));
+                        }
                     }
                 }
             }
@@ -260,25 +264,33 @@ impl<'tcx> ExternSpecResolver<'tcx> {
     /// the target's generic arguments in the stub's call to it, which state
     /// the target's bounds in the spec's parameters. The bounds of an impl
     /// method of a trait include those of the trait method, which may be
-    /// stronger: every use of the impl method goes through the trait. Returns
-    /// the declared bounds that do not follow and the target's bounds,
-    /// rendered, if there are any.
+    /// stronger than the impl method's own: every use of the impl method goes
+    /// through the trait. Returns `None` if every declared bound follows, and
+    /// otherwise the declared bounds that do not, each rendered with its span
+    /// (or `spec_span` if it has none), and the target's bounds, rendered.
     ///
     /// Only trait, projection and const-argument clauses are compared;
     /// regions are erased in Prusti, so outlives clauses are ignored.
     fn bounds_mismatch(
         &self,
         spec_def_id: DefId,
+        spec_span: Span,
         target_def_id: DefId,
         target_args: GenericArgsRef<'tcx>,
-    ) -> Option<(String, String)> {
-        let tcx = self.env_query.tcx();
+    ) -> Option<(Vec<(Span, String)>, String)> {
         let compared_clauses = |clauses: ty::GenericClauses<'tcx>, args: GenericArgsRef<'tcx>| {
             clauses
-                .instantiate(tcx, args)
+                .instantiate(self.env_query.tcx(), args)
                 .into_iter()
-                .map(|(clause, _)| tcx.erase_and_anonymize_regions(clause.skip_normalization()))
-                .filter(|clause| {
+                .map(|(clause, span)| {
+                    (
+                        self.env_query
+                            .tcx()
+                            .erase_and_anonymize_regions(clause.skip_normalization()),
+                        span,
+                    )
+                })
+                .filter(|(clause, _)| {
                     matches!(
                         clause.kind().skip_binder(),
                         ClauseKind::Trait(_)
@@ -296,49 +308,70 @@ impl<'tcx> ExternSpecResolver<'tcx> {
             matches!(
                 clause.kind().skip_binder(),
                 ClauseKind::Trait(pred) if matches!(
-                    tcx.as_lang_item(pred.def_id()),
+                    self.env_query.tcx().as_lang_item(pred.def_id()),
                     Some(LangItem::MetaSized | LangItem::PointeeSized)
                 )
             )
         };
-        let trait_method = find_trait_method_substs(tcx, target_def_id, target_args);
-        let target = compared_clauses(tcx.clauses_of(target_def_id), target_args)
+        let trait_method =
+            find_trait_method_substs(self.env_query.tcx(), target_def_id, target_args);
+        let target = compared_clauses(self.env_query.tcx().clauses_of(target_def_id), target_args)
             .chain(
                 trait_method
                     .into_iter()
                     .flat_map(|(trait_method, trait_args)| {
-                        compared_clauses(tcx.clauses_of(trait_method), tcx.mk_args(trait_args))
+                        compared_clauses(
+                            self.env_query.tcx().clauses_of(trait_method),
+                            self.env_query.tcx().mk_args(trait_args),
+                        )
                     }),
             )
+            .map(|(clause, _)| clause)
             .collect::<FxHashSet<_>>();
         let target_env = normalize_param_env_or_error(
-            tcx,
+            self.env_query.tcx(),
             ty::ParamEnv::new(
-                tcx.mk_clauses_from_iter(ty::elaborate::elaborate(tcx, target.iter().copied())),
+                self.env_query
+                    .tcx()
+                    .mk_clauses_from_iter(target.iter().copied()),
             ),
             ObligationCause::dummy(),
         );
         let typing_env = ty::TypingEnv::new(target_env, ty::TypingMode::PostAnalysis);
         // Every use of the target needs its by-value inputs and output to be
         // `Sized`, so a bound of the spec that only requires this always
-        // holds. A struct or tuple is `Sized` exactly if its last field is
-        // (the only one that may be unsized), so the bound is on the struct
-        // tail: `T: Sized` for an input of type `T`, `Cell<T>` or `(u8, T)`.
-        let by_value_tails = tcx
+        // holds. A trait spec has to declare such a bound when `Self` or a
+        // parameter of the trait may be unsized, since the stub and the spec
+        // items take the arguments by value. A struct or tuple is `Sized`
+        // exactly if its last field is (the only one that may be unsized), so
+        // the bound is on the struct tail: `T: Sized` for an input of type
+        // `T`, `Cell<T>` or `(u8, T)`.
+        let by_value_tails = self
+            .env_query
+            .tcx()
             .erase_and_anonymize_regions(
-                tcx.fn_sig(target_def_id)
-                    .instantiate(tcx, target_args)
+                self.env_query
+                    .tcx()
+                    .fn_sig(target_def_id)
+                    .instantiate(self.env_query.tcx(), target_args)
                     .skip_normalization(),
             )
             .skip_binder()
             .inputs_and_output
             .iter()
             .map(|ty| {
-                tcx.struct_tail_raw(
+                let ty = self
+                    .env_query
+                    .tcx()
+                    .try_normalize_erasing_regions(typing_env, ty::Unnormalized::new(ty))
+                    .unwrap_or(ty);
+                self.env_query.tcx().struct_tail_raw(
                     ty,
                     &ObligationCause::dummy(),
                     |ty| {
-                        tcx.try_normalize_erasing_regions(typing_env, ty)
+                        self.env_query
+                            .tcx()
+                            .try_normalize_erasing_regions(typing_env, ty)
                             .unwrap_or_else(|_| ty.skip_normalization())
                     },
                     || {},
@@ -348,46 +381,93 @@ impl<'tcx> ExternSpecResolver<'tcx> {
         let sized_by_value = |clause: &ty::Clause<'tcx>| {
             matches!(
                 clause.kind().skip_binder(),
-                ClauseKind::Trait(pred) if tcx.is_lang_item(pred.def_id(), LangItem::Sized)
+                ClauseKind::Trait(pred) if self.env_query.tcx().is_lang_item(pred.def_id(), LangItem::Sized)
                     && by_value_tails.contains(&pred.self_ty())
             )
         };
+        // Each declared clause, normalized in the target's environment, with
+        // the clause as written (for rendering) and its span. A clause
+        // declared twice (e.g. on the impl block and on the method) is checked
+        // once.
+        let mut seen = FxHashSet::default();
         let declared = compared_clauses(
-            tcx.clauses_of(spec_def_id),
+            self.env_query.tcx().clauses_of(spec_def_id),
             self.env_query.identity_substs(spec_def_id),
         )
-        .filter(|clause| !below_sized(clause) && !sized_by_value(clause))
-        .collect::<FxHashSet<_>>();
+        .map(|(clause, span)| {
+            let normalized = self
+                .env_query
+                .tcx()
+                .try_normalize_erasing_regions(typing_env, ty::Unnormalized::new(clause))
+                .unwrap_or(clause);
+            (normalized, clause, span)
+        })
+        .filter(|(normalized, clause, _)| {
+            !below_sized(clause) && !sized_by_value(normalized) && seen.insert(*clause)
+        })
+        .collect::<Vec<_>>();
         if declared.is_empty() {
             return None;
         }
         let infcx = self.env_query.infer_ctxt();
         let unimplied = declared
             .into_iter()
-            .filter(|clause| {
-                let clause = tcx
-                    .try_normalize_erasing_regions(typing_env, ty::Unnormalized::new(*clause))
-                    .unwrap_or(*clause);
-                let obligation = Obligation::new(tcx, ObligationCause::dummy(), target_env, clause);
+            .filter(|(normalized, _, _)| {
+                let obligation = Obligation::new(
+                    self.env_query.tcx(),
+                    ObligationCause::dummy(),
+                    target_env,
+                    *normalized,
+                );
                 // Regions are erased, so the region constraints that remain
                 // (e.g. from instantiating a higher-ranked bound) are not
                 // decided.
                 !infcx.predicate_must_hold_modulo_regions(&obligation)
             })
-            .collect::<FxHashSet<_>>();
+            .collect::<Vec<_>>();
         if unimplied.is_empty() {
             return None;
         }
-        let render = |clauses: &FxHashSet<ty::Clause<'tcx>>| {
-            let mut strs = clauses
-                .iter()
-                .filter(|clause| !below_sized(clause))
-                .map(|clause| clause.to_string())
-                .collect::<Vec<_>>();
-            strs.sort();
-            strs.join(", ")
+        // The spec's type and const parameters are the target's, in order, so
+        // the bounds are shown with the target's parameters, as the target
+        // names them (e.g. `Self` for the parameter a trait spec stands for).
+        let mut target_params = self
+            .env_query
+            .identity_substs(target_def_id)
+            .iter()
+            .filter(|arg| arg.as_region().is_none());
+        let target_names =
+            ty::GenericArgs::for_item(self.env_query.tcx(), spec_def_id, |param, _| {
+                match param.kind {
+                    ty::GenericParamDefKind::Lifetime => {
+                        self.env_query.tcx().lifetimes.re_erased.into()
+                    }
+                    _ => target_params
+                        .next()
+                        .expect("the extern spec has the target's type and const parameters"),
+                }
+            });
+        let render = |clause: ty::Clause<'tcx>| {
+            let _trimmed_paths = ty::print::ForceTrimmedGuard::new();
+            ty::EarlyBinder::bind(self.env_query.tcx(), clause)
+                .instantiate(self.env_query.tcx(), target_names)
+                .skip_normalization()
+                .to_string()
         };
-        Some((render(&unimplied), render(&target)))
+        let mut target = target
+            .into_iter()
+            .filter(|clause| !below_sized(clause))
+            .map(render)
+            .collect::<Vec<_>>();
+        target.sort();
+        let unimplied = unimplied
+            .into_iter()
+            .map(|(_, clause, span)| {
+                let span = if span.is_dummy() { spec_span } else { span };
+                (span, render(clause))
+            })
+            .collect();
+        Some((unimplied, target.join(", ")))
     }
 
     fn register_duplicate_spec(&mut self, decl_def_id: DefId, dup_spec_def_id: DefId, span: Span) {
@@ -421,6 +501,7 @@ impl<'tcx> ExternSpecResolver<'tcx> {
     pub fn check_errors(&self, env_diagnostic: &EnvDiagnostic<'tcx>) {
         self.check_duplicates(env_diagnostic);
 
+        let mut reported_bounds = FxHashSet::default();
         for error in self.errors.iter() {
             match error {
                 // TODO: branches look very similar
@@ -440,7 +521,8 @@ impl<'tcx> ExternSpecResolver<'tcx> {
                         "The type and const parameters of the external spec for \
                         '{function_name}' must be those of the target, in the same order, \
                         since the spec is applied at every use of the target. Parameters of \
-                        the spec: [{declared}]; arguments it passes to the target: [{target}]."
+                        the spec: [{declared}]; arguments of the target as written in the \
+                        spec: [{target}]."
                     );
                     PrustiError::incorrect(
                         "Invalid external specification",
@@ -460,12 +542,14 @@ impl<'tcx> ExternSpecResolver<'tcx> {
                     .emit(env_diagnostic);
                 }
                 ExternSpecResolverError::MismatchedBounds(def_id, span, declared, target) => {
+                    if !reported_bounds.insert((*span, declared)) {
+                        continue;
+                    }
                     let function_name = self.env_name.get_item_name(*def_id);
                     let err_note = format!(
-                        "The external spec for '{function_name}' must not declare trait bounds \
-                        that do not follow from the bounds of the target, since the spec is \
-                        applied at every use of the target. Declared bounds that do not follow: \
-                        [{declared}]; target bounds: [{target}]."
+                        "The bound `{declared}` does not follow from the bounds of \
+                        '{function_name}' ([{target}]). An external spec must not declare such \
+                        bounds, since it is applied at every use of its target."
                     );
                     PrustiError::incorrect(
                         "Invalid external specification",

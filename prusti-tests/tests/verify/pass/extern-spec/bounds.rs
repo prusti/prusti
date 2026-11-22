@@ -1,5 +1,5 @@
 //@ aux-build: foreign_traits.rs
-use foreign_traits::{Compare, Convert, Pair, Plain, Wrapped};
+use foreign_traits::{Compare, Convert, Other, Pair, Plain, Projected, Wrapped};
 use prusti_contracts::*;
 use std::{cell::Cell, ops::Not};
 
@@ -29,16 +29,18 @@ impl Convert for Plain {
     fn convert<U: Clone>(&self, u: U) -> bool;
 }
 
-// `Self` as the last element of a returned tuple.
+// Methods that take or return `Self` by value. Their spec items take it by value
+// too, so they need `Self: Sized`, as the spec of a method of a local trait
+// does. The target has it at every use: `Self` as such, as the last element of
+// a tuple, or as the last field of a struct.
 #[extern_spec(foreign_traits)]
 trait Pair {
     #[trusted]
-    fn pair(&self) -> (u8, Self);
+    fn pair(&self) -> (u8, Self)
+    where
+        Self: Sized;
 }
 
-// `Self` as the last field of a struct taken by value. As in the spec of a
-// local trait, the spec items need `Self: Sized`, which the target has at every
-// use since its argument is `Sized`.
 #[extern_spec(foreign_traits)]
 trait Wrapped {
     #[trusted]
@@ -47,20 +49,33 @@ trait Wrapped {
         Self: Sized;
 }
 
+// `T` taken by value through a projection that normalizes to it.
+#[extern_spec(foreign_traits)]
+trait Projected<T: ?Sized> {
+    #[trusted]
+    fn take(&self, x: <Self as Other>::A)
+    where
+        T: Sized;
+}
+
 // A by-value receiver written with its type.
 #[extern_spec]
 trait Not {
     #[pure]
     #[trusted]
-    fn not(self: Self) -> Self::Output;
+    fn not(self: Self) -> Self::Output
+    where
+        Self: Sized;
 }
 
-// `Self` returned by value, from a trait without a `Sized` supertrait.
+// From a trait without a `Sized` supertrait.
 #[cfg(unix)]
 #[extern_spec(std::os::fd)]
 trait FromRawFd {
     #[trusted]
-    unsafe fn from_raw_fd(fd: std::os::fd::RawFd) -> Self;
+    unsafe fn from_raw_fd(fd: std::os::fd::RawFd) -> Self
+    where
+        Self: Sized;
 }
 
 // A bound on a projection that the target states on an equal projection.
