@@ -3,20 +3,22 @@
 use super::*;
 
 impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
-    fn encode_common(
+    /// The value of `result_local` at the end of the region from `start` up
+    /// to `end` (not included), with `inputs` bound to the values supplied at
+    /// instantiation.
+    fn encode_region(
         &mut self,
         start: mir::BasicBlock,
         end: mir::BasicBlock,
-        local_count: usize,
+        inputs: impl Iterator<Item = mir::Local>,
         result_local: mir::Local,
     ) -> EncodeResult<'vir, ExprRet<'vir>, MirPureEnc> {
         let mut init = Fragment::default();
-        let v0 = Version::default();
         // TODO: what about locals which never have StorageLive (i.e. always_live)?
-        init.versions.insert(mir::RETURN_PLACE, v0);
-        for local in 1..local_count {
-            let local_ex = self.input(local.into());
-            self.bump_version_init(&mut init, local.into(), local_ex, v0.location);
+        let return_version = self.new_version(mir::RETURN_PLACE, mir::Location::START);
+        init.versions.insert(mir::RETURN_PLACE, return_version);
+        for local in inputs {
+            self.bind_input(&mut init, local);
         }
 
         // The body may unconditionally terminate with `unreachable` (e.g. a
@@ -25,11 +27,11 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
             let result_ty = self.body.local_decls[result_local].ty;
             return Ok(self.ty_use(result_ty).unreachable_to_snap());
         };
-        let ret_version = res.versions.get(&result_local).copied().unwrap_or(v0);
+        let ret_version = res.versions[&result_local];
         self.uses.read(result_local, ret_version.index);
 
         let ex = self.mk_local_ex(ret_version);
-        Ok(self.reify_binds(res, ex))
+        Ok(self.close_fragment(res, ex))
     }
 
     pub(super) fn encode_body(&mut self) -> EncodeResult<'vir, ExprRet<'vir>, MirPureEnc> {
@@ -39,10 +41,10 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                 vec![self.body.span],
             ));
         }
-        self.encode_common(
+        self.encode_region(
             mir::START_BLOCK,
             self.rev_doms.end,
-            self.body.arg_count + 1,
+            self.body.args_iter(),
             mir::RETURN_PLACE,
         )
     }
@@ -59,10 +61,10 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
             unreachable!("malformed spec-only block: should end in a call terminator");
         };
         assert!(destination.projection.is_empty());
-        self.encode_common(
+        self.encode_region(
             block,
             self.body.basic_blocks.successors(block).next().unwrap(),
-            self.body.local_decls.len(),
+            self.body.local_decls.indices().skip(1),
             destination.local,
         )
     }
@@ -151,9 +153,9 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                         (cond, branch)
                     })
                     .collect();
-                if !self.merge(&mut fragment, location, branches, otherwise) {
+                let Some(fragment) = self.merge(fragment, location, branches, otherwise) else {
                     return Ok(None);
-                }
+                };
 
                 // walk `join` -> `end`
                 self.encode_cfg(fragment, new_join_point, join_point)
@@ -187,9 +189,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                         .mk_const_expr(vir::ConstData::Bool(*expected))
                         .downcast_ty(),
                 );
-                let completes =
-                    self.merge(&mut fragment, location, vec![(ok_cond, ok_branch)], None);
-                Ok(completes.then_some(fragment))
+                Ok(self.merge(fragment, location, vec![(ok_cond, ok_branch)], None))
             }
 
             mir::TerminatorKind::Return => Ok(Some(fragment)),
@@ -218,7 +218,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                     .vcx
                     .with_span(span, |_| self.encode_call(curr_ver, func, args, curr, span));
                 let expr = self.encode_place_update(curr_ver, *destination, expr?, span)?;
-                self.bump_version(&mut fragment, destination.local, expr, location);
+                self.assign(&mut fragment, destination.local, expr, location);
 
                 // walk rest of CFG
                 self.encode_cfg(fragment, target, join_point)
@@ -300,7 +300,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
         self.vcx.with_span(stmt.source_info.span, |_| {
             match &stmt.kind {
                 &mir::StatementKind::StorageLive(local) => {
-                    let new_version = self.bump_version_no_assign(local, location);
+                    let new_version = self.new_version(local, location);
                     fragment.versions.insert(local, new_version);
                 }
                 mir::StatementKind::StorageDead(..)
@@ -319,7 +319,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                         .encode_rvalue(curr_ver, rvalue, span)
                         .and_then(|expr| self.encode_place_update(curr_ver, *dest, expr, span));
                     let reads = self.uses.end_assignment();
-                    self.bump_version(fragment, dest.local, expr?, location);
+                    self.assign(fragment, dest.local, expr?, location);
                     let version = fragment.versions[&dest.local].index;
                     self.uses.assigned(dest.local, version, reads);
                 }

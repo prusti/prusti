@@ -2,35 +2,35 @@
 
 use super::*;
 
+/// A version of a local: one of the values the local takes in the `let`
+/// chain.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct Version<'vir> {
+    /// Distinguishes the versions of a local. Version 0 of an input is the
+    /// value supplied at instantiation (see `ExprInput::inputs`).
     pub(super) index: usize,
+    /// Where the version is created, which only serves its name.
     pub(super) location: mir::Location,
-    pub(super) initialised: Option<vir::LocalDeclSnap<'vir>>,
+    /// The variable bound to the version, or `None` if the local is declared
+    /// (by `StorageLive`) but not yet assigned.
+    pub(super) decl: Option<vir::LocalDeclSnap<'vir>>,
 }
 
-impl<'vir> Default for Version<'vir> {
-    fn default() -> Self {
-        Self {
-            index: 0,
-            location: mir::Location::START,
-            initialised: None,
-        }
-    }
-}
-
-impl<'vir> fmt::Display for Version<'vir> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+/// The part of a variable's name that identifies a version of a local or a
+/// merge: the index, which makes it unique, after the location that creates
+/// it in builds with debug assertions.
+fn name_suffix(location: mir::Location, index: usize) -> impl fmt::Display {
+    fmt::from_fn(move |f| {
         if cfg!(debug_assertions) {
             write!(
                 f,
                 "{:?}_s{}_i{}",
-                self.location.block, self.location.statement_index, self.index
+                location.block, location.statement_index, index
             )
         } else {
-            write!(f, "{}", self.index)
+            write!(f, "{index}")
         }
-    }
+    })
 }
 
 /// The current version of each local.
@@ -61,32 +61,6 @@ impl<'vir> Fragment<'vir> {
             binds: Vec::new(),
             versions: versions.clone(),
         }
-    }
-
-    fn mk_local(
-        vcx: &'vir vir::VirCtxt<'vir>,
-        encoding_depth: usize,
-        local: mir::Local,
-        version: Version<'vir>,
-    ) -> &'vir str {
-        vir::vir_format!(vcx, "_{}_{}s_{}", encoding_depth, local.as_usize(), version)
-    }
-
-    fn assign(
-        &mut self,
-        vcx: &'vir vir::VirCtxt<'vir>,
-        encoding_depth: usize,
-        local: mir::Local,
-        mut version: Version<'vir>,
-        expr: ExprRet<'vir>,
-    ) {
-        let decl = vcx.mk_local_decl(
-            Self::mk_local(vcx, encoding_depth, local, version),
-            expr.ty(),
-        );
-        version.initialised = Some(decl);
-        self.binds.push(Bind::Local(local, version, expr));
-        self.versions.insert(local, version);
     }
 }
 
@@ -149,14 +123,27 @@ impl Uses {
 
 impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
     pub(super) fn mk_local_ex(&mut self, version: Version<'vir>) -> ExprRet<'vir> {
-        self.vcx.mk_local_ex(version.initialised.unwrap())
+        self.vcx.mk_local_ex(version.decl.unwrap())
     }
 
-    pub(super) fn mk_phi(&self, version: Version<'vir>) -> &'vir str {
-        vir::vir_format!(self.vcx, "_{}_phi_{}", self.encoding_depth, version)
+    /// A new version of `local`, created at `location`, without a value.
+    pub(super) fn new_version(
+        &mut self,
+        local: mir::Local,
+        location: mir::Location,
+    ) -> Version<'vir> {
+        let index = self.version_ctr[local];
+        self.version_ctr[local] += 1;
+        Version {
+            index,
+            location,
+            decl: None,
+        }
     }
 
-    pub(super) fn bump_version(
+    /// Extends `fragment` with a new version of `local`, created at
+    /// `location`, bound to `expr`.
+    pub(super) fn assign(
         &mut self,
         fragment: &mut Fragment<'vir>,
         local: mir::Local,
@@ -176,39 +163,42 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
             // checks for such a case and bumps the version twice.
             //
             // see: https://github.com/rust-lang/rust/issues/67400
-            self.bump_version_no_assign(local, location);
+            self.new_version(local, location);
         }
 
-        let new_version = self.bump_version_no_assign(local, location);
-        fragment.assign(self.vcx, self.encoding_depth, local, new_version, expr);
+        let version = self.new_version(local, location);
+        self.bind(fragment, local, version, expr);
     }
 
-    pub(super) fn bump_version_init(
+    /// Extends `fragment` with version 0 of the input `local`, bound to the
+    /// value supplied at instantiation.
+    pub(super) fn bind_input(&mut self, fragment: &mut Fragment<'vir>, local: mir::Local) {
+        let expr = self.input(local);
+        let version = self.new_version(local, mir::Location::START);
+        self.bind(fragment, local, version, expr);
+    }
+
+    fn bind(
         &mut self,
         fragment: &mut Fragment<'vir>,
         local: mir::Local,
+        mut version: Version<'vir>,
         expr: ExprRet<'vir>,
-        location: mir::Location,
     ) {
-        let new_version = self.bump_version_no_assign(local, location);
-        fragment.assign(self.vcx, self.encoding_depth, local, new_version, expr);
+        let name = vir::vir_format!(
+            self.vcx,
+            "_{}_{}s_{}",
+            self.encoding_depth,
+            local.as_usize(),
+            name_suffix(version.location, version.index)
+        );
+        version.decl = Some(self.vcx.mk_local_decl(name, expr.ty()));
+        fragment.binds.push(Bind::Local(local, version, expr));
+        fragment.versions.insert(local, version);
     }
 
-    pub(super) fn bump_version_no_assign(
-        &mut self,
-        local: mir::Local,
-        location: mir::Location,
-    ) -> Version<'vir> {
-        let index = self.version_ctr[local];
-        self.version_ctr[local] += 1;
-        Version {
-            index,
-            location,
-            initialised: None,
-        }
-    }
-
-    pub(super) fn reify_binds<T: CompType>(
+    /// Wraps the bindings of `fragment` around `expr`.
+    pub(super) fn close_fragment<T: CompType>(
         &self,
         fragment: Fragment<'vir>,
         expr: ExprRetAny<'vir, T>,
@@ -221,7 +211,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                 if !self.uses.is_read(*local, version.index) {
                     expr
                 } else {
-                    let decl = version.initialised.unwrap();
+                    let decl = version.decl.unwrap();
                     self.vcx.mk_let_expr(decl, val, expr)
                 }
             }
@@ -229,7 +219,8 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
         })
     }
 
-    pub(super) fn reify_branch(
+    /// The pair of the values of `mod_locals` at the end of `branch`.
+    pub(super) fn branch_pair(
         &mut self,
         tuple_ref: &PairUse<'vir>,
         mod_locals: &[mir::Local],
@@ -245,7 +236,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                         self.mk_local_ex(version)
                     })
                     .collect::<Vec<_>>();
-                self.reify_binds(branch, tuple_ref.mk_cons(&tuple_args))
+                self.close_fragment(branch, tuple_ref.mk_cons(&tuple_args))
             })
             .unwrap_or_else(|| {
                 // A branch that cannot complete (it ends in `unreachable` or
@@ -270,15 +261,15 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
     /// each other. A branch is the fragment of its region, or `None` if
     /// it cannot complete. The values of the locals that some branch changes,
     /// chosen by the conditions, are bound as one pair, and the locals
-    /// continue as its elements. Returns whether some branch completes;
-    /// otherwise `fragment` is unchanged.
+    /// continue as its elements. Returns the extended fragment, or `None` if
+    /// no branch completes.
     pub(super) fn merge(
         &mut self,
-        fragment: &mut Fragment<'vir>,
+        mut fragment: Fragment<'vir>,
         location: mir::Location,
         branches: Vec<(ExprRetAny<'vir, vir::Bool>, Option<Fragment<'vir>>)>,
         otherwise: Option<Fragment<'vir>>,
-    ) -> bool {
+    ) -> Option<Fragment<'vir>> {
         let completing = || {
             branches
                 .iter()
@@ -286,9 +277,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                 .chain([&otherwise])
                 .flatten()
         };
-        if completing().next().is_none() {
-            return false;
-        }
+        completing().next()?;
 
         // The merged locals are those that some branch changes and that were
         // defined before the conditional.
@@ -307,29 +296,28 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
         // A local that some completing branch leaves without a value (declared
         // by `StorageLive` but not assigned) is not merged: MIR reads no local
         // after a join that some path to it leaves uninitialised.
-        mod_locals.retain(|local| {
-            completing().all(|branch| branch.versions[local].initialised.is_some())
-        });
+        mod_locals.retain(|local| completing().all(|branch| branch.versions[local].decl.is_some()));
         let mod_tys = mod_locals
             .iter()
             .map(|l| self.get_ty_for_local(*l).as_dyn())
             .collect();
         let tuple_ref = self.deps.require_dep::<PairUseEnc>(mod_tys).unwrap();
 
-        let otherwise = self.reify_branch(&tuple_ref, &mod_locals, otherwise);
+        let otherwise = self.branch_pair(&tuple_ref, &mod_locals, otherwise);
         let phi_expr = branches
             .into_iter()
             .fold(otherwise, |expr, (cond, branch)| {
-                let branch = self.reify_branch(&tuple_ref, &mod_locals, branch);
+                let branch = self.branch_pair(&tuple_ref, &mod_locals, branch);
                 self.vcx.mk_ternary_expr(cond, branch, expr)
             });
 
-        let phi_idx = Version {
-            index: self.phi_ctr,
-            location,
-            initialised: None,
-        };
-        let phi = self.vcx.mk_local_decl(self.mk_phi(phi_idx), tuple_ref.ty);
+        let phi_name = vir::vir_format!(
+            self.vcx,
+            "_{}_phi_{}",
+            self.encoding_depth,
+            name_suffix(location, self.phi_ctr)
+        );
+        let phi = self.vcx.mk_local_decl(phi_name, tuple_ref.ty);
         self.phi_ctr += 1;
         fragment.binds.push(Bind::Phi(phi, phi_expr));
         // TODO: maybe this is unnecessary, we could instead use tuple
@@ -338,8 +326,8 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
             let expr = tuple_ref
                 .mk_elem(self.vcx.mk_local_ex(phi), elem_idx)
                 .downcast_ty();
-            self.bump_version(fragment, *local, expr, location);
+            self.assign(&mut fragment, *local, expr, location);
         }
-        true
+        Some(fragment)
     }
 }

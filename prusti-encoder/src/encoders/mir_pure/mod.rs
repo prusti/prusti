@@ -56,7 +56,7 @@ mod spec_closure;
 mod ssa;
 mod walk;
 
-use ssa::{Fragment, Uses, Version, Versions};
+use ssa::{Fragment, Uses, Versions};
 
 pub struct MirPureEnc;
 
