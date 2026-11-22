@@ -129,6 +129,11 @@ impl prusti_rustc_interface::driver::Callbacks for PrustiCompilerCalls {
                 .emit();
         }
         compiler.sess.dcx().abort_if_errors();
+        // `prusti-driver` enables `stmt_expr_attributes` with `-Zcrate-attr` for
+        // Prusti's specifications, so rustc must not report it as unused in a
+        // crate where no specification sits on a statement or expression.
+        // Querying a feature records it as used.
+        tcx.features().stmt_expr_attributes();
         if config::print_desugared_specs() {
             // based on the implementation of rustc_driver::pretty::print_after_parsing
             let sess = &compiler.sess;
