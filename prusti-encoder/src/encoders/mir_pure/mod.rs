@@ -576,12 +576,6 @@ mod rev_doms {
                 end: rbb.start_node(),
             }
         }
-        pub fn immediate_dominator(&self, bb: mir::BasicBlock) -> mir::BasicBlock {
-            // A block has an immediate dominator if it reaches `end`. The
-            // walk asks only for the switches of loop-free bodies, whose arms
-            // reach `Return` or, when they panic, `UnwindResume`.
-            self.dom.immediate_dominator(bb).unwrap()
-        }
     }
 
     use super::*;

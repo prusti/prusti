@@ -122,6 +122,14 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                     return self.encode_cfg(fragment, *live, join_point);
                 }
 
+                // Each target is walked up to the join point of the switch,
+                // the immediate reverse dominator of `curr`, where its
+                // branch is merged with the others. A switch without one, none
+                // of whose arms can complete, cannot complete either.
+                let Some(new_join_point) = self.rev_doms.dom.immediate_dominator(curr) else {
+                    return Ok(None);
+                };
+
                 // encode the discriminant operand
                 let discr_expr = self
                     .vcx
@@ -132,10 +140,6 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                 let discr_ty = discr.ty(self.body, self.vcx.tcx());
                 let discr_ty_out = self.ty_use(discr_ty)?.expect_primitive();
 
-                // Each target is walked up to the join point of the switch,
-                // the immediate reverse dominator of `curr`, where its
-                // branch is merged with the others.
-                let new_join_point = self.rev_doms.immediate_dominator(curr);
                 let branches = targets
                     .iter()
                     .map(|(cond_val, target)| {
