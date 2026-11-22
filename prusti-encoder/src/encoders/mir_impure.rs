@@ -209,6 +209,9 @@ where
     /// The PCG state at the start of the phase whose actions are encoded,
     /// and the label there.
     pub phase_start: Option<(Pcg<'enc, 'vir>, ReadPoint<'vir>)>,
+    /// The new names of the nodes the actions encoded so far in the phase
+    /// renamed, by their names in `phase_start`'s graph.
+    pub phase_renames: FxHashMap<NodeLp<'vir>, NodeLp<'vir>>,
 
     pub encoded_blocks: Vec<vir::CfgBlock<'vir>>, // TODO: use IndexVec ?
 }
@@ -216,12 +219,20 @@ where
 /// A lifetime-projection node of a local place.
 pub(crate) type NodeLp<'vir> = LifetimeProjection<'vir, MaybeLabelledPlace<'vir>>;
 
+/// Nodes of one place to fold, each from its children.
+type NodeFolds<'vir> = Vec<(NodeLp<'vir>, Vec<Child<'vir>>)>;
+
 /// A point where keys are read: the PCG state of `at` (see
-/// `ImpureEncVisitor::state_at_label`) under `label`.
+/// `ImpureEncVisitor::state_at_label`) under `label`. At the start of the
+/// actions of a phase following a statement's effect, the encoding has
+/// encoded the effect already, while the PCG's state there precedes it: such
+/// a point is `after_effect`, and its keys are read in the PCG state after the
+/// phase's actions, which contains the effect.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ReadPoint<'vir> {
     at: SnapshotLocation,
     label: vir::OldLabel<'vir>,
+    after_effect: bool,
 }
 
 /// Where the encoder created a node's predicates: their keys are read at
@@ -903,6 +914,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         let point = ReadPoint {
             at: SnapshotLocation::Before(AnalysisLocation::new(location, EvalStmtPhase::PostMain)),
             label: vir::OldLabel::Label(label),
+            after_effect: true,
         };
         let cfpcs = &self.current_fpcs.as_ref().unwrap().statements[location.statement_index];
         let graph = cfpcs.states[EvalStmtPhase::PreMain].borrow_pcg().graph();
@@ -943,6 +955,125 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             })
             .collect::<Vec<_>>();
         created_at.extend(moved);
+    }
+
+    /// Records the renames of an action of the phase (see `phase_renames`).
+    fn record_renames(&mut self, renamed: &[NodeReplacement<'vir>]) {
+        for replacement in renamed {
+            if let (PcgNode::LifetimeProjection(from), PcgNode::LifetimeProjection(to)) =
+                (replacement.from(), replacement.to())
+                && let (Some(from), Some(to)) = (local_node(from), local_node(to))
+            {
+                for name in self.phase_renames.values_mut() {
+                    if *name == from {
+                        *name = to;
+                    }
+                }
+                self.phase_renames.entry(from).or_insert(to);
+            }
+        }
+    }
+
+    /// Folds the future nodes that `renamed` makes current from the parts
+    /// whose `FromExpansion` edges lead into them: the PCG makes a lifetime
+    /// projection current again once its parts give back what they hold.
+    fn fold_from_parts(&mut self, renamed: &[NodeReplacement<'vir>]) -> EncodeResult<'vir, (), E> {
+        let mut folds: Vec<(Place<'vir>, NodeFolds<'vir>)> = Vec::new();
+        for replacement in renamed {
+            let (PcgNode::LifetimeProjection(from), PcgNode::LifetimeProjection(to)) =
+                (replacement.from(), replacement.to())
+            else {
+                continue;
+            };
+            let (Some(from), Some(to)) = (local_node(from), local_node(to)) else {
+                continue;
+            };
+            if from.label() != Some(LifetimeProjectionLabel::Future) || to.label().is_some() {
+                continue;
+            }
+            let parts = self
+                .phase_start
+                .as_ref()
+                .map(|(pcg, _)| {
+                    pcg.borrow_pcg()
+                        .graph()
+                        .edges()
+                        .filter_map(|edge| match edge.kind() {
+                            BorrowPcgEdgeKind::BorrowFlow(borrow_flow)
+                                if borrow_flow.kind().is_future_from_expansion()
+                                    && borrow_flow.short() == from =>
+                            {
+                                local_node(borrow_flow.long())
+                            }
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            // A part that is still a future node has not given anything back.
+            let children = parts
+                .into_iter()
+                .map(|part| self.phase_renames.get(&part).copied().unwrap_or(part))
+                .filter(|part| part.label() != Some(LifetimeProjectionLabel::Future))
+                .filter_map(|part| Child::of_place(to, part))
+                .collect::<Vec<_>>();
+            if children.is_empty() {
+                continue;
+            }
+            let place = to.base().place();
+            match folds.iter_mut().find(|(p, _)| *p == place) {
+                Some((_, place_folds)) => place_folds.push((to, children)),
+                None => folds.push((place, vec![(to, children)])),
+            }
+        }
+        let ctxt = self.pcg_ctxt();
+        for (place, place_folds) in folds {
+            self.fold_outermost_first(place.ty(ctxt).ty, place_folds)?;
+        }
+        Ok(())
+    }
+
+    /// Gives `node`, a future node that becomes current under the name
+    /// `current`, the predicates of the borrowers whose `FromBorrow` edges
+    /// lead into it: once a borrow expires, the lender's nested lifetime
+    /// projections hold what the borrower's hold then.
+    fn take_from_borrowers(
+        &mut self,
+        node: NodeLp<'vir>,
+        current: NodeLp<'vir>,
+    ) -> EncodeResult<'vir, (), E> {
+        let borrowers = self
+            .phase_start
+            .as_ref()
+            .map(|(pcg, _)| {
+                pcg.borrow_pcg()
+                    .graph()
+                    .edges()
+                    .filter_map(|edge| match edge.kind() {
+                        BorrowPcgEdgeKind::BorrowFlow(borrow_flow)
+                            if borrow_flow.kind().is_future_from_borrow()
+                                && borrow_flow.short() == node =>
+                        {
+                            local_node(borrow_flow.long())
+                        }
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        for borrower in borrowers {
+            let borrower = self
+                .phase_renames
+                .get(&borrower)
+                .copied()
+                .unwrap_or(borrower);
+            let lender = Child {
+                node: current,
+                part: Part::Referent,
+            };
+            self.fold_or_unfold_node(borrower, &[lender], FoldOrUnfold::Unfold)?;
+        }
+        Ok(())
     }
 
     /// The borrow graph on entry to `block`, before the first statement's
@@ -1032,65 +1163,13 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         Ok(inv)
     }
 
-    /// Folds the predicates of the lifetime projections of the current
-    /// `place` from those of its `parts`, when the place is put back together
-    /// from them: enclosing positions first, since the keys of the enclosed
-    /// ones read their predicates. Only the lifetime projections that the PCG
-    /// expanded, in some version, are folded; the others are still held.
-    fn fold_place_nodes(
-        &mut self,
-        place: Place<'vir>,
-        parts: &[Place<'vir>],
-    ) -> EncodeResult<'vir, (), E> {
-        let ctxt = self.pcg_ctxt();
-        let ty = place.ty(ctxt).ty;
-        let expanded = |node: NodeLp<'vir>, pcg: &Pcg<'_, 'vir>| {
-            pcg.borrow_pcg()
-                .graph()
-                .edges()
-                .any(|edge| match edge.kind() {
-                    BorrowPcgEdgeKind::BorrowPcgExpansion(expansion) => {
-                        matches!(expansion.base(), PcgNode::LifetimeProjection(base)
-                        if base.base() == node.base()
-                            && base.region_idx() == node.region_idx())
-                    }
-                    _ => false,
-                })
-        };
-        let lifetimes: IndexVec<_, GeneralizedLifetime<'vir>> = ctxt.extract_regions(ty);
-        let mut folds = Vec::new();
-        for lifetime in lifetimes {
-            let node = |part: Place<'vir>| {
-                LifetimeProjection::new(MaybeLabelledPlace::Current(part), lifetime, None, ctxt)
-            };
-            let Some(base) = node(place) else {
-                continue;
-            };
-            if !self
-                .phase_start
-                .as_ref()
-                .is_some_and(|(pcg, _)| expanded(base, pcg))
-            {
-                continue;
-            }
-            let children = parts
-                .iter()
-                .filter_map(|&part| Child::of_place(base, node(part)?))
-                .collect::<Vec<_>>();
-            if !children.is_empty() {
-                folds.push((base, children));
-            }
-        }
-        self.fold_outermost_first(ty, folds)
-    }
-
     /// Folds the predicates of the `folds`' nodes, all of a place of type
     /// `ty`, from those of their children: enclosing positions first, since
     /// the keys of the enclosed ones read their predicates.
     fn fold_outermost_first(
         &mut self,
         ty: ty::Ty<'vir>,
-        folds: Vec<(NodeLp<'vir>, Vec<Child<'vir>>)>,
+        folds: NodeFolds<'vir>,
     ) -> EncodeResult<'vir, (), E> {
         if folds.is_empty() {
             return Ok(());
@@ -1201,37 +1280,46 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         })
     }
 
+    /// The PCG state in which the keys at `point` are read.
+    fn state_at_point(&mut self, point: ReadPoint<'vir>) -> Option<Pcg<'enc, 'vir>> {
+        match point.at {
+            SnapshotLocation::Before(at) if point.after_effect => {
+                let block = self
+                    .fpcs_analysis
+                    .get_all_for_bb(at.location().block)
+                    .ok()??;
+                let location = block.statements.get(at.location().statement_index)?;
+                Some(location.states[at.eval_stmt_phase()].clone())
+            }
+            _ => self.state_at_label(point.at),
+        }
+    }
+
     /// The PCG state and label at which the keys of `node`'s predicates are
-    /// read. A fold keys the predicates by the contents they have at the
-    /// start of the phase whose actions are encoded; the values do not change
-    /// within a phase (see `phase_label`). An unfold uses the keys the
-    /// predicates were created with. Nothing these read changes while the
-    /// node is current, so those of a current node are read at the start of
-    /// the phase. Those of an earlier version of a node, which the PCG labels,
-    /// are read where the encoder created its predicates, or, if it created
-    /// them before the label, at the label; a fold of such a node, e.g. when
-    /// a package puts it back together, gives it these keys again.
+    /// read. The keys are the value the node's place had while the node was
+    /// current, read at the last point where it was current: at the start of
+    /// the phase for a current node, and just before its label for an
+    /// earlier version, which the PCG labels (see `phase_label`). If the
+    /// place has ended there, it is read at its own label (see
+    /// `place_read_in`). The value does not change while the node is current,
+    /// since the PCG labels the node whenever its place can change.
     #[allow(clippy::type_complexity)]
     fn keys_state(
         &mut self,
         node: NodeLp<'vir>,
     ) -> EncodeResult<'vir, ((Pcg<'enc, 'vir>, Option<ReadPoint<'vir>>), ReadPoint<'vir>), E> {
         let point = match node.label() {
-            Some(LifetimeProjectionLabel::Location(at)) => {
-                match self.indirect_predicate_state.current.created_at.get(&node) {
-                    Some(created) => Some(created.point),
-                    None => Some(ReadPoint {
-                        at,
-                        label: self.get_location_label(at),
-                    }),
-                }
-            }
+            Some(LifetimeProjectionLabel::Location(at)) => Some(ReadPoint {
+                at,
+                label: self.get_location_label(at),
+                after_effect: false,
+            }),
             _ => self.phase_start.as_ref().map(|(_, point)| *point),
         };
         let state = match point {
             Some(point) => match &self.phase_start {
-                Some((pcg, start)) if *start == point => Some(pcg.clone()),
-                _ => self.state_at_label(point.at),
+                Some((pcg, start)) if *start == point && !point.after_effect => Some(pcg.clone()),
+                _ => self.state_at_point(point),
             }
             .map(|pcg| ((pcg, Some(point)), point)),
             None => None,
@@ -1316,6 +1404,27 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             }
             _ => None,
         });
+        // A borrower moved since, e.g. by `r2 = r`, holds the borrow in the
+        // place it was moved into, which the assignment edges of its lifetime
+        // projections lead to.
+        let moved_into = |borrower: MaybeLabelledPlace<'vir>| {
+            graph.edges().find_map(|edge| match edge.kind() {
+                BorrowPcgEdgeKind::BorrowFlow(borrow_flow)
+                    if matches!(borrow_flow.kind(), BorrowFlowEdgeKind::Assignment(_))
+                        && local_node(borrow_flow.long())
+                            .is_some_and(|node| node.base() == borrower) =>
+                {
+                    Some(borrow_flow.short().base())
+                }
+                _ => None,
+            })
+        };
+        let mut borrower = borrower;
+        while let Some(MaybeLabelledPlace::Labelled(_)) = borrower
+            && let Some(next) = moved_into(borrower.unwrap())
+        {
+            borrower = Some(next);
+        }
         if let Some(borrower) = borrower {
             let value = self.place_value_in(borrower, pcg, at)?;
             let mutref = self.ty_use_pure(borrower.place().ty(ctxt).ty);
@@ -1500,23 +1609,6 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 }
                 _ => None,
             })
-    }
-
-    /// `place` as its `variant`, named `name`.
-    fn downcast_place(
-        &self,
-        place: Place<'vir>,
-        name: Option<prusti_rustc_interface::span::Symbol>,
-        variant: abi::VariantIdx,
-    ) -> Place<'vir> {
-        let projection = self.vcx.tcx().mk_place_elems_from_iter(
-            place
-                .projection
-                .iter()
-                .copied()
-                .chain([mir::ProjectionElem::Downcast(name, variant)]),
-        );
-        Place::new(place.local, projection)
     }
 
     /// Whether the PCG state `pcg` has the current `place` expanded into its
@@ -2043,40 +2135,6 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 // folded into the Rvalue `&mut y` that is stored in `x`. This
                 // reverses that effect
                 self.unfold(borrow.assigned_ref(), label)?;
-                // The nested lifetime projections of the borrower hold those of
-                // the lender's place through the equals edges of the borrow
-                // (see below); they are given back too.
-                let equals = self
-                    .phase_start
-                    .as_ref()
-                    .map(|(pcg, _)| {
-                        pcg.borrow_pcg()
-                            .graph()
-                            .edges()
-                            .filter_map(|edge| match edge.kind() {
-                                BorrowPcgEdgeKind::BorrowFlow(borrow_flow)
-                                    if matches!(
-                                        borrow_flow.kind(),
-                                        BorrowFlowEdgeKind::BorrowOutlives {
-                                            regions_equal: true
-                                        }
-                                    ) && borrow_flow.short().base().place()
-                                        == borrow.assigned_ref().place() =>
-                                {
-                                    Some((borrow_flow.short(), local_node(borrow_flow.long())?))
-                                }
-                                _ => None,
-                            })
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default();
-                for (target, source) in equals {
-                    let source = Child {
-                        node: source,
-                        part: Part::Referent,
-                    };
-                    self.fold_or_unfold_node(target, &[source], FoldOrUnfold::Unfold)?;
-                }
             }
             BorrowPcgEdgeKind::BorrowFlow(borrow_flow)
                 if let BorrowFlowEdgeKind::Assignment(assignment_data) = borrow_flow.kind()
@@ -2184,8 +2242,9 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             }
             // An equals edge from a referent's node to a reborrow's node of the
             // same lifetime, e.g. `*x↓'b -> y↓'b` for `y = &mut *x`, moves the
-            // referent's predicates into the reborrow's while it lives; the
-            // removal of the borrow gives them back.
+            // referent's predicates into the reborrow's while it lives. Its
+            // removal only forgets it: the referent gets them back from a
+            // `FromBorrow` edge (see below).
             BorrowPcgEdgeKind::BorrowFlow(borrow_flow)
                 if matches!(
                     borrow_flow.kind(),
@@ -2204,6 +2263,24 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                     .collect::<Vec<_>>();
                 self.fold_or_unfold_node(borrow_flow.short(), &sources, FoldOrUnfold::Fold)?;
             }
+            // A borrow's future edge into a node that is not a future node,
+            // e.g. `y|'a -> (*x)|'a`, gives the lender back what the borrower
+            // holds, as the edge into the future node does once that becomes
+            // current (see `take_from_borrowers`). A package adds one where
+            // it gives the referent of a reborrow its predicates again.
+            BorrowPcgEdgeKind::BorrowFlow(borrow_flow)
+                if borrow_flow.kind().is_future_from_borrow()
+                    && borrow_flow.short().label() != Some(LifetimeProjectionLabel::Future)
+                    && edge_action.is_add() =>
+            {
+                if let Some(borrower) = local_node(borrow_flow.long()) {
+                    let lender = Child {
+                        node: borrow_flow.short(),
+                        part: Part::Referent,
+                    };
+                    self.fold_or_unfold_node(borrower, &[lender], FoldOrUnfold::Unfold)?;
+                }
+            }
             BorrowPcgEdgeKind::Deref(deref) => {
                 let frame = self.fold_or_unfold(
                     deref.blocked_place(),
@@ -2211,26 +2288,20 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                     None,
                     label,
                 )?;
-                // The reference is put back together: its nested lifetime
-                // projections are folded from the referent's.
-                if edge_action.is_remove()
-                    && let MaybeLabelledPlace::Current(place) = deref.blocked_place()
-                    && let MaybeLabelledPlace::Current(referent) = deref.deref_place()
-                {
-                    self.fold_place_nodes(place, &[referent])?;
-                }
                 if let Some(footprint) = footprint
                     && let Some(frame) = frame
                 {
                     self.fold_footprint(footprint, edge, frame)?;
                 }
             }
-            // An expanded lifetime projection is folded when its place is put
-            // back together (see `fold_place_nodes`), not when the edge is
-            // removed: the PCG also removes the edges of earlier versions.
+            // Adding an expansion of a lifetime projection unfolds it into its
+            // parts. Removing one folds it again only if its base is the latest
+            // version, which the removal makes a leaf; the removal of an earlier
+            // version's expansion only forgets it. The base's place may have
+            // ended, e.g. `*x` when `x` is put back together.
             BorrowPcgEdgeKind::BorrowPcgExpansion(expansion)
                 if let PcgNode::LifetimeProjection(base) = expansion.base()
-                    && edge_action.is_add() =>
+                    && (edge_action.is_add() || base.label().is_none()) =>
             {
                 let children = expansion
                     .expansion()
@@ -2240,7 +2311,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                         PcgNode::Place(_) => None,
                     })
                     .collect::<Vec<_>>();
-                self.fold_or_unfold_node(base, &children, FoldOrUnfold::Unfold)?;
+                self.fold_or_unfold_node(base, &children, FoldOrUnfold::for_action(edge_action))?;
             }
             BorrowPcgEdgeKind::BorrowPcgExpansion(expansion)
                 if let PcgNode::Place(base) = expansion.base() =>
@@ -2251,19 +2322,6 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                     Some(expansion),
                     label,
                 )?;
-                if edge_action.is_remove()
-                    && let MaybeLabelledPlace::Current(place) = base
-                {
-                    let parts = expansion
-                        .expansion()
-                        .into_iter()
-                        .filter_map(|child| match child {
-                            PcgNode::Place(MaybeLabelledPlace::Current(part)) => Some(part),
-                            _ => None,
-                        })
-                        .collect::<Vec<_>>();
-                    self.fold_place_nodes(place, &parts)?;
-                }
                 if let Some(footprint) = footprint
                     && let Some(frame) = frame
                 {
@@ -2498,6 +2556,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         actions: &PcgActions<'vir>,
         edge_to_loop: bool,
     ) -> EncodeResult<'vir, (), E> {
+        self.phase_renames.clear();
         for action in actions.iter() {
             match action {
                 PcgAction::Borrow(action) => self.borrow_action(pcg, action, edge_to_loop)?,
@@ -2527,6 +2586,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         let point = ReadPoint {
             at: SnapshotLocation::Before(AnalysisLocation::new(location, phase)),
             label: vir::OldLabel::Label(label),
+            after_effect: matches!(phase, EvalStmtPhase::PostOperands | EvalStmtPhase::PostMain),
         };
         self.phase_start = Some((Self::phase_start_state(cfpcs, phase).clone(), point));
         // The predicates an assignment creates without an edge are folded
@@ -2578,6 +2638,18 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             _ => &[],
         };
         self.move_created_at(renamed);
+        self.record_renames(renamed);
+        self.fold_from_parts(renamed)?;
+        for replacement in renamed {
+            if let (PcgNode::LifetimeProjection(from), PcgNode::LifetimeProjection(to)) =
+                (replacement.from(), replacement.to())
+                && let (Some(from), Some(to)) = (local_node(from), local_node(to))
+                && from.label() == Some(LifetimeProjectionLabel::Future)
+                && to.label().is_none()
+            {
+                self.take_from_borrowers(from, to)?;
+            }
+        }
         match action.kind() {
             //Restore(RestoreCapability<'tcx>),
             //MakePlaceOld(Place<'tcx>),
@@ -2670,23 +2742,6 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                     self.stmts(data.unfold(place_ty.variant_index, place_enc, index, None, None));
                 } else if matches!(repack_op, pcg::free_pcs::RepackOp::Collapse(..)) {
                     self.stmts(data.fold(place_ty.variant_index, place_enc, index, None, None));
-                    // An enum is put back together from the variant it was
-                    // expanded into, any other place from its fields.
-                    let parts = match guide {
-                        Some(RepackGuide::Downcast(name, variant, _)) => {
-                            Some(vec![self.downcast_place(place, name, variant)])
-                        }
-                        _ if index.is_none()
-                            && !place_ty.ty.is_box()
-                            && !(place_ty.ty.is_enum() && place_ty.variant_index.is_none()) =>
-                        {
-                            place.expand_field(None, self.pcg_ctxt()).ok()
-                        }
-                        _ => None,
-                    };
-                    if let Some(parts) = parts {
-                        self.fold_place_nodes(place, &parts)?;
-                    }
                 } else {
                     unreachable!()
                 }
@@ -2772,6 +2827,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         let point = ReadPoint {
             at: SnapshotLocation::After(self.current_block.unwrap()),
             label: vir::OldLabel::Label(label),
+            after_effect: false,
         };
         self.phase_start = Some((post_main.clone(), point));
         let edge_to_loop = self.loop_head_of(succ.block()).is_some();
@@ -3991,6 +4047,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                     ReadPoint {
                         at: SnapshotLocation::After(block),
                         label: vir::OldLabel::Label(label),
+                        after_effect: false,
                     },
                 ));
                 let wand_packages = self.package_wands(state.borrow_pcg());
