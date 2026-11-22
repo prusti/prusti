@@ -319,7 +319,7 @@ impl TaskEncoder for MirPureEnc {
                     .map(|expr| (expr, vir::TYPE_BOOL.upcast_ty())),
                 _ => enc
                     .encode_body()
-                    .map(|expr| (expr, enc.get_ty_for_local(mir::RETURN_PLACE))),
+                    .and_then(|expr| Ok((expr, enc.get_ty_for_local(mir::RETURN_PLACE)?))),
             })?;
             let captures = enc.captures.take().unwrap_or_default();
             let inputs = enc
@@ -454,7 +454,7 @@ impl<'vir: 'enc, 'enc> PureRvalueEnc<'vir> for Enc<'vir, 'enc> {
         self.body
     }
     fn ty_use_pure(&mut self, ty: ty::Ty<'vir>) -> TyUsePure<'vir> {
-        self.ty_use(ty)
+        self.ty_use(ty).unwrap()
     }
 
     fn encode_place_snap(
@@ -521,28 +521,28 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
         }
     }
 
-    fn ty_use(&mut self, ty: ty::Ty<'vir>) -> TyUsePure<'vir> {
+    fn ty_use(&mut self, ty: ty::Ty<'vir>) -> EncodeResult<'vir, TyUsePure<'vir>, MirPureEnc> {
         let ty_task = RustTyDecomposition::from_ty(ty, self.context);
-        self.deps.require_dep::<TyUsePureEnc>(ty_task).unwrap()
+        self.deps.require_dep::<TyUsePureEnc>(ty_task)
     }
 
-    fn get_ty_for_local(&mut self, local: mir::Local) -> vir::TypeSnap<'vir> {
+    fn get_ty_for_local(
+        &mut self,
+        local: mir::Local,
+    ) -> EncodeResult<'vir, vir::TypeSnap<'vir>, MirPureEnc> {
         let ty = self.body.local_decls[local].ty;
         let ty_task = RustTyDecomposition::from_ty(ty, self.context);
-        self.deps
-            .require_ref::<TyUsePureEnc>(ty_task)
-            .unwrap()
-            .snapshot
+        Ok(self.deps.require_ref::<TyUsePureEnc>(ty_task)?.snapshot)
     }
 
     /// The value that the body's inputs supply for `local` (see
     /// `ExprInput::inputs`).
-    fn input(&mut self, local: mir::Local) -> ExprRet<'vir> {
-        self.vcx.mk_lazy_expr(
+    fn input(&mut self, local: mir::Local) -> EncodeResult<'vir, ExprRet<'vir>, MirPureEnc> {
+        Ok(self.vcx.mk_lazy_expr(
             vir::vir_format!(self.vcx, "input {local:?}"),
-            self.get_ty_for_local(local),
+            self.get_ty_for_local(local)?,
             Box::new(move |_vcx, lctx: ExprInput<'vir>| lctx.inputs[&local].kind),
-        )
+        ))
     }
 }
 

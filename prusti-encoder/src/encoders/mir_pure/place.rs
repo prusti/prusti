@@ -10,7 +10,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
         elem: mir::PlaceElem<'vir>,
         encoded_place: EncodedPlace<'vir>,
     ) -> EncodeResult<'vir, EncodedPlace<'vir>, MirPureEnc> {
-        let e_ty = self.ty_use(place_ty.ty);
+        let e_ty = self.ty_use(place_ty.ty)?;
         Ok(match elem {
             mir::ProjectionElem::Deref => {
                 assert!(place_ty.variant_index.is_none());
@@ -62,15 +62,13 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                                 .decompose_compare_normalize(ty_task.ty.params, ty_task.args);
                             let caster = self
                                 .deps
-                                .require_dep::<crate::GArgsCastEnc<crate::Pure>>(normalized)
-                                .unwrap();
+                                .require_dep::<crate::GArgsCastEnc<crate::Pure>>(normalized)?;
                             let inner_ty_task = inner
                                 .referent
                                 .decompose_context(ty_task.ty.params, ty_task.args);
                             let inner_ty = self
                                 .deps
-                                .require_dep::<crate::encoders::TyUseImpureEnc>(inner_ty_task)
-                                .unwrap();
+                                .require_dep::<crate::encoders::TyUseImpureEnc>(inner_ty_task)?;
                             caster.cast_to_caller_ctx(inner_ty.ref_to_snap(ref_expr))
                         };
                         EncodedPlace::new(val_expr, Some(ref_expr)).with_metadata(metadata)
@@ -192,7 +190,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
             // in a mode starts at the expression the body's inputs supply for
             // the local rather than at the variable the body binds to it.
             self.uses.read(local, 0);
-            self.input(local)
+            self.input(local)?
         };
         let local_ty = mir::PlaceTy::from_ty(self.body.local_decls[local].ty);
         self.encode_projection(
@@ -286,7 +284,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
             bases.push((base_ty, base.snap));
         }
         for ((base_ty, base_snap), &elem) in bases.into_iter().zip(&place.projection[..]).rev() {
-            let e_ty = self.ty_use(base_ty.ty);
+            let e_ty = self.ty_use(base_ty.ty)?;
             value = match elem {
                 mir::ProjectionElem::Downcast(..) => value,
                 mir::ProjectionElem::Field(..) if e_ty.specifics.is_opaque() => {

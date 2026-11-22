@@ -175,10 +175,15 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
 
     /// Extends `fragment` with version 0 of the input `local`, bound to the
     /// value supplied at instantiation.
-    pub(super) fn bind_input(&mut self, fragment: &mut Fragment<'vir>, local: mir::Local) {
-        let expr = self.input(local);
+    pub(super) fn bind_input(
+        &mut self,
+        fragment: &mut Fragment<'vir>,
+        local: mir::Local,
+    ) -> EncodeResult<'vir, (), MirPureEnc> {
+        let expr = self.input(local)?;
         let version = self.new_version(local, mir::Location::START);
         self.bind(fragment, local, version, expr);
+        Ok(())
     }
 
     fn bind(
@@ -230,34 +235,31 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
         tuple_ref: &PairUse<'vir>,
         mod_locals: &[mir::Local],
         branch: Option<Fragment<'vir>>,
-    ) -> ExprRetAny<'vir, vir::Pair> {
-        branch
-            .map(|branch| {
-                let tuple_args = mod_locals
-                    .iter()
-                    .map(|local| {
-                        let version = branch.versions[local];
-                        self.uses.read(*local, version.index);
-                        self.mk_local_ex(version)
-                    })
-                    .collect::<Vec<_>>();
-                self.close_fragment(branch, tuple_ref.mk_cons(&tuple_args))
+    ) -> EncodeResult<'vir, ExprRetAny<'vir, vir::Pair>, MirPureEnc> {
+        let Some(branch) = branch else {
+            // A branch that cannot complete (it ends in `unreachable` or a
+            // diverging call, or is the failing side of an `Assert`) merges
+            // the unreachable snapshots of the locals' types, whose
+            // precondition `false` requires the branch to be unreachable;
+            // with no locals to merge, nothing is checked.
+            let unreachable = mod_locals
+                .iter()
+                .map(|local| {
+                    let ty = self.ty_use(self.body.local_decls[*local].ty)?;
+                    Ok(ty.unreachable_to_snap())
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            return Ok(tuple_ref.mk_cons(&unreachable));
+        };
+        let tuple_args = mod_locals
+            .iter()
+            .map(|local| {
+                let version = branch.versions[local];
+                self.uses.read(*local, version.index);
+                self.mk_local_ex(version)
             })
-            .unwrap_or_else(|| {
-                // A branch that cannot complete (it ends in `unreachable` or
-                // a diverging call, or is the failing side of an `Assert`)
-                // merges the unreachable snapshots of the locals' types,
-                // whose precondition `false` requires the branch to be
-                // unreachable; with no locals to merge, nothing is checked.
-                let unreachable = mod_locals
-                    .iter()
-                    .map(|local| {
-                        self.ty_use(self.body.local_decls[*local].ty)
-                            .unreachable_to_snap()
-                    })
-                    .collect::<Vec<_>>();
-                tuple_ref.mk_cons(&unreachable)
-            })
+            .collect::<Vec<_>>();
+        Ok(self.close_fragment(branch, tuple_ref.mk_cons(&tuple_args)))
     }
 
     /// Merges the branches of a conditional at `location` into `fragment`,
@@ -274,7 +276,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
         location: mir::Location,
         branches: Vec<(ExprRetAny<'vir, vir::Bool>, Option<Fragment<'vir>>)>,
         otherwise: Option<Fragment<'vir>>,
-    ) -> Option<Fragment<'vir>> {
+    ) -> EncodeResult<'vir, Option<Fragment<'vir>>, MirPureEnc> {
         let completing = || {
             branches
                 .iter()
@@ -282,13 +284,15 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                 .chain([&otherwise])
                 .flatten()
         };
-        completing().next()?;
+        if completing().next().is_none() {
+            return Ok(None);
+        }
 
         // The merged locals are those that some branch changes and that were
-        // defined before the conditional.
-        // A local that some completing branch leaves without a value (declared
-        // by `StorageLive` but not assigned) is not merged: MIR reads no local
-        // after a join that some path to it leaves uninitialised.
+        // defined before the conditional, except one that some completing
+        // branch leaves without a value (declared by `StorageLive` but not
+        // assigned): MIR reads no local after a join that some path to it
+        // leaves uninitialised.
         let mod_locals = completing()
             .flat_map(|branch| &branch.versions)
             .filter(|(local, version)| {
@@ -304,17 +308,15 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
             .collect::<Vec<_>>();
         let mod_tys = mod_locals
             .iter()
-            .map(|l| self.get_ty_for_local(*l).as_dyn())
-            .collect();
-        let tuple_ref = self.deps.require_dep::<PairUseEnc>(mod_tys).unwrap();
+            .map(|l| Ok(self.get_ty_for_local(*l)?.as_dyn()))
+            .collect::<Result<_, _>>()?;
+        let tuple_ref = self.deps.require_dep::<PairUseEnc>(mod_tys)?;
 
-        let otherwise = self.branch_pair(&tuple_ref, &mod_locals, otherwise);
-        let phi_expr = branches
-            .into_iter()
-            .fold(otherwise, |expr, (cond, branch)| {
-                let branch = self.branch_pair(&tuple_ref, &mod_locals, branch);
-                self.vcx.mk_ternary_expr(cond, branch, expr)
-            });
+        let mut phi_expr = self.branch_pair(&tuple_ref, &mod_locals, otherwise)?;
+        for (cond, branch) in branches {
+            let branch = self.branch_pair(&tuple_ref, &mod_locals, branch)?;
+            phi_expr = self.vcx.mk_ternary_expr(cond, branch, phi_expr);
+        }
 
         let phi_name = vir::vir_format!(
             self.vcx,
@@ -333,6 +335,6 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                 .downcast_ty();
             self.assign(&mut fragment, *local, expr, location);
         }
-        Some(fragment)
+        Ok(Some(fragment))
     }
 }

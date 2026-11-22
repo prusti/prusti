@@ -20,14 +20,14 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
         let return_version = self.new_version(mir::RETURN_PLACE, mir::Location::START);
         init.versions.insert(mir::RETURN_PLACE, return_version);
         for local in inputs {
-            self.bind_input(&mut init, local);
+            self.bind_input(&mut init, local)?;
         }
 
         // The body may unconditionally terminate with `unreachable` (e.g. a
         // `match` on an uninhabited type): its result is the unreachable snapshot.
         let Some(res) = self.encode_cfg(init, start, end)? else {
             let result_ty = self.body.local_decls[result_local].ty;
-            return Ok(self.ty_use(result_ty).unreachable_to_snap());
+            return Ok(self.ty_use(result_ty)?.unreachable_to_snap());
         };
         let ret_version = res.versions[&result_local];
         self.uses.read(result_local, ret_version.index);
@@ -130,7 +130,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                     })?
                     .downcast_ty();
                 let discr_ty = discr.ty(self.body, self.vcx.tcx());
-                let discr_ty_out = self.ty_use(discr_ty).expect_primitive();
+                let discr_ty_out = self.ty_use(discr_ty)?.expect_primitive();
 
                 // Each target is walked up to the join point of the switch,
                 // the immediate reverse dominator of `curr`, where its
@@ -150,7 +150,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                     .collect::<Result<Vec<_>, _>>()?;
                 let otherwise = Fragment::starting_at(&fragment.versions);
                 let otherwise = self.encode_cfg(otherwise, targets.otherwise(), new_join_point)?;
-                let Some(fragment) = self.merge(fragment, location, branches, otherwise) else {
+                let Some(fragment) = self.merge(fragment, location, branches, otherwise)? else {
                     return Ok(None);
                 };
 
@@ -186,7 +186,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                         .mk_const_expr(vir::ConstData::Bool(*expected))
                         .downcast_ty(),
                 );
-                Ok(self.merge(fragment, location, vec![(ok_cond, ok_branch)], None))
+                self.merge(fragment, location, vec![(ok_cond, ok_branch)], None)
             }
 
             mir::TerminatorKind::Return => Ok(Some(fragment)),

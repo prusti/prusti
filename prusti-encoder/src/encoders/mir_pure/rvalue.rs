@@ -27,7 +27,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                 }
                 let (value, place_ref, metadata) =
                     self.encode_borrowed_place(curr_ver, (*place).into(), rvalue_ty)?;
-                let e_rvalue_ty = self.ty_use(rvalue_ty).expect_immref();
+                let e_rvalue_ty = self.ty_use(rvalue_ty)?.expect_immref();
                 Ok(e_rvalue_ty
                     .prim_to_snap(place_ref, metadata, value)
                     .upcast_ty())
@@ -52,7 +52,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
             }
             mir::Rvalue::Discriminant(place) => {
                 let place_ty = place.ty(self.body, self.vcx.tcx());
-                let ty = self.ty_use(place_ty.ty);
+                let ty = self.ty_use(place_ty.ty)?;
                 if ty.specifics.is_opaque() {
                     return Err(unsupported_opaque(place_ty.ty, span));
                 }
@@ -65,7 +65,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                             .downcast_ty(),
                     ),
                     None => {
-                        let e_rvalue_ty = self.ty_use(rvalue_ty).expect_primitive();
+                        let e_rvalue_ty = self.ty_use(rvalue_ty)?.expect_primitive();
                         // mir::Rvalue::Discriminant documents "Returns zero for types without discriminant"
                         let zero = self.vcx.mk_uint::<0>();
                         e_rvalue_ty.prim_to_snap(zero.upcast_ty()).lazy()
@@ -85,7 +85,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
             mir::Rvalue::RawPtr(_, place) => {
                 let (_, place_ref, metadata) =
                     self.encode_borrowed_place(curr_ver, (*place).into(), rvalue_ty)?;
-                let raw_ty = self.ty_use(rvalue_ty);
+                let raw_ty = self.ty_use(rvalue_ty)?;
                 Ok(raw_ty
                     .expect_raw()
                     .prim_to_snap(place_ref, metadata)

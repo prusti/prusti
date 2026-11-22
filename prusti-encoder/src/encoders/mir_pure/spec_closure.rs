@@ -35,7 +35,8 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
         };
         let snap = self.vcx.mk_lazy_expr(
             vir::vir_format!(self.vcx, "capture {field:?}"),
-            self.ty_use(shared_referent_ty.unwrap_or(field_ty)).snapshot,
+            self.ty_use(shared_referent_ty.unwrap_or(field_ty))?
+                .snapshot,
             Box::new(move |_vcx, lctx: ExprInput<'vir>| lctx.captures[field][&modes].snap.kind),
         );
         let Some(referent_ty) = shared_referent_ty else {
@@ -56,7 +57,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
             .normalize(field_ty.pointee_metadata_ty_or_projection(self.vcx.tcx()));
         let metadata = self.vcx.mk_lazy_expr(
             vir::vir_format!(self.vcx, "metadata of capture {field:?}"),
-            self.ty_use(metadata_ty).snapshot,
+            self.ty_use(metadata_ty)?.snapshot,
             Box::new(move |_vcx, lctx: ExprInput<'vir>| {
                 lctx.captures[field][&modes].metadata.unwrap().kind
             }),
@@ -111,13 +112,13 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                 .iter()
                 .enumerate()
                 .map(|(idx, qvar_ty)| {
-                    let ty_out = self.ty_use(qvar_ty);
-                    self.vcx.mk_local_decl(
+                    let ty_out = self.ty_use(qvar_ty)?;
+                    Ok(self.vcx.mk_local_decl(
                         vir::vir_format!(self.vcx, "qvar_{}_{idx}", self.encoding_depth),
                         ty_out.snapshot,
-                    )
+                    ))
                 })
-                .collect::<Vec<_>>(),
+                .collect::<Result<Vec<_>, _>>()?,
         );
 
         let mut reify_args = FxHashMap::default();
@@ -369,7 +370,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                     ));
                 }
                 self.modes.insert(modes);
-                self.unit_snap()
+                self.unit_snap()?
             }
             SpecBuiltin::ModeEnd(mode) => {
                 let modes = Modes::of(mode);
@@ -378,16 +379,17 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                     "a mode ends that was not entered"
                 );
                 self.modes.remove(modes);
-                self.unit_snap()
+                self.unit_snap()?
             }
         }
         .upcast_ty())
     }
 
-    fn unit_snap(&mut self) -> vir::ExprGenCSnap<'vir, ExprInput<'vir>, vir::ExprKind<'vir>> {
-        self.ty_use(self.vcx.tcx().types.unit)
+    fn unit_snap(&mut self) -> EncodeResult<'vir, ExprRetAny<'vir, vir::CSnap>, MirPureEnc> {
+        Ok(self
+            .ty_use(self.vcx.tcx().types.unit)?
             .zst_to_snap()
-            .unwrap()
+            .unwrap())
     }
 }
 
