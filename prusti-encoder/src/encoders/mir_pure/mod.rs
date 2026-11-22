@@ -273,14 +273,15 @@ impl TaskEncoder for MirPureEnc {
                 }
             })?;
             let captures = enc.captures.take().unwrap_or_default();
-            let inputs = std::mem::take(&mut enc.uses)
+            let inputs = enc
+                .uses
                 .read
-                .into_iter()
+                .iter()
                 .filter(|(l, v)| *l != mir::RETURN_PLACE && *v == 0)
-                .map(|(l, _v)| l)
+                .map(|&(l, _v)| l)
                 .sorted()
                 .collect::<Vec<_>>();
-            let inputs_expected = inputs.len();
+            let inputs_expected = vcx.alloc_slice(&inputs);
 
             // We wrap the expression with an additional lazy that will perform
             // some sanity checks. These requirements cannot be expressed using
@@ -305,10 +306,8 @@ impl TaskEncoder for MirPureEnc {
                         //   correct `DefId`?
                         assert_eq!(lctx.def_id, def_id);
 
-                        // check: are we providing the expected number of inputs?
-                        // TODO: check that the expected inputs are present; this
-                        //   check is not precise
-                        assert!(lctx.inputs.len() >= inputs_expected);
+                        // check: are we providing every input the body reads?
+                        assert!(inputs_expected.iter().all(|l| lctx.inputs.contains_key(l)));
 
                         use vir::Reify;
                         expr_inner.kind.reify(vcx, lctx)

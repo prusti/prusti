@@ -38,7 +38,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
         if graph::is_cyclic(&self.body.basic_blocks) {
             return Err(EncodeFullError::unsupported(
                 "a loop in pure code".to_string(),
-                vec![self.body.span],
+                vec![self.current_span()],
             ));
         }
         self.encode_region(

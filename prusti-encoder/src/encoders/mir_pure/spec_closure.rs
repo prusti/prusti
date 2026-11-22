@@ -248,15 +248,15 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
 
     /// A capture of a spec closure, passed to the closure as `capture` and
     /// read in `modes`, encoded in those modes and the modes this body is in
-    /// at the builtin. MIR building passes a capture by reference as a
-    /// temporary that it assigns the reference, such as `&*arr`; the capture is
-    /// encoded as the borrowed place `*arr`, so that the modes reach the read
-    /// of `arr`, together with the address and metadata of the reference. A
-    /// capture by value is the captured place itself. A shared reference
-    /// captured by value, which only a `move` closure makes (the specification
-    /// syntax never does), is not supported: the closure body reads it like a
-    /// capture by reference, which the place it refers to would have to be
-    /// supplied for.
+    /// at the builtin. A capture of a shared reference is supplied as the
+    /// place it refers to, with the address and metadata of the reference,
+    /// which is what its reader expects (see `Enc::encode_capture_read`). MIR
+    /// building passes a capture by reference as a temporary that it assigns
+    /// the reference, such as `&*arr`; the capture is encoded as the borrowed
+    /// place `*arr`, so that the modes reach the read of `arr`. A shared
+    /// reference captured by value, which only a `move` closure makes (the
+    /// specification syntax never does), is not supported. Any other capture
+    /// is encoded as its value.
     fn encode_capture(
         &mut self,
         capture: &mir::Operand<'vir>,
@@ -271,27 +271,35 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
             self.assignments()
                 .find_map(|(dest, value)| (dest.as_local() == Some(temp)).then_some(value))
         });
+        let is_shared_ref = matches!(
+            capture.ty(self.body, self.vcx.tcx()).kind(),
+            TyKind::Ref(.., ty::Mutability::Not)
+        );
 
         let outer_modes = self.modes;
+        // A mode joined with itself (e.g. `old` inside `old`) reads the same
+        // state; only a `rel` of one execution inside the other's has no
+        // meaning. (Within one body, nesting a mode in itself is rejected only
+        // because the set of modes cannot count the nesting.)
+        if (outer_modes | modes).contains(Modes::REL0 | Modes::REL1) {
+            return Err(EncodeFullError::unsupported(
+                "`rel` nested in `rel`".to_string(),
+                vec![self.current_span()],
+            ));
+        }
         self.modes = outer_modes | modes;
         let res = match value {
-            Some(value @ mir::Rvalue::Ref(_, _, place)) => {
+            Some(value @ mir::Rvalue::Ref(_, _, place)) if is_shared_ref => {
                 let ref_ty = value.ty(self.body, self.vcx.tcx());
                 self.encode_borrowed_place(curr_ver, (*place).into(), ref_ty)
                     .map(|(snap, place_ref, metadata)| {
                         EncodedPlace::new(snap, Some(place_ref)).with_metadata(metadata)
                     })
             }
+            _ if is_shared_ref => Err(by_value_ref_capture(self.current_span())),
             Some(value) => self
                 .encode_rvalue(curr_ver, value, self.current_span())
                 .map(|snap| EncodedPlace::new(snap, None)),
-            None if matches!(
-                capture.ty(self.body, self.vcx.tcx()).kind(),
-                TyKind::Ref(.., ty::Mutability::Not)
-            ) =>
-            {
-                Err(by_value_ref_capture(self.current_span()))
-            }
             None => self
                 .encode_operand_snap(capture, curr_ver)
                 .map(|snap| EncodedPlace::new(snap, None)),

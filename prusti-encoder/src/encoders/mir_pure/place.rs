@@ -182,8 +182,6 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
         }
 
         let local = place.local;
-        let version = curr_ver[&local];
-        self.uses.read(local, version.index);
         // The modes change only a read of an argument or the result (see
         // `Modes`).
         let modes = match self.body.local_kind(local) {
@@ -191,12 +189,15 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
             mir::LocalKind::Temp => Modes::empty(),
         };
         let snap = if modes.is_empty() {
+            let version = curr_ver[&local];
+            self.uses.read(local, version.index);
             self.mk_local_ex(version)
         } else {
             // A wrapper such as `old` only reinterprets the reads written
             // inside it, and a variable keeps its value under it, so a read
             // in a mode starts at the expression the body's inputs supply for
             // the local rather than at the variable the body binds to it.
+            self.uses.read(local, 0);
             self.input(local)
         };
         let local_ty = mir::PlaceTy::from_ty(self.body.local_decls[local].ty);
