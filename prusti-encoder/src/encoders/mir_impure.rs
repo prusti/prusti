@@ -1199,15 +1199,15 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
     /// node is current, so those of a current node are read at the start of
     /// the phase. Those of an earlier version of a node, which the PCG labels,
     /// are read where the encoder created its predicates, or, if it created
-    /// them before the label, at the label.
+    /// them before the label, at the label; a fold of such a node, e.g. when
+    /// a package puts it back together, gives it these keys again.
     #[allow(clippy::type_complexity)]
     fn keys_state(
         &mut self,
         node: NodeLp<'vir>,
-        unfold: bool,
     ) -> EncodeResult<'vir, ((Pcg<'enc, 'vir>, Option<ReadPoint<'vir>>), ReadPoint<'vir>), E> {
         let point = match node.label() {
-            Some(LifetimeProjectionLabel::Location(at)) if unfold => {
+            Some(LifetimeProjectionLabel::Location(at)) => {
                 match self.indirect_predicate_state.current.created_at.get(&node) {
                     Some(created) => Some(created.point),
                     None => Some(ReadPoint {
@@ -1330,6 +1330,17 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         }
         let current = match place {
             MaybeLabelledPlace::Current(current) => current,
+            // Where no node is named by the labelled place yet, the PCG
+            // labels it later and the place is current in `pcg`.
+            MaybeLabelledPlace::Labelled(labelled)
+                if at.is_some()
+                    && !graph.frozen_graph().nodes(ctxt).iter().any(|node| {
+                        matches!(node, PcgNode::LifetimeProjection(node)
+                            if local_node(*node).is_some_and(|node| node.base() == place))
+                    }) =>
+            {
+                return self.place_read_in(labelled.place().into(), pcg, at);
+            }
             // A labelled place has its shallow snapshot from its label, read
             // where the state there has it.
             MaybeLabelledPlace::Labelled(labelled) => {
@@ -1707,7 +1718,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         let mut children_keys = Vec::new();
         for child in children.iter().filter(|child| child.part != Part::Rest) {
             let keys = if to_generic {
-                let (child_state, _) = self.keys_state(child.node, true)?;
+                let (child_state, _) = self.keys_state(child.node)?;
                 self.node_keys(child.node, &child_state)?
             } else {
                 self.node_keys(child.node, state)?
@@ -1926,14 +1937,14 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             return Ok(());
         }
         let (ty, nodes, positions) = self.node_positions(base)?;
-        let (state, point) = self.keys_state(base, unfold)?;
+        let (state, point) = self.keys_state(base)?;
         let keys = self.place_keys(place, &nodes, &positions, &state)?;
         let elements = self.array_elements(ty, children)?;
         let element_predicates = self.element_predicates(ty, &nodes, &keys, &elements);
         // The rest's predicates hold the parts the other children do not.
         let mut rest_predicates = Vec::new();
         for &child in children.iter().filter(|child| child.part == Part::Rest) {
-            let (rest_state, _) = self.keys_state(child.node, true)?;
+            let (rest_state, _) = self.keys_state(child.node)?;
             let rest_keys = self.place_keys(child.node.base(), &nodes, &positions, &rest_state)?;
             rest_predicates.extend(
                 rest_keys
@@ -2337,10 +2348,14 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         let mut to_skip = Vec::new();
         let actions = footprint.actions;
         for action in actions {
+            let edge_action = match action {
+                BorrowPcgUnblockAction::RemoveEdge(_) => EdgeAction::Remove,
+                BorrowPcgUnblockAction::AddEdge(..) => EdgeAction::Add,
+            };
             self.pcs_handle_edge(
                 borrows_state,
                 action.edge(),
-                EdgeAction::Remove,
+                edge_action,
                 false,
                 &mut to_skip,
                 Some(footprint),
@@ -2438,7 +2453,9 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         let ctxt = self.pcg_ctxt();
         let mut unblocked_under = Vec::new();
         for action in footprint.actions {
-            let unblocking = action.edge();
+            let BorrowPcgUnblockAction::RemoveEdge(unblocking) = action else {
+                continue;
+            };
             if !unblocking.blocks_node(node, ctxt) {
                 continue;
             }
