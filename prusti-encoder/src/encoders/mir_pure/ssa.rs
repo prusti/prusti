@@ -2,6 +2,151 @@
 
 use super::*;
 
+#[derive(Debug, Clone, Copy)]
+pub(super) struct Version<'vir> {
+    pub(super) index: usize,
+    pub(super) location: mir::Location,
+    pub(super) initialised: Option<vir::LocalDeclSnap<'vir>>,
+}
+
+impl<'vir> Default for Version<'vir> {
+    fn default() -> Self {
+        Self {
+            index: 0,
+            location: mir::Location::START,
+            initialised: None,
+        }
+    }
+}
+
+impl<'vir> fmt::Display for Version<'vir> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if cfg!(debug_assertions) {
+            write!(
+                f,
+                "{:?}_s{}_i{}",
+                self.location.block, self.location.statement_index, self.index
+            )
+        } else {
+            write!(f, "{}", self.index)
+        }
+    }
+}
+
+/// The current version of each local.
+pub(super) type Versions<'vir> = FxHashMap<mir::Local, Version<'vir>>;
+
+/// A part of the `let` chain that encodes a body: the bindings that a region
+/// of the body adds, in order, and the version of each local at the end of
+/// the region. The walk over a region extends the fragment it starts with
+/// (see `Enc::encode_cfg`); a region that cannot complete has none.
+#[derive(Debug, Default)]
+pub(super) struct Fragment<'vir> {
+    pub(super) binds: Vec<Bind<'vir>>,
+    pub(super) versions: Versions<'vir>,
+}
+
+/// A binding of the `let` chain: of a version of a local, or of the pair that
+/// merges the branches of a conditional (see `Enc::merge`).
+#[derive(Debug)]
+pub(super) enum Bind<'vir> {
+    Local(mir::Local, Version<'vir>, ExprRet<'vir>),
+    Phi(vir::LocalDeclPair<'vir>, ExprRetAny<'vir, vir::Pair>),
+}
+
+impl<'vir> Fragment<'vir> {
+    /// The empty fragment of a branch that starts at `versions`.
+    pub(super) fn starting_at(versions: &Versions<'vir>) -> Self {
+        Self {
+            binds: Vec::new(),
+            versions: versions.clone(),
+        }
+    }
+
+    fn mk_local(
+        vcx: &'vir vir::VirCtxt<'vir>,
+        encoding_depth: usize,
+        local: mir::Local,
+        version: Version<'vir>,
+    ) -> &'vir str {
+        vir::vir_format!(vcx, "_{}_{}s_{}", encoding_depth, local.as_usize(), version)
+    }
+
+    fn assign(
+        &mut self,
+        vcx: &'vir vir::VirCtxt<'vir>,
+        encoding_depth: usize,
+        local: mir::Local,
+        mut version: Version<'vir>,
+        expr: ExprRet<'vir>,
+    ) {
+        let decl = vcx.mk_local_decl(
+            Self::mk_local(vcx, encoding_depth, local, version),
+            expr.ty(),
+        );
+        version.initialised = Some(decl);
+        self.binds.push(Bind::Local(local, version, expr));
+        self.versions.insert(local, version);
+    }
+}
+
+/// The versions of locals that the encoded expression reads, directly or
+/// through the value of a version it reads. Only the bindings of these
+/// versions are emitted, so that a binding nothing reads emits nothing its
+/// value reads either.
+#[derive(Default)]
+pub(super) struct Uses {
+    /// The versions read. Closed under `pending`: once a version is read, so
+    /// are the versions its value reads.
+    pub(super) read: FxHashSet<(mir::Local, usize)>,
+    /// For each assigned version not read yet, the versions its value reads.
+    pending: FxHashMap<(mir::Local, usize), Vec<(mir::Local, usize)>>,
+    /// While an assignment is encoded, the versions its value reads so far.
+    assignment: Option<Vec<(mir::Local, usize)>>,
+}
+
+impl Uses {
+    /// Records a read of version `index` of `local`: by the value of the
+    /// assignment being encoded, if any, or else by the expression itself.
+    pub(super) fn read(&mut self, local: mir::Local, index: usize) {
+        if let Some(reads) = &mut self.assignment {
+            reads.push((local, index));
+        } else if self.read.insert((local, index))
+            && let Some(reads) = self.pending.remove(&(local, index))
+        {
+            for (local, index) in reads {
+                self.read(local, index);
+            }
+        }
+    }
+
+    /// Starts recording the reads of an assignment's value.
+    pub(super) fn start_assignment(&mut self) {
+        debug_assert!(self.assignment.is_none(), "assignments do not nest");
+        self.assignment = Some(Vec::new());
+    }
+
+    /// Stops recording the reads of an assignment's value, returning them.
+    pub(super) fn end_assignment(&mut self) -> Vec<(mir::Local, usize)> {
+        self.assignment.take().unwrap()
+    }
+
+    /// Records that version `index` of `local` is assigned a value that
+    /// reads `reads`; they count as read once that version is.
+    pub(super) fn assigned(
+        &mut self,
+        local: mir::Local,
+        index: usize,
+        reads: Vec<(mir::Local, usize)>,
+    ) {
+        self.pending.insert((local, index), reads);
+    }
+
+    fn is_read(&self, local: mir::Local, index: usize) -> bool {
+        self.read.contains(&(local, index))
+    }
+}
+
 impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
     pub(super) fn mk_local_ex(&mut self, version: Version<'vir>) -> ExprRet<'vir> {
         self.vcx.mk_local_ex(version.initialised.unwrap())

@@ -5,7 +5,7 @@ use super::*;
 impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
     pub(super) fn encode_rvalue(
         &mut self,
-        curr_ver: &FxHashMap<mir::Local, Version<'vir>>,
+        curr_ver: &Versions<'vir>,
         rvalue: &mir::Rvalue<'vir>,
         span: Span,
     ) -> EncodeResult<'vir, ExprRet<'vir>, MirPureEnc> {

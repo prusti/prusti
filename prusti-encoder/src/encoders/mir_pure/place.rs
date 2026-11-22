@@ -5,7 +5,7 @@ use super::*;
 impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
     fn encode_place_element(
         &mut self,
-        curr_ver: &FxHashMap<mir::Local, Version<'vir>>,
+        curr_ver: &Versions<'vir>,
         place_ty: mir::PlaceTy<'vir>,
         elem: mir::PlaceElem<'vir>,
         encoded_place: EncodedPlace<'vir>,
@@ -146,7 +146,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
     /// the snapshot of `place`, its address and the pointer metadata.
     pub(super) fn encode_borrowed_place(
         &mut self,
-        curr_ver: &FxHashMap<mir::Local, Version<'vir>>,
+        curr_ver: &Versions<'vir>,
         place: Place<'vir>,
         ref_ty: ty::Ty<'vir>,
     ) -> EncodeResult<'vir, (ExprRet<'vir>, ExprRetRef<'vir>, ExprRet<'vir>), MirPureEnc> {
@@ -174,7 +174,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
     /// that the dereferences in `place` give it.
     pub(super) fn encode_place_with_ref(
         &mut self,
-        curr_ver: &FxHashMap<mir::Local, Version<'vir>>,
+        curr_ver: &Versions<'vir>,
         place: Place<'vir>,
     ) -> EncodeResult<'vir, EncodedPlace<'vir>, MirPureEnc> {
         if self.captures.is_some() && place.local == ty::CAPTURE_STRUCT_LOCAL {
@@ -215,7 +215,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
     // TODO: factor this out (duplication with impure encoder)?
     pub(super) fn encode_projection(
         &mut self,
-        curr_ver: &FxHashMap<mir::Local, Version<'vir>>,
+        curr_ver: &Versions<'vir>,
         base_ty: mir::PlaceTy<'vir>,
         base: EncodedPlace<'vir>,
         projection: &[mir::PlaceElem<'vir>],
@@ -269,7 +269,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
     /// old snapshot with only the part at `place` replaced.
     pub(super) fn encode_place_update(
         &mut self,
-        curr_ver: &FxHashMap<mir::Local, Version<'vir>>,
+        curr_ver: &Versions<'vir>,
         place: mir::Place<'vir>,
         mut value: ExprRet<'vir>,
         span: Span,

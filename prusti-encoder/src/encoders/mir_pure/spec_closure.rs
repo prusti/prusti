@@ -11,7 +11,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
     /// and is not wrapped in them here.
     pub(super) fn encode_capture_read(
         &mut self,
-        curr_ver: &FxHashMap<mir::Local, Version<'vir>>,
+        curr_ver: &Versions<'vir>,
         place: Place<'vir>,
     ) -> EncodeResult<'vir, EncodedPlace<'vir>, MirPureEnc> {
         let [
@@ -89,7 +89,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
         name: &str,
         closure_ty: ty::Ty<'vir>,
         block: mir::BasicBlock,
-        curr_ver: &FxHashMap<mir::Local, Version<'vir>>,
+        curr_ver: &Versions<'vir>,
     ) -> EncodeResult<'vir, SpecClosure<'vir>, MirPureEnc> {
         let (qvar_tys, cl_kind, cl_def_id, cl_args) = match closure_ty.kind() {
             TyKind::Closure(cl_def_id, cl_args) => (
@@ -261,7 +261,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
         &mut self,
         capture: &mir::Operand<'vir>,
         modes: Modes,
-        curr_ver: &FxHashMap<mir::Local, Version<'vir>>,
+        curr_ver: &Versions<'vir>,
     ) -> EncodeResult<'vir, EncodedPlace<'vir>, MirPureEnc> {
         let temp = capture
             .place()
@@ -310,7 +310,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
         arg_tys: ty::GenericArgsRef<'vir>,
         args: &[Spanned<mir::Operand<'vir>>],
         block: mir::BasicBlock,
-        curr_ver: &FxHashMap<mir::Local, Version<'vir>>,
+        curr_ver: &Versions<'vir>,
     ) -> EncodeResult<'vir, ExprRet<'vir>, MirPureEnc> {
         let mk_bool = |prim: vir::ExprGenBool<'vir, _, _>| prim.upcast_ty::<vir::CSnap>();
         Ok(match builtin {
