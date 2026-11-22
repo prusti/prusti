@@ -973,7 +973,7 @@ mod tests {
     use task_encoder::{EncodeFullError, EncodeFullResult, TaskEncoder, TaskEncoderDependencies};
     use vir::CastType;
 
-    use super::{WandEnc, WandEncTask};
+    use super::{LhsKeys, WandEnc, WandEncTask};
     use crate::encoders::{
         MirLocalDefEnc, MirLocalDefEncTask, TyUseImpureEnc,
         pure::spec::PledgeExpr,
