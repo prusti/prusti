@@ -8,7 +8,7 @@ use crate::encoders::{
     ConstEnc, MirBuiltinBinOpEnc, MirBuiltinBinOpTask, MirBuiltinUnOpEnc, MirBuiltinUnOpTask,
     MirBuiltinUseCastEnc, MirBuiltinUseCastTask, PrustiBuiltin, PrustiBuiltinEnc,
     PrustiBuiltinTask,
-    builtin::seq_repeat_function,
+    builtin::{MirBuiltinUseCastOutput, seq_repeat_function},
     r#const::ConstEncTask,
     ty::{
         RustTyDecomposition,
@@ -61,7 +61,8 @@ type ExprResult<'vir, Enc: PureRvalueEnc<'vir>> =
 
 #[allow(type_alias_bounds)]
 type CastSnap<'vir, Enc: PureRvalueEnc<'vir>> = (
-    Option<vir::StmtGen<'vir, Enc::ExprCurr, Enc::ExprNext>>,
+    MirBuiltinUseCastOutput<'vir>,
+    vir::ExprGenCSnap<'vir, Enc::ExprCurr, Enc::ExprNext>,
     ExprOutput<'vir, Enc>,
 );
 
@@ -185,8 +186,7 @@ pub(crate) trait PureRvalueEnc<'vir> {
             span,
         )?;
         let cast = cast_output.cast(encoded_operand).upcast_ty();
-        let cast_stmt = cast_output.unsize(encoded_operand);
-        Ok((cast_stmt, cast))
+        Ok((cast_output, encoded_operand, cast))
     }
 
     fn encode_binop_snap(

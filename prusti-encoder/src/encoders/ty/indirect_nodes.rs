@@ -99,6 +99,20 @@ impl<'vir> NodePredicates<'vir> {
             .collect()
     }
 
+    /// The predicates of all positions on a place with snapshot `snap`,
+    /// outermost first.
+    pub fn all(&self, snap: vir::ExprSnap<'vir>) -> Vec<vir::ExprBool<'vir>> {
+        let block = self.block(snap);
+        block
+            .positions()
+            .into_iter()
+            .map(|p| {
+                let (lo, hi) = self.graph.interval(p);
+                if_nonempty(block.nonempty(p), block.predicate(block.key(p), lo, hi))
+            })
+            .collect()
+    }
+
     /// Whether the node of `lifetime` has any predicates.
     pub fn has_positions(&self, lifetime: PcgLifetime<'vir>) -> bool {
         self.graph

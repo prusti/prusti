@@ -557,9 +557,10 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             mir::Rvalue::Use(op, _) => Ok(self.encode_operand_snap(op, operand_snaps)?.into()),
             mir::Rvalue::Cast(cast_kind, operand, ty) => {
                 assert_eq!(*ty, rvalue_ty);
-                let (stmt, cast) =
+                let (cast_output, operand, cast) =
                     self.encode_cast_snap(rvalue_ty, *cast_kind, operand, operand_snaps)?;
-                self.stmts(stmt);
+                let unsize = cast_output.unsize(operand, self.deps())?;
+                self.stmts(unsize);
                 Ok(cast.into())
             }
             mir::Rvalue::BinaryOp(op, box (l, r)) => Ok(self
@@ -1406,11 +1407,13 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         });
         // A borrower moved since, e.g. by `r2 = r`, holds the borrow in the
         // place it was moved into, which the assignment edges of its lifetime
-        // projections lead to.
+        // projections lead to. A cast, e.g. an unsizing coercion, changes the
+        // type, and undoing it gives the predicates back to the operand.
         let moved_into = |borrower: MaybeLabelledPlace<'vir>| {
             graph.edges().find_map(|edge| match edge.kind() {
                 BorrowPcgEdgeKind::BorrowFlow(borrow_flow)
-                    if matches!(borrow_flow.kind(), BorrowFlowEdgeKind::Assignment(_))
+                    if matches!(borrow_flow.kind(),
+                        BorrowFlowEdgeKind::Assignment(assignment) if assignment.cast_kind().is_none())
                         && local_node(borrow_flow.long())
                             .is_some_and(|node| node.base() == borrower) =>
                 {
@@ -2199,7 +2202,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 };
                 let src_snap = self.encode_place_with_snap(src_place)?.1.downcast_ty();
                 let src_enc = self.vcx.maybe_apply_label(src_snap, src_label);
-                let undo = cast_output.undo(src_enc);
+                let undo = cast_output.undo(src_enc, self.deps())?;
                 self.stmts(undo);
                 return Ok(());
             }
