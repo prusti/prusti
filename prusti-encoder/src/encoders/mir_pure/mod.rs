@@ -32,6 +32,7 @@ use crate::encoders::{
 };
 use itertools::Itertools;
 use pcg::utils::Place;
+use prusti_interface::environment::body::MirBody;
 use prusti_rustc_interface::{
     abi,
     data_structures::graph::{self, Successors},
@@ -185,6 +186,68 @@ pub enum PureKind {
     SpecBlock(mir::BasicBlock),
 }
 
+/// What the kind of a body decides about its encoding, apart from the body
+/// itself (see `PureKind::body`) and the region of it that is encoded.
+struct BodySetup {
+    /// The item whose generic parameters the body's types are expressed in.
+    context_def_id: DefId,
+    impure_context: bool,
+    captures: Option<IndexVec<abi::FieldIdx, FxHashSet<Modes>>>,
+}
+
+impl PureKind {
+    /// The body of this kind that `def_id` holds, encoded with `gargs`.
+    fn body<'vir>(
+        self,
+        vcx: &'vir vir::VirCtxt<'vir>,
+        def_id: DefId,
+        gargs: GArgs<'vir>,
+    ) -> MirBody<'vir> {
+        // A specification is instantiated with the arguments of the
+        // encoding, which differ from its own when a trait's specification
+        // is encoded for an `impl` of that trait. So is the closure of a
+        // quantifier or `spec_block`, which is encoded in the context of
+        // the expression it is part of. The other bodies are encoded
+        // generically, so they are taken as stored.
+        match self {
+            PureKind::Closure { context } => {
+                let substs = vcx.tcx().mk_args(gargs.args());
+                vcx.body_mut().get_closure_body(def_id, substs, context)
+            }
+            PureKind::Spec { context, .. } => {
+                let substs = vcx.tcx().mk_args(gargs.args());
+                vcx.body_mut().get_spec_body(def_id, substs, context)
+            }
+            PureKind::Pure => crate::encoders::pure_body(def_id),
+            PureKind::Constant(promoted) => {
+                vcx.body_mut().get_promoted_constant_body(def_id, promoted)
+            }
+            PureKind::SpecBlock(_) => crate::encoders::impure_body(def_id)
+                .unwrap_or_else(|| panic!("no body to encode for {def_id:?}")),
+        }
+    }
+
+    fn setup(self, def_id: DefId, body: &mir::Body<'_>) -> BodySetup {
+        BodySetup {
+            context_def_id: match self {
+                PureKind::Closure { context } | PureKind::Spec { context, .. } => context,
+                PureKind::Pure | PureKind::Constant(_) | PureKind::SpecBlock(_) => def_id,
+            },
+            impure_context: matches!(
+                self,
+                PureKind::Spec { impure: true, .. } | PureKind::SpecBlock(..)
+            ),
+            captures: matches!(self, PureKind::Closure { .. }).then(|| {
+                let closure_ty = body.local_decls[ty::CAPTURE_STRUCT_LOCAL].ty.peel_refs();
+                let TyKind::Closure(_, args) = closure_ty.kind() else {
+                    unreachable!("a closure body takes its closure first");
+                };
+                IndexVec::from_elem_n(FxHashSet::default(), args.as_closure().upvar_tys().len())
+            }),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct MirPureEncTask<'vir> {
     /// How deeply the body is nested in the expression it becomes part of.
@@ -234,28 +297,7 @@ impl TaskEncoder for MirPureEnc {
 
         tracing::debug!("encoding {def_id:?}");
         let (inputs, expr, captures) = vir::with_vcx(move |vcx| {
-            // A specification is instantiated with the arguments of the
-            // encoding, which differ from its own when a trait's specification
-            // is encoded for an `impl` of that trait. So is the closure of a
-            // quantifier or `spec_block`, which is encoded in the context of
-            // the expression it is part of. The other bodies are encoded
-            // generically, so they are taken as stored.
-            let body = match kind {
-                PureKind::Closure { context } => {
-                    let substs = vcx.tcx().mk_args(gargs.args());
-                    vcx.body_mut().get_closure_body(def_id, substs, context)
-                }
-                PureKind::Spec { context, .. } => {
-                    let substs = vcx.tcx().mk_args(gargs.args());
-                    vcx.body_mut().get_spec_body(def_id, substs, context)
-                }
-                PureKind::Pure => crate::encoders::pure_body(def_id),
-                PureKind::Constant(promoted) => {
-                    vcx.body_mut().get_promoted_constant_body(def_id, promoted)
-                }
-                PureKind::SpecBlock(_) => crate::encoders::impure_body(def_id)
-                    .unwrap_or_else(|| panic!("no body to encode for {def_id:?}")),
-            };
+            let body = kind.body(vcx, def_id, gargs);
 
             // Encode under the body's span: expression nodes pick up the
             // ambient span at creation, so everything in a pure/spec body
@@ -269,13 +311,15 @@ impl TaskEncoder for MirPureEnc {
             } else {
                 body.span
             };
-            let mut enc = Enc::new(vcx, encoding_depth, def_id, kind, gargs, &body, deps);
-            let expr_inner = vcx.with_span(body_span, |_| {
-                if let PureKind::SpecBlock(block) = kind {
-                    enc.encode_spec_block(block)
-                } else {
-                    enc.encode_body()
-                }
+            let setup = kind.setup(def_id, &body);
+            let mut enc = Enc::new(vcx, encoding_depth, def_id, gargs, &body, setup, deps);
+            let (expr_inner, snapshot) = vcx.with_span(body_span, |_| match kind {
+                PureKind::SpecBlock(block) => enc
+                    .encode_spec_block(block)
+                    .map(|expr| (expr, vir::TYPE_BOOL.upcast_ty())),
+                _ => enc
+                    .encode_body()
+                    .map(|expr| (expr, enc.get_ty_for_local(mir::RETURN_PLACE))),
             })?;
             let captures = enc.captures.take().unwrap_or_default();
             let inputs = enc
@@ -289,14 +333,8 @@ impl TaskEncoder for MirPureEnc {
             let inputs_expected = vcx.alloc_slice(&inputs);
 
             // The expression is wrapped in a lazy one that checks that it is
-            // instantiated for this body, with every input it reads.
-            let snapshot = if let PureKind::SpecBlock(..) = kind {
-                vir::TYPE_BOOL.upcast_ty()
-            } else {
-                let ret = RustTyDecomposition::from_ty(body.return_ty(), enc.context);
-                deps.require_ref::<TyUsePureEnc>(ret)?.snapshot
-            };
-            // Created under the body's span: this wrapper is the node whose
+            // instantiated for this body, with every input it reads. It is
+            // created under the body's span: this wrapper is the node whose
             // span survives reification as the top of the expression (`span`
             // is passed through by `reify`), so it is what error positions
             // pointing at the whole body (e.g. a failing precondition
@@ -454,20 +492,22 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
         vcx: &'vir vir::VirCtxt<'vir>,
         encoding_depth: usize,
         def_id: DefId,
-        kind: PureKind,
         gargs: GArgs<'vir>,
         body: &'enc mir::Body<'vir>,
+        setup: BodySetup,
         deps: &'enc mut TaskEncoderDependencies<'vir, MirPureEnc>,
     ) -> Self {
+        let BodySetup {
+            context_def_id,
+            impure_context,
+            captures,
+        } = setup;
         let rev_doms = rev_doms::ReverseDominators::new(&body.basic_blocks);
         Self {
             vcx,
             encoding_depth,
             context: gargs.context(),
-            context_def_id: match kind {
-                PureKind::Closure { context } | PureKind::Spec { context, .. } => context,
-                PureKind::Pure | PureKind::Constant(_) | PureKind::SpecBlock(_) => def_id,
-            },
+            context_def_id,
             body,
             rev_doms,
             spec_arms: SpecArms::for_body(def_id, body),
@@ -476,17 +516,8 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
             uses: Default::default(),
             phi_ctr: 0,
             modes: Modes::empty(),
-            impure_context: matches!(
-                kind,
-                PureKind::Spec { impure: true, .. } | PureKind::SpecBlock(..)
-            ),
-            captures: matches!(kind, PureKind::Closure { .. }).then(|| {
-                let closure_ty = body.local_decls[ty::CAPTURE_STRUCT_LOCAL].ty.peel_refs();
-                let TyKind::Closure(_, args) = closure_ty.kind() else {
-                    unreachable!("a closure body takes its closure first");
-                };
-                IndexVec::from_elem_n(FxHashSet::default(), args.as_closure().upvar_tys().len())
-            }),
+            impure_context,
+            captures,
         }
     }
 
