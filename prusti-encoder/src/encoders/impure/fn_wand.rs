@@ -68,10 +68,15 @@ impl<'vir, E: TaskEncoder> ImpureEncVisitor<'vir, '_, E> {
         let args = PledgeExpr::pledge_args(result, args);
 
         for wand_data in self.wands.viper_wands() {
-            let Some(wand) = self
-                .wands
-                .mk_wand(&wand_data, args, None, None, self.vcx, self.deps)
-            else {
+            let Some(wand) = self.wands.mk_wand(
+                &wand_data,
+                args,
+                None,
+                LhsKeys::AtLabel(vir::OldLabel::Label(label)),
+                None,
+                self.vcx,
+                self.deps,
+            ) else {
                 continue;
             };
             let rhs = wand_data
@@ -127,6 +132,18 @@ impl<'vir, E: TaskEncoder> ImpureEncVisitor<'vir, '_, E> {
 }
 
 type EncodedPledges<'vir> = Vec<EncodedPledge<'vir>>;
+
+/// How the keys of a wand's left side are fixed. A wand must be
+/// self-framing, but a key can read the predicates of other lifetimes, which
+/// are not in its left side: it is read under a label, or bound outside the
+/// wand.
+enum LhsKeys<'vir, 'a> {
+    /// The keys as they are, for a wand that is only displayed.
+    #[cfg(test)]
+    InPlace,
+    AtLabel(vir::OldLabel<'vir>),
+    Bound(&'a mut Vec<(vir::LocalDecl<'vir, vir::Snap>, vir::ExprSnap<'vir>)>),
+}
 
 /// Not tied to a caller or callee context. `indirect_pres`, `indirect_posts`,
 /// `wand_posts`, and `package_wands` are identity-substituted and intended for
@@ -225,13 +242,28 @@ impl<'vir> WandEncOutput<'vir> {
         deps: &mut TaskEncoderDependencies<'vir, E>,
         g: impl Into<FunctionShapeNode<Generalized>>,
         call_ctx: WandCallContext<'vir>,
-        mut snap: impl FnMut(mir::Local) -> vir::ExprSnap<'vir>,
+        snap: impl FnMut(mir::Local) -> vir::ExprSnap<'vir>,
         state: Option<vir::OldLabel<'vir>>,
+    ) -> Option<vir::ExprBool<'vir>> {
+        self.encode_predicates_with_keys(vcx, deps, g, call_ctx, snap, |key| {
+            vcx.maybe_apply_label(key, state)
+        })
+    }
+
+    /// Like `encode_predicates_for_function_shape_node`, with each key given
+    /// by `key` applied to its extension of the snapshot.
+    fn encode_predicates_with_keys<E: TaskEncoder>(
+        &self,
+        vcx: &'vir vir::VirCtxt<'vir>,
+        deps: &mut TaskEncoderDependencies<'vir, E>,
+        g: impl Into<FunctionShapeNode<Generalized>>,
+        call_ctx: WandCallContext<'vir>,
+        mut snap: impl FnMut(mir::Local) -> vir::ExprSnap<'vir>,
+        key: impl FnMut(vir::ExprSnap<'vir>) -> vir::ExprSnap<'vir>,
     ) -> Option<vir::ExprBool<'vir>> {
         let g = g.into();
         let (nodes, lifetime) = self.node(vcx, deps, g)?;
-        let in_state = |key| vcx.maybe_apply_label(key, state);
-        let predicates = vcx.mk_conj(&nodes.of(lifetime, snap(g.mir_local()), in_state));
+        let predicates = vcx.mk_conj(&nodes.of(lifetime, snap(g.mir_local()), key));
         // The predicates are in terms of the callee's generic parameters.
         let generics = self.generics_subst(call_ctx, vcx, deps);
         Some(vcx.with_local_subst(generics, || {
@@ -468,12 +500,26 @@ impl<'vir> WandEncOutput<'vir> {
 
         // TODO: wands for late-bound regions
         self.viper_wands().into_iter().filter_map(move |wand_data| {
-            let wand = self.mk_wand(&wand_data, args, None, None, vcx, deps)?;
-            Some(vcx.mk_let_expr(
-                wand_result,
-                local_defs[mir::RETURN_PLACE].impure_snap,
-                vcx.mk_wand_expr(wand),
-            ))
+            // The keys of the left side are bound outside the wand, which
+            // must be self-framing: they read the result's predicates of the
+            // other lifetimes, which are not in its left side.
+            let mut bindings = Vec::new();
+            let wand = self.mk_wand(
+                &wand_data,
+                args,
+                None,
+                LhsKeys::Bound(&mut bindings),
+                None,
+                vcx,
+                deps,
+            )?;
+            let wand = bindings
+                .into_iter()
+                .rev()
+                .fold(vcx.mk_wand_expr(wand), |expr, (decl, key)| {
+                    vcx.mk_let_expr(decl, key, expr)
+                });
+            Some(vcx.mk_let_expr(wand_result, local_defs[mir::RETURN_PLACE].impure_snap, wand))
         })
     }
 
@@ -506,6 +552,7 @@ impl<'vir> WandEncOutput<'vir> {
                 &wand_data,
                 args,
                 Some(label_pre),
+                LhsKeys::AtLabel(vir::OldLabel::Label(label_post)),
                 Some(call_ctx),
                 visitor.vcx,
                 visitor.deps,
@@ -538,11 +585,13 @@ impl<'vir> WandEncOutput<'vir> {
         Ok(caster.cast_to_callee_ctx(snap))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn mk_wand<E: TaskEncoder>(
         &self,
         wand_data: &WandData<'vir>,
         pledge_args: PledgeArgs<'vir>,
         pledge_old_label: Option<&'vir str>,
+        mut lhs_keys: LhsKeys<'vir, '_>,
         call_ctx: WandCallContext<'vir>,
         vcx: &'vir vir::VirCtxt<'vir>,
         deps: &mut TaskEncoderDependencies<'vir, E>,
@@ -582,17 +631,30 @@ impl<'vir> WandEncOutput<'vir> {
             return None;
         }
         let rhs = vcx.mk_conj(&rhs);
-        let lhs = wand_data.lhs.iter().filter_map(|g| {
-            self.encode_predicates_for_function_shape_node(
+        let mut lhs = Vec::new();
+        for g in &wand_data.lhs {
+            let key = |key: vir::ExprSnap<'vir>| match &mut lhs_keys {
+                #[cfg(test)]
+                LhsKeys::InPlace => key,
+                LhsKeys::AtLabel(label) => vcx.maybe_apply_label(key, Some(*label)),
+                LhsKeys::Bound(bindings) => {
+                    let name = vir::vir_format!(vcx, "wand_key_{}", bindings.len());
+                    let decl = vcx.mk_local_decl(name, key.ty());
+                    bindings.push((decl, key));
+                    vcx.mk_local_ex(decl)
+                }
+            };
+            lhs.extend(self.encode_predicates_with_keys(
                 vcx,
                 deps,
                 *g,
                 call_ctx,
                 |i| pledge_args[i],
-                None,
-            )
-        });
+                key,
+            ));
+        }
         let lhs = lhs
+            .into_iter()
             .chain(
                 wand_data
                     .pledges
@@ -994,7 +1056,9 @@ mod tests {
                 let args = PledgeExpr::pledge_args(snaps[0], args);
                 let mut lines = Vec::new();
                 for wand_data in wands.viper_wands() {
-                    if let Some(wand) = wands.mk_wand(&wand_data, args, None, None, vcx, deps) {
+                    if let Some(wand) =
+                        wands.mk_wand(&wand_data, args, None, LhsKeys::InPlace, None, vcx, deps)
+                    {
                         let mut wand_lines = show(wand.lhs);
                         wand_lines.push("--*".to_string());
                         wand_lines.extend(show(wand.rhs));
