@@ -2569,6 +2569,9 @@ impl<'vir, 'enc, E: TaskEncoder> PureRvalueEnc<'vir> for ImpureEncVisitor<'vir, 
     fn body(&self) -> &mir::Body<'vir> {
         self.body
     }
+    fn encoding_depth(&self) -> usize {
+        0
+    }
 
     fn ty_use_pure(&mut self, ty: ty::Ty<'vir>) -> TyUsePure<'vir> {
         let ty_task = RustTyDecomposition::from_ty(ty, self.def_id);

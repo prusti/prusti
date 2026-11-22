@@ -98,6 +98,9 @@ pub(crate) trait PureRvalueEnc<'vir> {
     fn deps(&mut self) -> &mut TaskEncoderDependencies<'vir, Self::Encoder>;
     fn vcx(&self) -> &'vir vir::VirCtxt<'vir>;
     fn body(&self) -> &mir::Body<'vir>;
+    /// See `MirPureEncTask::encoding_depth`; `ConstEnc` encodes the promoted
+    /// constants of the body one level deeper.
+    fn encoding_depth(&self) -> usize;
     fn ty_use_pure(&mut self, ty: ty::Ty<'vir>) -> TyUsePure<'vir>;
 
     /// When creating a reference to a place, the metadata either comes from a
@@ -237,9 +240,10 @@ pub(crate) trait PureRvalueEnc<'vir> {
         constant: &mir::ConstOperand<'vir>,
     ) -> EncodeResult<'vir, vir::ExprCSnap<'vir>, Self::Encoder> {
         let context = self.context();
+        let encoding_depth = self.encoding_depth();
         self.deps().require_dep::<ConstEnc>(ConstEncTask::Mir {
             const_: constant.const_,
-            encoding_depth: 0,
+            encoding_depth,
             context,
             span: constant.span,
         })

@@ -453,6 +453,9 @@ impl<'vir: 'enc, 'enc> PureRvalueEnc<'vir> for Enc<'vir, 'enc> {
     fn body(&self) -> &mir::Body<'vir> {
         self.body
     }
+    fn encoding_depth(&self) -> usize {
+        self.encoding_depth
+    }
     fn ty_use_pure(&mut self, ty: ty::Ty<'vir>) -> TyUsePure<'vir> {
         self.ty_use(ty).unwrap()
     }
