@@ -255,8 +255,11 @@ pub(crate) struct IndirectPredicateState<'vir> {
 
 impl<'vir> IndirectPredicateState<'vir> {
     /// Starts a block with its predecessors' states; the predecessors not
-    /// encoded yet are back edges of loops. Returns the nodes whose predicates
-    /// the predecessors created at different points.
+    /// encoded yet are back edges of loops. Returns the earlier versions of
+    /// nodes whose predicates the predecessors created at different points.
+    /// A node that is current at the block keeps on each path the value its
+    /// predicates were created with, so its keys are read where it is
+    /// labelled later, as when no predecessor recorded it.
     pub(crate) fn enter_block(
         &mut self,
         block: mir::BasicBlock,
@@ -281,6 +284,13 @@ impl<'vir> IndirectPredicateState<'vir> {
                 .created_at
                 .retain(|node, _| end.created_at.contains_key(node));
         }
+        disagreeing.retain(|node| {
+            let current = node.label().is_none();
+            if current {
+                state.created_at.remove(node);
+            }
+            !current
+        });
         self.current = state;
         disagreeing.into_iter().collect()
     }
