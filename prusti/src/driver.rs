@@ -144,10 +144,6 @@ fn main() {
         rustc_args.push("-Zcrate-attr=feature(stmt_expr_attributes)".to_owned());
         rustc_args.push("-Zcrate-attr=feature(register_tool)".to_owned());
         rustc_args.push("-Zcrate-attr=register_tool(prusti)".to_owned());
-        // The two features above are injected here, not by the crate being
-        // compiled, so a crate that denies warnings would otherwise fail with
-        // `unused_features` whenever it does not also use them itself.
-        rustc_args.push("-Zcrate-attr=allow(unused_features)".to_owned());
 
         if config::check_overflows() {
             // Some crates might have a `overflow-checks = false` in their `Cargo.toml` to
