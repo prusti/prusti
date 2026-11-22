@@ -488,7 +488,6 @@ struct EncodedPlace<'vir> {
     /// The metadata for the pointed-to value. Set when going through a
     /// `ProjectionElem::Deref`.
     metadata: Option<ExprRet<'vir>>,
-    in_deep_snap: bool,
 }
 
 impl<'vir> EncodedPlace<'vir> {
@@ -497,13 +496,7 @@ impl<'vir> EncodedPlace<'vir> {
             snap: expr,
             place_ref,
             metadata: None,
-            in_deep_snap: false,
         }
-    }
-
-    fn with_in_deep_snap(mut self, in_deep_snap: bool) -> Self {
-        self.in_deep_snap = in_deep_snap;
-        self
     }
 
     fn with_metadata(mut self, metadata: ExprRet<'vir>) -> Self {
