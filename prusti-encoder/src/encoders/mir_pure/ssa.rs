@@ -67,7 +67,10 @@ impl<'vir> Fragment<'vir> {
 /// The versions of locals that the encoded expression reads, directly or
 /// through the value of a version it reads. Only the bindings of these
 /// versions are emitted, so that a binding nothing reads emits nothing its
-/// value reads either.
+/// value reads either. This is required, not only an optimisation: every
+/// input has a binding of version 0, but only the inputs read are supplied
+/// (see `MirPureEncOutput::inputs`). The pair of a merge is always bound,
+/// and reads the versions it merges.
 #[derive(Default)]
 pub(super) struct Uses {
     /// The versions read. Closed under `pending`: once a version is read, so
@@ -197,7 +200,9 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
         fragment.versions.insert(local, version);
     }
 
-    /// Wraps the bindings of `fragment` around `expr`.
+    /// Wraps the bindings of `fragment` around `expr`. Whether a binding is
+    /// read must be final by then: true at the end of the body, and for the
+    /// fragment of a branch, whose versions only its merge's pair reads.
     pub(super) fn close_fragment<T: CompType>(
         &self,
         fragment: Fragment<'vir>,
@@ -242,8 +247,8 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                 // A branch that cannot complete (it ends in `unreachable` or
                 // a diverging call, or is the failing side of an `Assert`)
                 // merges the unreachable snapshots of the locals' types,
-                // which assume `false` where they are evaluated; with no
-                // locals to merge, nothing is assumed.
+                // whose precondition `false` requires the branch to be
+                // unreachable; with no locals to merge, nothing is checked.
                 let unreachable = mod_locals
                     .iter()
                     .map(|local| {
@@ -281,7 +286,10 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
 
         // The merged locals are those that some branch changes and that were
         // defined before the conditional.
-        let mut mod_locals = completing()
+        // A local that some completing branch leaves without a value (declared
+        // by `StorageLive` but not assigned) is not merged: MIR reads no local
+        // after a join that some path to it leaves uninitialised.
+        let mod_locals = completing()
             .flat_map(|branch| &branch.versions)
             .filter(|(local, version)| {
                 fragment
@@ -290,13 +298,10 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                     .is_some_and(|before| before.index != version.index)
             })
             .map(|(local, _)| *local)
+            .sorted()
+            .dedup()
+            .filter(|local| completing().all(|branch| branch.versions[local].decl.is_some()))
             .collect::<Vec<_>>();
-        mod_locals.sort();
-        mod_locals.dedup();
-        // A local that some completing branch leaves without a value (declared
-        // by `StorageLive` but not assigned) is not merged: MIR reads no local
-        // after a join that some path to it leaves uninitialised.
-        mod_locals.retain(|local| completing().all(|branch| branch.versions[local].decl.is_some()));
         let mod_tys = mod_locals
             .iter()
             .map(|l| self.get_ty_for_local(*l).as_dyn())

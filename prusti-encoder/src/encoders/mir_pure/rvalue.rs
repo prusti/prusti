@@ -75,6 +75,9 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
             }
             mir::Rvalue::Cast(kind, operand, ty) => {
                 assert_eq!(*ty, rvalue_ty);
+                // `encode_cast_snap` also returns a statement, which moves the
+                // referent's predicate in a `&mut` unsize coercion. Pure code
+                // holds no predicates, so only the value (`.1`) is used.
                 Ok(self
                     .encode_cast_snap(rvalue_ty, *kind, operand, curr_ver)?
                     .1)

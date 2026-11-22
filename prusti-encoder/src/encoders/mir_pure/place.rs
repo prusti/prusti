@@ -151,15 +151,9 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
         ref_ty: ty::Ty<'vir>,
     ) -> EncodeResult<'vir, (ExprRet<'vir>, ExprRetRef<'vir>, ExprRet<'vir>), MirPureEnc> {
         let encoded_place = self.encode_place_with_ref(curr_ver, place)?;
-        // We want to distinguish if `place` is a value that lives
-        // in pure code or not. If it lives in impure (the only way
-        // that this can happen is that we have a `&mut` argument)
-        // then we want to return the actual address in the
-        // snapshot. Otherwise we want to use `null` as this value
-        // should never escape pure code anyway. Thus `place_ref`
-        // will return `None` if this isn't a re-borrow, and if it's
-        // a re-borrow of created-in-pure reference then it will be
-        // field projections of `null` which is also `null`.
+        // A place behind a dereference has the address that the reference or
+        // box holds. Any other place exists only in this expression; a
+        // reference to it cannot leave pure code, and gets the address null.
         let place_ref = encoded_place
             .place_ref
             .unwrap_or_else(|| self.vcx.mk_null().lazy());
@@ -228,16 +222,16 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
             // The snapshots of the arguments and the result are pinned to a
             // state, so the only read of the heap is the dereference of a
             // mutable reference in an impure context; only that is wrapped.
-            // An `old` around a pinned snapshot is a no-op, but breaks the
-            // match with the callee's wand at a call site, where the `old` is
-            // labelled. Silicon evaluates the heap-independent parts of a wand
-            // when inhaling it, where `old[lhs]` is undefined.
             let heap_read = self.impure_context
                 && matches!(elem, mir::ProjectionElem::Deref)
                 && matches!(place_ty.ty.kind(), TyKind::Ref(.., ty::Mutability::Mut));
             encoded_place = self.encode_place_element(curr_ver, place_ty, elem, encoded_place)?;
             place_ty = place_ty.projection_ty(self.vcx.tcx(), elem);
             if heap_read && modes.contains(Modes::OLD) {
+                // An `old` around a pinned snapshot would be a no-op, but would
+                // break the match with the callee's wand at a call site, where
+                // the `old` is labelled. The label is only known at
+                // instantiation (`ExprInput::old`).
                 let inner = encoded_place.snap;
                 encoded_place.snap = self.vcx.mk_lazy_expr(
                     "old_mode_wrap",
@@ -250,6 +244,9 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                 );
             }
             if heap_read && modes.contains(Modes::BEFORE_EXPIRY) {
+                // Silicon evaluates the heap-independent parts of a wand when
+                // inhaling it, where `old[lhs]` is undefined, so an `old[lhs]`
+                // around a pinned snapshot would be ill-defined there.
                 encoded_place.snap = self.vcx.mk_old_lhs_expr(encoded_place.snap);
             }
         }

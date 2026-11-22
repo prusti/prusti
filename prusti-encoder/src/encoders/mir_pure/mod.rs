@@ -14,10 +14,10 @@
 //! complete.
 //!
 //! The expression is built lazily: the values of its inputs (version 0 of
-//! the arguments), the state `old` refers to, and a spec closure's captures
-//! are supplied when it is instantiated (see `ExprInput`). The bindings of
-//! versions that nothing reads, directly or through other bindings, are left
-//! out (see `Uses`).
+//! the arguments, or of every local of the enclosing body for a spec block),
+//! the state `old` refers to, and a spec closure's captures are supplied when
+//! it is instantiated (see `ExprInput`). The bindings of versions that nothing
+//! reads, directly or through other bindings, are left out (see `Uses`).
 
 use crate::encoders::{
     FunctionCallEnc, Mode, PrustiBuiltin, SpecBuiltin,
@@ -96,6 +96,8 @@ type SpecClosure<'vir> = (
 
 #[derive(Clone, Debug)]
 pub struct MirPureEncOutput<'vir> {
+    /// The inputs the body reads (see `ExprInput::inputs`), which every
+    /// instantiation supplies.
     pub inputs: Vec<mir::Local>,
     /// The body `expr` encodes.
     pub def_id: DefId,
@@ -185,6 +187,9 @@ pub enum PureKind {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct MirPureEncTask<'vir> {
+    /// How deeply the body is nested in the expression it becomes part of.
+    /// It is part of every variable name of the body, so that the variables
+    /// of a body inlined into another one do not clash with the other's.
     // TODO: depth of encoding should be in the lazy context rather than here;
     //   can we integrate the lazy context into the identifier system?
     pub encoding_depth: usize,
@@ -283,9 +288,8 @@ impl TaskEncoder for MirPureEnc {
                 .collect::<Vec<_>>();
             let inputs_expected = vcx.alloc_slice(&inputs);
 
-            // We wrap the expression with an additional lazy that will perform
-            // some sanity checks. These requirements cannot be expressed using
-            // only the type system.
+            // The expression is wrapped in a lazy one that checks that it is
+            // instantiated for this body, with every input it reads.
             let snapshot = if let PureKind::SpecBlock(..) = kind {
                 vir::TYPE_BOOL.upcast_ty()
             } else {
@@ -344,8 +348,15 @@ struct Enc<'vir: 'enc, 'enc> {
     /// Always holds the next version to be used for a local.
     version_ctr: IndexVec<mir::Local, usize>,
     uses: Uses,
+    /// The index of the next merge, which makes its variable's name unique.
     phi_ctr: usize,
+    /// The modes the walk is in: the mode markers it passes enter and leave
+    /// them. A mode's markers enclose a whole expression, so every branch of
+    /// a conditional ends in the modes it starts in.
     modes: Modes,
+    /// Whether the body is a specification of an impure method or a spec
+    /// block in one, whose heap holds the values behind `&mut` arguments: only
+    /// there can a dereference of one read the value, through its predicate.
     impure_context: bool,
     /// For a spec closure, the modes its body reads each capture in (see
     /// [`MirPureEncOutput::captures`]); `None` for other bodies.
@@ -357,6 +368,9 @@ struct Enc<'vir: 'enc, 'enc> {
 /// passed into a spec closure (`Captures`).
 struct EncodedPlaceGen<'vir, Curr, Next> {
     snap: vir::ExprGenSnap<'vir, Curr, Next>,
+    /// The address of the place, if it is behind a dereference: the address
+    /// that the reference or box holds, projected to the place. `None` for a
+    /// place that exists only in this expression.
     place_ref: Option<vir::ExprGenRef<'vir, Curr, Next>>,
     /// The metadata for the pointed-to value. Set when going through a
     /// `ProjectionElem::Deref`.
@@ -462,10 +476,6 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
             uses: Default::default(),
             phi_ctr: 0,
             modes: Modes::empty(),
-            // An impure method's specs and contained spec blocks get shallow
-            // argument snapshots (and can take a snapshot of the predicates
-            // behind `&mut`s). Pure functions currently also only get shallow
-            // snapshots but cannot get the value behind `&mut`s.
             impure_context: matches!(
                 kind,
                 PureKind::Spec { impure: true, .. } | PureKind::SpecBlock(..)
@@ -506,24 +516,19 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
 }
 
 mod rev_doms {
-    /// Identical to `body.basic_blocks.dominators()` except in reverse. Since
-    /// there may be multiple `Return`/`Unreachable`/etc. terminators, we add a
-    /// special end block index which is invalid in `basic_blocks` but pretends
-    /// to be the successor of all these no-successor blocks.
+    /// The dominators of the reversed control flow graph, whose start is an
+    /// extra block `end` succeeding every block that ends in `Return` or
+    /// `UnwindResume`. A block that cannot complete is not connected to `end`,
+    /// so that a switch with such an arm still joins its other arms.
     pub struct ReverseDominators {
         pub dom: dominators::Dominators<mir::BasicBlock>,
         pub end: mir::BasicBlock,
     }
     impl ReverseDominators {
-        #[allow(clippy::needless_lifetimes)]
-        pub fn new<'a, 'vir>(blocks: &'a mir::BasicBlocks<'vir>) -> Self {
+        pub fn new(blocks: &mir::BasicBlocks<'_>) -> Self {
             let no_succ_blocks = blocks
                 .iter_enumerated()
                 .filter(|(_, data)| {
-                    /* The commented line below prevents e.g. a SwitchInt with a branch
-                    going to an Unreachable terminator from having a join point, so
-                    do not treat such terminators as return blocks. */
-                    // data.terminator().successors().next().is_none()
                     matches!(
                         data.terminator().kind,
                         mir::TerminatorKind::Return | mir::TerminatorKind::UnwindResume
@@ -538,7 +543,9 @@ mod rev_doms {
             }
         }
         pub fn immediate_dominator(&self, bb: mir::BasicBlock) -> mir::BasicBlock {
-            // This unwrap should never fail since all blocks can reach `end`
+            // A block has an immediate dominator if it reaches `end`. The
+            // walk asks only for the switches of loop-free bodies, whose arms
+            // reach `Return` or, when they panic, `UnwindResume`.
             self.dom.immediate_dominator(bb).unwrap()
         }
     }

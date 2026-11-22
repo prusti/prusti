@@ -14,7 +14,9 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
         result_local: mir::Local,
     ) -> EncodeResult<'vir, ExprRet<'vir>, MirPureEnc> {
         let mut init = Fragment::default();
-        // TODO: what about locals which never have StorageLive (i.e. always_live)?
+        // TODO: a local without `StorageLive` that is first assigned in the
+        //   branches of a conditional has no version before it, so it is not
+        //   merged (see `Enc::merge`), and a read of it after the join panics.
         let return_version = self.new_version(mir::RETURN_PLACE, mir::Location::START);
         init.versions.insert(mir::RETURN_PLACE, return_version);
         for local in inputs {
@@ -49,21 +51,25 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
         )
     }
 
+    /// The value of the spec block `block`, which builds the spec closure and
+    /// calls the builtin with it: the call's result. Every local of the
+    /// enclosing body is an input.
     pub(super) fn encode_spec_block(
         &mut self,
         block: mir::BasicBlock,
     ) -> EncodeResult<'vir, ExprRet<'vir>, MirPureEnc> {
-        let Some(mir::TerminatorKind::Call { destination, .. }) = self.body.basic_blocks[block]
-            .terminator
-            .as_ref()
-            .map(|t| &t.kind)
+        let mir::TerminatorKind::Call {
+            destination,
+            target: Some(target),
+            ..
+        } = self.body[block].terminator().kind
         else {
             unreachable!("malformed spec-only block: should end in a call terminator");
         };
         assert!(destination.projection.is_empty());
         self.encode_region(
             block,
-            self.body.basic_blocks.successors(block).next().unwrap(),
+            target,
             self.body.local_decls.indices().skip(1),
             destination.local,
         )
@@ -95,11 +101,8 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
         // then walk terminator. Its operands and call are encoded under its
         // span, like statements in `encode_stmt`; the walks of its successors
         // are not, as they encode other blocks.
-        let term = self.body[curr].terminator.as_ref().unwrap();
-        let location = mir::Location {
-            block: curr,
-            statement_index: self.body[curr].statements.len(),
-        };
+        let term = self.body[curr].terminator();
+        let location = self.body.terminator_loc(curr);
         match &term.kind {
             &mir::TerminatorKind::Goto { target }
             | &mir::TerminatorKind::FalseEdge {
@@ -133,26 +136,20 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                 // the immediate reverse dominator of `curr`, where its
                 // branch is merged with the others.
                 let new_join_point = self.rev_doms.immediate_dominator(curr);
-                let mut branches = targets
-                    .all_targets()
-                    .iter()
-                    .map(|target| {
-                        let branch = Fragment::starting_at(&fragment.versions);
-                        self.encode_cfg(branch, *target, new_join_point)
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
-                let otherwise = branches.pop().unwrap();
                 let branches = targets
                     .iter()
-                    .zip(branches)
-                    .map(|((cond_val, _target), branch)| {
+                    .map(|(cond_val, target)| {
+                        let branch = Fragment::starting_at(&fragment.versions);
+                        let branch = self.encode_cfg(branch, target, new_join_point)?;
                         let cond = self.vcx.mk_eq_expr(
                             discr_ty_out.snap_to_prim(discr_expr),
                             discr_ty_out.expr_from_bits(discr_ty, cond_val).lazy(),
                         );
-                        (cond, branch)
+                        Ok((cond, branch))
                     })
-                    .collect();
+                    .collect::<Result<Vec<_>, _>>()?;
+                let otherwise = Fragment::starting_at(&fragment.versions);
+                let otherwise = self.encode_cfg(otherwise, targets.otherwise(), new_join_point)?;
                 let Some(fragment) = self.merge(fragment, location, branches, otherwise) else {
                     return Ok(None);
                 };
@@ -243,26 +240,23 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
     ) -> EncodeResult<'vir, ExprRet<'vir>, MirPureEnc> {
         let func_ty = func.ty(self.body, self.vcx.tcx());
         let (def_id, arg_tys) = RustSignature::get_def_id_and_caller_substs(func_ty);
-        // The bodiless `ptr_metadata` intrinsic is only lowered to
-        // `UnOp::PtrMetadata` in optimized MIR; do the lowering here.
+        // The bodiless intrinsics of `RustcIntrinsic` are lowered here, as
+        // only optimized MIR lowers them (e.g. `ptr_metadata` to
+        // `UnOp::PtrMetadata`).
         let intrinsic = self.vcx.tcx().intrinsic(def_id);
         if let Some(intrinsic) = intrinsic.and_then(RustcIntrinsic::from_intrinsic) {
             return self.encode_intrinsic(intrinsic, arg_tys, args, curr_ver);
         }
-        match PrustiBuiltin::new(def_id, self.gargs(arg_tys)) {
+        let gargs = self.gargs(arg_tys);
+        match PrustiBuiltin::new(def_id, gargs) {
             // The pure-only builtins: quantifiers, spec blocks, mode markers.
             Some(PrustiBuiltin::Spec(builtin)) => {
                 self.encode_pure_only_builtin(builtin, arg_tys, args, block, curr_ver)
             }
-            Some(builtin) => self.encode_prusti_builtin(
-                builtin,
-                def_id,
-                self.gargs(arg_tys),
-                args,
-                span,
-                curr_ver,
-            ),
-            None if crate::encoders::is_function_pure(def_id, self.gargs(arg_tys)) => {
+            Some(builtin) => {
+                self.encode_prusti_builtin(builtin, def_id, gargs, args, span, curr_ver)
+            }
+            None if crate::encoders::is_function_pure(def_id, gargs) => {
                 let pure_func = self.deps.require_dep_spanned::<FunctionCallEnc>(
                     CallTaskDescription::new(self.context, arg_tys, def_id),
                     span,

@@ -369,7 +369,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                     ));
                 }
                 self.modes.insert(modes);
-                mk_bool(self.vcx.mk_bool::<true>().lazy()) // TODO: what value do we return?
+                self.unit_snap()
             }
             SpecBuiltin::ModeEnd(mode) => {
                 let modes = Modes::of(mode);
@@ -378,10 +378,16 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                     "a mode ends that was not entered"
                 );
                 self.modes.remove(modes);
-                mk_bool(self.vcx.mk_bool::<true>().lazy()) // TODO: what value do we return?
+                self.unit_snap()
             }
         }
         .upcast_ty())
+    }
+
+    fn unit_snap(&mut self) -> vir::ExprGenCSnap<'vir, ExprInput<'vir>, vir::ExprKind<'vir>> {
+        self.ty_use(self.vcx.tcx().types.unit)
+            .zst_to_snap()
+            .unwrap()
     }
 }
 
