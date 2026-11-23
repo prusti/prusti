@@ -1,7 +1,7 @@
 use prusti_rustc_interface::{middle::ty, span::def_id::DefId};
 use rustc_hash::FxHashMap;
 use task_encoder::{EncodeFullResult, OutputRefAny, TaskEncoder, TaskEncoderDependencies};
-use vir::{FunctionIdn, ViperIdent, vir_format_identifier};
+use vir::{CastType, FunctionIdn, ViperIdent, vir_format_identifier};
 
 use crate::encoders::{
     TyUsePureEnc,
@@ -9,7 +9,7 @@ use crate::encoders::{
         RustTyDecomposition,
         generics::{
             GParams, GenericParamsEnc,
-            trait_impls::{self, TraitImplConditionEnc},
+            trait_impls::{self, TraitImplConditionEnc, TraitImplEnc},
         },
         lifted::TyConstructorEnc,
     },
@@ -114,11 +114,74 @@ impl TaskEncoder for TraitEnc {
                 *task_key,
                 TraitEncOutputRef {
                     trait_name,
-                    assoc_types,
+                    assoc_types: assoc_types.clone(),
                     assoc_consts,
                     impl_fun,
                 },
             )?;
+
+            // The bounds declared on an associated type (`type A: Bound;`)
+            // hold of it wherever the trait is implemented: rustc checks
+            // them for every impl, assuming the impl's where-clauses, and a
+            // type parameter bounded by the trait has its associated types
+            // satisfy them too. The guard is the where-clauses in force at
+            // the item, which include the trait bound on `Self` and, for a
+            // generic associated type, its own where-clauses. Triggering on
+            // the associated type (rather than on the trait bound) keeps a
+            // bound mentioning the trait itself (`type A: Tr;` in `Tr`) from
+            // forming a matching loop.
+            let mut dom_axioms = Vec::new();
+            for item in tcx.associated_items(*task_key).in_definition_order() {
+                if !matches!(item.kind, ty::AssocKind::Type { .. }) {
+                    continue;
+                }
+                let item_did = item.def_id;
+                let item_params = GParams::from(item_did);
+                let item_bounds = tcx.item_bounds(item_did).instantiate_identity();
+                let bounds = TraitImplEnc::clause_bounds(
+                    vcx,
+                    deps,
+                    item_params,
+                    item_bounds.skip_normalization(),
+                    None,
+                )?;
+                if bounds.is_empty() {
+                    continue;
+                }
+                let guard = TraitImplEnc::context_bounds(vcx, deps, item_params, None)?;
+                let item_generics = deps.require_dep::<GenericParamsEnc>(item_params)?;
+                let projection: vir::ExprDyn =
+                    assoc_types[&item_did](item_generics.ty_exprs(), item_generics.const_exprs())
+                        .upcast_ty();
+                let body = vcx.mk_conj(&bounds);
+                let body = if guard.is_empty() {
+                    body
+                } else {
+                    let guard = vcx.mk_conj(&guard);
+                    vir::expr! { (guard) ==> (body) }
+                };
+                let qvars = item_generics
+                    .ty_decls()
+                    .iter()
+                    .map(|decl| decl.upcast_ty())
+                    .chain(
+                        item_generics
+                            .const_decls()
+                            .iter()
+                            .map(|decl| decl.upcast_ty()),
+                    )
+                    .collect::<Vec<vir::LocalDeclDyn<'_>>>();
+                let axiom = vcx.mk_forall_expr(
+                    vcx.alloc_slice(&qvars),
+                    vcx.alloc_slice(&[vcx.mk_trigger(&[projection])]),
+                    body,
+                );
+                let item_name = ViperIdent::from_def_id(vcx, item_did);
+                dom_axioms.push(vcx.mk_domain_axiom(
+                    vir_format_identifier!(vcx, "{trait_name}_assoc_type_{item_name}_bounds"),
+                    axiom,
+                ));
+            }
 
             // Each relevant impl contributes an axiom stating where it makes
             // `impl_fun` hold (see `impl_unlock_keys` for the gating).
@@ -157,7 +220,7 @@ impl TaskEncoder for TraitEnc {
             let trait_domain = vcx.mk_domain(
                 vir_format_identifier!(vcx, "trait_{trait_name}"),
                 &[],
-                &[],
+                vcx.alloc_slice(&dom_axioms),
                 vcx.alloc_slice(&dom_funcs),
                 None,
             );

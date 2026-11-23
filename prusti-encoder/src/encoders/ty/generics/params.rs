@@ -315,11 +315,11 @@ impl<'vir> GenericParams<'vir> {
                         panic!("expected a projection")
                     };
                     let trait_did = tcx.associated_item(def_id).container_id(tcx);
-                    let trait_data = deps.require_ref::<TraitEnc>(trait_did).unwrap();
+                    let trait_data = deps.require_ref::<TraitEnc>(trait_did)?;
                     let args = GArgs::new(ty.args.context, alias.args);
-                    let args = deps.require_dep::<GArgsTyEnc>(args).unwrap();
-                    (trait_data.assoc_types[&def_id])(args.get_ty(), args.get_const())
-                }),
+                    let args = deps.require_dep::<GArgsTyEnc>(args)?;
+                    Ok((trait_data.assoc_types[&def_id])(args.get_ty(), args.get_const()))
+                })?,
             });
         }
         let ty_constructor = deps.require_ref::<TyConstructorEnc>(ty.ty)?.ty_constructor;
