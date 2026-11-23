@@ -143,7 +143,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                 let branches = targets
                     .iter()
                     .map(|(cond_val, target)| {
-                        let branch = Fragment::starting_at(&fragment.versions);
+                        let branch = Fragment::starting_at(&fragment);
                         let branch = self.encode_cfg(branch, target, new_join_point)?;
                         let cond = self.vcx.mk_eq_expr(
                             discr_ty_out.snap_to_prim(discr_expr),
@@ -152,7 +152,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                         Ok((cond, branch))
                     })
                     .collect::<Result<Vec<_>, _>>()?;
-                let otherwise = Fragment::starting_at(&fragment.versions);
+                let otherwise = Fragment::starting_at(&fragment);
                 let otherwise = self.encode_cfg(otherwise, targets.otherwise(), new_join_point)?;
                 let Some(fragment) = self.merge(fragment, location, branches, otherwise)? else {
                     return Ok(None);
@@ -182,7 +182,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                 // has the expected value; the other one fails the assertion
                 // and does not complete. As the success branch reaches the end
                 // of the region, nothing follows the merge.
-                let ok_branch = Fragment::starting_at(&fragment.versions);
+                let ok_branch = Fragment::starting_at(&fragment);
                 let ok_branch = self.encode_cfg(ok_branch, *target, join_point)?;
                 let ok_cond = self.vcx.mk_eq_expr(
                     cond_expr,
@@ -217,7 +217,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                 let curr_ver = &fragment.versions;
                 let expr = self
                     .vcx
-                    .with_span(span, |_| self.encode_call(curr_ver, func, args, curr, span));
+                    .with_span(span, |_| self.encode_call(&fragment, func, args, span));
                 let expr = self.encode_place_update(curr_ver, *destination, expr?, span)?;
                 self.assign(&mut fragment, destination.local, expr, location);
 
@@ -232,16 +232,16 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
         }
     }
 
-    /// The value of the returning call of `func` with `args` that ends
-    /// `block`: of an intrinsic, a Prusti builtin or a pure function.
+    /// The value of the returning call of `func` with `args` at the end of
+    /// `fragment`: of an intrinsic, a Prusti builtin or a pure function.
     fn encode_call(
         &mut self,
-        curr_ver: &Versions<'vir>,
+        fragment: &Fragment<'vir>,
         func: &mir::Operand<'vir>,
         args: &[Spanned<mir::Operand<'vir>>],
-        block: mir::BasicBlock,
         span: Span,
     ) -> EncodeResult<'vir, ExprRet<'vir>, MirPureEnc> {
+        let curr_ver = &fragment.versions;
         let func_ty = func.ty(self.body, self.vcx.tcx());
         let (def_id, arg_tys) = RustSignature::get_def_id_and_caller_substs(func_ty);
         // The bodiless intrinsics of `RustcIntrinsic` are lowered here, as
@@ -255,7 +255,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
         match PrustiBuiltin::new(def_id, gargs) {
             // The pure-only builtins: quantifiers, spec blocks, mode markers.
             Some(PrustiBuiltin::Spec(builtin)) => {
-                self.encode_pure_only_builtin(builtin, arg_tys, args, block, curr_ver)
+                self.encode_pure_only_builtin(builtin, arg_tys, args, &fragment.closures)
             }
             Some(builtin) => {
                 self.encode_prusti_builtin(builtin, def_id, gargs, args, span, curr_ver)
@@ -311,6 +311,16 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                 | mir::StatementKind::BackwardIncompatibleDropHint { .. } => {} // nop
                 mir::StatementKind::Assign(box (dest, rvalue)) => {
                     let span = stmt.source_info.span;
+                    if let mir::Rvalue::Aggregate(box mir::AggregateKind::Closure(def_id, _), _) =
+                        rvalue
+                    {
+                        let construction = ClosureConstruction {
+                            location,
+                            versions: fragment.versions.clone(),
+                            modes: self.modes,
+                        };
+                        fragment.closures.insert(*def_id, construction);
+                    }
                     let curr_ver = &fragment.versions;
                     self.uses.start_assignment();
                     let expr = self

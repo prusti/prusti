@@ -88,15 +88,15 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
     /// capture in some modes, it reads the operand this specification built
     /// the capture from, in those modes (a quantified `old(arr.lookup(i))`
     /// reads the reborrow `&*arr` in the pre-state). Those operands are
-    /// encoded here, at `curr_ver` in `block`, which builds the closure and
-    /// calls the builtin, and passed to the closure body as its captures (see
-    /// `ExprInput`).
+    /// encoded here, in the state where the closure is built (the versions of
+    /// the locals and the modes there), which the walk records in `closures`
+    /// (see `Fragment::closures`), and passed to the closure body as its
+    /// captures (see `ExprInput`).
     fn encode_spec_closure(
         &mut self,
         name: &str,
         closure_ty: ty::Ty<'vir>,
-        block: mir::BasicBlock,
-        curr_ver: &Versions<'vir>,
+        closures: &FxHashMap<DefId, ClosureConstruction<'vir>>,
     ) -> EncodeResult<'vir, SpecClosure<'vir>, MirPureEnc> {
         let (qvar_tys, cl_kind, cl_def_id, cl_args) = match closure_ty.kind() {
             TyKind::Closure(cl_def_id, cl_args) => (
@@ -149,48 +149,43 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
             // in this context, in which `cl_args` are expressed.
             gargs: GArgs::new(self.context, cl_args),
         })?;
-        // The specification macros build the closure in the `block` that
-        // calls the builtin, after which the block assigns only temporaries
-        // (borrows of the closure, the triggers); captured places are rooted
-        // at variables, so they read at `curr_ver` what the closure captured.
-        // Other closures are not supported. A closure without captures needs
-        // no aggregate: its borrow may be promoted to a constant.
-        let statements = &self.body[block].statements;
-        let built = statements
-            .iter()
-            .enumerate()
-            .rev()
-            .find_map(|(index, stmt)| match &stmt.kind {
-                mir::StatementKind::Assign(box (
-                    _,
-                    mir::Rvalue::Aggregate(box mir::AggregateKind::Closure(def_id, _), operands),
-                )) if *def_id == cl_def_id => Some((index, operands)),
-                _ => None,
-            });
-        let assigns_variable = |stmt: &mir::Statement<'vir>| match &stmt.kind {
-            mir::StatementKind::Assign(box (dest, _)) => self.is_variable(dest.local),
-            _ => false,
-        };
-        let (before_closure, operands) = match built {
-            Some((index, operands)) if !statements[index + 1..].iter().any(assigns_variable) => {
-                (&statements[..index], operands.as_slice())
-            }
-            None if out.captures.is_empty() => (&[][..], IndexSlice::empty()),
-            _ => {
+        let mut captures = IndexVec::<abi::FieldIdx, _>::with_capacity(out.captures.len());
+        // A closure without captures needs no construction: its borrow may be
+        // promoted to a constant.
+        if !out.captures.is_empty() {
+            let Some(construction) = closures.get(&cl_def_id) else {
                 return Err(EncodeFullError::unsupported(
-                    format!("a `{name}` whose closure is not built right before it"),
+                    format!(
+                        "a `{name}` whose closure is built in a conditional that ends before \
+                         it, or not in this body"
+                    ),
                     vec![self.current_span()],
                 ));
+            };
+            let mir::Location {
+                block,
+                statement_index,
+            } = construction.location;
+            let statements = &self.body[block].statements;
+            let mir::StatementKind::Assign(box (_, mir::Rvalue::Aggregate(_, operands))) =
+                &statements[statement_index].kind
+            else {
+                unreachable!("a closure is built by an aggregate");
+            };
+            let before_closure = &statements[..statement_index];
+            for (capture, reads) in operands.iter().zip(&out.captures) {
+                let mut values = FxHashMap::default();
+                for &modes in reads {
+                    let value = self.encode_capture(
+                        capture,
+                        before_closure,
+                        construction.modes | modes,
+                        &construction.versions,
+                    )?;
+                    values.insert(modes, value);
+                }
+                captures.push(values);
             }
-        };
-        let mut captures = IndexVec::<abi::FieldIdx, _>::with_capacity(operands.len());
-        for (capture, reads) in operands.iter().zip(&out.captures) {
-            let mut values = FxHashMap::default();
-            for &modes in reads {
-                let value = self.encode_capture(capture, before_closure, modes, curr_ver)?;
-                values.insert(modes, value);
-            }
-            captures.push(values);
         }
         let captures = self.vcx.alloc(captures);
         let body = out.expr;
@@ -225,9 +220,10 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
         })
     }
 
-    /// A capture of a spec closure, passed to the closure as `capture` and
-    /// read in `modes`, encoded in those modes and the modes this body is in
-    /// at the builtin. A capture of a shared reference is supplied as the
+    /// A capture of a spec closure, passed to the closure as `capture`,
+    /// encoded in `modes` at `curr_ver`: the modes the closure's body reads
+    /// it in together with the modes where the closure is built, and the
+    /// versions there. A capture of a shared reference is supplied as the
     /// place it refers to, with the address and metadata of the reference,
     /// which is what its reader expects (see `Enc::encode_capture_read`).
     ///
@@ -268,18 +264,17 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
             TyKind::Ref(.., ty::Mutability::Not)
         );
 
-        let outer_modes = self.modes;
         // A mode joined with itself (e.g. `old` inside `old`) reads the same
         // state; only a `rel` of one execution inside the other's has no
         // meaning. (Within one body, nesting a mode in itself is rejected only
         // because the set of modes cannot count the nesting.)
-        if (outer_modes | modes).contains(Modes::REL0 | Modes::REL1) {
+        if modes.contains(Modes::REL0 | Modes::REL1) {
             return Err(EncodeFullError::unsupported(
                 "`rel` nested in `rel`".to_string(),
                 vec![self.current_span()],
             ));
         }
-        self.modes = outer_modes | modes;
+        let outer_modes = std::mem::replace(&mut self.modes, modes);
         let res = match value {
             Some(value @ mir::Rvalue::Ref(_, _, place)) if is_shared_ref => {
                 let ref_ty = value.ty(self.body, self.vcx.tcx());
@@ -309,8 +304,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
         builtin: SpecBuiltin,
         arg_tys: ty::GenericArgsRef<'vir>,
         args: &[Spanned<mir::Operand<'vir>>],
-        block: mir::BasicBlock,
-        curr_ver: &Versions<'vir>,
+        closures: &FxHashMap<DefId, ClosureConstruction<'vir>>,
     ) -> EncodeResult<'vir, ExprRet<'vir>, MirPureEnc> {
         let mk_bool = |prim: vir::ExprGenBool<'vir, _, _>| prim.upcast_ty::<vir::CSnap>();
         Ok(match builtin {
@@ -325,7 +319,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                     "exists"
                 };
                 let (qvars, body) =
-                    self.encode_spec_closure(name, arg_tys[2].expect_ty(), block, curr_ver)?;
+                    self.encode_spec_closure(name, arg_tys[2].expect_ty(), closures)?;
                 // TODO: triggers
                 let res = if builtin == SpecBuiltin::Forall {
                     self.vcx.mk_forall_expr(qvars, &[], body)
@@ -338,12 +332,8 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                 assert_eq!(arg_tys.len(), 2);
                 assert_eq!(args.len(), 1);
 
-                let (qvars, body) = self.encode_spec_closure(
-                    "spec_block",
-                    arg_tys[1].expect_ty(),
-                    block,
-                    curr_ver,
-                )?;
+                let (qvars, body) =
+                    self.encode_spec_closure("spec_block", arg_tys[1].expect_ty(), closures)?;
                 assert!(qvars.is_empty(), "`spec_block` closures take no arguments");
                 mk_bool(body)
             }
