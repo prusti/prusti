@@ -16,10 +16,7 @@ use prusti_rustc_interface::{
     data_structures::fx::{FxHashMap, FxHashSet},
     hir::attrs::LangItem,
     middle::ty::{self, ClauseKind, GenericArgsRef},
-    trait_selection::traits::{
-        normalize_param_env_or_error, query::evaluate_obligation::InferCtxtExt, Obligation,
-        ObligationCause,
-    },
+    trait_selection::traits::{normalize_param_env_or_error, ObligationCause},
 };
 use prusti_specs::ExternSpecKind;
 use std::cmp::{Eq, PartialEq};
@@ -406,23 +403,13 @@ impl<'tcx> ExternSpecResolver<'tcx> {
             !below_sized(clause) && !sized_by_value(normalized) && seen.insert(*clause)
         })
         .collect::<Vec<_>>();
-        if declared.is_empty() {
-            return None;
-        }
-        let infcx = self.env_query.infer_ctxt();
+        // The clauses' regions are erased, so they are checked modulo regions.
         let unimplied = declared
             .into_iter()
             .filter(|(normalized, _, _)| {
-                let obligation = Obligation::new(
-                    self.env_query.tcx(),
-                    ObligationCause::dummy(),
-                    target_env,
-                    *normalized,
-                );
-                // Regions are erased, so the region constraints that remain
-                // (e.g. from instantiating a higher-ranked bound) are not
-                // decided.
-                !infcx.predicate_must_hold_modulo_regions(&obligation)
+                !self
+                    .env_query
+                    .clause_holds_modulo_regions(target_env, *normalized)
             })
             .collect::<Vec<_>>();
         if unimplied.is_empty() {
