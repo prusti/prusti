@@ -53,3 +53,13 @@ fn reborrow_user() {
     *y = 72;
     assert!(pt.x == pt.y);
 }
+
+// A reference that dies together with a reborrow of it gives its lender back
+// what the reborrow holds: `a` sees the write through `c`.
+fn reborrow_dying_together() {
+    let mut a = 1;
+    let mut b = &mut a;
+    let c = &mut b;
+    **c = 5;
+    assert!(a == 5);
+}
