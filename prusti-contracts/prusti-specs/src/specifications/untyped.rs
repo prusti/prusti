@@ -28,10 +28,15 @@ impl syn::parse::Parse for AnyFnItem {
                 input.advance_to(&fork);
                 Ok(AnyFnItem::Fn(res))
             }
-            Err(_) => {
-                // It is not a valid ItemFn.
-                let item_method = input.parse()?;
-                Ok(AnyFnItem::TraitMethod(item_method))
+            Err(item_fn_error) => {
+                // It is not a valid ItemFn. If it is not a trait method
+                // either, the error of parsing it as an ItemFn describes it
+                // better: a trait method has no visibility, so parsing one
+                // fails at the start of e.g. any `pub` function.
+                match input.parse() {
+                    Ok(item_method) => Ok(AnyFnItem::TraitMethod(item_method)),
+                    Err(_) => Err(item_fn_error),
+                }
             }
         }
     }

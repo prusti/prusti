@@ -16,6 +16,14 @@ fn main() {
         #[ensures(result == y + y)]
         |y: i32| -> i32 { y + y }
     );
+
+    // Attributes written with their full path, and a Prusti operator in the
+    // specification.
+    let h = closure!(
+        #[prusti_contracts::pure]
+        #[prusti_contracts::ensures(z > 0 ==> result > 0)]
+        |z: i32| -> i32 { z }
+    );
 }
 
 // The body reads the capture `n` (the condition is there only for that): a

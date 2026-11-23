@@ -1,10 +1,12 @@
-use super::rewriter::AstRewriter;
+use super::{
+    common::inherent_impl, prusti_attribute_kind, rewriter::AstRewriter, SpecAttributeKind,
+};
 use itertools::Itertools;
 use proc_macro2::{Span, TokenStream};
 use quote::{quote_spanned, ToTokens};
 use syn::{
     parse::Parser, parse_quote_spanned, punctuated::Punctuated, spanned::Spanned, Expr, ExprLit,
-    Fields, Generics, Ident, Lit, Pat, PatLit, Token,
+    Fields, Lit, Pat, PatLit, Token,
 };
 
 pub fn rewrite_struct(
@@ -160,11 +162,11 @@ fn rewrite_internal_struct(
         }
     };
 
-    let item_impl = generate_generics(
+    let item_impl = inherent_impl(
         item_struct.span(),
-        item_struct.ident.clone(),
+        &item_struct.ident,
         &item_struct.generics,
-        spec_item.into_token_stream(),
+        spec_item,
     );
     Ok(vec![syn::Item::Impl(item_impl)])
 }
@@ -191,7 +193,7 @@ fn rewrite_internal_enum(
 
     for variant in &item_enum.variants {
         if let Some(custom_print) = variant.attrs.iter().find(|attr| {
-            attr.path.get_ident().map(|x| x.to_string()) == Some("print_counterexample".to_string())
+            prusti_attribute_kind(attr) == Some(SpecAttributeKind::PrintCounterexample)
         }) {
             let variant_name = variant.ident.clone();
             let item_span = variant.ident.span();
@@ -290,17 +292,17 @@ fn rewrite_internal_enum(
         x.to_tokens(&mut spec_item_as_tokens);
     }
 
-    let item_impl = generate_generics(
+    let item_impl = inherent_impl(
         item_enum.span(),
-        item_enum.ident.clone(),
+        &item_enum.ident,
         &item_enum.generics,
-        spec_item_as_tokens.into_token_stream(),
+        spec_item_as_tokens,
     );
     let mut item_enum_new = item_enum;
     for variant in &mut item_enum_new.variants {
         //remove all macros inside the enum
         variant.attrs.retain(|attr| {
-            attr.path.get_ident().map(|x| x.to_string()) != Some("print_counterexample".to_string())
+            prusti_attribute_kind(attr) != Some(SpecAttributeKind::PrintCounterexample)
         });
     }
     Ok(vec![
@@ -394,26 +396,4 @@ fn check_validity_of_args(
         }
     }
     Ok(())
-}
-
-fn generate_generics(
-    item_span: Span,
-    typ: Ident,
-    generics: &Generics,
-    spec_item: TokenStream,
-) -> syn::ItemImpl {
-    let generics_idents = generics
-        .params
-        .iter()
-        .filter_map(|generic_param| match generic_param {
-            syn::GenericParam::Type(type_param) => Some(type_param.ident.clone()),
-            _ => None,
-        })
-        .collect::<syn::punctuated::Punctuated<_, syn::Token![,]>>();
-    let item_impl: syn::ItemImpl = parse_quote_spanned! {item_span=>
-        impl #generics #typ <#generics_idents> {
-            #spec_item
-        }
-    };
-    item_impl
 }

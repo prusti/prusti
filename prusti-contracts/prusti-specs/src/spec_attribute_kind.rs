@@ -12,12 +12,11 @@ pub enum SpecAttributeKind {
     AssertOnExpiry = 4,
     Pure = 5,
     Trusted = 6,
-    Predicate = 7,
-    Invariant = 8,
-    RefineSpec = 9,
-    Terminates = 10,
-    PrintCounterexample = 11,
-    Verified = 12,
+    Invariant = 7,
+    RefineSpec = 8,
+    Terminates = 9,
+    PrintCounterexample = 10,
+    Verified = 11,
 }
 
 impl TryFrom<String> for SpecAttributeKind {
@@ -31,7 +30,6 @@ impl TryFrom<String> for SpecAttributeKind {
             "assert_on_expiry" => Ok(SpecAttributeKind::AssertOnExpiry),
             "pure" => Ok(SpecAttributeKind::Pure),
             "trusted" => Ok(SpecAttributeKind::Trusted),
-            "predicate" => Ok(SpecAttributeKind::Predicate),
             "invariant" => Ok(SpecAttributeKind::Invariant),
             "refine_spec" => Ok(SpecAttributeKind::RefineSpec),
             "terminates" => Ok(SpecAttributeKind::Terminates),
