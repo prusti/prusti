@@ -1,5 +1,6 @@
+use prusti_rustc_interface::{hir::attrs::LangItem, span::DUMMY_SP};
 use task_encoder::{EncodeFullError, EncodeFullResult, TaskEncoder, TaskEncoderDependencies};
-use vir::{CastType, FunctionIdn, PredicateIdn};
+use vir::{CastType, FunctionIdn, MethodIdn, PredicateIdn};
 
 use crate::encoders::TyUseImpureEnc;
 
@@ -7,12 +8,13 @@ use super::{
     RustTy, RustTyDecomposition,
     data::TySpecifics,
     generics::{
-        GArgsTyEnc, GenericParamsEnc, ParamTypEnc,
+        GArgsTyEnc, GenericParamsEnc, IndirectCastIdn, ParamTypEnc,
         arity::{TyArityEnc, add, sub},
         clamp::ClampEnc,
         lifetime_position::{
             EnclosureGraph, GeneralizedLifetime, LifetimePosition, LifetimePositionEnc,
         },
+        r#trait::TraitEnc,
     },
     impure::TyImpureEnc,
     pure::TyPureEnc,
@@ -66,9 +68,14 @@ pub struct IndirectPredRef<'vir> {
     /// the index makes them distinct even where elements are equal.
     pub element: Option<ElementPredIdn<'vir>>,
     /// Whether the predicate has a body; that of a type parameter, or of a
-    /// type whose predicate is not defined yet (e.g. a raw pointer), is
-    /// abstract and can be neither folded nor unfolded.
+    /// type whose predicate is not defined yet (e.g. a slice), is abstract
+    /// and can be neither folded nor unfolded.
     pub has_body: bool,
+    /// For a type parameter, `copy_ind_X(k, T, lo, hi)`: the predicate of a
+    /// copy of the value `k`, given that the type is `Copy`. A `Copy` type
+    /// contains no mutable references, so its predicate holds no
+    /// permissions, and a copy may hold it as well as the original.
+    pub copy: Option<IndirectCastIdn<'vir>>,
 }
 
 pub type ElementPredIdn<'vir> = PredicateIdn<
@@ -692,6 +699,7 @@ impl TaskEncoder for IndirectPredEnc {
         vir::Function<'vir>,
         GraftShallowDecls<'vir>,
         Option<vir::Predicate<'vir>>,
+        Option<vir::Method<'vir>>,
     );
 
     fn task_to_key<'vir>(task: &Self::TaskDescription<'vir>) -> Self::TaskKey<'vir> {
@@ -767,10 +775,23 @@ impl TaskEncoder for IndirectPredEnc {
                 TySpecifics::StructLike(_)
                 | TySpecifics::EnumLike(_)
                 | TySpecifics::MutRef(_)
-                | TySpecifics::ImmRef(_) => true,
+                | TySpecifics::ImmRef(_)
+                | TySpecifics::Raw(_) => true,
                 TySpecifics::ArrayLike(data) => !data.slice,
                 _ => false,
             };
+            let copy = ty.specifics.is_param().then(|| {
+                MethodIdn::new(
+                    vir::ViperIdent::new(vir::vir_format!(vcx, "copy_ind_{}", task_key.name())),
+                    (
+                        snapshot,
+                        params.ty_args(),
+                        params.const_args(),
+                        vir::TYPE_INT,
+                        vir::TYPE_INT,
+                    ),
+                )
+            });
             deps.emit_output_ref(
                 *task_key,
                 IndirectPredRef {
@@ -780,6 +801,7 @@ impl TaskEncoder for IndirectPredEnc {
                     shallow,
                     element,
                     has_body,
+                    copy,
                 },
             )?;
 
@@ -1128,8 +1150,10 @@ impl TaskEncoder for IndirectPredEnc {
                         .push(forall(result_i, vcx.mk_eq_expr(result_i, collapsed)));
                     (Some(body), None, None, None)
                 }
-                // A shared reference has no lifetime positions.
-                TySpecifics::ImmRef(_) => (Some(vcx.mk_bool::<true>()), Some(k), Some(s), Some(s)),
+                // A shared reference or raw pointer has no lifetime positions.
+                TySpecifics::ImmRef(_) | TySpecifics::Raw(_) => {
+                    (Some(vcx.mk_bool::<true>()), Some(k), Some(s), Some(s))
+                }
                 // TODO: the remaining types.
                 _ => (None, None, None, None),
             };
@@ -1146,6 +1170,37 @@ impl TaskEncoder for IndirectPredEnc {
                 ),
                 body,
             );
+            let copy_decl = match copy {
+                Some(copy) => {
+                    let copy_trait = vcx.tcx().require_lang_item(LangItem::Copy, DUMMY_SP);
+                    let is_copy = deps.require_ref::<TraitEnc>(copy_trait)?.impl_fun;
+                    let is_copy = is_copy(params.ty_exprs(), params.const_exprs());
+                    let pred = vir::expr! { vcx;
+                        ((lo) < (hi)) ==> (acc([predicate](
+                            k,
+                            [..[params.ty_exprs()]],
+                            [..[params.const_exprs()]],
+                            lo,
+                            hi
+                        )))
+                    };
+                    Some(vcx.mk_method(
+                        copy,
+                        (
+                            k_decl,
+                            params.ty_decls(),
+                            params.const_decls(),
+                            lo_decl,
+                            hi_decl,
+                        ),
+                        &[],
+                        vcx.alloc_slice(&[is_copy]),
+                        vcx.alloc_slice(&[pred]),
+                        None,
+                    ))
+                }
+                None => None,
+            };
 
             // Fetching through an empty interval reads nothing and needs no predicate, so
             // callers extend through a position's interval without checking whether the
@@ -1241,14 +1296,20 @@ impl TaskEncoder for IndirectPredEnc {
             };
 
             Ok((
-                (predicate_decl, extend_decl, graft_shallow, element_decl),
+                (
+                    predicate_decl,
+                    extend_decl,
+                    graft_shallow,
+                    element_decl,
+                    copy_decl,
+                ),
                 (),
             ))
         })
     }
 
     fn emit_outputs<'vir>(program: &mut task_encoder::Program<'vir>) {
-        for (predicate, extend, graft_shallow, element) in Self::all_outputs_local(program) {
+        for (predicate, extend, graft_shallow, element, copy) in Self::all_outputs_local(program) {
             program.add_predicate(predicate);
             if let Some(element) = element {
                 program.add_predicate(element);
@@ -1260,6 +1321,9 @@ impl TaskEncoder for IndirectPredEnc {
                     program.add_function(shallow);
                 }
                 GraftShallowDecls::Domain(domain) => program.add_domain(domain),
+            }
+            if let Some(copy) = copy {
+                program.add_method(copy);
             }
         }
     }

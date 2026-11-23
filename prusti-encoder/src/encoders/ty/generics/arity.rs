@@ -91,8 +91,12 @@ impl TaskEncoder for ArityEnc {
                 .downcast_ty();
             let instantiated_type =
                 ty_constructor.ty_constructor.call()(params.ty_exprs(), params.const_exprs());
-            // shared references have no lifetime positions, they work with snapshots instead
-            let rhs = if matches!(task_key.specifics, TySpecifics::ImmRef(_)) {
+            // shared references and raw pointers have no lifetime positions, they work with
+            // snapshots instead
+            let rhs = if matches!(
+                task_key.specifics,
+                TySpecifics::ImmRef(_) | TySpecifics::Raw(_)
+            ) {
                 vcx.mk_uint::<0>()
             } else {
                 // L + arity(T_0) + ... + arity(T_{M-1})
@@ -338,7 +342,7 @@ mod tests {
             dedent(
                 r#"
                 forall T$0: Type :: {arity(s_RawPtr_mutable_type(T$0))}
-                  (arity(s_RawPtr_mutable_type(T$0))) == (arity(T$0))
+                  (arity(s_RawPtr_mutable_type(T$0))) == (0)
                 "#
             ),
         );

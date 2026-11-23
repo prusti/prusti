@@ -2953,7 +2953,9 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             }
             &mir::Operand::Copy(_source) => {
                 let ty_out = self.ty_use_impure(ty);
-                (self.encode_operand_snap(operand, &None)?, ty_out)
+                let snap = self.encode_operand_snap(operand, &None)?;
+                self.copy_indirect(ty, snap)?;
+                (snap, ty_out)
             }
             mir::Operand::Constant(box constant) => {
                 let ty_out = self.ty_use_impure(ty);
@@ -2999,6 +3001,9 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                     self.encode_place_with_snap(Place::from(place))?;
                 let tmp = self.new_tmp(ty_out.snapshot());
                 self.stmt(self.vcx.mk_pure_assign_stmt(tmp, snap_val));
+                if matches!(operand, mir::Operand::Copy(_)) {
+                    self.copy_indirect(operand.ty(self.local_decls, self.vcx.tcx()), tmp)?;
+                }
                 if matches!(operand, mir::Operand::Move(_)) {
                     self.stmt(self.vcx.mk_exhale_stmt(ty_out.ref_to_pred(
                         self.vcx,
@@ -3013,6 +3018,20 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             }
             mir::Operand::RuntimeChecks(_) => todo!(),
         }
+    }
+
+    /// Gives a copy of the value `snap` of type `ty` its indirect predicates
+    /// (see [`NodePredicates::copy`]).
+    fn copy_indirect(
+        &mut self,
+        ty: ty::Ty<'vir>,
+        snap: vir::ExprSnap<'vir>,
+    ) -> EncodeResult<'vir, (), E> {
+        let nodes = NodePredicates::new(RustTyDecomposition::from_ty(ty, self.def_id), self.deps)?;
+        for stmt in nodes.copy(snap) {
+            self.stmt(stmt);
+        }
+        Ok(())
     }
 
     /// Read `statement`'s operands into an [OperandSnaps] map; see the call
@@ -3036,7 +3055,11 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         let mut snaps = FxHashMap::default();
         for operand in &collector.0 {
             let place = operand.place().unwrap();
-            if snaps.contains_key(&place) {
+            if let Some(&snap) = snaps.get(&place) {
+                // Each copy holds its own predicates.
+                if matches!(operand, mir::Operand::Copy(_)) {
+                    self.copy_indirect(operand.ty(self.local_decls, self.vcx.tcx()), snap)?;
+                }
                 continue;
             }
             let snap = self.capture_operand_snap(operand)?;

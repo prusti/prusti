@@ -113,6 +113,24 @@ impl<'vir> NodePredicates<'vir> {
             .collect()
     }
 
+    /// For a type parameter, the statements giving a copy of the value
+    /// `snap` its predicates (see `IndirectPredRef::copy`); none for other
+    /// types.
+    pub fn copy(&self, snap: vir::ExprSnap<'vir>) -> Vec<vir::Stmt<'vir>> {
+        let Some(copy) = self.ind.copy else {
+            return Vec::new();
+        };
+        let block = self.block(snap);
+        block
+            .positions()
+            .into_iter()
+            .map(|p| {
+                let (lo, hi) = self.graph.interval(p);
+                copy(block.key(p), self.tys, self.consts, lo, hi).alloc()
+            })
+            .collect()
+    }
+
     /// Whether the node of `lifetime` has any predicates.
     pub fn has_positions(&self, lifetime: PcgLifetime<'vir>) -> bool {
         self.graph
