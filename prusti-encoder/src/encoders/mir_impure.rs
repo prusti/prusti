@@ -2415,6 +2415,75 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         Ok(())
     }
 
+    /// At the return, gives the caller back what flows into its views of the
+    /// arguments' lifetime projections, the remote nodes, by unblocking them
+    /// in `state` as a package does. The PCG keeps the nodes that the body no
+    /// longer gives back until then. A remote node whose unblocking goes
+    /// through the result is given back by the result's wand instead.
+    pub(crate) fn give_back_arguments(
+        &mut self,
+        state: &BorrowsState<'_, 'vir>,
+    ) -> EncodeResult<'vir, (), E> {
+        let ctxt = self.pcg_ctxt();
+        let mut remote = Vec::new();
+        for edge in state.graph().edges() {
+            for node in edge.blocked_nodes(ctxt) {
+                if let PcgNode::LifetimeProjection(rp) = node
+                    && matches!(rp.base(), PlaceOrConst::Place(MaybeRemotePlace::Remote(_)))
+                    && !remote.contains(&node)
+                {
+                    remote.push(node);
+                }
+            }
+        }
+        let is_result_place = |place: Place<'vir>| place.local == mir::RETURN_PLACE;
+        // The nodes are unblocked together, as in a package: an edge blocking
+        // several of them is removed once.
+        let mut given_back = Vec::new();
+        for node in remote {
+            let actions = UnblockGraph::for_nodes([node], state, ctxt)
+                .actions(ctxt)
+                .unwrap();
+            let through_result = actions.iter().any(|action| {
+                let edge = action.edge();
+                edge.blocked_by_nodes(ctxt).any(|node| match node {
+                    PcgNode::Place(place) => is_result_place(place.place()),
+                    PcgNode::LifetimeProjection(rp) => is_result_place(rp.base().place()),
+                }) || edge.blocked_nodes(ctxt).any(|node| match node {
+                    PcgNode::Place(place) => is_result_place(place.place()),
+                    PcgNode::LifetimeProjection(rp) => {
+                        local_node(rp).is_some_and(|node| is_result_place(node.base().place()))
+                    }
+                })
+            });
+            comment!(
+                self,
+                "give back {}{}",
+                node.to_short_string(ctxt),
+                if through_result {
+                    " (by the result's wand)"
+                } else {
+                    ""
+                }
+            );
+            if !through_result {
+                given_back.push(node);
+            }
+        }
+        let actions = UnblockGraph::for_nodes(given_back, state, ctxt)
+            .actions(ctxt)
+            .unwrap();
+        let mut to_skip = Vec::new();
+        for action in &actions {
+            let edge_action = match action {
+                BorrowPcgUnblockAction::RemoveEdge(_) => EdgeAction::Remove,
+                BorrowPcgUnblockAction::AddEdge(..) => EdgeAction::Add,
+            };
+            self.pcs_handle_edge(state, action.edge(), edge_action, false, &mut to_skip, None)?;
+        }
+        Ok(())
+    }
+
     fn pcs_unblock_actions(
         &mut self,
         borrows_state: &BorrowsState<'_, 'vir>,
@@ -4064,11 +4133,17 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                         after_effect: false,
                     },
                 ));
-                let wand_packages = self.package_wands(state.borrow_pcg());
+                // The arguments are given back once the result's wands hold
+                // what goes back to the caller through the result.
+                let result = self
+                    .package_wands(state.borrow_pcg())
+                    .and_then(|wand_packages| {
+                        self.stmts(wand_packages);
+                        self.give_back_arguments(state.borrow_pcg())
+                    });
                 self.phase_start = None;
                 self.current_fpcs = Some(current_fpcs);
-                let wand_packages = wand_packages?;
-                self.stmts(wand_packages);
+                result?;
 
                 self.vcx
                     .mk_goto_stmt(self.vcx.alloc(vir::CfgBlockLabelData::End))
