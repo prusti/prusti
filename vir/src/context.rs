@@ -7,7 +7,8 @@ use std::{cell::RefCell, fmt::Debug};
 
 use crate::{data::*, refs::*};
 
-/// How a Rust item's `DefId` is rendered into a Viper identifier.
+/// How a Rust item's `DefId` is rendered into a Viper identifier, and whether
+/// the variables of pure code name the MIR location that creates them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum IdentStyle {
     /// The item's full definition path.

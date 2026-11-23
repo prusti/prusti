@@ -333,7 +333,7 @@ Maximum amount of instantiated Viper verifiers the server will keep around for r
 
 ## `SHORT_VIPER_NAMES`
 
-When enabled, Viper identifiers derived from Rust items use the item's short name (e.g. `Foo`) instead of its full definition path (e.g. `my_crate::module::Foo`).
+When enabled, Viper identifiers derived from Rust items use the item's short name (e.g. `Foo`) instead of its full definition path (e.g. `my_crate::module::Foo`), and the variables of pure code leave out the MIR location that creates them (e.g. `_0_1s_3` instead of `_0_1s_bb2_s4_i3`).
 This is useful for debugging but may result in name collisions (in which case the generated Viper programs will fail to compile).
 
 ## `SHOW_IDE_INFO`

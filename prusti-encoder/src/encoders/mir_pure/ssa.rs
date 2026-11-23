@@ -18,17 +18,18 @@ pub(super) struct Version<'vir> {
 
 /// The part of a variable's name that identifies a version of a local or a
 /// merge: the index, which makes it unique, after the location that creates
-/// it in builds with debug assertions.
-fn name_suffix(location: mir::Location, index: usize) -> impl fmt::Display {
+/// it unless short names are asked for (`short_viper_names`).
+fn name_suffix(vcx: &vir::VirCtxt<'_>, location: mir::Location, index: usize) -> impl fmt::Display {
+    let short = vcx.ident_style == vir::IdentStyle::ItemName;
     fmt::from_fn(move |f| {
-        if cfg!(debug_assertions) {
+        if short {
+            write!(f, "{index}")
+        } else {
             write!(
                 f,
                 "{:?}_s{}_i{}",
                 location.block, location.statement_index, index
             )
-        } else {
-            write!(f, "{index}")
         }
     })
 }
@@ -198,7 +199,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
             "_{}_{}s_{}",
             self.encoding_depth,
             local.as_usize(),
-            name_suffix(version.location, version.index)
+            name_suffix(self.vcx, version.location, version.index)
         );
         version.decl = Some(self.vcx.mk_local_decl(name, expr.ty()));
         fragment.binds.push(Bind::Local(local, version, expr));
@@ -322,7 +323,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
             self.vcx,
             "_{}_phi_{}",
             self.encoding_depth,
-            name_suffix(location, self.phi_ctr)
+            name_suffix(self.vcx, location, self.phi_ctr)
         );
         let phi = self.vcx.mk_local_decl(phi_name, tuple_ref.ty);
         self.phi_ctr += 1;
