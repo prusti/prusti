@@ -98,6 +98,9 @@ pub(crate) trait PureRvalueEnc<'vir> {
     fn deps(&mut self) -> &mut TaskEncoderDependencies<'vir, Self::Encoder>;
     fn vcx(&self) -> &'vir vir::VirCtxt<'vir>;
     fn body(&self) -> &mir::Body<'vir>;
+    /// See `MirPureEncTask::encoding_depth`; `ConstEnc` encodes the promoted
+    /// constants of the body one level deeper.
+    fn encoding_depth(&self) -> usize;
     fn ty_use_pure(&mut self, ty: ty::Ty<'vir>) -> TyUsePure<'vir>;
 
     /// When creating a reference to a place, the metadata either comes from a
@@ -237,9 +240,10 @@ pub(crate) trait PureRvalueEnc<'vir> {
         constant: &mir::ConstOperand<'vir>,
     ) -> EncodeResult<'vir, vir::ExprCSnap<'vir>, Self::Encoder> {
         let context = self.context();
+        let encoding_depth = self.encoding_depth();
         self.deps().require_dep::<ConstEnc>(ConstEncTask::Mir {
             const_: constant.const_,
-            encoding_depth: 0,
+            encoding_depth,
             context,
             span: constant.span,
         })
@@ -268,9 +272,9 @@ pub(crate) trait PureRvalueEnc<'vir> {
         GArgs::new(self.context(), args)
     }
 
-    /// Encodes a call to a `prusti_contracts` builtin. Returns `None` for the
-    /// pure-only builtins (`forall`/`exists`/`spec_block`/mode markers), which
-    /// the pure encoder handles itself.
+    /// Encodes a call to a `prusti_contracts` builtin other than the
+    /// pure-only ones (`forall`/`exists`/`spec_block`/mode markers), which
+    /// only the pure encoder handles.
     fn encode_prusti_builtin(
         &mut self,
         builtin: PrustiBuiltin,
@@ -279,10 +283,11 @@ pub(crate) trait PureRvalueEnc<'vir> {
         args: &[Spanned<mir::Operand<'vir>>],
         span: Span,
         ctxt: &Self::EncodePlaceCtxt,
-    ) -> EncodeResult<'vir, Option<ExprOutput<'vir, Self>>, Self::Encoder> {
-        if matches!(builtin, PrustiBuiltin::Spec(_)) {
-            return Ok(None);
-        }
+    ) -> EncodeResult<'vir, ExprOutput<'vir, Self>, Self::Encoder> {
+        assert!(
+            !matches!(builtin, PrustiBuiltin::Spec(_)),
+            "pure-only builtin {builtin:?} outside the pure encoder"
+        );
         let is_pure = Self::PURE;
         let expr = self
             .deps()
@@ -297,7 +302,7 @@ pub(crate) trait PureRvalueEnc<'vir> {
             .iter()
             .map(|arg| self.encode_operand_snap(&arg.node, ctxt))
             .collect::<Result<Vec<_>, _>>()?;
-        Ok(Some(expr.apply(self.vcx(), &operands)))
+        Ok(expr.apply(self.vcx(), &operands))
     }
 
     fn encode_aggregate_snap(

@@ -213,7 +213,7 @@ impl TaskEncoder for FunctionEnc {
                 match deps.require_dep::<MirPureEnc>(MirPureEncTask {
                     encoding_depth: 0,
                     kind: PureKind::Pure,
-                    parent_def_id: def_id,
+                    def_id,
                     gargs: params.identity_args(),
                 }) {
                     Ok(out) => {

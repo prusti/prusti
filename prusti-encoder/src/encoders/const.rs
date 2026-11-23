@@ -392,7 +392,7 @@ impl TaskEncoder for ConstEnc {
                         // context is needed.
                         let task = MirPureEncTask {
                             encoding_depth: encoding_depth + 1,
-                            parent_def_id: uneval.def,
+                            def_id: uneval.def,
                             gargs: GParams::from(uneval.def).identity_args(),
                             kind: PureKind::Constant(promoted),
                         };

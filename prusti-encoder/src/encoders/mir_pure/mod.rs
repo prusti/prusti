@@ -1,9 +1,29 @@
+//! The encoding of MIR bodies as Viper expressions: of pure functions,
+//! specifications, promoted constants, spec blocks, and the closures of
+//! quantifiers and spec blocks.
+//!
+//! A body becomes one expression, a chain of `let`s in static single
+//! assignment form: each assignment to a local binds a new version of it
+//! (see `Version`), whose variable the later reads of the local refer to. The
+//! walk over the control flow graph builds the chain region by region (see
+//! `Fragment`). A conditional is a merge: its branches are encoded up to
+//! their join point, the locals that some branch changes are bound as one
+//! pair chosen by the branch conditions, and the locals continue as its
+//! elements (see `Enc::merge`). An assertion is a merge whose branch for the
+//! expected value is the rest of the region and whose other branch cannot
+//! complete.
+//!
+//! The expression is built lazily: the values of its inputs (version 0 of
+//! the arguments, or of every local of the enclosing body for a spec block),
+//! the state `old` refers to, and a spec closure's captures are supplied when
+//! it is instantiated (see `ExprInput`). The bindings of versions that nothing
+//! reads, directly or through other bindings, are left out (see `Uses`).
+
 use crate::encoders::{
     FunctionCallEnc, Mode, PrustiBuiltin, SpecBuiltin,
     custom::{PairUse, PairUseEnc},
     mir_fn::{CallTaskDescription, RustSignature, SpecArms},
     mir_shared::{EncodeResult, PureRvalueEnc, RustcIntrinsic, unsupported_opaque},
-    pure::spec::MirSpecEncMode,
     ty::{
         RustTyDecomposition,
         generics::{GArgs, GParams},
@@ -12,6 +32,7 @@ use crate::encoders::{
 };
 use itertools::Itertools;
 use pcg::utils::Place;
+use prusti_interface::environment::body::MirBody;
 use prusti_rustc_interface::{
     abi,
     data_structures::graph::{self, Successors},
@@ -36,23 +57,34 @@ mod spec_closure;
 mod ssa;
 mod walk;
 
+use ssa::{Fragment, Uses, Versions};
+
 pub struct MirPureEnc;
 
 #[derive(Clone, Debug)]
-pub enum MirPureEncError {
-    // UnsupportedStatement,
-    // UnsupportedTerminator,
-}
+pub enum MirPureEncError {}
 
 /// The values of an encoded body's inputs.
 pub type Inputs<'vir> = &'vir FxHashMap<mir::Local, vir::ExprSnap<'vir>>;
 /// The values of a spec closure's captures, in the modes its body reads them
-/// in (see `MirPureEncOutput::captures`).
-type Captures<'vir> = &'vir IndexSlice<abi::FieldIdx, FxHashMap<Modes, vir::ExprSnap<'vir>>>;
-/// What an encoded body is instantiated with: the body's `DefId`, the values
-/// of its inputs, the state `old` refers to, and, for a spec closure, the
-/// values of its captures.
-type ExprInput<'vir> = (DefId, Inputs<'vir>, vir::OldLabel<'vir>, Captures<'vir>);
+/// in (see `MirPureEncOutput::captures`): the captured places, encoded by the
+/// enclosing body (see `Enc::encode_capture`).
+type Captures<'vir> =
+    &'vir IndexSlice<abi::FieldIdx, FxHashMap<Modes, EncodedPlaceGen<'vir, (), !>>>;
+/// What an encoded body is instantiated with (see
+/// `MirPureEncOutput::reify_at`).
+#[derive(Clone, Copy)]
+struct ExprInput<'vir> {
+    /// The body being instantiated; the encoded body checks that it is its
+    /// own.
+    def_id: DefId,
+    /// The values of the body's inputs.
+    inputs: Inputs<'vir>,
+    /// The state `old` refers to.
+    old: vir::OldLabel<'vir>,
+    /// For a spec closure, the values of its captures.
+    captures: Captures<'vir>,
+}
 type ExprRet<'vir> = vir::ExprGenSnap<'vir, ExprInput<'vir>, vir::ExprKind<'vir>>;
 type ExprRetRef<'vir> = vir::ExprGenRef<'vir, ExprInput<'vir>, vir::ExprKind<'vir>>;
 type ExprRetAny<'vir, T> = vir::ExprGen<'vir, ExprInput<'vir>, vir::ExprKind<'vir>, T>;
@@ -65,6 +97,8 @@ type SpecClosure<'vir> = (
 
 #[derive(Clone, Debug)]
 pub struct MirPureEncOutput<'vir> {
+    /// The inputs the body reads (see `ExprInput::inputs`), which every
+    /// instantiation supplies.
     pub inputs: Vec<mir::Local>,
     /// The body `expr` encodes.
     pub def_id: DefId,
@@ -84,7 +118,12 @@ impl<'vir> MirPureEncOutput<'vir> {
     /// Like `reify`, with `old(..)` in the body referring to the state `old`.
     pub fn reify_at(&self, inputs: Inputs<'vir>, old: vir::OldLabel<'vir>) -> vir::ExprSnap<'vir> {
         use vir::Reify;
-        let input = (self.def_id, inputs, old, IndexSlice::empty());
+        let input = ExprInput {
+            def_id: self.def_id,
+            inputs,
+            old,
+            captures: IndexSlice::empty(),
+        };
         vir::with_vcx(|vcx| self.expr.reify(vcx, input))
     }
 }
@@ -99,6 +138,27 @@ bitflags::bitflags! {
         const REL0 = 1 << 1;
         const REL1 = 1 << 2;
         const BEFORE_EXPIRY = 1 << 3;
+    }
+}
+
+impl Modes {
+    fn of(mode: Mode) -> Self {
+        match mode {
+            Mode::Old => Self::OLD,
+            Mode::Rel(0) => Self::REL0,
+            Mode::Rel(_) => Self::REL1,
+            Mode::BeforeExpiry => Self::BEFORE_EXPIRY,
+        }
+    }
+
+    /// The modes that a read in `self` cannot be nested in: `self`, and for
+    /// a `rel`, either execution.
+    fn conflicting(self) -> Self {
+        if self.intersects(Self::REL0 | Self::REL1) {
+            Self::REL0 | Self::REL1
+        } else {
+            self
+        }
     }
 }
 
@@ -117,22 +177,90 @@ pub enum PureKind {
     /// instantiated accordingly.
     Spec {
         context: DefId,
-        /// How the arguments are supplied, which decides whether their
-        /// snapshots are deep (see `Enc::impure_context`).
-        mode: MirSpecEncMode,
+        /// Whether the specification belongs to an impure function (see
+        /// `Enc::impure_context`).
+        impure: bool,
     },
     Pure,
     Constant(mir::Promoted),
     SpecBlock(mir::BasicBlock),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+/// What the kind of a body decides about its encoding, apart from the body
+/// itself (see `PureKind::body`) and the region of it that is encoded.
+struct BodySetup {
+    /// The item whose generic parameters the body's types are expressed in.
+    context_def_id: DefId,
+    impure_context: bool,
+    captures: Option<IndexVec<abi::FieldIdx, FxHashSet<Modes>>>,
+}
+
+impl PureKind {
+    /// The body of this kind that `def_id` holds, encoded with `gargs`.
+    fn body<'vir>(
+        self,
+        vcx: &'vir vir::VirCtxt<'vir>,
+        def_id: DefId,
+        gargs: GArgs<'vir>,
+    ) -> MirBody<'vir> {
+        // A specification is instantiated with the arguments of the
+        // encoding, which differ from its own when a trait's specification
+        // is encoded for an `impl` of that trait. So is the closure of a
+        // quantifier or `spec_block`, which is encoded in the context of
+        // the expression it is part of. The other bodies are encoded
+        // generically, so they are taken as stored.
+        match self {
+            PureKind::Closure { context } => {
+                let substs = vcx.tcx().mk_args(gargs.args());
+                vcx.body_mut().get_closure_body(def_id, substs, context)
+            }
+            PureKind::Spec { context, .. } => {
+                let substs = vcx.tcx().mk_args(gargs.args());
+                vcx.body_mut().get_spec_body(def_id, substs, context)
+            }
+            PureKind::Pure => crate::encoders::pure_body(def_id),
+            PureKind::Constant(promoted) => {
+                vcx.body_mut().get_promoted_constant_body(def_id, promoted)
+            }
+            PureKind::SpecBlock(_) => crate::encoders::impure_body(def_id)
+                .unwrap_or_else(|| panic!("no body to encode for {def_id:?}")),
+        }
+    }
+
+    fn setup(self, def_id: DefId, body: &mir::Body<'_>) -> BodySetup {
+        BodySetup {
+            context_def_id: match self {
+                PureKind::Closure { context } | PureKind::Spec { context, .. } => context,
+                PureKind::Pure | PureKind::Constant(_) | PureKind::SpecBlock(_) => def_id,
+            },
+            impure_context: matches!(
+                self,
+                PureKind::Spec { impure: true, .. } | PureKind::SpecBlock(..)
+            ),
+            captures: matches!(self, PureKind::Closure { .. }).then(|| {
+                let closure_ty = body.local_decls[ty::CAPTURE_STRUCT_LOCAL].ty.peel_refs();
+                let TyKind::Closure(_, args) = closure_ty.kind() else {
+                    unreachable!("a closure body takes its closure first");
+                };
+                IndexVec::from_elem_n(FxHashSet::default(), args.as_closure().upvar_tys().len())
+            }),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct MirPureEncTask<'vir> {
+    /// How deeply the body is nested in the expression it becomes part of.
+    /// It is part of every variable name of the body, so that the variables
+    /// of a body inlined into another one do not clash with the other's.
     // TODO: depth of encoding should be in the lazy context rather than here;
     //   can we integrate the lazy context into the identifier system?
     pub encoding_depth: usize,
     pub kind: PureKind,
-    pub parent_def_id: DefId, // ID of the function
+    /// The item whose MIR holds the body: the pure function, specification
+    /// or closure itself, the item a constant is promoted from, or the
+    /// function a spec block is in.
+    pub def_id: DefId,
     /// The generic arguments the body is encoded with, together with the
     /// context whose parameters give them meaning.
     pub gargs: GArgs<'vir>,
@@ -144,25 +272,14 @@ impl TaskEncoder for MirPureEnc {
 
     type TaskDescription<'vir> = MirPureEncTask<'vir>;
 
-    type TaskKey<'vir> = (
-        usize,       // encoding depth
-        PureKind,    // encoding a pure function?
-        DefId,       // ID of the function
-        GArgs<'vir>, // the generic arguments and their context
-    );
+    type TaskKey<'vir> = MirPureEncTask<'vir>;
 
     type OutputFullDependency<'vir> = MirPureEncOutput<'vir>;
 
     type EncodingError = MirPureEncError;
 
     fn task_to_key<'vir>(task: &Self::TaskDescription<'vir>) -> Self::TaskKey<'vir> {
-        (
-            // TODO
-            task.encoding_depth,
-            task.kind,
-            task.parent_def_id,
-            task.gargs,
-        )
+        *task
     }
 
     fn do_encode_full<'vir>(
@@ -171,32 +288,16 @@ impl TaskEncoder for MirPureEnc {
     ) -> EncodeFullResult<'vir, Self> {
         deps.emit_output_ref(*task_key, ())?;
 
-        let (_, kind, def_id, gargs) = *task_key;
+        let MirPureEncTask {
+            encoding_depth,
+            kind,
+            def_id,
+            gargs,
+        } = *task_key;
 
         tracing::debug!("encoding {def_id:?}");
         let (inputs, expr, captures) = vir::with_vcx(move |vcx| {
-            // A specification is instantiated with the arguments of the
-            // encoding, which differ from its own when a trait's specification
-            // is encoded for an `impl` of that trait. So is the closure of a
-            // quantifier or `spec_block`, which is encoded in the context of
-            // the expression it is part of. The other bodies are encoded
-            // generically, so they are taken as stored.
-            let body = match kind {
-                PureKind::Closure { context } => {
-                    let substs = vcx.tcx().mk_args(gargs.args());
-                    vcx.body_mut().get_closure_body(def_id, substs, context)
-                }
-                PureKind::Spec { context, .. } => {
-                    let substs = vcx.tcx().mk_args(gargs.args());
-                    vcx.body_mut().get_spec_body(def_id, substs, context)
-                }
-                PureKind::Pure => crate::encoders::pure_body(def_id),
-                PureKind::Constant(promoted) => {
-                    vcx.body_mut().get_promoted_constant_body(def_id, promoted)
-                }
-                PureKind::SpecBlock(_) => crate::encoders::impure_body(def_id)
-                    .unwrap_or_else(|| panic!("no body to encode for {def_id:?}")),
-            };
+            let body = kind.body(vcx, def_id, gargs);
 
             // Encode under the body's span: expression nodes pick up the
             // ambient span at creation, so everything in a pure/spec body
@@ -210,35 +311,30 @@ impl TaskEncoder for MirPureEnc {
             } else {
                 body.span
             };
-            let mut enc = Enc::new(vcx, task_key.0, def_id, kind, gargs, &body, deps);
-            let expr_inner = vcx.with_span(body_span, |_| {
-                if let PureKind::SpecBlock(block) = kind {
-                    enc.encode_spec_block(block)
-                } else {
-                    enc.encode_body()
-                }
+            let setup = kind.setup(def_id, &body);
+            let mut enc = Enc::new(vcx, encoding_depth, def_id, gargs, &body, setup, deps);
+            let (expr_inner, snapshot) = vcx.with_span(body_span, |_| match kind {
+                PureKind::SpecBlock(block) => enc
+                    .encode_spec_block(block)
+                    .map(|expr| (expr, vir::TYPE_BOOL.upcast_ty())),
+                _ => enc
+                    .encode_body()
+                    .and_then(|expr| Ok((expr, enc.get_ty_for_local(mir::RETURN_PLACE)?))),
             })?;
             let captures = enc.captures.take().unwrap_or_default();
-            let inputs = std::mem::take(&mut enc.uses)
+            let inputs = enc
+                .uses
                 .read
-                .into_iter()
+                .iter()
                 .filter(|(l, v)| *l != mir::RETURN_PLACE && *v == 0)
-                .map(|(l, _v)| l)
-                .unique()
+                .map(|&(l, _v)| l)
                 .sorted()
                 .collect::<Vec<_>>();
-            let inputs_expected = inputs.len();
+            let inputs_expected = vcx.alloc_slice(&inputs);
 
-            // We wrap the expression with an additional lazy that will perform
-            // some sanity checks. These requirements cannot be expressed using
-            // only the type system.
-            let snapshot = if let PureKind::SpecBlock(..) = kind {
-                vir::TYPE_BOOL.upcast_ty()
-            } else {
-                let ret = RustTyDecomposition::from_ty(body.return_ty(), enc.context);
-                deps.require_ref::<TyUsePureEnc>(ret)?.snapshot
-            };
-            // Created under the body's span: this wrapper is the node whose
+            // The expression is wrapped in a lazy one that checks that it is
+            // instantiated for this body, with every input it reads. It is
+            // created under the body's span: this wrapper is the node whose
             // span survives reification as the top of the expression (`span`
             // is passed through by `reify`), so it is what error positions
             // pointing at the whole body (e.g. a failing precondition
@@ -250,12 +346,10 @@ impl TaskEncoder for MirPureEnc {
                     Box::new(move |vcx, lctx: ExprInput<'_>| {
                         // check: are we actually providing inputs for the
                         //   correct `DefId`?
-                        assert_eq!(lctx.0, def_id);
+                        assert_eq!(lctx.def_id, def_id);
 
-                        // check: are we providing the expected number of inputs?
-                        // TODO: check that the expected inputs are present; this
-                        //   check is not precise
-                        assert!(lctx.1.len() >= inputs_expected);
+                        // check: are we providing every input the body reads?
+                        assert!(inputs_expected.iter().all(|l| lctx.inputs.contains_key(l)));
 
                         use vir::Reify;
                         expr_inner.kind.reify(vcx, lctx)
@@ -277,119 +371,6 @@ impl TaskEncoder for MirPureEnc {
     }
 }
 
-#[derive(Debug, Default)]
-struct Update<'vir> {
-    binds: Vec<UpdateBind<'vir>>,
-    versions: FxHashMap<mir::Local, Version<'vir>>,
-}
-
-#[derive(Debug)]
-enum UpdateBind<'vir> {
-    Local(#[allow(dead_code)] mir::Local, Version<'vir>, ExprRet<'vir>),
-    Phi(vir::LocalDeclPair<'vir>, ExprRetAny<'vir, vir::Pair>),
-}
-
-impl<'vir> Update<'vir> {
-    fn new() -> Self {
-        Self::default()
-    }
-
-    fn mk_local(
-        vcx: &'vir vir::VirCtxt<'vir>,
-        encoding_depth: usize,
-        local: mir::Local,
-        version: Version<'vir>,
-    ) -> &'vir str {
-        vir::vir_format!(vcx, "_{}_{}s_{}", encoding_depth, local.as_usize(), version)
-    }
-
-    fn assign(
-        &mut self,
-        vcx: &'vir vir::VirCtxt<'vir>,
-        encoding_depth: usize,
-        local: mir::Local,
-        mut version: Version<'vir>,
-        expr: ExprRet<'vir>,
-    ) {
-        let decl = vcx.mk_local_decl(
-            Self::mk_local(vcx, encoding_depth, local, version),
-            expr.ty(),
-        );
-        version.initialised = Some(decl);
-        self.binds.push(UpdateBind::Local(local, version, expr));
-        self.versions.insert(local, version);
-    }
-
-    fn merge(self, newer: Option<Self>) -> Option<Self> {
-        Some(self.merge_inner(newer?))
-    }
-
-    fn merge_inner(self, newer: Self) -> Self {
-        Self {
-            binds: self.binds.into_iter().chain(newer.binds).collect(),
-            versions: self.versions.into_iter().chain(newer.versions).collect(),
-        }
-    }
-
-    fn add_to_map(&self, curr_ver: &mut FxHashMap<mir::Local, Version<'vir>>) {
-        for (local, ver) in &self.versions {
-            curr_ver.insert(*local, *ver);
-        }
-    }
-}
-
-/// The versions of locals that the encoded expression reads, directly or
-/// through the value of a version it reads. Only the bindings of these
-/// versions are emitted, so that a binding nothing reads emits nothing its
-/// value reads either.
-#[derive(Default)]
-struct Uses {
-    /// The versions read. Closed under `pending`: once a version is read, so
-    /// are the versions its value reads.
-    read: FxHashSet<(mir::Local, usize)>,
-    /// For each assigned version not read yet, the versions its value reads.
-    pending: FxHashMap<(mir::Local, usize), Vec<(mir::Local, usize)>>,
-    /// While an assignment is encoded, the versions its value reads so far.
-    assignment: Option<Vec<(mir::Local, usize)>>,
-}
-
-impl Uses {
-    /// Records a read of version `index` of `local`: by the value of the
-    /// assignment being encoded, if any, or else by the expression itself.
-    fn read(&mut self, local: mir::Local, index: usize) {
-        if let Some(reads) = &mut self.assignment {
-            reads.push((local, index));
-        } else if self.read.insert((local, index))
-            && let Some(reads) = self.pending.remove(&(local, index))
-        {
-            for (local, index) in reads {
-                self.read(local, index);
-            }
-        }
-    }
-
-    /// Starts recording the reads of an assignment's value.
-    fn start_assignment(&mut self) {
-        debug_assert!(self.assignment.is_none(), "assignments do not nest");
-        self.assignment = Some(Vec::new());
-    }
-
-    /// Stops recording the reads of an assignment's value, returning them.
-    fn end_assignment(&mut self) -> Vec<(mir::Local, usize)> {
-        self.assignment.take().unwrap()
-    }
-
-    /// Records that version `index` of `local` is assigned a value that
-    /// reads `reads`; they count as read once that version is.
-    fn assigned(&mut self, local: mir::Local, index: usize, reads: Vec<(mir::Local, usize)>) {
-        self.pending.insert((local, index), reads);
-    }
-
-    fn is_read(&self, local: mir::Local, index: usize) -> bool {
-        self.read.contains(&(local, index))
-    }
-}
-
 struct Enc<'vir: 'enc, 'enc> {
     vcx: &'vir vir::VirCtxt<'vir>,
     encoding_depth: usize,
@@ -405,24 +386,42 @@ struct Enc<'vir: 'enc, 'enc> {
     /// Always holds the next version to be used for a local.
     version_ctr: IndexVec<mir::Local, usize>,
     uses: Uses,
+    /// The index of the next merge, which makes its variable's name unique.
     phi_ctr: usize,
+    /// The modes the walk is in: the mode markers it passes enter and leave
+    /// them. A mode's markers enclose a whole expression, so every branch of
+    /// a conditional ends in the modes it starts in.
     modes: Modes,
+    /// Whether the body is a specification of an impure method or a spec
+    /// block in one, whose heap holds the values behind `&mut` arguments: only
+    /// there can a dereference of one read the value, through its predicate.
     impure_context: bool,
     /// For a spec closure, the modes its body reads each capture in (see
     /// [`MirPureEncOutput::captures`]); `None` for other bodies.
     captures: Option<IndexVec<abi::FieldIdx, FxHashSet<Modes>>>,
 }
 
-struct EncodedPlace<'vir> {
-    snap: ExprRet<'vir>,
-    place_ref: Option<ExprRetRef<'vir>>,
+/// An encoded place, as expressions in the context `Curr`/`Next`: lazy ones
+/// while a body is encoded (`EncodedPlace`), and reified ones for the captures
+/// passed into a spec closure (`Captures`).
+struct EncodedPlaceGen<'vir, Curr, Next> {
+    snap: vir::ExprGenSnap<'vir, Curr, Next>,
+    /// The address of the place, if it is behind a dereference: the address
+    /// that the reference or box holds, projected to the place. `None` for a
+    /// place that exists only in this expression.
+    place_ref: Option<vir::ExprGenRef<'vir, Curr, Next>>,
     /// The metadata for the pointed-to value. Set when going through a
     /// `ProjectionElem::Deref`.
-    metadata: Option<ExprRet<'vir>>,
+    metadata: Option<vir::ExprGenSnap<'vir, Curr, Next>>,
 }
 
-impl<'vir> EncodedPlace<'vir> {
-    fn new(expr: ExprRet<'vir>, place_ref: Option<ExprRetRef<'vir>>) -> Self {
+type EncodedPlace<'vir> = EncodedPlaceGen<'vir, ExprInput<'vir>, vir::ExprKind<'vir>>;
+
+impl<'vir, Curr, Next> EncodedPlaceGen<'vir, Curr, Next> {
+    fn new(
+        expr: vir::ExprGenSnap<'vir, Curr, Next>,
+        place_ref: Option<vir::ExprGenRef<'vir, Curr, Next>>,
+    ) -> Self {
         Self {
             snap: expr,
             place_ref,
@@ -430,7 +429,7 @@ impl<'vir> EncodedPlace<'vir> {
         }
     }
 
-    fn with_metadata(mut self, metadata: ExprRet<'vir>) -> Self {
+    fn with_metadata(mut self, metadata: vir::ExprGenSnap<'vir, Curr, Next>) -> Self {
         self.metadata = Some(metadata);
         self
     }
@@ -438,7 +437,7 @@ impl<'vir> EncodedPlace<'vir> {
 
 impl<'vir: 'enc, 'enc> PureRvalueEnc<'vir> for Enc<'vir, 'enc> {
     type Encoder = MirPureEnc;
-    type EncodePlaceCtxt = FxHashMap<mir::Local, Version<'vir>>;
+    type EncodePlaceCtxt = Versions<'vir>;
     const PURE: bool = true;
     type ExprCurr = ExprInput<'vir>;
     type ExprNext = vir::ExprKind<'vir>;
@@ -454,11 +453,14 @@ impl<'vir: 'enc, 'enc> PureRvalueEnc<'vir> for Enc<'vir, 'enc> {
     fn body(&self) -> &mir::Body<'vir> {
         self.body
     }
+    fn encoding_depth(&self) -> usize {
+        self.encoding_depth
+    }
     fn ty_use_pure(&mut self, ty: ty::Ty<'vir>) -> TyUsePure<'vir> {
-        self.ty_use(ty)
+        self.ty_use(ty).unwrap()
     }
 
-    fn encode_place_snap<'slf>(
+    fn encode_place_snap(
         &mut self,
         place: Place<'vir>,
         curr_ver: &Self::EncodePlaceCtxt,
@@ -469,7 +471,7 @@ impl<'vir: 'enc, 'enc> PureRvalueEnc<'vir> for Enc<'vir, 'enc> {
     fn encode_operand_snap(
         &mut self,
         operand: &mir::Operand<'vir>,
-        curr_ver: &FxHashMap<mir::Local, Version<'vir>>,
+        curr_ver: &Versions<'vir>,
     ) -> EncodeResult<'vir, ExprRet<'vir>, MirPureEnc> {
         Ok(match operand {
             mir::Operand::Copy(place) | mir::Operand::Move(place) => {
@@ -478,7 +480,12 @@ impl<'vir: 'enc, 'enc> PureRvalueEnc<'vir> for Enc<'vir, 'enc> {
             mir::Operand::Constant(box constant) => {
                 self.encode_constant_snap(constant)?.upcast_ty().lazy()
             }
-            mir::Operand::RuntimeChecks(_) => todo!(),
+            mir::Operand::RuntimeChecks(_) => {
+                return Err(EncodeFullError::unsupported(
+                    format!("operand `{operand:?}` in pure code"),
+                    vec![self.current_span()],
+                ));
+            }
         })
     }
 }
@@ -488,84 +495,74 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
         vcx: &'vir vir::VirCtxt<'vir>,
         encoding_depth: usize,
         def_id: DefId,
-        kind: PureKind,
         gargs: GArgs<'vir>,
         body: &'enc mir::Body<'vir>,
+        setup: BodySetup,
         deps: &'enc mut TaskEncoderDependencies<'vir, MirPureEnc>,
     ) -> Self {
+        let BodySetup {
+            context_def_id,
+            impure_context,
+            captures,
+        } = setup;
         let rev_doms = rev_doms::ReverseDominators::new(&body.basic_blocks);
         Self {
             vcx,
             encoding_depth,
             context: gargs.context(),
-            context_def_id: match kind {
-                PureKind::Closure { context } | PureKind::Spec { context, .. } => context,
-                PureKind::Pure | PureKind::Constant(_) | PureKind::SpecBlock(_) => def_id,
-            },
+            context_def_id,
             body,
             rev_doms,
             spec_arms: SpecArms::for_body(def_id, body),
             deps,
-            // visited: IndexVec::from_elem_n(false, body.basic_blocks.len()),
             version_ctr: IndexVec::from_elem_n(0, body.local_decls.len()),
             uses: Default::default(),
             phi_ctr: 0,
             modes: Modes::empty(),
-            // An impure method's specs and contained spec blocks get shallow
-            // argument snapshots (and can take a snapshot of the predicates
-            // behind `&mut`s). Pure functions currently also only get shallow
-            // snapshots but cannot get the value behind `&mut`s.
-            impure_context: matches!(
-                kind,
-                PureKind::Spec {
-                    mode: MirSpecEncMode::Impure,
-                    ..
-                } | PureKind::SpecBlock(..)
-            ),
-            captures: matches!(kind, PureKind::Closure { .. }).then(|| {
-                let closure_ty = body.local_decls[ty::CAPTURE_STRUCT_LOCAL].ty.peel_refs();
-                let TyKind::Closure(_, args) = closure_ty.kind() else {
-                    unreachable!("a closure body takes its closure first");
-                };
-                IndexVec::from_elem_n(FxHashSet::default(), args.as_closure().upvar_tys().len())
-            }),
+            impure_context,
+            captures,
         }
     }
 
-    fn ty_use(&mut self, ty: ty::Ty<'vir>) -> TyUsePure<'vir> {
+    fn ty_use(&mut self, ty: ty::Ty<'vir>) -> EncodeResult<'vir, TyUsePure<'vir>, MirPureEnc> {
         let ty_task = RustTyDecomposition::from_ty(ty, self.context);
-        self.deps.require_dep::<TyUsePureEnc>(ty_task).unwrap()
+        self.deps.require_dep::<TyUsePureEnc>(ty_task)
     }
 
-    fn get_ty_for_local(&mut self, local: mir::Local) -> vir::TypeSnap<'vir> {
+    fn get_ty_for_local(
+        &mut self,
+        local: mir::Local,
+    ) -> EncodeResult<'vir, vir::TypeSnap<'vir>, MirPureEnc> {
         let ty = self.body.local_decls[local].ty;
         let ty_task = RustTyDecomposition::from_ty(ty, self.context);
-        self.deps
-            .require_ref::<TyUsePureEnc>(ty_task)
-            .unwrap()
-            .snapshot
+        Ok(self.deps.require_ref::<TyUsePureEnc>(ty_task)?.snapshot)
+    }
+
+    /// The value that the body's inputs supply for `local` (see
+    /// `ExprInput::inputs`).
+    fn input(&mut self, local: mir::Local) -> EncodeResult<'vir, ExprRet<'vir>, MirPureEnc> {
+        Ok(self.vcx.mk_lazy_expr(
+            vir::vir_format!(self.vcx, "input {local:?}"),
+            self.get_ty_for_local(local)?,
+            Box::new(move |_vcx, lctx: ExprInput<'vir>| lctx.inputs[&local].kind),
+        ))
     }
 }
 
 mod rev_doms {
-    /// Identical to `body.basic_blocks.dominators()` except in reverse. Since
-    /// there may be multiple `Return`/`Unreachable`/etc. terminators, we add a
-    /// special end block index which is invalid in `basic_blocks` but pretends
-    /// to be the successor of all these no-successor blocks.
+    /// The dominators of the reversed control flow graph, whose start is an
+    /// extra block `end` succeeding every block that ends in `Return` or
+    /// `UnwindResume`. A block that cannot complete is not connected to `end`,
+    /// so that a switch with such an arm still joins its other arms.
     pub struct ReverseDominators {
         pub dom: dominators::Dominators<mir::BasicBlock>,
         pub end: mir::BasicBlock,
     }
     impl ReverseDominators {
-        #[allow(clippy::needless_lifetimes)]
-        pub fn new<'a, 'vir>(blocks: &'a mir::BasicBlocks<'vir>) -> Self {
+        pub fn new(blocks: &mir::BasicBlocks<'_>) -> Self {
             let no_succ_blocks = blocks
                 .iter_enumerated()
                 .filter(|(_, data)| {
-                    /* The commented line below prevents e.g. a SwitchInt with a branch
-                    going to an Unreachable terminator from having a join point, so
-                    do not treat such terminators as return blocks. */
-                    // data.terminator().successors().next().is_none()
                     matches!(
                         data.terminator().kind,
                         mir::TerminatorKind::Return | mir::TerminatorKind::UnwindResume
@@ -578,10 +575,6 @@ mod rev_doms {
                 dom: dominators::dominators(&rbb),
                 end: rbb.start_node(),
             }
-        }
-        pub fn immediate_dominator(&self, bb: mir::BasicBlock) -> mir::BasicBlock {
-            // This unwrap should never fail since all blocks can reach `end`
-            self.dom.immediate_dominator(bb).unwrap()
         }
     }
 
@@ -623,37 +616,6 @@ mod rev_doms {
             } else {
                 Box::new((&self.0).predecessors(node)) as Box<dyn Iterator<Item = _>>
             }
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-struct Version<'vir> {
-    index: usize,
-    location: mir::Location,
-    initialised: Option<vir::LocalDeclSnap<'vir>>,
-}
-
-impl<'vir> Default for Version<'vir> {
-    fn default() -> Self {
-        Self {
-            index: 0,
-            location: mir::Location::START,
-            initialised: None,
-        }
-    }
-}
-
-impl<'vir> fmt::Display for Version<'vir> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if cfg!(debug_assertions) {
-            write!(
-                f,
-                "{:?}_s{}_i{}",
-                self.location.block, self.location.statement_index, self.index
-            )
-        } else {
-            write!(f, "{}", self.index)
         }
     }
 }

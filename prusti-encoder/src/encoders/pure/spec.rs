@@ -394,9 +394,9 @@ impl MirSpecEnc {
             encoding_depth: 0,
             kind: PureKind::Spec {
                 context: ctx.context_def_id,
-                mode: ctx.enc_mode,
+                impure: ctx.enc_mode == MirSpecEncMode::Impure,
             },
-            parent_def_id: def_id,
+            def_id,
             gargs: GArgs::new(
                 GParams::from(ctx.context_def_id),
                 spec_args(vcx, ctx.substs, def_id),

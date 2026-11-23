@@ -1812,7 +1812,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
     ) -> EncodeResult<'vir, vir::ExprBool<'vir>, E> {
         let enc_output = self.deps.require_dep::<MirPureEnc>(MirPureEncTask {
             encoding_depth: 0,
-            parent_def_id: self.def_id,
+            def_id: self.def_id,
             gargs: GParams::from(self.def_id).identity_args(),
             kind: PureKind::SpecBlock(spec_block),
         })?;
@@ -2532,17 +2532,14 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                     vec![span],
                 ));
             }
-            let expr = self
-                .encode_prusti_builtin(
-                    builtin,
-                    func_def_id,
-                    self.gargs(caller_substs),
-                    args,
-                    span,
-                    &None,
-                )?
-                .unwrap();
-            Some(expr)
+            Some(self.encode_prusti_builtin(
+                builtin,
+                func_def_id,
+                self.gargs(caller_substs),
+                args,
+                span,
+                &None,
+            )?)
         } else {
             None
         })
@@ -2571,6 +2568,9 @@ impl<'vir, 'enc, E: TaskEncoder> PureRvalueEnc<'vir> for ImpureEncVisitor<'vir, 
 
     fn body(&self) -> &mir::Body<'vir> {
         self.body
+    }
+    fn encoding_depth(&self) -> usize {
+        0
     }
 
     fn ty_use_pure(&mut self, ty: ty::Ty<'vir>) -> TyUsePure<'vir> {

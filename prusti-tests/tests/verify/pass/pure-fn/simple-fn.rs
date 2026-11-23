@@ -56,3 +56,43 @@ fn keep_or_set(a: u32, c: bool) -> u32 {
 #[requires(a < 100)]
 #[ensures(!c ==> keep_or_set(a, c) == a + 1)]
 fn keep_or_set_spec(a: u32, c: bool) {}
+
+/// `r` is assigned in one branch only; the other returns.
+#[pure]
+fn assigned_in_one_branch(c: bool) -> u32 {
+    let r = if c { 1 } else { return 0 };
+    r
+}
+
+#[ensures(assigned_in_one_branch(true) == 1 && assigned_in_one_branch(false) == 0)]
+fn assigned_in_one_branch_client() {}
+
+pub enum Void {}
+
+pub enum TwoVoids {
+    A(Void),
+    B(Void),
+}
+
+/// No arm of the `match` on `t` completes: it has no join point.
+#[pure]
+fn uninhabited_arms(e: Option<TwoVoids>) -> u32 {
+    match e {
+        None => 2,
+        Some(t) => match t {
+            TwoVoids::A(v) => match v {},
+            TwoVoids::B(v) => match v {},
+        },
+    }
+}
+
+#[ensures(uninhabited_arms(None) == 2)]
+fn uninhabited_arms_client() {}
+
+/// Nothing after the bounds check of `a[i]` completes.
+#[pure]
+#[requires(false)]
+fn index_then_diverge(a: [u32; 3], i: usize) -> u32 {
+    let _x = a[i];
+    unreachable!()
+}

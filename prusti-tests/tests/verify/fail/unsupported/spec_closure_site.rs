@@ -23,3 +23,8 @@ fn built_in_branch(n: u32) {}
     quantify((), &c) //~ ERROR: a `forall` whose closure is not built right before it
 })]
 fn variable_assigned_in_between(a: &u32, b: &u32) {}
+
+// A `move` closure captures the reference `r` by value, which the
+// specification syntax never does.
+#[requires(quantify((), &(move |i: u32| i != *r)))] //~ ERROR: a reference captured by value in a spec closure
+fn reference_captured_by_value(r: &u32) {}
