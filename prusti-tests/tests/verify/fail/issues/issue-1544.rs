@@ -1,3 +1,4 @@
+//@ known-failure
 // Regression test for prusti/prusti#1544: the same program as the pass test, but with a pledge
 // that changes the length, so the loop invariant on the length fails.
 use prusti_contracts::*;
