@@ -2211,9 +2211,13 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             // packed, and removing it splits them again.
             BorrowPcgEdgeKind::Aggregate(aggregate) => {
                 let target = aggregate.target();
-                // A labelled target was expanded since, and its parts' nodes
-                // already hold the predicates.
-                if edge_action.is_remove() && target.label().is_some() {
+                // A labelled target holds no predicates: a target with a
+                // version label was expanded since, and its parts' nodes hold
+                // them; one whose place is labelled passed them on with its
+                // value, e.g. when it was moved into another place.
+                if edge_action.is_remove()
+                    && (target.label().is_some() || !target.base().is_current())
+                {
                     return Ok(());
                 }
                 let is_array = target.base().place().ty(self.pcg_ctxt()).ty.is_array();
