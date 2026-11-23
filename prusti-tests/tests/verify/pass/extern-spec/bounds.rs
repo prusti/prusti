@@ -1,5 +1,5 @@
 //@ aux-build: foreign_traits.rs
-use foreign_traits::{Compare, Convert, Other, Pair, Plain, Projected, Wrapped};
+use foreign_traits::{Compare, Convert, Make, Other, Pair, Plain, Projected, Wrapped};
 use prusti_contracts::*;
 use std::{cell::Cell, ops::Not};
 
@@ -94,4 +94,29 @@ trait Iterator {
     where
         Self: Sized,
         P: FnMut(&Self::Item) -> bool;
+}
+
+// A default type parameter, as in the target's header.
+#[extern_spec(std::ops)]
+trait Add<Rhs = Self> {
+    #[trusted]
+    fn add(self, rhs: Rhs) -> Self::Output
+    where
+        Self: Sized;
+}
+
+// An inline bound of a trait parameter that mentions `Self`.
+#[extern_spec(foreign_traits)]
+trait Make<T: Into<Self>>: Sized {
+    #[pure]
+    #[trusted]
+    #[ensures(result)]
+    fn check(&self, t: T) -> bool;
+}
+
+fn check_made<M: Make<u8>>(m: &M)
+where
+    u8: Into<M>,
+{
+    assert!(m.check(1));
 }

@@ -61,3 +61,10 @@ trait Display {
     where
         Self: Sized;
 }
+
+// An inline bound of a trait parameter with a default.
+#[extern_spec(std::ops)]
+trait AddAssign<Rhs: Copy = Self> { //~ ERROR: Invalid external specification
+    #[trusted]
+    fn add_assign(&mut self, rhs: Rhs);
+}

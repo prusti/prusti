@@ -24,6 +24,10 @@ pub trait Wrapped {
     fn wrapped(x: Cell<Self>) -> bool;
 }
 
+pub trait Make<T: Into<Self>>: Sized {
+    fn check(&self, t: T) -> bool;
+}
+
 pub trait Other {
     type A: ?Sized;
 }
