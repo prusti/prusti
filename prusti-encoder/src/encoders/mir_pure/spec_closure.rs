@@ -14,6 +14,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
         curr_ver: &Versions<'vir>,
         place: Place<'vir>,
     ) -> EncodeResult<'vir, EncodedPlace<'vir>, MirPureEnc> {
+        use vir::Reify;
         let [
             mir::ProjectionElem::Deref,
             mir::ProjectionElem::Field(field, field_ty),
@@ -37,7 +38,10 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
             vir::vir_format!(self.vcx, "capture {field:?}"),
             self.ty_use(shared_referent_ty.unwrap_or(field_ty))?
                 .snapshot,
-            Box::new(move |_vcx, lctx: ExprInput<'vir>| lctx.captures[field][&modes].snap.kind),
+            Box::new(move |vcx, lctx: ExprInput<'vir>| {
+                let capture = lctx.captures[field][&modes].snap;
+                capture.reify(vcx, lctx.enclosing()).kind
+            }),
         );
         let Some(referent_ty) = shared_referent_ty else {
             let value = EncodedPlace::new(snap, None);
@@ -48,8 +52,9 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
         let address = self.vcx.mk_lazy_expr(
             vir::vir_format!(self.vcx, "address of capture {field:?}"),
             vir::TYPE_REF,
-            Box::new(move |_vcx, lctx: ExprInput<'vir>| {
-                lctx.captures[field][&modes].place_ref.unwrap().kind
+            Box::new(move |vcx, lctx: ExprInput<'vir>| {
+                let capture = lctx.captures[field][&modes].place_ref.unwrap();
+                capture.reify(vcx, lctx.enclosing()).kind
             }),
         );
         let metadata_ty = self
@@ -58,8 +63,9 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
         let metadata = self.vcx.mk_lazy_expr(
             vir::vir_format!(self.vcx, "metadata of capture {field:?}"),
             self.ty_use(metadata_ty)?.snapshot,
-            Box::new(move |_vcx, lctx: ExprInput<'vir>| {
-                lctx.captures[field][&modes].metadata.unwrap().kind
+            Box::new(move |vcx, lctx: ExprInput<'vir>| {
+                let capture = lctx.captures[field][&modes].metadata.unwrap();
+                capture.reify(vcx, lctx.enclosing()).kind
             }),
         );
         // Only a `move` closure, which captures a reference by value, reads the
@@ -165,11 +171,11 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
             mir::StatementKind::Assign(box (dest, _)) => self.is_variable(dest.local),
             _ => false,
         };
-        let operands = match built {
+        let (before_closure, operands) = match built {
             Some((index, operands)) if !statements[index + 1..].iter().any(assigns_variable) => {
-                operands.as_slice()
+                (&statements[..index], operands.as_slice())
             }
-            None if out.captures.is_empty() => IndexSlice::empty(),
+            None if out.captures.is_empty() => (&[][..], IndexSlice::empty()),
             _ => {
                 return Err(EncodeFullError::unsupported(
                     format!("a `{name}` whose closure is not built right before it"),
@@ -181,7 +187,8 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
         for (capture, reads) in operands.iter().zip(&out.captures) {
             let mut values = FxHashMap::default();
             for &modes in reads {
-                values.insert(modes, self.encode_capture(capture, modes, curr_ver)?);
+                let value = self.encode_capture(capture, before_closure, modes, curr_ver)?;
+                values.insert(modes, value);
             }
             captures.push(values);
         }
@@ -192,46 +199,17 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
             vir::vir_format!(self.vcx, "spec closure body ({name})"),
             body.ty(),
             Box::new(move |vcx, lctx: ExprInput<'vir>| {
-                let captures = captures
-                    .iter()
-                    .map(|values| {
-                        values
-                            .iter()
-                            .map(|(&modes, value)| {
-                                let value = EncodedPlaceGen {
-                                    snap: value.snap.reify(vcx, lctx),
-                                    place_ref: value.place_ref.reify(vcx, lctx),
-                                    metadata: value.metadata.reify(vcx, lctx),
-                                };
-                                (modes, value)
-                            })
-                            .collect()
-                    })
-                    .collect::<IndexVec<_, _>>();
                 let input = ExprInput {
                     def_id: cl_def_id,
                     inputs: reify_args,
                     old: lctx.old,
-                    captures: vcx.alloc(captures),
+                    captures,
+                    enclosing: Some(vcx.alloc(lctx)),
                 };
                 body.reify(vcx, input).kind
             }),
         );
         Ok((qvars, body.downcast_ty::<vir::Bool>()))
-    }
-
-    /// The assignment statements of this body, as destination and value.
-    fn assignments(
-        &self,
-    ) -> impl Iterator<Item = (&'enc mir::Place<'vir>, &'enc mir::Rvalue<'vir>)> {
-        self.body
-            .basic_blocks
-            .iter()
-            .flat_map(|block| &block.statements)
-            .filter_map(|stmt| match &stmt.kind {
-                mir::StatementKind::Assign(box (dest, rvalue)) => Some((dest, rvalue)),
-                _ => None,
-            })
     }
 
     /// Whether `local` is a variable or an argument rather than a temporary:
@@ -251,16 +229,20 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
     /// read in `modes`, encoded in those modes and the modes this body is in
     /// at the builtin. A capture of a shared reference is supplied as the
     /// place it refers to, with the address and metadata of the reference,
-    /// which is what its reader expects (see `Enc::encode_capture_read`). MIR
-    /// building passes a capture by reference as a temporary that it assigns
-    /// the reference, such as `&*arr`; the capture is encoded as the borrowed
-    /// place `*arr`, so that the modes reach the read of `arr`. A shared
-    /// reference captured by value, which only a `move` closure makes (the
-    /// specification syntax never does), is not supported. Any other capture
-    /// is encoded as its value.
+    /// which is what its reader expects (see `Enc::encode_capture_read`).
+    ///
+    /// MIR building passes a capture by reference as a temporary holding the
+    /// reference, such as `&*arr`, which it assigns in `before_closure`, the
+    /// statements that precede the closure's aggregate in its block; the
+    /// closure sees the last such assignment. The capture is encoded as the
+    /// borrowed place `*arr`, so that the modes reach the read of `arr`. A
+    /// shared reference captured by value, which only a `move` closure makes
+    /// (the specification syntax never does), is not supported. Any other
+    /// capture is encoded as its value.
     fn encode_capture(
         &mut self,
         capture: &mir::Operand<'vir>,
+        before_closure: &[mir::Statement<'vir>],
         modes: Modes,
         curr_ver: &Versions<'vir>,
     ) -> EncodeResult<'vir, EncodedPlace<'vir>, MirPureEnc> {
@@ -269,8 +251,17 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
             .and_then(|place| place.as_local())
             .filter(|&local| !self.is_variable(local));
         let value = temp.and_then(|temp| {
-            self.assignments()
-                .find_map(|(dest, value)| (dest.as_local() == Some(temp)).then_some(value))
+            before_closure
+                .iter()
+                .rev()
+                .find_map(|stmt| match &stmt.kind {
+                    mir::StatementKind::Assign(box (dest, value))
+                        if dest.as_local() == Some(temp) =>
+                    {
+                        Some(value)
+                    }
+                    _ => None,
+                })
         });
         let is_shared_ref = matches!(
             capture.ty(self.body, self.vcx.tcx()).kind(),

@@ -69,8 +69,7 @@ pub type Inputs<'vir> = &'vir FxHashMap<mir::Local, vir::ExprSnap<'vir>>;
 /// The values of a spec closure's captures, in the modes its body reads them
 /// in (see `MirPureEncOutput::captures`): the captured places, encoded by the
 /// enclosing body (see `Enc::encode_capture`).
-type Captures<'vir> =
-    &'vir IndexSlice<abi::FieldIdx, FxHashMap<Modes, EncodedPlaceGen<'vir, (), !>>>;
+type Captures<'vir> = &'vir IndexSlice<abi::FieldIdx, FxHashMap<Modes, EncodedPlace<'vir>>>;
 /// What an encoded body is instantiated with (see
 /// `MirPureEncOutput::reify_at`).
 #[derive(Clone, Copy)]
@@ -82,8 +81,20 @@ struct ExprInput<'vir> {
     inputs: Inputs<'vir>,
     /// The state `old` refers to.
     old: vir::OldLabel<'vir>,
-    /// For a spec closure, the values of its captures.
+    /// For a spec closure, the values of its captures, which are expressions
+    /// of the enclosing body.
     captures: Captures<'vir>,
+    /// For a spec closure, the instantiation of the body it is part of, which
+    /// a read of a capture instantiates the capture's value with.
+    enclosing: Option<&'vir ExprInput<'vir>>,
+}
+
+impl<'vir> ExprInput<'vir> {
+    fn enclosing(&self) -> Self {
+        *self
+            .enclosing
+            .expect("a spec closure is instantiated within its enclosing body")
+    }
 }
 type ExprRet<'vir> = vir::ExprGenSnap<'vir, ExprInput<'vir>, vir::ExprKind<'vir>>;
 type ExprRetRef<'vir> = vir::ExprGenRef<'vir, ExprInput<'vir>, vir::ExprKind<'vir>>;
@@ -123,6 +134,7 @@ impl<'vir> MirPureEncOutput<'vir> {
             inputs,
             old,
             captures: IndexSlice::empty(),
+            enclosing: None,
         };
         vir::with_vcx(|vcx| self.expr.reify(vcx, input))
     }
@@ -401,27 +413,19 @@ struct Enc<'vir: 'enc, 'enc> {
     captures: Option<IndexVec<abi::FieldIdx, FxHashSet<Modes>>>,
 }
 
-/// An encoded place, as expressions in the context `Curr`/`Next`: lazy ones
-/// while a body is encoded (`EncodedPlace`), and reified ones for the captures
-/// passed into a spec closure (`Captures`).
-struct EncodedPlaceGen<'vir, Curr, Next> {
-    snap: vir::ExprGenSnap<'vir, Curr, Next>,
+struct EncodedPlace<'vir> {
+    snap: ExprRet<'vir>,
     /// The address of the place, if it is behind a dereference: the address
     /// that the reference or box holds, projected to the place. `None` for a
     /// place that exists only in this expression.
-    place_ref: Option<vir::ExprGenRef<'vir, Curr, Next>>,
+    place_ref: Option<ExprRetRef<'vir>>,
     /// The metadata for the pointed-to value. Set when going through a
     /// `ProjectionElem::Deref`.
-    metadata: Option<vir::ExprGenSnap<'vir, Curr, Next>>,
+    metadata: Option<ExprRet<'vir>>,
 }
 
-type EncodedPlace<'vir> = EncodedPlaceGen<'vir, ExprInput<'vir>, vir::ExprKind<'vir>>;
-
-impl<'vir, Curr, Next> EncodedPlaceGen<'vir, Curr, Next> {
-    fn new(
-        expr: vir::ExprGenSnap<'vir, Curr, Next>,
-        place_ref: Option<vir::ExprGenRef<'vir, Curr, Next>>,
-    ) -> Self {
+impl<'vir> EncodedPlace<'vir> {
+    fn new(expr: ExprRet<'vir>, place_ref: Option<ExprRetRef<'vir>>) -> Self {
         Self {
             snap: expr,
             place_ref,
@@ -429,7 +433,7 @@ impl<'vir, Curr, Next> EncodedPlaceGen<'vir, Curr, Next> {
         }
     }
 
-    fn with_metadata(mut self, metadata: vir::ExprGenSnap<'vir, Curr, Next>) -> Self {
+    fn with_metadata(mut self, metadata: ExprRet<'vir>) -> Self {
         self.metadata = Some(metadata);
         self
     }
