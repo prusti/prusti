@@ -3,7 +3,7 @@ use peer_list::PeerList;
 use prusti_contracts::*;
 
 #[extern_spec]
-impl <T: Clone + Eq> Clone for PeerList<T> {
+impl <T: Clone> Clone for PeerList<T> {
     #[trusted]
     #[ensures(some_property(self) ==> some_property(&result))]
     pub fn clone(&self) -> PeerList<T>;

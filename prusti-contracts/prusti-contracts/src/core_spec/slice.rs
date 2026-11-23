@@ -17,7 +17,9 @@ where
 {
     #[trusted]
     #[pure]
-    fn index(self, slice: &T) -> &Self::Output;
+    fn index(self, slice: &T) -> &Self::Output
+    where
+        Self: Sized;
 }
 
 #[extern_spec]

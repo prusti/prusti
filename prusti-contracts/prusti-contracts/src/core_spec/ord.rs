@@ -58,7 +58,7 @@ impl Ordering {
 // comparisons to agree with `partial_cmp` as their default bodies do (with
 // `Option::is_some_and` inlined).
 #[extern_spec]
-trait PartialOrd<Rhs> {
+trait PartialOrd<Rhs: ?Sized> {
     #[trusted]
     #[pure]
     #[ensures(matches!(result, Some(Ordering::Equal)) == self.eq(other))]

@@ -14,7 +14,10 @@ use prusti_rustc_interface::{
     },
     trait_selection::{
         infer::TyCtxtInferExt,
-        traits::{ImplSource, Obligation, ObligationCause, SelectionContext},
+        traits::{
+            query::evaluate_obligation::InferCtxtExt, ImplSource, Obligation, ObligationCause,
+            SelectionContext,
+        },
     },
 };
 use sealed::{IntoParam, IntoParamTcx};
@@ -136,6 +139,20 @@ impl<'tcx> EnvQuery<'tcx> {
             Ok(Some(ImplSource::UserDefined(data))) => Some(data.impl_def_id),
             _ => None,
         }
+    }
+
+    /// Returns true iff the trait solver proves that `clause` holds in
+    /// `param_env`. Region constraints that remain (e.g. from instantiating a
+    /// higher-ranked bound) are not decided, so the result is only meaningful
+    /// for clauses whose regions do not matter, such as erased ones.
+    pub fn clause_holds_modulo_regions(
+        self,
+        param_env: ty::ParamEnv<'tcx>,
+        clause: ty::Clause<'tcx>,
+    ) -> bool {
+        let obligation = Obligation::new(self.tcx, ObligationCause::dummy(), param_env, clause);
+        self.infer_ctxt()
+            .predicate_must_hold_modulo_regions(&obligation)
     }
 
     /// Given some procedure `proc_def_id` which is called, this method returns the actual method which will be executed when `proc_def_id` is defined on a trait.

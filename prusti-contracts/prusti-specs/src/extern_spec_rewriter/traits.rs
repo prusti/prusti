@@ -20,11 +20,12 @@ use syn::{parse_quote, spanned::Spanned, TypeParam};
 /// ```
 /// it produces a struct
 /// ```rust
-/// struct Aux<T, TSelf> where TSelf: SomeTrait {
-///     // phantom data for T, TSelf
+/// struct Aux<TSelf: ?Sized, T> where TSelf: SomeTrait<T> {
+///     // phantom data for TSelf, T
 /// }
 /// ```
-/// and a corresponding impl block with methods of `SomeTrait`.
+/// whose `TSelf` also has the supertraits declared in the spec as bounds, and a
+/// corresponding impl block with methods of `SomeTrait`.
 ///
 pub fn rewrite_extern_spec(
     item_trait: &syn::ItemTrait,
@@ -59,37 +60,68 @@ fn generate_new_struct(
 
     let new_generics = &mut new_struct.generics.params;
 
-    // Add a new type parameter to struct which represents an implementation of the trait
+    // Add a new type parameter to struct which represents an implementation
+    // of the trait. Like `Self` of a trait, it is `?Sized` unless the trait
+    // requires `Sized`. The supertraits declared in the spec are propagated
+    // below, so that they are checked against the trait's.
     let self_type_ident = syn::Ident::new("Prusti_T_Self", item_trait.span());
-    new_generics.push(syn::GenericParam::Type(parse_quote!(#self_type_ident)));
+    new_generics.push(syn::GenericParam::Type(
+        parse_quote!(#self_type_ident: ?Sized),
+    ));
 
-    let parsed_generics = parse_trait_type_params(item_trait)?;
+    let mut parsed_generics = parse_trait_type_params(item_trait)?;
 
+    // Generic arguments are plain idents; bounds such as `?Sized` are not
+    // allowed there.
+    let generic_idents = parsed_generics.iter().map(|param| &param.ident);
     let self_type_trait: syn::TypePath = parse_quote_spanned! {item_trait.span()=>
-        #trait_path :: <#(#parsed_generics),*>
+        #trait_path :: <#(#generic_idents),*>
     };
 
-    // Generic type parameters are added as generics to the struct
+    // The trait's type parameters are added to the struct without their
+    // defaults, which an impl cannot have, and with their bounds moved into
+    // the where clause, where `Self` in them is rewritten like in the trait's
+    // own where clause.
+    let mut self_where_clause = syn::WhereClause {
+        where_token: Default::default(),
+        predicates: Default::default(),
+    };
+    for param in &mut parsed_generics {
+        if !param.bounds.is_empty() {
+            let ident = &param.ident;
+            let bounds = &param.bounds;
+            self_where_clause
+                .predicates
+                .push(parse_quote! { #ident: #bounds });
+        }
+        param.colon_token = None;
+        param.bounds.clear();
+        param.eq_token = None;
+        param.default = None;
+    }
     new_generics.extend(parsed_generics.into_iter().map(syn::GenericParam::Type));
+    if let Some(where_clause) = &item_trait.generics.where_clause {
+        self_where_clause
+            .predicates
+            .extend(where_clause.predicates.iter().cloned());
+    }
+    self_where_clause.rewrite_self_type(&parse_quote! { #self_type_ident }, Some(&self_type_trait));
 
-    // Add a where clause which restricts this self type parameter to the trait
-    let self_where_clause: syn::WhereClause = if let Some(where_clause) =
-        &item_trait.generics.where_clause
-    {
-        let mut where_clause = where_clause.clone();
-        where_clause.rewrite_self_type(&parse_quote! { #self_type_ident }, Some(&self_type_trait));
-        // remove trailing comma
-        let p = where_clause.predicates.pop().unwrap();
-        where_clause.predicates.push(p.into_value());
-        // merge into existing where clause
-        parse_quote! {
-            #where_clause, #self_type_ident: #self_type_trait
-        }
-    } else {
-        parse_quote! {
-            where #self_type_ident: #self_type_trait
-        }
-    };
+    // Restrict the self type parameter to the trait.
+    self_where_clause
+        .predicates
+        .push(parse_quote! { #self_type_ident: #self_type_trait });
+    // Propagate the declared supertraits (e.g. `trait Default: Sized`) as
+    // bounds on the self type parameter.
+    let supertraits = &item_trait.supertraits;
+    if !supertraits.is_empty() {
+        let mut supertrait_clause: syn::WhereClause = parse_quote! { where Self: #supertraits };
+        supertrait_clause
+            .rewrite_self_type(&parse_quote! { #self_type_ident }, Some(&self_type_trait));
+        self_where_clause
+            .predicates
+            .extend(supertrait_clause.predicates);
+    }
     new_struct.generics.where_clause = Some(self_where_clause);
 
     add_phantom_data_for_generic_params(&mut new_struct);
@@ -128,6 +160,7 @@ impl GeneratedStruct<'_> {
             .params
             .clone()
             .into_token_stream();
+        let generic_args = rewrite_generics(&self.generated_struct.generics);
         let where_clause = self
             .generated_struct
             .generics
@@ -137,7 +170,7 @@ impl GeneratedStruct<'_> {
 
         let mut struct_impl: syn::ItemImpl = parse_quote_spanned! {self.item_trait.span()=>
             #[allow(non_camel_case_types)]
-            impl< #generic_params > #struct_ident < #generic_params > #where_clause {}
+            impl< #generic_params > #struct_ident #generic_args #where_clause {}
         };
 
         // Add items to impl block

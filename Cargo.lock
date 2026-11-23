@@ -2263,7 +2263,7 @@ dependencies = [
 
 [[package]]
 name = "prusti-specs"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "itertools 0.10.5",
  "proc-macro2",
