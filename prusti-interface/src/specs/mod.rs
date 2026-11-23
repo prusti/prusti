@@ -34,14 +34,16 @@ use typed::SpecIdRef;
 
 use crate::specs::{
     external::ExternSpecResolver,
-    typed::{ProcedureSpecification, ProcedureSpecificationKind, SpecGraph, SpecificationItem},
+    typed::{
+        ProcedureSpecification, ProcedureSpecificationKind, PureMode, SpecGraph, SpecificationItem,
+    },
 };
 use prusti_specs::specifications::common::SpecificationId;
 
 #[derive(Debug)]
 struct ProcedureSpecRefs {
     spec_id_refs: Vec<SpecIdRef>,
-    pure: bool,
+    pure: Option<PureMode>,
     abstract_predicate: bool,
     trusted: bool,
 }
@@ -50,8 +52,8 @@ impl From<&ProcedureSpecRefs> for ProcedureSpecificationKind {
     fn from(refs: &ProcedureSpecRefs) -> Self {
         if refs.abstract_predicate {
             ProcedureSpecificationKind::Predicate(None)
-        } else if refs.pure {
-            ProcedureSpecificationKind::Pure
+        } else if let Some(mode) = refs.pure {
+            ProcedureSpecificationKind::Pure(mode)
         } else {
             ProcedureSpecificationKind::Impure
         }
@@ -272,7 +274,7 @@ impl<'a, 'tcx> SpecCollector<'a, 'tcx> {
             }
             let mut spec = SpecGraph::new(ProcedureSpecification::empty(local_id.to_def_id()));
             spec.set_kind(if refs.pure {
-                ProcedureSpecificationKind::Pure
+                ProcedureSpecificationKind::Pure(PureMode::Value)
             } else {
                 ProcedureSpecificationKind::Impure
             });
@@ -579,12 +581,19 @@ fn get_procedure_spec_ids(def_id: DefId, attrs: &[hir::Attribute]) -> Option<Pro
         def_id, spec_id_refs
     );
 
-    let pure = has_prusti_attr(attrs, "pure");
+    // `#[pure]` is marked `prusti::pure`; a mode argument is stored as its
+    // value, e.g. `prusti::pure = "memory"`.
+    let pure =
+        has_prusti_attr(attrs, "pure").then(|| match read_prusti_attr("pure", attrs).as_deref() {
+            None => PureMode::Value,
+            Some("memory") => PureMode::Memory,
+            Some(mode) => unreachable!("unknown purity mode `{mode}`"),
+        });
     let trusted = has_prusti_attr(attrs, "trusted")
         || (!is_predicate && config::opt_in_verification() && !has_prusti_attr(attrs, "verified"));
     let abstract_predicate = has_abstract_predicate_attr(attrs);
 
-    if abstract_predicate || pure || trusted || !spec_id_refs.is_empty() {
+    if abstract_predicate || pure.is_some() || trusted || !spec_id_refs.is_empty() {
         Some(ProcedureSpecRefs {
             spec_id_refs,
             pure,
