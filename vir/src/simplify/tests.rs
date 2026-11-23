@@ -415,12 +415,35 @@ fn let_scopes() {
         },
         |actual| assert!(actual.contains("a.f0"), "{actual}"),
     );
-    // Uses in triggers and wands stay as encoded.
+    // Uses in triggers are substituted like those in the body.
+    check_with(
+        |c| {
+            let trigger = c.app("f", &[c.i("a"), c.i("q")]);
+            let body = c.bin(CmpEq, c.app("f", &[c.i("q")]), c.i("q"));
+            c.let_("a", c.i("x"), c.forall("q", &[trigger], body))
+        },
+        |actual| {
+            assert!(!actual.starts_with("(let"), "{actual}");
+            assert!(actual.contains("{f(x, q)}"), "{actual}");
+        },
+    );
+    // A trigger set stays as encoded if simplifying it would make it invalid:
+    // a substituted value contains an operator, or a term folds to a
+    // variable.
     check_prefix("(let a ==", |c| {
-        let trigger = c.app("f", &[c.i("a")]);
+        let trigger = c.app("f", &[c.i("a"), c.i("q")]);
         let body = c.bin(CmpEq, c.app("f", &[c.i("q")]), c.i("q"));
-        c.let_("a", c.i("x"), c.forall("q", &[trigger], body))
+        let val = c.bin(Add, c.i("x"), c.int(1));
+        c.let_("a", val, c.forall("q", &[trigger], body))
     });
+    check_with(
+        |c| {
+            let trigger = c.field(c.p(&[c.i("q"), c.int(0)]), "f0");
+            c.forall("q", &[trigger], c.bin(CmpEq, c.i("q"), c.i("q")))
+        },
+        |actual| assert!(actual.contains("{P_cons(q, 0).f0}"), "{actual}"),
+    );
+    // Uses in wands stay as encoded.
     check_prefix("(let a ==", |c| {
         let lhs = c.bin(CmpEq, c.i("a"), c.i("y"));
         let wand = c.vcx.mk_wand(lhs.inner_cast_ty(), c.vcx.mk_bool::<true>());
@@ -483,5 +506,43 @@ fn unchanged_expressions_are_not_reallocated() {
     with_ctx(|ctx, c| {
         let e = c.bin(CmpEq, c.i("x"), c.i("y"));
         assert!(Simplifier::new(c.vcx, ctx).simplify(e).is_none());
+    });
+}
+
+#[test]
+fn trigger_term_shape() {
+    with_ctx(|_, c| {
+        let shape = |e| crate::trigger_term_shape(crate::inline_lets(c.vcx, e));
+        // A `let` at the top is replaced by its value.
+        let s = shape(c.let_("a", c.app("f", &[c.i("q")]), c.i("a")));
+        assert!(s.valid_head && !s.forbidden && s.locals.contains("q"));
+        // A binding the term does not use disappears, with its locals.
+        let unused = c.bin(Add, c.i("q"), c.int(1));
+        let s = shape(c.let_("b", unused, c.app("f", &[c.i("x")])));
+        assert!(s.valid_head && !s.forbidden && !s.locals.contains("q"));
+        // A variable is not a valid trigger term, also behind a `let`.
+        assert!(!shape(c.let_("a", c.i("q"), c.i("a"))).valid_head);
+        // A `let` that the inlining keeps is looked through, like `old`.
+        let s = shape(c.let_("a", c.app("g", &[c.i("q")]), c.old(c.app("f", &[c.i("a")]))));
+        assert!(s.valid_head && !s.forbidden && s.locals.contains("q"));
+    });
+}
+
+#[test]
+fn inline_lets_under_old() {
+    with_ctx(|_, c| {
+        let inline = |e| format!("{:?}", crate::inline_lets(c.vcx, e));
+        // A local keeps its value under `old(..)`, so it is inlined there.
+        let e = c.let_("a", c.i("q"), c.old(c.app("f", &[c.i("a")])));
+        assert_eq!(inline(e), "old(f(q))");
+        // Another value is not, and keeps its `let`; it is still inlined
+        // outside the `old(..)`.
+        let in_old = c.old(c.app("f", &[c.i("a")]));
+        let e = c.let_(
+            "a",
+            c.app("h", &[c.i("q")]),
+            c.app("g", &[c.i("a"), in_old]),
+        );
+        assert_eq!(inline(e), "(let a == (h(q)) in\n  g(h(q), old(f(a))))");
     });
 }

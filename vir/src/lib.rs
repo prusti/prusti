@@ -17,6 +17,7 @@ mod reify;
 mod serde;
 pub mod simplify;
 mod spans;
+mod triggers;
 mod callable;
 mod viper_ident;
 mod r#type;
@@ -33,6 +34,7 @@ pub use r#type::*;
 pub use refs::*;
 pub use reify::*;
 pub use spans::{ErrorTaint, Reported, VirSpan};
+pub use triggers::*;
 pub use viper_ident::*;
 pub use visit::*;
 
