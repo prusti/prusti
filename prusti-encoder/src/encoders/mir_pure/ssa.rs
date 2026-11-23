@@ -45,6 +45,23 @@ pub(super) type Versions<'vir> = FxHashMap<mir::Local, Version<'vir>>;
 pub(super) struct Fragment<'vir> {
     pub(super) binds: Vec<Bind<'vir>>,
     pub(super) versions: Versions<'vir>,
+    /// The closures built in the region or before it, each with the state at
+    /// its construction (see `Enc::encode_spec_closure`); the versions of
+    /// that state are still bound at the end of the region. A merge
+    /// continues with the fragment before the conditional, so it leaves out
+    /// the closures built in the branches, whose versions it does not bind.
+    pub(super) closures: FxHashMap<DefId, ClosureConstruction<'vir>>,
+}
+
+/// The construction of a closure, `_c = {closure} { .. }`, with the state
+/// its captures are read in.
+#[derive(Debug, Clone)]
+pub(super) struct ClosureConstruction<'vir> {
+    pub(super) location: mir::Location,
+    /// The versions of the locals there.
+    pub(super) versions: Versions<'vir>,
+    /// The modes the walk is in there.
+    pub(super) modes: Modes,
 }
 
 /// A binding of the `let` chain: of a version of a local, or of the pair that
@@ -56,11 +73,12 @@ pub(super) enum Bind<'vir> {
 }
 
 impl<'vir> Fragment<'vir> {
-    /// The empty fragment of a branch that starts at `versions`.
-    pub(super) fn starting_at(versions: &Versions<'vir>) -> Self {
+    /// The empty fragment of a branch that starts at the end of `fragment`.
+    pub(super) fn starting_at(fragment: &Self) -> Self {
         Self {
             binds: Vec::new(),
-            versions: versions.clone(),
+            versions: fragment.versions.clone(),
+            closures: fragment.closures.clone(),
         }
     }
 }
