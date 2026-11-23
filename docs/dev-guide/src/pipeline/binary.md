@@ -6,7 +6,11 @@
 This is a short stage responsible for setting up the correct environment variables for the Rust compiler and the Prusti-supporting libraries. To invoke `prusti-driver` correctly, the following arguments are set up:
 
  - `--sysroot`, pointing to the Rust sysroot where its libraries are stored.
- - `-L`, adding Prusti's `target/*/deps` directory into the library search path.
- - `--extern prusti_contracts=...` and `--extern prusti_contracts_internal=...`, specifying the path for the dynamic libraries containing the procedural macros for Prusti specifications.
 
-> - [`prusti/src/bin/prusti-rustc.rs`](https://github.com/prusti/prusti/blob/143e673dc19b4c1363efade90ffee4f77641ec11/prusti/src/bin/prusti-rustc.rs)
+When `prusti-rustc` is run directly, it also sets up the following arguments (under `cargo-prusti`, Cargo links the package's `prusti-contracts` dependency instead):
+
+ - `-L`, adding the directories that contain the compiled `prusti-contracts` crate and its dependencies to the library search path.
+ - `--extern prusti_contracts=...`, specifying the path of the compiled `prusti-contracts` library, which provides the procedural macros for Prusti specifications.
+ - `--crate-type=lib`, unless a crate type is given, so that a file without a `main` function can be verified.
+
+> - [`prusti-launch/src/bin/prusti-rustc.rs`](https://github.com/prusti/prusti/blob/main/prusti-launch/src/bin/prusti-rustc.rs)
