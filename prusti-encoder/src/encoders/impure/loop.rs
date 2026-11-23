@@ -10,15 +10,15 @@ use pcg::{
             PcgLifetimeProjectionBaseLike,
         },
     },
-    r#loop::PlaceUsages,
+    r#loop::{LoopId, PlaceUsages},
     pcg::{CapabilityKind, EvalStmtPhase, PcgNode},
     results::PcgBasicBlock,
     utils::{
-        HasCompilerCtxt, HasPlace, Place, maybe_old::MaybeLabelledPlace,
+        HasCompilerCtxt, HasPlace, Place, SnapshotLocation, maybe_old::MaybeLabelledPlace,
         maybe_remote::MaybeRemotePlace,
     },
 };
-use prusti_rustc_interface::index::IndexVec;
+use prusti_rustc_interface::{index::IndexVec, middle::mir};
 
 use task_encoder::TaskEncoder;
 
@@ -42,6 +42,7 @@ impl<'vir: 'a, 'a, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         cfpcs: &PcgBasicBlock<'_, 'vir>,
         entry_graph: &BorrowsGraph<'vir>,
         loop_place_usages: &PlaceUsages<'vir>,
+        (loop_id, loop_head): (LoopId, mir::BasicBlock),
         ctxt: impl HasCompilerCtxt<'a, 'vir>,
     ) -> EncodeResult<
         'vir,
@@ -138,9 +139,25 @@ impl<'vir: 'a, 'a, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         // A place's predicate is stated before those of the places behind it,
         // whose addresses are read from its snapshot.
         held.sort_by_key(|place| place.projection.len());
+        // The loop havocs the snapshots of the held places, which the keys of
+        // the indirect predicates are read from. A place with lifetimes that
+        // the loop keeps (see `loop_keeps`) keeps its snapshot from before
+        // the loop.
+        let entry = self.loop_entry_label(loop_id, loop_head);
         for place in &held {
-            let (place_res, _snap, _, ty_out) = self.encode_place_with_snap(*place)?;
+            let (place_res, snap, _, ty_out) = self.encode_place_with_snap(*place)?;
             inv.push(ty_out.ref_to_pred(self.vcx, place_res.expr.expect_predicate(), None));
+            if let Some(entry) = entry
+                && place
+                    .ty(ctxt)
+                    .ty
+                    .walk()
+                    .any(|arg| arg.as_region().is_some())
+                && self.loop_keeps(loop_id, *place)
+            {
+                let before = self.vcx.maybe_apply_label(snap, Some(entry));
+                inv.push(self.vcx.mk_eq_expr(snap, before));
+            }
         }
         inv.extend(self.indirect_loop_invariant(&cfpcs.statements[0].entry_state)?);
 
@@ -161,6 +178,71 @@ impl<'vir: 'a, 'a, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         }
 
         Ok((inv, held_places))
+    }
+
+    /// The label at the end of the block from which the loop `loop_id` with
+    /// head `head` is entered, if it is entered from only one.
+    fn loop_entry_label(
+        &self,
+        loop_id: LoopId,
+        head: mir::BasicBlock,
+    ) -> Option<vir::OldLabel<'vir>> {
+        let [entry] = self.body.basic_blocks.predecessors()[head]
+            .iter()
+            .filter(|&&block| !self.loop_analysis().in_loop(block, loop_id))
+            .collect::<Vec<_>>()[..]
+        else {
+            return None;
+        };
+        Some(self.get_location_label(SnapshotLocation::After(*entry)))
+    }
+
+    /// Whether the loop `loop_id` keeps the snapshot of `place`, which has no
+    /// dereference of a reference: no statement in the loop mutates a place
+    /// containing it or a part of it, except a part behind a reference, which
+    /// the snapshot does not include.
+    fn loop_keeps(&self, loop_id: LoopId, place: Place<'vir>) -> bool {
+        use mir::visit::Visitor;
+        struct Mutated<'vir>(Vec<mir::Place<'vir>>);
+        impl<'vir> Visitor<'vir> for Mutated<'vir> {
+            fn visit_place(
+                &mut self,
+                place: &mir::Place<'vir>,
+                context: mir::visit::PlaceContext,
+                _location: mir::Location,
+            ) {
+                if context.is_mutating_use() {
+                    self.0.push(*place);
+                }
+            }
+        }
+        let tcx = self.vcx.tcx();
+        // Whether `place` dereferences a reference or raw pointer at or after
+        // its `from`-th projection.
+        let behind_ref = |place: mir::Place<'vir>, from: usize| {
+            place.iter_projections().skip(from).any(|(base, elem)| {
+                matches!(elem, mir::ProjectionElem::Deref) && !base.ty(self.body, tcx).ty.is_box()
+            })
+        };
+        let place: mir::Place<'vir> = mir::Place {
+            local: place.local,
+            projection: tcx.mk_place_elems(place.projection),
+        };
+        if behind_ref(place, 0) {
+            return false;
+        }
+        let mut mutated = Mutated(Vec::new());
+        for (block, data) in self.body.basic_blocks.iter_enumerated() {
+            if self.loop_analysis().in_loop(block, loop_id) {
+                mutated.visit_basic_block_data(block, data);
+            }
+        }
+        !mutated.0.into_iter().any(|mutated| {
+            let n = mutated.projection.len().min(place.projection.len());
+            mutated.local == place.local
+                && mutated.projection[..n] == place.projection[..n]
+                && !behind_ref(mutated, n)
+        })
     }
 
     pub(crate) fn encode_pcg_node<T: PcgLifetimeProjectionBaseLike<'vir>>(

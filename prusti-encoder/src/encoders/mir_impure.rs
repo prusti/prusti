@@ -2812,7 +2812,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         Ok(())
     }
 
-    fn loop_analysis(&self) -> &LoopAnalysis {
+    pub(crate) fn loop_analysis(&self) -> &LoopAnalysis {
         self.fpcs_analysis.analysis().loop_analysis()
     }
 
@@ -3718,6 +3718,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 &[],
                 self.vcx.mk_goto_stmt(current_block_label),
             ));
+            let loop_head = loop_spec.original_head_block;
             // The permission part of the invariant, and errors encoding it, refer to the
             // loop head.
             let head_span = self
@@ -3728,7 +3729,13 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             // statement's actions: every edge into the block carries it.
             let entry_graph = self.block_entry_graph(block).unwrap();
             let (permissions, place_capabilities) = self.vcx.with_span(head_span, |_| {
-                self.get_loop_inv(&cfpcs, &entry_graph, &loop_place_usages, self.pcg_ctxt())
+                self.get_loop_inv(
+                    &cfpcs,
+                    &entry_graph,
+                    &loop_place_usages,
+                    (loop_id, loop_head),
+                    self.pcg_ctxt(),
+                )
             })?;
             let pcg_state = &cfpcs.statements[0].states[EvalStmtPhase::PreOperands];
             // The Viper loop havocs the edge flags set in the loop, including
