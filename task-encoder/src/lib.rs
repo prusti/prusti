@@ -146,6 +146,12 @@ impl<'vir> Program<'vir> {
         code
     }
 
+    /// Replaces the `let`s in the triggers of all items added so far by the
+    /// values they bind (see [`vir::inline_trigger_lets`]).
+    pub fn inline_trigger_lets(&mut self) {
+        vir::with_vcx(|vcx| self.fold(|program| vir::inline_trigger_lets(vcx, program)));
+    }
+
     /// Simplifies the expressions of all domain axioms, predicates, functions
     /// and methods added so far (see [`vir::simplify`]).
     pub fn simplify(&mut self) {
@@ -157,22 +163,24 @@ impl<'vir> Program<'vir> {
                 &self.literal_inverses,
                 &self.user_level,
             );
-            for domain in self.domains.iter_mut() {
-                *domain = vir::simplify::simplify(vcx, &ctx, *domain);
-            }
-            for predicate in self.predicates.iter_mut() {
-                *predicate = vir::simplify::simplify(vcx, &ctx, *predicate);
-            }
-            for function in self.functions.iter_mut() {
-                *function = vir::simplify::simplify(vcx, &ctx, *function);
-            }
-            for method in self.methods.iter_mut() {
-                *method = vir::simplify::simplify(vcx, &ctx, *method);
-            }
+            self.fold(|program| vir::simplify::simplify(vcx, &ctx, program));
         });
     }
 
-    pub fn mk_program(self) -> vir::Program<'vir> {
+    /// Applies `f` to the program made of the items added so far and keeps
+    /// the items of the result. `f` must keep every item at its index, as a
+    /// fold does, since the field `code` refers to items by index.
+    fn fold(&mut self, f: impl FnOnce(vir::Program<'vir>) -> vir::Program<'vir>) {
+        let program = f(self.mk_program());
+        self.fields = program.fields.to_vec();
+        self.adts = program.adts.to_vec();
+        self.domains = program.domains.to_vec();
+        self.predicates = program.predicates.to_vec();
+        self.functions = program.functions.to_vec();
+        self.methods = program.methods.to_vec();
+    }
+
+    pub fn mk_program(&self) -> vir::Program<'vir> {
         vir::with_vcx(|vcx| {
             vcx.mk_program(
                 vcx.alloc_slice(&self.fields),

@@ -127,23 +127,47 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                 .collect::<Result<Vec<_>, _>>()?,
         );
 
+        let kind = PureKind::Closure {
+            context: self.context_def_id,
+        };
+        let body = self.encode_closure_body(name, kind, cl_def_id, cl_args, qvars, closures)?;
+        let body = body.embed(
+            self.vcx,
+            vir::vir_format!(self.vcx, "spec closure body ({name})"),
+        );
+        Ok((qvars, body.downcast_ty::<vir::Bool>()))
+    }
+
+    /// Encodes the body of the spec closure `cl_def_id` with the generic
+    /// arguments `cl_args`, as a body of `kind` whose arguments after the
+    /// closure itself are the quantified variables `qvars`, together with its
+    /// captures, encoded from the closure's construction among `closures`
+    /// (see [`Self::encode_spec_closure`]). `name` is the builtin's
+    /// `prusti_contracts` name, for error reporting.
+    pub(super) fn encode_closure_body(
+        &mut self,
+        name: &str,
+        kind: PureKind,
+        cl_def_id: DefId,
+        cl_args: ty::GenericArgsRef<'vir>,
+        qvars: &'vir [vir::LocalDeclSnap<'vir>],
+        closures: &FxHashMap<DefId, ClosureConstruction<'vir>>,
+    ) -> EncodeResult<'vir, ClosureBody<'vir>, MirPureEnc> {
         let mut reify_args = FxHashMap::default();
         // The arguments to the closure are the closure itself, which gets no
         // value as the body reads it only through its captures, and the
         // qvars.
+        let qvar_local = |idx: usize| mir::Local::from_usize(idx + 2);
         reify_args.extend(
             qvars
                 .iter()
                 .enumerate()
-                .map(|(idx, qvar)| ((idx + 2).into(), self.vcx.mk_local_ex(qvar))),
+                .map(|(idx, qvar)| (qvar_local(idx), self.vcx.mk_local_ex(qvar))),
         );
 
-        use vir::Reify;
         let out = self.deps.require_dep::<MirPureEnc>(MirPureEncTask {
             encoding_depth: self.encoding_depth + 1,
-            kind: PureKind::Closure {
-                context: self.context_def_id,
-            },
+            kind,
             def_id: cl_def_id,
             // The body becomes part of this expression, so it is encoded
             // in this context, in which `cl_args` are expressed.
@@ -187,24 +211,17 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                 captures.push(values);
             }
         }
-        let captures = self.vcx.alloc(captures);
-        let body = out.expr;
-        let reify_args = self.vcx.alloc(reify_args);
-        let body = self.vcx.mk_lazy_expr(
-            vir::vir_format!(self.vcx, "spec closure body ({name})"),
-            body.ty(),
-            Box::new(move |vcx, lctx: ExprInput<'vir>| {
-                let input = ExprInput {
-                    def_id: cl_def_id,
-                    inputs: reify_args,
-                    old: lctx.old,
-                    captures,
-                    enclosing: Some(vcx.alloc(lctx)),
-                };
-                body.reify(vcx, input).kind
-            }),
-        );
-        Ok((qvars, body.downcast_ty::<vir::Bool>()))
+        Ok(ClosureBody {
+            def_id: cl_def_id,
+            expr: out.expr,
+            inputs: self.vcx.alloc(reify_args),
+            captures: self.vcx.alloc(captures),
+            reads: self.vcx.alloc_slice(
+                &(0..qvars.len())
+                    .map(|idx| out.inputs.contains(&qvar_local(idx)))
+                    .collect::<Vec<_>>(),
+            ),
+        })
     }
 
     /// Whether `local` is a variable or an argument rather than a temporary:
@@ -306,6 +323,38 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
         args: &[Spanned<mir::Operand<'vir>>],
         closures: &FxHashMap<DefId, ClosureConstruction<'vir>>,
     ) -> EncodeResult<'vir, ExprRet<'vir>, MirPureEnc> {
+        if self.trigger {
+            let span = self.current_span();
+            match builtin {
+                SpecBuiltin::Forall | SpecBuiltin::Exists => {
+                    return Err(EncodeFullError::incorrect(
+                        "a trigger cannot contain a quantifier".to_string(),
+                        vec![span],
+                    ));
+                }
+                SpecBuiltin::SpecBlock => {
+                    return Err(EncodeFullError::incorrect(
+                        "a trigger cannot contain a specification block".to_string(),
+                        vec![span],
+                    ));
+                }
+                // Viper allows `old` in a trigger; the other states are not
+                // supported in a trigger.
+                SpecBuiltin::ModeStart(mode) | SpecBuiltin::ModeEnd(mode) => {
+                    let keyword = match mode {
+                        Mode::Old => None,
+                        Mode::Rel(execution) => Some(format!("rel{execution}")),
+                        Mode::BeforeExpiry => Some("before_expiry".to_string()),
+                    };
+                    if let Some(keyword) = keyword {
+                        return Err(EncodeFullError::unsupported(
+                            format!("`{keyword}` in a trigger"),
+                            vec![span],
+                        ));
+                    }
+                }
+            }
+        }
         let mk_bool = |prim: vir::ExprGenBool<'vir, _, _>| prim.upcast_ty::<vir::CSnap>();
         Ok(match builtin {
             SpecBuiltin::Forall | SpecBuiltin::Exists => {
@@ -320,11 +369,12 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                 };
                 let (qvars, body) =
                     self.encode_spec_closure(name, arg_tys[2].expect_ty(), closures)?;
-                // TODO: triggers
+                let triggers =
+                    self.encode_trigger_sets(name, arg_tys[0].expect_ty(), qvars, closures)?;
                 let res = if builtin == SpecBuiltin::Forall {
-                    self.vcx.mk_forall_expr(qvars, &[], body)
+                    self.vcx.mk_forall_expr(qvars, triggers, body)
                 } else {
-                    self.vcx.mk_exists_expr(qvars, &[], body)
+                    self.vcx.mk_exists_expr(qvars, triggers, body)
                 };
                 mk_bool(res)
             }

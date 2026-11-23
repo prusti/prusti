@@ -45,16 +45,14 @@ use prusti_rustc_interface::{
 };
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::fmt;
-use task_encoder::{
-    DependencyErrorLink, EncodeFullError, EncodeFullResult, ErrorKind, TaskEncoder,
-    TaskEncoderDependencies,
-};
+use task_encoder::{EncodeFullError, EncodeFullResult, TaskEncoder, TaskEncoderDependencies};
 use vir::{CastType, CompType, add_debug_note};
 
 mod place;
 mod rvalue;
 mod spec_closure;
 mod ssa;
+mod trigger;
 mod walk;
 
 use ssa::{ClosureConstruction, Fragment, Uses, Versions};
@@ -99,12 +97,51 @@ impl<'vir> ExprInput<'vir> {
 type ExprRet<'vir> = vir::ExprGenSnap<'vir, ExprInput<'vir>, vir::ExprKind<'vir>>;
 type ExprRetRef<'vir> = vir::ExprGenRef<'vir, ExprInput<'vir>, vir::ExprKind<'vir>>;
 type ExprRetAny<'vir, T> = vir::ExprGen<'vir, ExprInput<'vir>, vir::ExprKind<'vir>, T>;
+type TriggerRet<'vir> = vir::TriggerGen<'vir, ExprInput<'vir>, vir::ExprKind<'vir>>;
 /// An encoded spec closure (see `Enc::encode_spec_closure`): the quantified
 /// variables derived from the closure's arguments, and the closure's body.
 type SpecClosure<'vir> = (
     &'vir [vir::LocalDeclSnap<'vir>],
     ExprRetAny<'vir, vir::Bool>,
 );
+
+/// The encoded body of a spec closure, with what it is instantiated with
+/// (see `Enc::encode_closure_body`).
+#[derive(Clone, Copy)]
+struct ClosureBody<'vir> {
+    def_id: DefId,
+    expr: ExprRet<'vir>,
+    /// The values of the closure's arguments after the closure itself, the
+    /// quantified variables.
+    inputs: Inputs<'vir>,
+    /// The values of the closure's captures in the modes its body reads them
+    /// in, encoded in the body that builds the closure.
+    captures: Captures<'vir>,
+    /// For each quantified variable, whether the body reads it.
+    reads: &'vir [bool],
+}
+
+impl<'vir> ClosureBody<'vir> {
+    /// The body as part of the expression the closure is built in, in that
+    /// expression's state, named `name` for debugging.
+    fn embed(self, vcx: &'vir vir::VirCtxt<'vir>, name: &'vir str) -> ExprRet<'vir> {
+        use vir::Reify;
+        vcx.mk_lazy_expr(
+            name,
+            self.expr.ty(),
+            Box::new(move |vcx, lctx: ExprInput<'vir>| {
+                let input = ExprInput {
+                    def_id: self.def_id,
+                    inputs: self.inputs,
+                    old: lctx.old,
+                    captures: self.captures,
+                    enclosing: Some(vcx.alloc(lctx)),
+                };
+                self.expr.reify(vcx, input).kind
+            }),
+        )
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct MirPureEncOutput<'vir> {
@@ -182,6 +219,15 @@ pub enum PureKind {
     Closure {
         context: DefId,
     },
+    /// A closure holding a trigger of a quantifier, encoded like `Closure`. A
+    /// trigger is a pattern, whose value never becomes a fact, so the runtime
+    /// checks of MIR (bounds, overflow, division by zero) are not encoded:
+    /// Silicon evaluates a trigger that is not part of the body without the
+    /// body's conditions, where the failing branch of a check would assume
+    /// `false`.
+    Trigger {
+        context: DefId,
+    },
     /// A specification, attached to the item `context` specifies. That is
     /// not the specified item itself when an `impl` refines the
     /// specification of a trait: there the trait's parameters (notably
@@ -205,6 +251,8 @@ struct BodySetup {
     context_def_id: DefId,
     impure_context: bool,
     captures: Option<IndexVec<abi::FieldIdx, FxHashSet<Modes>>>,
+    /// Whether the body is a trigger (see `PureKind::Trigger`).
+    trigger: bool,
 }
 
 impl PureKind {
@@ -217,12 +265,12 @@ impl PureKind {
     ) -> MirBody<'vir> {
         // A specification is instantiated with the arguments of the
         // encoding, which differ from its own when a trait's specification
-        // is encoded for an `impl` of that trait. So is the closure of a
-        // quantifier or `spec_block`, which is encoded in the context of
-        // the expression it is part of. The other bodies are encoded
-        // generically, so they are taken as stored.
+        // is encoded for an `impl` of that trait. So are the closures of a
+        // quantifier (its body and its triggers) and of a `spec_block`, which
+        // are encoded in the context of the expression they are part of. The
+        // other bodies are encoded generically, so they are taken as stored.
         match self {
-            PureKind::Closure { context } => {
+            PureKind::Closure { context } | PureKind::Trigger { context } => {
                 let substs = vcx.tcx().mk_args(gargs.args());
                 vcx.body_mut().get_closure_body(def_id, substs, context)
             }
@@ -242,20 +290,25 @@ impl PureKind {
     fn setup(self, def_id: DefId, body: &mir::Body<'_>) -> BodySetup {
         BodySetup {
             context_def_id: match self {
-                PureKind::Closure { context } | PureKind::Spec { context, .. } => context,
+                PureKind::Closure { context }
+                | PureKind::Trigger { context }
+                | PureKind::Spec { context, .. } => context,
                 PureKind::Pure | PureKind::Constant(_) | PureKind::SpecBlock(_) => def_id,
             },
             impure_context: matches!(
                 self,
                 PureKind::Spec { impure: true, .. } | PureKind::SpecBlock(..)
             ),
-            captures: matches!(self, PureKind::Closure { .. }).then(|| {
-                let closure_ty = body.local_decls[ty::CAPTURE_STRUCT_LOCAL].ty.peel_refs();
-                let TyKind::Closure(_, args) = closure_ty.kind() else {
-                    unreachable!("a closure body takes its closure first");
-                };
-                IndexVec::from_elem_n(FxHashSet::default(), args.as_closure().upvar_tys().len())
-            }),
+            captures: matches!(self, PureKind::Closure { .. } | PureKind::Trigger { .. }).then(
+                || {
+                    let closure_ty = body.local_decls[ty::CAPTURE_STRUCT_LOCAL].ty.peel_refs();
+                    let TyKind::Closure(_, args) = closure_ty.kind() else {
+                        unreachable!("a closure body takes its closure first");
+                    };
+                    IndexVec::from_elem_n(FxHashSet::default(), args.as_closure().upvar_tys().len())
+                },
+            ),
+            trigger: matches!(self, PureKind::Trigger { .. }),
         }
     }
 }
@@ -411,6 +464,8 @@ struct Enc<'vir: 'enc, 'enc> {
     /// For a spec closure, the modes its body reads each capture in (see
     /// [`MirPureEncOutput::captures`]); `None` for other bodies.
     captures: Option<IndexVec<abi::FieldIdx, FxHashSet<Modes>>>,
+    /// Whether the body is a trigger (see `PureKind::Trigger`).
+    trigger: bool,
 }
 
 struct EncodedPlace<'vir> {
@@ -508,6 +563,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
             context_def_id,
             impure_context,
             captures,
+            trigger,
         } = setup;
         let rev_doms = rev_doms::ReverseDominators::new(&body.basic_blocks);
         Self {
@@ -525,6 +581,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
             modes: Modes::empty(),
             impure_context,
             captures,
+            trigger,
         }
     }
 

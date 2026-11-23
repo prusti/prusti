@@ -43,12 +43,16 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                 vec![self.current_span()],
             ));
         }
-        self.encode_region(
+        let expr = self.encode_region(
             mir::START_BLOCK,
             self.rev_doms.end,
             self.body.args_iter(),
             mir::RETURN_PLACE,
-        )
+        )?;
+        if self.trigger {
+            self.check_trigger(expr)?;
+        }
+        Ok(expr)
     }
 
     /// The value of the spec block `block`, which builds the spec closure and
@@ -121,6 +125,13 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                 if let Some(live) = self.spec_arms.switches.get(&curr) {
                     return self.encode_cfg(fragment, *live, join_point);
                 }
+                if self.trigger {
+                    return Err(EncodeFullError::incorrect(
+                        "a trigger cannot contain a conditional (`if`, `match`, `&&` or `||`)"
+                            .to_string(),
+                        vec![term.source_info.span],
+                    ));
+                }
 
                 // Each target is walked up to the join point of the switch,
                 // the immediate reverse dominator of `curr`, where its
@@ -168,6 +179,12 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                 target,
                 ..
             } => {
+                // A trigger does not contain the checks (see
+                // `PureKind::Trigger`).
+                if self.trigger {
+                    return self.encode_cfg(fragment, *target, join_point);
+                }
+
                 // encode the condition operand
                 let cond_ty = cond.ty(self.body, self.vcx.tcx());
                 assert_eq!(*cond_ty.kind(), TyKind::Bool);
@@ -208,6 +225,14 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                 ..
             } => {
                 let Some(target) = *target else {
+                    if self.trigger {
+                        return Err(EncodeFullError::incorrect(
+                            "a trigger cannot contain a call that never returns, such as \
+                             `panic!()`"
+                                .to_string(),
+                            vec![term.source_info.span],
+                        ));
+                    }
                     // target is none if the call diverges (i.e. returns !), in
                     // this case treat it just like an unreachable terminator.
                     return Ok(None);
@@ -271,17 +296,13 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                     .collect::<Result<Vec<_>, _>>()?;
                 Ok(pure_func.call_pure(snap_args))
             }
-            None => Err(EncodeFullError::DependencyError(vec![
-                DependencyErrorLink::new(
-                    MirPureEnc::ENCODER_NAME,
-                    format!(
-                        "use of impure function `{}` in pure code is not allowed",
-                        self.vcx.tcx().def_path_str(def_id)
-                    ),
-                    vec![span],
-                    ErrorKind::Incorrect,
+            None => Err(EncodeFullError::incorrect(
+                format!(
+                    "use of impure function `{}` in pure code is not allowed",
+                    self.vcx.tcx().def_path_str(def_id)
                 ),
-            ])),
+                vec![span],
+            )),
         }
     }
 

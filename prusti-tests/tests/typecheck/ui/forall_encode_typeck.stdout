@@ -20,9 +20,10 @@ non_snake_case)]
 #[prusti::spec_id = "$(NUM_UUID)"]
 fn prusti_pre_item_test1_$(NUM_UUID)() -> bool {
     let prusti_result: bool =
-        ::prusti_contracts::forall(((#[prusti::spec_only] |a: i32, b: u32|
-                        (a == a), #[prusti::spec_only] |a: i32, b: u32| (a == a)),
-                (#[prusti::spec_only] |a: i32, b: u32| (true),)),
+        ::prusti_contracts::forall(((&(#[prusti::spec_only] |a: i32, b: u32|
+                                (a == a)),
+                    &(#[prusti::spec_only] |a: i32, b: u32| (a == a))),
+                (&(#[prusti::spec_only] |a: i32, b: u32| (true)),)),
             &(#[prusti::spec_only] |a: i32, b: u32| -> bool { a == a }));
     prusti_result
 }
@@ -35,9 +36,10 @@ non_snake_case)]
 #[prusti::spec_id = "$(NUM_UUID)"]
 fn prusti_pre_item_test2_$(NUM_UUID)() -> bool {
     let prusti_result: bool =
-        ::prusti_contracts::exists(((#[prusti::spec_only] |a: i32, b: u32|
-                        (a == a), #[prusti::spec_only] |a: i32, b: u32| (a == a)),
-                (#[prusti::spec_only] |a: i32, b: u32| (true),)),
+        ::prusti_contracts::exists(((&(#[prusti::spec_only] |a: i32, b: u32|
+                                (a == a)),
+                    &(#[prusti::spec_only] |a: i32, b: u32| (a == a))),
+                (&(#[prusti::spec_only] |a: i32, b: u32| (true)),)),
             &(#[prusti::spec_only] |a: i32, b: u32| -> bool { a == a }));
     prusti_result
 }
