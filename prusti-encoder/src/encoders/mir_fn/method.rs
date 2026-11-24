@@ -293,7 +293,15 @@ impl TaskEncoder for MethodEnc {
                     span,
                 )?;
 
-                let pcg_creator = pcg::PcgCtxtCreator::new(vcx.tcx());
+                // TODO: the keys of the indirect predicates are snapshots of
+                // whole values, which also change when data without lifetimes
+                // changes. A lifetime projection is therefore re-keyed at
+                // every change of its place, so the PCG must label it then,
+                // not only when its loans may change. Keys that depend only on
+                // what holds the loans would make this setting unnecessary.
+                let mut pcg_settings = pcg::utils::PcgSettings::new();
+                pcg_settings.label_all_lifetime_projections = true;
+                let pcg_creator = pcg::PcgCtxtCreator::with_settings(vcx.tcx(), pcg_settings);
                 let pcg_ctxt = pcg_creator.new_nll_ctxt(&body_with_facts);
                 let fpcs_analysis = pcg::run_pcg(pcg_ctxt);
                 pcg_ctxt.update_debug_visualization_metadata();
