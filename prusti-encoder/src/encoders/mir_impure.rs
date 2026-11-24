@@ -551,6 +551,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         rvalue: &mir::Rvalue<'vir>,
         span: Span,
         operand_snaps: &OperandSnaps<'vir>,
+        location: mir::Location,
     ) -> EncodeResult<'vir, EncodedRvalue<'vir>, E> {
         let rvalue_ty = rvalue.ty(self.local_decls, self.vcx.tcx());
         match rvalue {
@@ -633,7 +634,10 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
 
             mir::Rvalue::Ref(_reg, _kind, place) => Ok(match rvalue_ty.kind() {
                 TyKind::Ref(.., ty::Mutability::Not) => {
-                    let (address, snap, _, _) = self.encode_place_with_snap((*place).into())?;
+                    let (address, _, _, _) = self.encode_place_with_snap((*place).into())?;
+                    // The referent's value, as specifications read it.
+                    let pcg = self.effect_state(location);
+                    let snap = self.place_value_in(Place::from(*place).into(), &pcg, None)?;
                     let metadata = address.expr.metadata;
                     let metadata =
                         metadata.unwrap_or_else(|| self.expect_thin_ptr_metadata(rvalue_ty));
@@ -1260,6 +1264,13 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             EvalStmtPhase::PreMain => &location.states[EvalStmtPhase::PostOperands],
             EvalStmtPhase::PostMain => &location.states[EvalStmtPhase::PreMain],
         }
+    }
+
+    /// The PCG state of the effect of the statement at `location`: between
+    /// its `PreMain` and `PostMain` actions.
+    fn effect_state(&self, location: mir::Location) -> Pcg<'enc, 'vir> {
+        let statement = &self.current_fpcs.as_ref().unwrap().statements[location.statement_index];
+        Self::phase_start_state(statement, EvalStmtPhase::PostMain).clone()
     }
 
     /// The PCG state where the snapshots the PCG labels with `at` are taken
@@ -4078,7 +4089,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                         .expect_predicate();
 
                     // The snapshot of the value that we are assigning.
-                    let rval_enc = self.encode_rvalue(rvalue, span, &captured)?;
+                    let rval_enc = self.encode_rvalue(rvalue, span, &captured, location)?;
 
                     let dest_ty = dest.ty(self.local_decls, self.vcx.tcx());
                     assert!(dest_ty.variant_index.is_none());
