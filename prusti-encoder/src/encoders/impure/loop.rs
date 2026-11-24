@@ -64,8 +64,10 @@ impl<'vir: 'a, 'a, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             if capability.is_write() {
                 continue; // No permissions are encoded for places with write capabilities currently
             }
-            // A reported place without a capability at the head lies behind a mutable
-            // reference in a held place, whose indirect predicates hold it.
+            // `loop_invariant_place_capabilities` reports a place without a capability at
+            // the head only behind a mutable reference in another reported place. The
+            // indirect predicates of that place hold it, so its own predicate would hold it
+            // a second time.
             if state.place_capability(*place, self.pcg_ctxt()).is_none() {
                 continue;
             }
