@@ -128,9 +128,9 @@ fn rewrite_trait_impl(
     let mut new_impl = impl_item.clone();
     new_impl.self_ty = new_ty;
     new_impl.trait_ = None;
-    // The `!` of a negative impl belongs to the trait; the inherent impl is
-    // positive.
-    new_impl.modifiers.polarity = None;
+    // An inherent impl is neither `unsafe`, negative nor `default`.
+    new_impl.unsafety = None;
+    new_impl.modifiers = syn::ImplModifiers::default();
     new_impl.items.clear();
 
     let item_trait_path = impl_item.trait_.as_ref().unwrap().0.clone();
