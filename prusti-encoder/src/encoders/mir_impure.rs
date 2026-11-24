@@ -1735,10 +1735,13 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             PlaceRead::Held(snap) => {
                 let ty = place.place().ty(self.pcg_ctxt()).ty;
                 let decomposition = RustTyDecomposition::from_ty(ty, self.def_id);
-                if self
-                    .deps
-                    .require_dep::<LifetimePositionEnc>(decomposition)?
-                    .is_empty()
+                // Behind a shared reference, the snapshot is read out of the
+                // reference's, which holds the full value.
+                if place.place().projects_shared_ref(self.pcg_ctxt())
+                    || self
+                        .deps
+                        .require_dep::<LifetimePositionEnc>(decomposition)?
+                        .is_empty()
                 {
                     snap
                 } else {
