@@ -189,6 +189,24 @@ impl ViperBackendConfig {
                 if config::use_more_complete_exhale() {
                     verifier_args.push("--enableMoreCompleteExhale".to_string());
                 }
+                // Silicon's default state consolidation tries to merge every chunk it
+                // adds with each held chunk of the same resource, at one prover check
+                // per pair, and assumes the facts that follow from field chunks
+                // (receivers are non-null; full permissions have distinct receivers).
+                // Mode 3 does this only while it retries a failed check. Prusti loses
+                // nothing by it, as its programs have no aliasing chunks: every place
+                // has a single owner, whose predicate instance is held once, so the
+                // merges fail (each check typically only when the `--checkTimeout`
+                // runs out). Its methods hold no field chunks either, since the
+                // predicates of primitives, references and raw pointers stay folded
+                // there. Silicon rejects the option given twice, so the extra
+                // arguments can override it.
+                if !verifier_args
+                    .iter()
+                    .any(|arg| arg.starts_with("--stateConsolidationMode"))
+                {
+                    verifier_args.push("--stateConsolidationMode=3".to_string());
+                }
                 if config::counterexample() {
                     verifier_args.push("--counterexample".to_string());
                     verifier_args.push("mapped".to_string());
