@@ -263,10 +263,11 @@ impl<'vir> WandEncOutput<'vir> {
     ) -> Option<vir::ExprBool<'vir>> {
         let g = g.into();
         let (nodes, lifetime) = self.node(vcx, deps, g)?;
-        let predicates = vcx.mk_conj(&nodes.of(lifetime, snap(g.mir_local()), key));
-        // The predicates are in terms of the callee's generic parameters.
-        let generics = self.generics_subst(call_ctx, vcx, deps);
-        Some(vcx.with_local_subst(generics, || {
+        // The predicates are in terms of the callee's generic parameters, the
+        // snapshot in the caller's.
+        let (placeholder, subst) = self.placeholder_subst(call_ctx, snap(g.mir_local()), vcx, deps);
+        let predicates = vcx.mk_conj(&nodes.of(lifetime, placeholder, key));
+        Some(vcx.with_local_subst(subst, || {
             predicates.lazy::<(), vir::ExprKind<'vir>>().reify(vcx, ())
         }))
     }
@@ -387,14 +388,7 @@ impl<'vir> WandEncOutput<'vir> {
             .tcx()
             .mk_args_from_iter(params.into_iter().map(ty::GenericArg::from));
         let args = deps.require_dep::<GArgsTyEnc>(GArgs::new(call_ctx.context(), params))?;
-        // The snapshot is substituted for a placeholder together with the
-        // generic arguments, so that the substitution does not apply to the
-        // caller's own type parameters in it.
-        let placeholder = vcx.mk_local_decl("call_arg", snap.ty());
-        let mut subst = self.generics_subst(Some(call_ctx), vcx, deps).clone();
-        subst.insert(placeholder.name, snap.as_dyn());
-        let subst = vcx.alloc(subst);
-        let placeholder = vcx.mk_local_ex(placeholder);
+        let (placeholder, subst) = self.placeholder_subst(Some(call_ctx), snap, vcx, deps);
         let mut stmts = Vec::new();
         for p in nodes.positions_of(lifetime) {
             let (first, end) = blocks[p];
@@ -694,6 +688,32 @@ impl<'vir> WandEncOutput<'vir> {
             .zip(args.get_const::<(), !>())
             .map(|(decl, arg)| (decl.name, arg.as_dyn()));
         vcx.alloc(tys.chain(consts).collect())
+    }
+
+    /// A placeholder for `snap`, a snapshot in the caller's terms, and the
+    /// substitution of `generics_subst` that also replaces the placeholder by
+    /// `snap`. An expression built on the placeholder in the callee's terms
+    /// and reified under the substitution has `snap` in it, which the
+    /// substitution does not apply to: its type parameters are the caller's,
+    /// which may have the names of the callee's. Without a call context,
+    /// nothing is substituted, and `snap` is its own placeholder.
+    fn placeholder_subst<E: TaskEncoder>(
+        &self,
+        call_ctx: WandCallContext<'vir>,
+        snap: vir::ExprSnap<'vir>,
+        vcx: &'vir vir::VirCtxt<'vir>,
+        deps: &mut TaskEncoderDependencies<'vir, E>,
+    ) -> (
+        vir::ExprSnap<'vir>,
+        &'vir FxHashMap<&'vir str, vir::ExprDyn<'vir>>,
+    ) {
+        if call_ctx.is_none() {
+            return (snap, self.generics_subst(call_ctx, vcx, deps));
+        }
+        let placeholder = vcx.mk_local_decl("call_arg", snap.ty());
+        let mut subst = self.generics_subst(call_ctx, vcx, deps).clone();
+        subst.insert(placeholder.name, snap.as_dyn());
+        (vcx.mk_local_ex(placeholder), vcx.alloc(subst))
     }
 }
 
