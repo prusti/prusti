@@ -613,6 +613,7 @@ fn reconstruct_arg(pat: &syn::Pat, pinned: bool) -> syn::Result<TokenStream> {
         // A unit struct: the path is the value.
         syn::Pat::Path(path) => Ok(path.to_token_stream()),
         syn::Pat::Type(pat_type) => reconstruct_arg(&pat_type.pat, pinned),
+        syn::Pat::Paren(paren) => reconstruct_arg(&paren.pat, pinned),
         syn::Pat::Rest(rest) => Err(unsupported(rest.span(), "`..`")),
         other => Err(unsupported(other.span(), "this kind of pattern")),
     }
