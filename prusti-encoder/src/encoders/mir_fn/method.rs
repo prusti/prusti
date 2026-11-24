@@ -338,11 +338,17 @@ impl TaskEncoder for MethodEnc {
                 );
 
                 deps.check_cycle()?;
+                // The types of the locals normalized as the PCG and the
+                // signatures have them.
+                let mut local_decls = body.local_decls.clone();
+                for decl in local_decls.iter_mut() {
+                    decl.ty = pcg::utils::normalize::normalize_opaque_types(vcx.tcx(), decl.ty);
+                }
                 let mut visitor = ImpureEncVisitor {
                     vcx,
                     deps,
                     def_id,
-                    local_decls: &body.local_decls,
+                    local_decls: vcx.alloc(local_decls),
                     fpcs_analysis,
                     local_defs,
                     spec_blocks,

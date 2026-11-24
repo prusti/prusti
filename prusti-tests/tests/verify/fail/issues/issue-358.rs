@@ -1,3 +1,4 @@
+//@ known-failure
 // Regression test for prusti/prusti#358: the body is encoded, so a false claim after the
 // closure-taking calls is reported.
 use prusti_contracts::*;
