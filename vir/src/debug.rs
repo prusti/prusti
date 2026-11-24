@@ -155,6 +155,9 @@ impl<'vir, Curr, Next> Debug for DomainAxiomGenData<'vir, Curr, Next> {
 
 impl<'vir> Debug for DomainFunctionData<'vir> {
     fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+        if self.no_auto_trigger {
+            writeln!(f, "  @noAutoTrigger()")?;
+        }
         write!(f, "  ")?;
         if self.unique {
             write!(f, "unique ")?;
@@ -290,6 +293,9 @@ impl<'vir, Curr, Next> Debug for FuncAppGenData<'vir, Curr, Next> {
 
 impl<'vir, Curr, Next> Debug for FunctionGenData<'vir, Curr, Next> {
     fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+        if self.no_auto_trigger {
+            writeln!(f, "@noAutoTrigger()")?;
+        }
         writeln!(f, "function {}(", self.name)?;
         fmt_comma_sep_lines(f, self.args, 0)?;
         writeln!(f, "): {:?}", self.ret)?;

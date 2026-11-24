@@ -36,6 +36,7 @@ fn build_program<'a>(ast: &'a AstFactory) -> Program<'a> {
         false,
         "Wrapper",
         None,
+        false,
     );
 
     let unwrap_domain_function = ast.domain_func(
@@ -52,6 +53,7 @@ fn build_program<'a>(ast: &'a AstFactory) -> Program<'a> {
         false,
         "Wrapper",
         None,
+        false,
     );
 
     let wrapper_domain = ast.domain(
@@ -101,6 +103,7 @@ fn build_program<'a>(ast: &'a AstFactory) -> Program<'a> {
                 ast.int_lit(0),
             ),
         ),
+        false,
     );
 
     let even_num_box_predicate = ast.predicate(
