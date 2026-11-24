@@ -19,7 +19,9 @@ use pcg::{
         FunctionData, FunctionShape, FunctionShapeInput, FunctionShapeNode, FunctionShapeOutput,
         GeneralizedLifetime, MakeFunctionShapeError,
         borrow_pcg_edge::BlockedNode,
-        region_projection::{Generalized, LifetimeProjection},
+        region_projection::{
+            ExtractRegionsCtxt, Generalized, LifetimeProjection, LifetimeProjectionIdx,
+        },
         state::BorrowsState,
     },
     utils::place::remote::RemotePlace,
@@ -82,7 +84,8 @@ impl<'vir, E: TaskEncoder> ImpureEncVisitor<'vir, '_, E> {
             let rhs = wand_data
                 .rhs
                 .iter()
-                .map(|g| {
+                .filter_map(|g| {
+                    let region_idx = self.wands.body_region_idx(self.vcx, (*g).into())?;
                     let resources = self.wands.encode_predicates_for_function_shape_node(
                         self.vcx,
                         self.deps,
@@ -98,10 +101,10 @@ impl<'vir, E: TaskEncoder> ImpureEncVisitor<'vir, '_, E> {
                     let node: BlockedNode<'vir> =
                         LifetimeProjection::<'vir, RemotePlace>::from_index(
                             RemotePlace::new(g.mir_local()),
-                            g.region_idx(),
+                            region_idx,
                         )
                         .into();
-                    (node, resources.into_iter().collect())
+                    Some((node, resources.into_iter().collect()))
                 })
                 .collect();
             let mut package_script = self.pcs_package_script(final_borrow_state, rhs, label)?;
@@ -232,6 +235,29 @@ impl<'vir> WandEncOutput<'vir> {
         let decomp = RustTyDecomposition::from_ty(ty, self.g_params(vcx, None));
         let nodes = NodePredicates::new(decomp, deps).unwrap();
         nodes.has_positions(lifetime).then_some((nodes, lifetime))
+    }
+
+    /// The index of `g`'s lifetime among the lifetimes of its local's type as
+    /// the function's body numbers them: unlike the shape, without those in a
+    /// type parameter's trait bounds, for which there is none.
+    // TODO: once the PCG gives the lifetimes in a type parameter's trait bounds
+    // nodes in bodies too (see `FunctionData::shape_node_lifetime`), a shape
+    // node's index is the body's, and this translation is unnecessary.
+    fn body_region_idx(
+        &self,
+        vcx: &'vir vir::VirCtxt<'vir>,
+        g: FunctionShapeNode<Generalized>,
+    ) -> Option<LifetimeProjectionIdx<Generalized>> {
+        let lifetime = self
+            .function_data
+            .shape_node_lifetime(g, vcx.tcx())
+            .ok()??;
+        let ty = g.ty(self.fn_sig(vcx, None));
+        let lifetimes: IndexVec<LifetimeProjectionIdx<Generalized>, GeneralizedLifetime<'vir>> =
+            vcx.tcx().extract_regions(ty);
+        lifetimes
+            .iter_enumerated()
+            .find_map(|(idx, l)| (*l == lifetime).then_some(idx))
     }
 
     /// The predicates of `g` on the snapshot `snap` of its local, with keys
