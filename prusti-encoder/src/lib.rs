@@ -27,7 +27,7 @@ use crate::encoders::{
             builtin_impls::BuiltinImplEnc,
             clamp::ClampEnc,
             merge_split::MergeSplitEnc,
-            r#trait::TraitEnc,
+            r#trait::{AssocTypeBoundEnc, TraitEnc},
             trait_fn::TraitFnEnc,
             trait_impls::{
                 TraitImplConditionEnc, TraitImplDefaultFnEnc, TraitImplEnc, TraitImplItemEnc,
@@ -176,6 +176,7 @@ pub(crate) fn emit_program<'vir>() -> task_encoder::Program<'vir> {
 
     program.header("traits");
     TraitEnc::emit_outputs(&mut program);
+    AssocTypeBoundEnc::emit_outputs(&mut program);
     BuiltinImplEnc::emit_outputs(&mut program);
     ArityEnc::emit_outputs(&mut program);
     ClampEnc::emit_outputs(&mut program);

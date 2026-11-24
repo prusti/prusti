@@ -447,9 +447,7 @@ impl TraitImplEnc {
         Self::clause_bounds(vcx, deps, ctx, caller_bounds, bind_points)
     }
 
-    /// The trait and projection clauses among `caller_bounds`, stated over
-    /// the parameters of `ctx`. See [`Self::context_bounds`] for
-    /// `bind_points`.
+    /// Like [`Self::context_bounds`], for the given clauses.
     pub(crate) fn clause_bounds<'vir, E: TaskEncoder + 'vir + ?Sized>(
         vcx: &'vir vir::VirCtxt<'vir>,
         deps: &mut TaskEncoderDependencies<'vir, E>,
