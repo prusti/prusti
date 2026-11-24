@@ -227,7 +227,7 @@ mod self_type_rewriter {
                 {
                     if ty_path.path.segments.len() == 1 {
                         // replace `Self` type
-                        *ty = self.self_type.clone();
+                        *ty = super::parenthesized_trait_object(self.self_type);
                     } else if ty_path.path.segments.len() >= 2 {
                         // replace associated types
                         let mut path_rest = ty_path
@@ -252,6 +252,15 @@ mod self_type_rewriter {
             }
             syn::visit_mut::visit_type_mut(self, ty);
         }
+    }
+}
+
+/// `ty`, in parentheses if it is a trait object with several bounds, which
+/// needs them in most positions (`&(dyn A + B)`, `*const (dyn A + B)`).
+pub(crate) fn parenthesized_trait_object(ty: &syn::Type) -> syn::Type {
+    match ty {
+        syn::Type::TraitObject(object) if object.bounds.len() > 1 => parse_quote!((#object)),
+        _ => ty.clone(),
     }
 }
 
@@ -356,8 +365,9 @@ mod receiver_rewriter {
                         #mutability _self : #new_ty
                     },
                     ReceiverKind::Reference(and, lifetime, ref_mutability) => {
+                        let referent = super::parenthesized_trait_object(new_ty);
                         parse_quote_spanned! {span=>
-                            _self : #and #lifetime #ref_mutability #new_ty
+                            _self : #and #lifetime #ref_mutability #referent
                         }
                     }
                     ReceiverKind::Typed(_, ty) => parse_quote_spanned! {span=>

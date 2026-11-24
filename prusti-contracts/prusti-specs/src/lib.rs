@@ -613,6 +613,7 @@ fn reconstruct_arg(pat: &syn::Pat, pinned: bool) -> syn::Result<TokenStream> {
         // A unit struct: the path is the value.
         syn::Pat::Path(path) => Ok(path.to_token_stream()),
         syn::Pat::Type(pat_type) => reconstruct_arg(&pat_type.pat, pinned),
+        syn::Pat::Paren(paren) => reconstruct_arg(&paren.pat, pinned),
         syn::Pat::Rest(rest) => Err(unsupported(rest.span(), "`..`")),
         other => Err(unsupported(other.span(), "this kind of pattern")),
     }
@@ -1254,92 +1255,94 @@ pub fn ghost(tokens: TokenStream) -> TokenStream {
     let spec_id = rewriter.generate_spec_id();
     let spec_id_str = spec_id.to_string();
 
+    /// Finds the expressions that leave the ghost block.
     struct Visitor {
-        loops: Vec<(Option<syn::Ident>, Span)>,
-        breaks: Vec<(Option<syn::Ident>, Span)>,
-        returns: Option<Span>,
-        tries: Vec<Span>,
+        /// The loops and blocks around the visited expression, inside the
+        /// ghost block: their labels, and whether each is a loop.
+        targets: Vec<(Option<syn::Ident>, bool)>,
+        exits: Vec<Span>,
+    }
+
+    impl Visitor {
+        fn visit_target(
+            &mut self,
+            label: &Option<syn::Label>,
+            is_loop: bool,
+            visit: impl FnOnce(&mut Self),
+        ) {
+            let label = label.as_ref().map(|label| label.name.ident.clone());
+            self.targets.push((label, is_loop));
+            visit(self);
+            self.targets.pop();
+        }
+
+        /// Records a `break` or `continue` that leaves the ghost block: one
+        /// whose label, or for an unlabeled one any loop, is not around it.
+        fn visit_jump(&mut self, label: &Option<syn::Lifetime>, span: Span) {
+            let stays = self.targets.iter().any(|(target, is_loop)| match label {
+                Some(label) => target.as_ref() == Some(&label.ident),
+                None => *is_loop,
+            });
+            if !stays {
+                self.exits.push(span);
+            }
+        }
     }
 
     impl<'ast> Visit<'ast> for Visitor {
         fn visit_expr_for_loop(&mut self, ex: &'ast syn::ExprForLoop) {
-            let e = ex.clone();
-            let lbl = e.label.map(|c| c.name.ident);
-            let span = e.body.brace_token.span.join();
-            self.loops.push((lbl, span));
-            syn::visit::visit_expr_for_loop(self, ex);
+            // The iterator is evaluated outside the loop.
+            self.visit_pat(&ex.pat);
+            self.visit_expr(&ex.expr);
+            self.visit_target(&ex.label, true, |v| v.visit_block(&ex.body));
         }
         fn visit_expr_while(&mut self, ex: &'ast syn::ExprWhile) {
-            let e = ex.clone();
-            let lbl = e.label.map(|c| c.name.ident);
-            let span = e.body.brace_token.span.join();
-            self.loops.push((lbl, span));
-            syn::visit::visit_expr_while(self, ex);
+            self.visit_target(&ex.label, true, |v| syn::visit::visit_expr_while(v, ex));
         }
         fn visit_expr_loop(&mut self, ex: &'ast syn::ExprLoop) {
-            let e = ex.clone();
-            let lbl = e.label.map(|c| c.name.ident);
-            let span = e.body.brace_token.span.join();
-            self.loops.push((lbl, span));
-            syn::visit::visit_expr_loop(self, ex);
+            self.visit_target(&ex.label, true, |v| syn::visit::visit_expr_loop(v, ex));
+        }
+        fn visit_expr_block(&mut self, ex: &'ast syn::ExprBlock) {
+            self.visit_target(&ex.label, false, |v| syn::visit::visit_expr_block(v, ex));
         }
         fn visit_expr_continue(&mut self, ex: &'ast syn::ExprContinue) {
-            let e = ex.clone();
-            let lbl = e.label.map(|c| c.ident);
-            self.breaks.push((lbl, ex.span()));
+            self.visit_jump(&ex.label, ex.span());
             syn::visit::visit_expr_continue(self, ex);
         }
         fn visit_expr_break(&mut self, ex: &'ast syn::ExprBreak) {
-            let e = ex.clone();
-            let lbl = e.label.map(|c| c.ident);
-            self.breaks.push((lbl, ex.span()));
+            self.visit_jump(&ex.label, ex.span());
             syn::visit::visit_expr_break(self, ex);
         }
         fn visit_expr_return(&mut self, e: &'ast syn::ExprReturn) {
-            let e = e.clone();
-            self.returns = Some(e.span());
+            self.exits.push(e.span());
         }
         // `?` exits the enclosing function like `return` does.
         fn visit_expr_try(&mut self, ex: &'ast syn::ExprTry) {
-            self.tries.push(ex.span());
+            self.exits.push(ex.span());
             syn::visit::visit_expr_try(self, ex);
         }
-        // Do not descend into nested closures or items: `return`/`?` (and
-        // loops) inside them are local to the closure/item and do not leave
-        // the ghost block.
+        // Do not descend into nested closures, async blocks or items:
+        // `return`/`?` (and loops) inside them are local to them and do not
+        // leave the ghost block.
         fn visit_expr_closure(&mut self, _: &'ast syn::ExprClosure) {}
+        fn visit_expr_async(&mut self, _: &'ast syn::ExprAsync) {}
         fn visit_item(&mut self, _: &'ast syn::Item) {}
     }
 
     let mut visitor = Visitor {
-        loops: vec![],
-        breaks: vec![],
-        returns: None,
-        tries: vec![],
+        targets: vec![],
+        exits: vec![],
     };
 
     let tokens = quote! {
         {#tokens}
     };
 
-    let input = syn::parse::<syn::Block>(tokens.clone().into()).unwrap();
+    let input: syn::Block = handle_result!(syn::parse2(tokens.clone()));
 
     visitor.visit_block(&input);
 
-    let mut exit_errors = visitor.returns.into_iter().collect::<Vec<_>>();
-    exit_errors.extend(visitor.tries);
-
-    'breaks: for (break_label, break_span) in visitor.breaks.iter() {
-        for (loop_label, loop_span) in visitor.loops.iter() {
-            let loop_span = loop_span.unwrap();
-            let label_match = break_label == loop_label || break_label.is_none();
-            let break_inside = loop_span.join(break_span.unwrap()).unwrap().eq(&loop_span);
-            if label_match && break_inside {
-                continue 'breaks;
-            }
-        }
-        exit_errors.push(*break_span);
-    }
+    let exit_errors = visitor.exits;
 
     // The ghost body lives in dead code, so it is pruned before codegen; the
     // live path merely constructs the `Ghost` ZST. The body appears twice:

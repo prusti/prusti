@@ -14,6 +14,12 @@ impl ExternTrait for Dummy {
     default fn bar(&self) -> Self::Ret2Ty;
 }
 
-// An extern spec may be given for a negative impl.
+// An extern spec may be given for a negative, an `unsafe` or a `default` impl.
 #[extern_spec]
 impl<T: ?Sized> !Send for *const T {}
+
+#[extern_spec]
+unsafe impl<T: ?Sized + Send> Send for std::sync::Mutex<T> {}
+
+#[extern_spec]
+default impl Clone for String {}

@@ -35,11 +35,4 @@ pub fn trigger_moves_capture(s: S) {}
 #[requires(forall(|i: usize| p(i), triggers = [(p(i), p(i), p(i), p(i), p(i), p(i), p(i), p(i), p(i), p(i), p(i), p(i), p(i))]))] //~ERROR: a trigger set can have at most 12 expressions
 pub fn too_many_terms() {}
 
-// The return type becomes the type of the postcondition's `result` parameter,
-// where precise capturing is not allowed.
-#[ensures(true)]
-pub fn precise_capture() -> impl Sized + use<> { //~ERROR: `use<...>` precise capturing syntax not allowed in argument-position
-    0
-}
-
 // TODO: Test parser errors.

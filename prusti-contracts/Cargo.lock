@@ -154,7 +154,7 @@ dependencies = [
 
 [[package]]
 name = "prusti-specs"
-version = "0.3.9"
+version = "0.3.10"
 dependencies = [
  "itertools",
  "proc-macro2",
