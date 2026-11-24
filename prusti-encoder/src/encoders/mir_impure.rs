@@ -1492,7 +1492,31 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             {
                 return self.place_read_in(variant.into(), pcg, at);
             }
-            if ty.ty.is_box() || ty.ty.is_array() || ty.ty.is_enum() && ty.variant_index.is_none() {
+            // An expanded box has its fields, which the PCG does not expand it
+            // into and which are held by their own predicates, and the value
+            // of its referent.
+            if ty.ty.is_box() {
+                let fields = current.expand_field(None, ctxt).map_err(|_| {
+                    EncodeFullError::unsupported(
+                        format!("INTERNAL ERROR: no fields of the expanded box `{current:?}`"),
+                        vec![self.current_span()],
+                    )
+                })?;
+                let referent: Place<'vir> = current
+                    .project_deeper(&[mir::ProjectionElem::Deref], self.vcx.tcx())
+                    .into();
+                let mut values = Vec::with_capacity(fields.len() + 1);
+                for field in fields {
+                    values.push(self.place_snap(field.into())?);
+                }
+                values.push(self.place_value_in(referent.into(), pcg, at)?);
+                let value = self
+                    .ty_use_pure(ty.ty)
+                    .expect_structlike()
+                    .field_snaps_to_snap(values);
+                return Ok(PlaceRead::Value(value.upcast_ty()));
+            }
+            if ty.ty.is_array() || ty.ty.is_enum() && ty.variant_index.is_none() {
                 return Err(EncodeFullError::unsupported(
                     format!("INTERNAL ERROR: the value of the expanded place `{current:?}`"),
                     vec![self.current_span()],
@@ -1536,6 +1560,9 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                     .read(parent_value.downcast_ty())
             }
             mir::ProjectionElem::Downcast(..) => parent_value,
+            mir::ProjectionElem::Deref if parent_ty.ty.is_box() => pure
+                .expect_structlike()
+                .box_value_access(parent_value.downcast_ty()),
             mir::ProjectionElem::Deref
                 if matches!(parent_ty.ty.kind(), ty::Ref(_, _, mir::Mutability::Mut)) =>
             {
@@ -1937,9 +1964,14 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                     continue;
                 };
                 let field_idx = abi::FieldIdx::from_usize(idx);
+                // The last field of a box is the boxed value, of the box's
+                // first type argument; the ADT does not have it.
+                let boxed_value = matches!(ty.kind(), ty::Adt(adt, _)
+                    if adt.is_box() && idx == adt.non_enum_variant().fields.len());
                 // The field's type is a type parameter, whose positions in
                 // `ty` are those of its argument.
                 let arg = match ty.kind() {
+                    _ if boxed_value => 0,
                     ty::Adt(adt, _) => {
                         let field_def =
                             &adt.variant(variant.unwrap_or(abi::FIRST_VARIANT)).fields[field_idx];
@@ -1969,9 +2001,12 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                         })
                         .collect(),
                     None => {
-                        let field_ty =
+                        let field_ty = if boxed_value {
+                            ty.expect_boxed_ty()
+                        } else {
                             mir::PlaceTy::field_ty(self.vcx.tcx(), ty, variant, field_idx)
-                                .skip_normalization();
+                                .skip_normalization()
+                        };
                         let field_nodes = NodePredicates::new(
                             RustTyDecomposition::from_ty(field_ty, self.def_id),
                             self.deps,
