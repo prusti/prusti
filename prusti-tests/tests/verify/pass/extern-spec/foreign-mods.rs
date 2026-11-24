@@ -6,6 +6,7 @@ extern "C" {
 
 unsafe extern "C" {
     fn min(a: i32, b: i32) -> i32;
+    safe fn getpid() -> i32;
     unsafe fn llabs(a: i64) -> i64;
 }
 
@@ -25,6 +26,10 @@ unsafe extern "C" {
     fn min(a: i32, b: i32) -> i32;
 
     #[trusted]
+    #[ensures(result > 0)]
+    safe fn getpid() -> i32;
+
+    #[trusted]
     #[ensures(result >= 0)]
     unsafe fn llabs(a: i64) -> i64;
 }
@@ -32,5 +37,6 @@ unsafe extern "C" {
 fn test() {
     assert!(unsafe { max(1, 2) } == 2);
     assert!(unsafe { min(1, 2) } == 1);
+    assert!(getpid() > 0);
     assert!(unsafe { llabs(-1) } >= 0);
 }
