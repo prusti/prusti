@@ -626,9 +626,9 @@ fn validate_predicate(predicate: syn::WherePredicate) -> syn::Result<syn::Predic
             Ok(type_bound)
         }
         Lifetime(lifetime_bound) => disallowed_lifetime_error(lifetime_bound.span()),
-        Eq(eq_bound) => err(
-            eq_bound.span(),
-            "equality constraints are not allowed in type-conditional spec refinements",
+        other => err(
+            other.span(),
+            "only trait bounds are allowed in type-conditional spec refinements",
         ),
     }
 }
@@ -653,6 +653,12 @@ fn validate_trait_bounds(trait_bounds: &syn::PredicateType) -> syn::Result<()> {
                 if let Some(lt) = &trait_bound.lifetimes {
                     return disallowed_lifetime_error(lt.span());
                 }
+            }
+            other => {
+                return err(
+                    other.span(),
+                    "only trait bounds are allowed in type-conditional spec refinements",
+                );
             }
         }
     }
@@ -1196,14 +1202,14 @@ mod tests {
 
         #[test]
         fn invalid_args() {
-            let err_invalid_bounds = "expected one of: `for`, parentheses, `fn`, `unsafe`, `extern`, identifier, `::`, `<`, square brackets, `*`, `&`, `!`, `impl`, `_`, lifetime";
+            let err_invalid_bounds = "expected one of: `for`, parentheses, `unsafe`, `fn`, `extern`, identifier, `::`, `<`, `dyn`, square brackets, `*`, `&`, `!`, `impl`, `_`, lifetime";
             assert_error!(
                 parse_type_cond_spec(quote! { [requires(false)] }),
                 "expected `where`"
             );
             assert_error!(
                 parse_type_cond_spec(quote! { where [requires(false)] }),
-                err_invalid_bounds
+                "expected `:`"
             );
             assert_error!(
                 parse_type_cond_spec(quote! { [requires(false)], T: A }),
@@ -1211,7 +1217,7 @@ mod tests {
             );
             assert_error!(
                 parse_type_cond_spec(quote! { where [requires(false)], T: A }),
-                err_invalid_bounds
+                "expected `:`"
             );
             assert_error!(
                 parse_type_cond_spec(quote! {}),

@@ -5,7 +5,10 @@ use itertools::Itertools;
 use proc_macro2::{Span, TokenStream};
 use quote::{quote_spanned, ToTokens};
 use syn::{
-    parse::Parser, parse_quote_spanned, punctuated::Punctuated, spanned::Spanned, Expr, ExprLit,
+    parse::{ParseStream, Parser},
+    parse_quote_spanned,
+    punctuated::Punctuated,
+    spanned::Spanned,
     Fields, Lit, Pat, PatLit, Token,
 };
 
@@ -67,12 +70,17 @@ impl std::convert::From<TypeCounterexampleError> for syn::Error {
     }
 }
 
+/// Parses the comma-separated arguments of a `#[print_counterexample]`
+/// attribute.
+fn parse_arguments(input: ParseStream) -> syn::Result<Punctuated<Pat, Token![,]>> {
+    Punctuated::parse_terminated_with(input, Pat::parse_single)
+}
+
 fn rewrite_internal_struct(
     attr: TokenStream,
     item_struct: syn::ItemStruct,
 ) -> TypeCounterexampleResult<Vec<syn::Item>> {
-    let parser = Punctuated::<Pat, Token![,]>::parse_terminated;
-    let attrs = match parser.parse(attr.clone().into()) {
+    let attrs = match parse_arguments.parse(attr.clone().into()) {
         Ok(result) => result,
         Err(err) => return Err(TypeCounterexampleError::ParsingError(err)),
     };
@@ -175,8 +183,7 @@ fn rewrite_internal_enum(
     attr: TokenStream,
     item_enum: syn::ItemEnum,
 ) -> TypeCounterexampleResult<Vec<syn::Item>> {
-    let parser = Punctuated::<Pat, Token![,]>::parse_terminated;
-    let attrs = match parser.parse(attr.clone().into()) {
+    let attrs = match parse_arguments.parse(attr.clone().into()) {
         Ok(result) => result,
         Err(err) => return Err(TypeCounterexampleError::ParsingError(err)),
     };
@@ -205,8 +212,7 @@ fn rewrite_internal_enum(
                 item_span,
             );
             let variant_name_str = variant_name.to_string();
-            let parser = Punctuated::<Pat, Token![,]>::parse_terminated; //parse_separated_nonempty;
-            let attrs = match custom_print.parse_args_with(parser) {
+            let attrs = match custom_print.parse_args_with(parse_arguments) {
                 Ok(result) => result,
                 Err(err) => return Err(TypeCounterexampleError::ParsingError(err)),
             };
@@ -323,11 +329,7 @@ fn process_attr(
         match text {
             Pat::Lit(PatLit {
                 attrs: _,
-                expr:
-                    box Expr::Lit(ExprLit {
-                        attrs: _,
-                        lit: Lit::Str(lit_str),
-                    }),
+                lit: Lit::Str(lit_str),
             }) => {
                 let value = lit_str.value();
                 let count = value.matches("{}").count();
@@ -349,11 +351,7 @@ fn process_attr(
             }
             Pat::Lit(PatLit {
                 attrs: _,
-                expr:
-                    box Expr::Lit(ExprLit {
-                        attrs: _,
-                        lit: Lit::Int(lit_int),
-                    }),
+                lit: Lit::Int(lit_int),
             }) => {
                 quote_spanned! {callsite_span=> #lit_int; }
             }
@@ -373,11 +371,7 @@ fn check_validity_of_args(
     for arg in &args {
         if let Pat::Lit(PatLit {
             attrs: _,
-            expr:
-                box Expr::Lit(ExprLit {
-                    attrs: _,
-                    lit: Lit::Int(lit_int),
-                }),
+            lit: Lit::Int(lit_int),
         }) = arg
         {
             let value: u32 = match lit_int.base10_parse() {

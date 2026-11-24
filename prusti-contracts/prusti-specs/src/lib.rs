@@ -58,12 +58,11 @@ macro_rules! result_to_tokens {
 /// surrounding delimiters dropped, or no tokens if it has no argument. These
 /// are the tokens rustc passes to an attribute macro in outer position.
 fn unwrap_argument(attr: &syn::Attribute) -> syn::Result<TokenStream> {
-    let mut iter = attr.tokens.clone().into_iter();
-    match (iter.next(), iter.next()) {
-        (None, _) => Ok(TokenStream::new()),
-        (Some(TokenTree::Group(group)), None) => Ok(group.stream()),
-        _ => {
-            let name = &attr.path.segments.last().unwrap().ident;
+    match &attr.meta {
+        syn::Meta::Path(_) => Ok(TokenStream::new()),
+        syn::Meta::List(list) => Ok(list.tokens.clone()),
+        syn::Meta::NameValue(_) => {
+            let name = &attr.path().segments.last().unwrap().ident;
             Err(syn::Error::new(
                 attr.span(),
                 format!("`#[{name} = ...]` is not supported"),
@@ -75,7 +74,7 @@ fn unwrap_argument(attr: &syn::Attribute) -> syn::Result<TokenStream> {
 /// The kind of a Prusti attribute written as `#[kind]` or
 /// `#[prusti_contracts::kind]`, or `None` for any other attribute.
 fn prusti_attribute_kind(attr: &syn::Attribute) -> Option<SpecAttributeKind> {
-    let segments = &attr.path.segments;
+    let segments = &attr.path().segments;
     let is_prusti_path =
         segments.len() == 1 || (segments.len() == 2 && segments[0].ident == "prusti_contracts");
     if !is_prusti_path {
@@ -147,7 +146,7 @@ fn extract_applicable_attributes(
         };
         // The span of the annotation itself, so diagnostics can point
         // at the specific attribute rather than the whole item.
-        let attr_span = attr.path.span();
+        let attr_span = attr.path().span();
         prusti_attributes.push((attr_kind, attr_span, unwrap_argument(&attr)?));
     }
     *attrs = regular_attributes;
@@ -569,9 +568,11 @@ fn reconstruct_arg(pat: &syn::Pat, pinned: bool) -> syn::Result<TokenStream> {
         // A constructor is a nominal signature: its fields' types are fixed
         // by the struct definition, whatever the position of the whole.
         syn::Pat::TupleStruct(tuple_struct) => {
+            if tuple_struct.qself.is_some() {
+                return Err(unsupported(tuple_struct.span(), "qualified paths"));
+            }
             let path = &tuple_struct.path;
             let elems = tuple_struct
-                .pat
                 .elems
                 .iter()
                 .map(|elem| reconstruct_arg(elem, true))
@@ -579,8 +580,11 @@ fn reconstruct_arg(pat: &syn::Pat, pinned: bool) -> syn::Result<TokenStream> {
             Ok(quote_spanned! {tuple_struct.span()=> #path(#(#elems),*) })
         }
         syn::Pat::Struct(pat_struct) => {
-            if let Some(dot2) = &pat_struct.dot2_token {
-                return Err(unsupported(dot2.span(), "`..`"));
+            if let Some(rest) = &pat_struct.rest {
+                return Err(unsupported(rest.span(), "`..`"));
+            }
+            if pat_struct.qself.is_some() {
+                return Err(unsupported(pat_struct.span(), "qualified paths"));
             }
             let path = &pat_struct.path;
             let fields = pat_struct
@@ -672,15 +676,21 @@ pub fn closure(tokens: TokenStream) -> TokenStream {
 
     let syn::ExprClosure {
         attrs,
+        lifetimes,
+        modifiers,
+        constness,
         asyncness,
-        movability,
         capture,
-        or1_token,
+        inputs_begin,
         inputs,
-        or2_token,
+        inputs_end,
         output,
         body,
     } = cl_spec.cl;
+    // The closure is rebuilt from its parts below. `modifiers` holds closure
+    // modifiers that syn does not parse yet; syn cannot print them on their
+    // own, so a closure with any is rejected rather than rebuilt without them.
+    handle_result!(modifiers.require_empty());
 
     let mut attrs_ts = TokenStream::new();
     for a in attrs {
@@ -690,7 +700,7 @@ pub fn closure(tokens: TokenStream) -> TokenStream {
             // Reject other specification attributes rather than forwarding
             // them (they would be silently ignored on the `let` binding).
             Some(_) => {
-                let ident = &a.path.segments.last().unwrap().ident;
+                let ident = &a.path().segments.last().unwrap().ident;
                 return syn::Error::new(
                     a.span(),
                     format!("`{ident}` is not supported on `closure!`"),
@@ -816,8 +826,8 @@ pub fn closure(tokens: TokenStream) -> TokenStream {
             #[prusti::specs_version = #SPECS_VERSION]
             #attrs_ts
             let _prusti_closure =
-                #asyncness #movability #capture
-                #or1_token #inputs #or2_token #output
+                #lifetimes #constness #asyncness #capture
+                #inputs_begin #inputs #inputs_end #output
                 #new_body;
             _prusti_closure
         }
@@ -829,7 +839,7 @@ pub fn refine_trait_spec(_attr: TokenStream, tokens: TokenStream) -> TokenStream
     let impl_generics = &impl_block.generics;
 
     let trait_path: syn::TypePath = match &impl_block.trait_ {
-        Some((_, trait_path, _)) => parse_quote_spanned!(trait_path.span()=>#trait_path),
+        Some((trait_path, _)) => parse_quote_spanned!(trait_path.span()=>#trait_path),
         None => handle_result!(Err(syn::Error::new(
             impl_block.span(),
             "Can refine trait specifications only on trait implementation blocks"
@@ -842,7 +852,7 @@ pub fn refine_trait_spec(_attr: TokenStream, tokens: TokenStream) -> TokenStream
     let mut generated_spec_items = Vec::new();
     for item in impl_block.items {
         match item {
-            syn::ImplItem::Method(method) => {
+            syn::ImplItem::Fn(method) => {
                 let mut method_item = untyped::AnyFnItem::ImplMethod(method);
                 let prusti_attributes: Vec<_> =
                     handle_result!(extract_prusti_attributes(&mut method_item));
@@ -893,7 +903,7 @@ pub fn refine_trait_spec(_attr: TokenStream, tokens: TokenStream) -> TokenStream
                 generated_spec_items.push(spec_function);
 
                 // Add patched predicate function to new items
-                new_items.push(syn::ImplItem::Method(predicate.patched_function));
+                new_items.push(syn::ImplItem::Fn(predicate.patched_function));
             }
             _ => new_items.push(item),
         }
@@ -903,7 +913,7 @@ pub fn refine_trait_spec(_attr: TokenStream, tokens: TokenStream) -> TokenStream
     for generated_spec_item in generated_spec_items.iter_mut() {
         merge_generics(&mut generated_spec_item.sig.generics, impl_generics);
         generated_spec_item.rewrite_self_type(self_type, Some(&trait_path));
-        generated_spec_item.rewrite_receiver(self_type);
+        handle_result!(generated_spec_item.rewrite_receiver(self_type));
     }
 
     impl_block.items = new_items;
@@ -1255,21 +1265,21 @@ pub fn ghost(tokens: TokenStream) -> TokenStream {
         fn visit_expr_for_loop(&mut self, ex: &'ast syn::ExprForLoop) {
             let e = ex.clone();
             let lbl = e.label.map(|c| c.name.ident);
-            let span = e.body.brace_token.span;
+            let span = e.body.brace_token.span.join();
             self.loops.push((lbl, span));
             syn::visit::visit_expr_for_loop(self, ex);
         }
         fn visit_expr_while(&mut self, ex: &'ast syn::ExprWhile) {
             let e = ex.clone();
             let lbl = e.label.map(|c| c.name.ident);
-            let span = e.body.brace_token.span;
+            let span = e.body.brace_token.span.join();
             self.loops.push((lbl, span));
             syn::visit::visit_expr_while(self, ex);
         }
         fn visit_expr_loop(&mut self, ex: &'ast syn::ExprLoop) {
             let e = ex.clone();
             let lbl = e.label.map(|c| c.name.ident);
-            let span = e.body.brace_token.span;
+            let span = e.body.brace_token.span.join();
             self.loops.push((lbl, span));
             syn::visit::visit_expr_loop(self, ex);
         }

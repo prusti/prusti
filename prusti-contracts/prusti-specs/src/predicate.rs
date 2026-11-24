@@ -26,7 +26,7 @@ impl<T: ToTokens> ToTokens for PredicateWithBody<T> {
 #[derive(Debug)]
 pub struct PredicateWithoutBody {
     /// The function which was inside the macro to be used at the definition-site of the macro
-    patched_function: syn::TraitItemMethod,
+    patched_function: syn::TraitItemFn,
 }
 
 impl ToTokens for PredicateWithoutBody {
@@ -42,7 +42,7 @@ pub enum ParsedPredicate {
     Abstract(PredicateWithoutBody),
 
     /// A predicate which implements an abstract predicate
-    Impl(PredicateWithBody<syn::ImplItemMethod>),
+    Impl(PredicateWithBody<syn::ImplItemFn>),
 
     /// A free-standing predicate (for free-standing functions)
     FreeStanding(PredicateWithBody<syn::ItemFn>),
@@ -101,7 +101,7 @@ fn parse_predicate_internal(
         let mut rewriter = rewriter::AstRewriter::new();
         let spec_id = rewriter.generate_spec_id();
         if in_spec_refinement {
-            let patched_function: syn::ImplItemMethod =
+            let patched_function: syn::ImplItemFn =
                 patch_predicate_macro_body(&input, span, spec_id);
             let spec_function =
                 generate_spec_function(body, return_type, spec_id, &patched_function)?;

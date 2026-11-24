@@ -69,18 +69,12 @@ union CounterexampleUnion {
     a: i32,
 }
 
-#[ensures(result > 0)]
-#[unsafe(no_mangle)] //~ERROR: the `#[ensures]` attribute can only be applied to functions, and this item could not be parsed as one: expected path
-pub extern "C" fn unparsable() -> i32 {
-    1
-}
-
-// A `pub` function that syn cannot parse is reported where syn fails (at
-// `use`), not at `pub`.
+// The error for an item with a visibility points at where parsing it as a
+// function fails (at `struct`), not at `pub`; `pub` is on its own line so that
+// the test tells the two positions apart.
 #[ensures(true)]
-pub fn unparsable_pub() -> impl Sized + use<> { //~ERROR: the `#[ensures]` attribute can only be applied to functions, and this item could not be parsed as one
-    0
-}
+pub
+struct EnsuresOnPubStruct; //~ERROR: the `#[ensures]` attribute can only be applied to functions, and this item could not be parsed as one: expected `fn`
 
 #[trusted]
 #[pure]

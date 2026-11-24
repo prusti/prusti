@@ -1,4 +1,4 @@
-error: expected one of: `for`, parentheses, `fn`, `unsafe`, `extern`, identifier, `::`, `<`, square brackets, `*`, `&`, `!`, `impl`, `_`, lifetime
+error: expected one of: `for`, parentheses, `unsafe`, `fn`, `extern`, identifier, `::`, `<`, `dyn`, square brackets, `*`, `&`, `!`, `impl`, `_`, lifetime
  --> $DIR/simple_forall.rs:9:23
   |
 9 | #[requires(forall(|x: 32, y: usize| x > 0 ==> x > -1, triggers=[]))]
