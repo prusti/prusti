@@ -36,6 +36,19 @@ impl<'a> AstFactory<'a> {
             .unwrap_result(ast::NoInfo_object::with(self.env).singleton())
     }
 
+    /// The info of a function or domain function: the annotation
+    /// `@noAutoTrigger()` if `no_auto_trigger`, otherwise none.
+    fn function_info(&self, no_auto_trigger: bool) -> JObject<'_> {
+        if !no_auto_trigger {
+            return self.no_info();
+        }
+        let annotations = self
+            .jni
+            .new_map(&[(self.jni.new_string("noAutoTrigger"), self.jni.new_seq(&[]))]);
+        self.jni
+            .unwrap_result(ast::AnnotationInfo::with(self.env).new(annotations))
+    }
+
     fn simple_info(&self, comments: &[&str]) -> JObject<'_> {
         self.jni.unwrap_result(
             ast::SimpleInfo::with(self.env).new(

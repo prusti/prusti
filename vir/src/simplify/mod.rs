@@ -29,7 +29,7 @@ mod walk;
 
 use prusti_rustc_interface::data_structures::fx::{FxHashMap, FxHashSet};
 
-use crate::{refs::*, Foldable, ViperIdent, VirCtxt};
+use crate::{refs::*, Folder, ViperIdent, VirCtxt};
 
 /// A declaration that `outer(inner(k))` is `k` for every integer literal `k`
 /// in one of the inclusive `ranges` (pairs of literal bounds), such as for the
@@ -112,13 +112,24 @@ impl<'vir> SimplifyCtx<'vir> {
     }
 }
 
-/// Simplifies the expressions of a program, or of one of its items (a
-/// domain, predicate, function or method).
-pub fn simplify<'vir, 'tcx, T: Foldable<'vir, (), !> + Copy>(
-    vcx: &'vir VirCtxt<'tcx>,
-    ctx: &SimplifyCtx<'vir>,
-    item: T,
-) -> T {
-    let mut s = walk::Simplifier::new(vcx, ctx);
-    item.fold_with(&mut walk::Roots(&mut s)).unwrap_or(item)
+/// Simplifies the expressions of the items it folds (a program, or its
+/// domains, predicates, functions and methods): hands the roots of their
+/// expression trees (contract clauses, invariants, bodies, axioms and
+/// statement operands) to `Simplifier::root`.
+pub struct Simplify<'a, 'vir, 'tcx>(walk::Simplifier<'a, 'vir, 'tcx>);
+
+impl<'a, 'vir, 'tcx> Simplify<'a, 'vir, 'tcx> {
+    pub fn new(vcx: &'vir VirCtxt<'tcx>, ctx: &'a SimplifyCtx<'vir>) -> Self {
+        Self(walk::Simplifier::new(vcx, ctx))
+    }
+}
+
+impl<'vir> Folder<'vir, (), !> for Simplify<'_, 'vir, '_> {
+    fn fold_expr(&mut self, e: ExprDyn<'vir>) -> Option<ExprDyn<'vir>> {
+        self.0.root(e)
+    }
+
+    fn fold_wand(&mut self, _: Wand<'vir>) -> Option<Wand<'vir>> {
+        None
+    }
 }

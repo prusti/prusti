@@ -149,7 +149,7 @@ impl TaskEncoder for MirBuiltinBinOpEnc {
 
     fn emit_outputs<'vir>(program: &mut task_encoder::Program<'vir>) {
         for function in Self::all_outputs_local(program) {
-            program.add_user_function(function);
+            program.add_user_operator(function);
         }
     }
 }

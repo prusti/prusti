@@ -46,21 +46,6 @@ pub(super) struct Simplifier<'a, 'vir, 'tcx> {
     impure: FxHashMap<Ptr<'vir>, bool>,
 }
 
-/// Hands the roots of the expression trees of an item (contract clauses,
-/// invariants, bodies, axioms and statement operands) to
-/// [`Simplifier::root`].
-pub(super) struct Roots<'s, 'a, 'vir, 'tcx>(pub &'s mut Simplifier<'a, 'vir, 'tcx>);
-
-impl<'vir> Folder<'vir, (), !> for Roots<'_, '_, 'vir, '_> {
-    fn fold_expr(&mut self, e: ExprDyn<'vir>) -> Option<ExprDyn<'vir>> {
-        self.0.root(e)
-    }
-
-    fn fold_wand(&mut self, _: Wand<'vir>) -> Option<Wand<'vir>> {
-        None
-    }
-}
-
 /// Magic wands are left untouched, wherever they occur: Viper matches
 /// packaged wand instances syntactically, and evaluates the heap-dependent
 /// subterms of a wand only when applying it, in the order of its conjuncts,

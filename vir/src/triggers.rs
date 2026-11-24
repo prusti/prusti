@@ -6,7 +6,7 @@
 //! contains no quantifier, which Viper allows but a pattern of the SMT solver
 //! cannot contain.
 //!
-//! The encoder's triggers contain `let`s, which [`inline_trigger_lets`]
+//! The encoder's triggers contain `let`s, which [`InlineTriggerLets`]
 //! inlines in the whole program before the simplifier runs: Silicon looks a
 //! trigger up among the terms of the quantifier's body, and evaluates it with
 //! the body's path conditions, only if it has no `let`s. The rules apply to
@@ -18,21 +18,8 @@ use crate::{
 };
 use prusti_rustc_interface::data_structures::fx::FxHashSet;
 
-/// `item` with the values of the `let`s in its triggers in place of their
-/// locals, and without the `let`s. Under an `old(..)`, only values that are
-/// locals or constants are inlined, and the `let` of a local still used
-/// there stays. The encoder gives every local it binds a fresh name, so a
-/// value never ends up under a `let` that rebinds one of its own locals.
-pub fn inline_trigger_lets<'vir, T: Foldable<'vir, (), !> + Copy>(
-    vcx: &'vir VirCtxt<'_>,
-    item: T,
-) -> T {
-    item.fold_with(&mut InlineTriggerLets { vcx })
-        .unwrap_or(item)
-}
-
 /// `e` with its `let`s inlined like a trigger term (see
-/// [`inline_trigger_lets`]).
+/// [`InlineTriggerLets`]).
 #[cfg(test)]
 pub(crate) fn inline_lets<'vir>(vcx: &'vir VirCtxt<'_>, e: ExprDyn<'vir>) -> ExprDyn<'vir> {
     let mut inline = Inline {
@@ -42,10 +29,20 @@ pub(crate) fn inline_lets<'vir>(vcx: &'vir VirCtxt<'_>, e: ExprDyn<'vir>) -> Exp
     e.fold_with(&mut inline).unwrap_or(e)
 }
 
-/// Inlines the `let`s in the triggers of the quantifiers it folds (see
-/// [`inline_trigger_lets`]).
-struct InlineTriggerLets<'vir, 'tcx> {
+/// Folds an item into the item with the values of the `let`s in its triggers
+/// in place of their locals, and without the `let`s. Under an `old(..)`, only
+/// values that are locals or constants are inlined, and the `let` of a local
+/// still used there stays. The encoder gives every local it binds a fresh
+/// name, so a value never ends up under a `let` that rebinds one of its own
+/// locals.
+pub struct InlineTriggerLets<'vir, 'tcx> {
     vcx: &'vir VirCtxt<'tcx>,
+}
+
+impl<'vir, 'tcx> InlineTriggerLets<'vir, 'tcx> {
+    pub fn new(vcx: &'vir VirCtxt<'tcx>) -> Self {
+        Self { vcx }
+    }
 }
 
 impl<'vir> Folder<'vir, (), !> for InlineTriggerLets<'vir, '_> {
@@ -58,7 +55,7 @@ impl<'vir> Folder<'vir, (), !> for InlineTriggerLets<'vir, '_> {
 }
 
 /// Replaces the locals that the `let`s of a term bind by their values (see
-/// [`inline_trigger_lets`]).
+/// [`InlineTriggerLets`]).
 struct Inline<'vir, 'tcx> {
     vcx: &'vir VirCtxt<'tcx>,
     bindings: Vec<(&'vir str, ExprDyn<'vir>)>,
@@ -139,7 +136,7 @@ pub(crate) fn is_trigger_set<'vir>(qvars: &[LocalDeclDyn<'vir>], terms: &[ExprDy
         .all(|q| shapes.iter().any(|shape| mentions(shape, q)))
 }
 
-/// A trigger term with its `let`s inlined (see [`inline_trigger_lets`]), as
+/// A trigger term with its `let`s inlined (see [`InlineTriggerLets`]), as
 /// the rules see it.
 pub(crate) struct TriggerTermShape<'vir> {
     /// Whether the term is an application or an access at its top, possibly
@@ -154,7 +151,7 @@ pub(crate) struct TriggerTermShape<'vir> {
 }
 
 /// The shape of the trigger term `e` (see [`TriggerTermShape`]), whose `let`s
-/// are expected to be inlined (see [`inline_trigger_lets`]).
+/// are expected to be inlined (see [`InlineTriggerLets`]).
 pub(crate) fn trigger_term_shape<'vir>(e: ExprDyn<'vir>) -> TriggerTermShape<'vir> {
     let mut head = e;
     loop {

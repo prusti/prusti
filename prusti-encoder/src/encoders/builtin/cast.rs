@@ -498,7 +498,7 @@ impl TaskEncoder for MirBuiltinCastEnc {
     fn emit_outputs<'vir>(program: &mut task_encoder::Program<'vir>) {
         for local in Self::all_outputs_local(program) {
             if local.user_level {
-                program.add_user_function(local.cast);
+                program.add_user_operator(local.cast);
             } else {
                 program.add_function(local.cast);
             }

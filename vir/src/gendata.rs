@@ -565,6 +565,11 @@ pub struct FunctionGenData<'vir, Curr, Next> {
     pub posts: &'vir [ExprGenBool<'vir, Curr, Next>],
     pub decreases: DecreasesGen<'vir, Curr, Next>,
     pub expr: Option<ExprGenDyn<'vir, Curr, Next>>,
+    /// Whether the function carries Viper's `@noAutoTrigger()` annotation: the
+    /// triggers that Viper infers never contain an application of it, as
+    /// they never contain Viper's own operators.
+    #[vir(reify_pass)]
+    pub no_auto_trigger: bool,
 }
 
 #[derive(VirHash, VirReify, VirSerde, VirVisitable, VirFoldable)]

@@ -138,6 +138,7 @@ fn with_user_level(
                 posts: &[],
                 decreases: vcx.alloc(DecreasesGenData::None),
                 expr: None,
+                no_auto_trigger: false,
             })
         };
         let functions = [
@@ -158,6 +159,7 @@ fn with_user_level(
             args: vcx.alloc_slice(&[TYPE_INT.as_dyn()]),
             ret: TYPE_INT.as_dyn(),
             interpretation: None,
+            no_auto_trigger: false,
         });
         let domain = vcx.mk_domain(
             crate::ViperIdent::new("D"),

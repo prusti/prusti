@@ -233,6 +233,9 @@ fn main() {
             java_class!("viper.silver.ast.AndOp$", vec![
                 object_getter!(),
             ]),
+            java_class!("viper.silver.ast.AnnotationInfo", vec![
+                constructor!(),
+            ]),
             java_class!("viper.silver.ast.AnySetContains", vec![
                 constructor!(),
             ]),

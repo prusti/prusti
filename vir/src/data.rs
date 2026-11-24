@@ -297,6 +297,8 @@ pub struct DomainFunctionData<'vir> {
     #[serde(with = "crate::serde::serde_ref")]
     pub ret: TypeDyn<'vir>,
     pub interpretation: Option<InterpretationData<'vir>>,
+    /// See [`crate::FunctionGenData::no_auto_trigger`].
+    pub no_auto_trigger: bool,
 }
 
 #[derive(PartialEq, Eq, Clone, Copy, Serialize, Deserialize, Hash)]
