@@ -64,6 +64,13 @@ impl<'vir: 'a, 'a, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             if capability.is_write() {
                 continue; // No permissions are encoded for places with write capabilities currently
             }
+            // `loop_invariant_place_capabilities` reports a place without a capability at
+            // the head only behind a mutable reference in another reported place. The
+            // indirect predicates of that place hold it, so its own predicate would hold it
+            // a second time.
+            if state.place_capability(*place, self.pcg_ctxt()).is_none() {
+                continue;
+            }
             // A place behind a shared reference has no predicate of its own: its value is
             // part of the snapshot of the first shared reference on its path from the local.
             // The invariant holds the predicate of that reference instead, only once even if
