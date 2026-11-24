@@ -257,15 +257,21 @@ impl<'vir> Program<'vir> {
 
     /// Applies `f` to the program made of the items added so far and keeps
     /// the items of the result. `f` must keep every item at its index, as a
-    /// fold does, since the field `code` refers to items by index. The domain
-    /// [`OPERATORS_DOMAIN`] is kept as built from `operators`, so the passes
-    /// that fold the program leave the operators' axioms as they are: their
-    /// triggers have no `let`s to inline, and simplifying them is optional.
+    /// fold does, since the field `code` refers to items by index.
     fn fold(&mut self, f: impl FnOnce(vir::Program<'vir>) -> vir::Program<'vir>) {
         let program = f(self.mk_program());
         self.fields = program.fields.to_vec();
         self.adts = program.adts.to_vec();
-        self.domains = program.domains[..self.domains.len()].to_vec();
+        let (domains, operators) = program.domains.split_at(self.domains.len());
+        self.domains = domains.to_vec();
+        if let [operators] = operators {
+            self.operators = (operators.functions.iter().zip(operators.axioms))
+                .map(|(&function, &definition)| Operator {
+                    function,
+                    definition,
+                })
+                .collect();
+        }
         self.predicates = program.predicates.to_vec();
         self.functions = program.functions.to_vec();
         self.methods = program.methods.to_vec();
