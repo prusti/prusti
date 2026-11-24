@@ -1,5 +1,6 @@
 #![feature(rustc_private)]
 #![feature(associated_type_defaults)]
+#![feature(never_type)]
 
 use core::panic;
 use prusti_rustc_interface::{
@@ -269,9 +270,9 @@ impl<'vir> Program<'vir> {
     }
 
     /// Replaces the `let`s in the triggers of all items added so far by the
-    /// values they bind (see [`vir::inline_trigger_lets`]).
+    /// values they bind (see [`vir::InlineTriggerLets`]).
     pub fn inline_trigger_lets(&mut self) {
-        vir::with_vcx(|vcx| self.fold(|program| vir::inline_trigger_lets(vcx, program)));
+        vir::with_vcx(|vcx| self.fold(&mut vir::InlineTriggerLets::new(vcx)));
     }
 
     /// Simplifies the expressions of all domain axioms, predicates, functions
@@ -285,30 +286,29 @@ impl<'vir> Program<'vir> {
                 &self.literal_inverses,
                 &self.user_level,
             );
-            self.fold(|program| vir::simplify::simplify(vcx, &ctx, program));
+            self.fold(&mut vir::simplify::Simplify::new(vcx, &ctx));
         });
     }
 
-    /// Applies `f` to the program made of the items added so far and keeps
-    /// the items of the result. `f` must keep every item at its index, as a
-    /// fold does, since the field `code` refers to items by index.
-    fn fold(&mut self, f: impl FnOnce(vir::Program<'vir>) -> vir::Program<'vir>) {
-        let program = f(self.mk_program());
-        self.fields = program.fields.to_vec();
-        self.adts = program.adts.to_vec();
-        let (domains, operators) = program.domains.split_at(self.domains.len());
-        self.domains = domains.to_vec();
-        if let [operators] = operators {
-            self.operators = (operators.functions.iter().zip(operators.axioms))
-                .map(|(&function, &definition)| Operator {
-                    function,
-                    definition,
-                })
-                .collect();
+    /// Folds the items added so far with `f`, in the order of
+    /// [`Self::mk_program`].
+    fn fold(&mut self, f: &mut impl vir::Folder<'vir, (), !>) {
+        fn fold_all<'a, 'vir, T: vir::Foldable<'vir, (), !> + 'a>(
+            items: impl IntoIterator<Item = &'a mut T>,
+            f: &mut impl vir::Folder<'vir, (), !>,
+        ) {
+            for item in items {
+                if let Some(folded) = item.fold_with(f) {
+                    *item = folded;
+                }
+            }
         }
-        self.predicates = program.predicates.to_vec();
-        self.functions = program.functions.to_vec();
-        self.methods = program.methods.to_vec();
+        fold_all(&mut self.adts, f);
+        fold_all(&mut self.domains, f);
+        fold_all(self.operators.iter_mut().map(|op| &mut op.definition), f);
+        fold_all(&mut self.predicates, f);
+        fold_all(&mut self.functions, f);
+        fold_all(&mut self.methods, f);
     }
 
     pub fn mk_program(&self) -> vir::Program<'vir> {
