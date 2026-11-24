@@ -58,12 +58,10 @@ impl<'vir: 'a, 'a, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         let loop_invariant_place_capabilities =
             cfpcs.loop_invariant_place_capabilities(loop_place_usages, ctxt);
 
-        // The places held at the head: the used places and the places on the
-        // way to them, e.g. the reference `w.f` of a used `*w.f`, that are
-        // initialized leaves of the owned PCG, or, behind a reference, that a
-        // deref edge of the head's borrow graph dereferences or that are
-        // leaves of it. A place the loop writes is still held if it is
-        // initialized at the head.
+        // Whether the head holds `place`: an initialized leaf of the owned PCG,
+        // or, behind a reference, a place that a deref edge of the head's
+        // borrow graph dereferences or a leaf of it. A place the loop writes is
+        // still held if it is initialized at the head.
         let entry_leaves = entry_graph.frozen_graph().leaf_nodes(self.pcg_ctxt());
         let entry_derefs = entry_graph
             .edges()
@@ -72,36 +70,41 @@ impl<'vir: 'a, 'a, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 _ => None,
             })
             .collect::<Vec<_>>();
-        let mut held = loop_invariant_place_capabilities
+        let held_at_head = |place: Place<'vir>| {
+            let local_state = &state.owned()[place.local];
+            if !local_state.is_allocated() {
+                return false;
+            }
+            let is_owned_leaf = local_state
+                .expansions()
+                .leaf_places(ctxt)
+                .into_iter()
+                .any(|leaf| Place::from(leaf) == place);
+            let held_owned = is_owned_leaf
+                && state
+                    .computed_owned_capability(place, self.pcg_ctxt())
+                    .is_some_and(|capability| !capability.is_write());
+            held_owned
+                || entry_derefs.contains(&place)
+                || entry_leaves.iter().any(|leaf| {
+                    matches!(leaf, PcgNode::Place(leaf) if leaf.as_current_place() == Some(place))
+                })
+        };
+        // The places that the loop's usages need and the head holds: the
+        // reported places, except those behind a mutable reference that the
+        // head has not unpacked, whose permission the reference's indirect
+        // predicate holds; and the places on the way to the used places, e.g.
+        // the reference `w.f` of a used `*w.f`.
+        let reported = loop_invariant_place_capabilities
             .iter()
-            .filter(|(_, capability)| !capability.is_write())
-            .map(|(place, _)| *place)
+            .filter(|(place, capability)| !capability.is_write() && held_at_head(*place))
             .collect::<Vec<_>>();
+        let mut held = reported.iter().map(|(place, _)| *place).collect::<Vec<_>>();
         for usage in loop_place_usages.iter() {
             let mut place = Some(*usage.0);
             while let Some(current) = place {
                 place = current.last_projection().map(|(parent, _)| parent);
-                if held.contains(&current) {
-                    continue;
-                }
-                let local_state = &state.owned()[current.local];
-                if !local_state.is_allocated() {
-                    break;
-                }
-                let is_owned_leaf = local_state
-                    .expansions()
-                    .leaf_places(ctxt)
-                    .into_iter()
-                    .any(|leaf| Place::from(leaf) == current);
-                let held_owned = is_owned_leaf
-                    && state
-                        .computed_owned_capability(current, self.pcg_ctxt())
-                        .is_some_and(|capability| !capability.is_write());
-                let held_borrowed = entry_derefs.contains(&current)
-                    || entry_leaves.iter().any(|leaf| {
-                        matches!(leaf, PcgNode::Place(place) if place.as_current_place() == Some(current))
-                    });
-                if held_owned || held_borrowed {
+                if !held.contains(&current) && held_at_head(current) {
                     held.push(current);
                 }
             }
@@ -120,12 +123,10 @@ impl<'vir: 'a, 'a, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 .unwrap_or(place)
         };
         let mut held_places = FxHashMap::default();
-        for (place, capability) in loop_invariant_place_capabilities.iter() {
-            if !capability.is_write() {
-                held_places
-                    .entry(behind_shared_ref(*place))
-                    .or_insert(*capability);
-            }
+        for (place, capability) in &reported {
+            held_places
+                .entry(behind_shared_ref(*place))
+                .or_insert(*capability);
         }
         let mut held =
             held.into_iter()
