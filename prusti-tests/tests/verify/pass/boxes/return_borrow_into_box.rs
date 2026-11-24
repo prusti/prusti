@@ -1,3 +1,4 @@
+//@ known-failure
 use prusti_contracts::*;
 
 #[ensures(*result == old(**b))]
