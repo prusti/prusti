@@ -1,4 +1,3 @@
-//@ known-failure
 
 #![allow(unused)]
 

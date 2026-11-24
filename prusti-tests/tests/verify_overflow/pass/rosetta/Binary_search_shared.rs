@@ -1,4 +1,3 @@
-//@ known-failure
 //! A version of `Binary_search.rs` that uses shared references.
 
 #![allow(dead_code)]

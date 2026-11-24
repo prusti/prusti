@@ -182,7 +182,8 @@ impl<'vir> WandEncOutput<'vir> {
         let predicates = deps
             .require_dep::<IndirectPredicatesEnc>(region_proj)
             .unwrap()
-            .predicate_applications;
+            .applications()
+            .collect::<Vec<_>>();
         (!predicates.is_empty()).then_some(predicates)
     }
 

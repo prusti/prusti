@@ -1,4 +1,3 @@
-//@ known-failure
 //! An adaptation of the example from
 //! https://rosettacode.org/wiki/Sorting_algorithms/Heapsort#Rust
 //!

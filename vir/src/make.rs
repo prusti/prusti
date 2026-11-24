@@ -1310,6 +1310,21 @@ impl<'tcx> VirCtxt<'tcx> {
         }
     }
 
+    /// The label of the block through which the edges entering the loop whose
+    /// head is `block` pass, see [CfgBlockLabelData::LoopEntry].
+    pub fn mk_loop_entry_label<'vir>(
+        &'vir self,
+        block: usize,
+        pres: impl IntoIterator<Item = usize>,
+    ) -> CfgBlockLabel<'vir> {
+        let pres = self.alloc(pres.into_iter().map(|l| self.alloc(l)).collect::<Vec<_>>());
+        if pres.is_empty() {
+            self.alloc(CfgBlockLabelData::LoopEntry(block))
+        } else {
+            self.alloc(CfgBlockLabelData::PreLoopLoopEntry(block, pres))
+        }
+    }
+
     pub fn mk_label_stmt<'vir, Curr, Next>(
         &'vir self,
         label: &'vir str,
