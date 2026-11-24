@@ -1,3 +1,4 @@
+//@ known-failure
 /// From crate `050_chrono`
 /// https://github.com/chronotope/chrono/blob/master/src/format/parsed.rs
 

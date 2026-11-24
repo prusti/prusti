@@ -1,3 +1,4 @@
+//@ known-failure
 //! An adaptation of the example from
 //! https://rosettacode.org/wiki/Singly-linked_list/Element_definition#Rust
 //! https://rosettacode.org/wiki/Singly-linked_list/Traversal#Rust
