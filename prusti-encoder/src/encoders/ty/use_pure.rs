@@ -542,6 +542,17 @@ impl<'vir> TyUsePureArray<'vir> {
         self.caster.cast_to_caller_ctx(res.upcast_ty())
     }
 
+    /// The array-like `snap` with the element at `index` replaced by `value`.
+    pub fn update<Curr, Next>(
+        &self,
+        snap: vir::ExprGenCSnap<'vir, Curr, Next>,
+        index: vir::ExprGenCSnap<'vir, Curr, Next>,
+        value: vir::ExprGenSnap<'vir, Curr, Next>,
+    ) -> vir::ExprGenCSnap<'vir, Curr, Next> {
+        let value = self.caster.cast_to_callee_ctx(value).downcast_ty();
+        self.pure.update.call()(snap, index, value)
+    }
+
     /// The element snapshot at `index` in its generic (`p_Param`) form, i.e.
     /// without applying the element caster. Use when relating two array-likes
     /// that share the same generic element type, where the concrete conversion

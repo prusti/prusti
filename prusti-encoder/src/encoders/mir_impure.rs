@@ -1516,6 +1516,45 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                     .field_snaps_to_snap(values);
                 return Ok(PlaceRead::Value(value.upcast_ty()));
             }
+            // An array expanded into an element is the snapshot it had before
+            // the expansion with that element replaced, as folding it gives.
+            if ty.ty.is_array()
+                && let Some(element) = self.expanded_part_in(current, pcg, |elem| {
+                    matches!(
+                        elem,
+                        mir::ProjectionElem::Index(_) | mir::ProjectionElem::ConstantIndex { .. }
+                    )
+                })
+            {
+                let index = match element.projection.last() {
+                    Some(mir::ProjectionElem::Index(index)) => self
+                        .encode_place_with_snap(mir::Place::from(*index).into())?
+                        .1
+                        .downcast_ty(),
+                    Some(mir::ProjectionElem::ConstantIndex {
+                        offset,
+                        from_end: false,
+                        ..
+                    }) => self.usize_const_snap(*offset),
+                    _ => {
+                        return Err(EncodeFullError::unsupported(
+                            format!("INTERNAL ERROR: the index of `{element:?}`"),
+                            vec![self.current_span()],
+                        ));
+                    }
+                };
+                let address = self.encode_place(current)?.expr.expect_predicate();
+                let frame = self
+                    .ty_use_impure(ty.ty)
+                    .expect_array()
+                    .ref_to_index_frame(address, index);
+                let value = self.place_value_in(element.into(), pcg, at)?;
+                let value = self
+                    .ty_use_pure(ty.ty)
+                    .expect_array()
+                    .update(frame, index, value);
+                return Ok(PlaceRead::Value(value.upcast_ty()));
+            }
             if ty.ty.is_array() || ty.ty.is_enum() && ty.variant_index.is_none() {
                 return Err(EncodeFullError::unsupported(
                     format!("INTERNAL ERROR: the value of the expanded place `{current:?}`"),
@@ -1596,14 +1635,25 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
     /// The variant place that the PCG state `pcg` has the current enum `place`
     /// expanded into, as an owned place or by a borrowed expansion.
     fn expanded_variant_in(&self, place: Place<'vir>, pcg: &Pcg<'_, 'vir>) -> Option<Place<'vir>> {
+        self.expanded_part_in(place, pcg, |elem| {
+            matches!(elem, mir::ProjectionElem::Downcast(..))
+        })
+    }
+
+    /// The part that the PCG state `pcg` has the current `place` expanded
+    /// into, as an owned place or by a borrowed expansion, among those whose
+    /// last projection satisfies `is_part`.
+    fn expanded_part_in(
+        &self,
+        place: Place<'vir>,
+        pcg: &Pcg<'_, 'vir>,
+        is_part: impl Fn(&mir::PlaceElem<'vir>) -> bool,
+    ) -> Option<Place<'vir>> {
         let ctxt = self.pcg_ctxt();
         let is_variant = |part: Place<'vir>| {
             part.projection.len() == place.projection.len() + 1
                 && place.is_prefix_of(part)
-                && matches!(
-                    part.projection.last(),
-                    Some(mir::ProjectionElem::Downcast(..))
-                )
+                && part.projection.last().is_some_and(&is_part)
         };
         let local_state = &pcg.owned()[place.local];
         if local_state.is_allocated() {

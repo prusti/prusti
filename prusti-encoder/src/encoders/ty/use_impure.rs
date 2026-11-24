@@ -704,6 +704,21 @@ impl<'vir> TyUseImpureArray<'vir> {
         self.data.impure.ref_to_index_ref.call()(self_ref, index, self.args.get_ty())
     }
 
+    /// The snapshot of the array, unfolded at `index`, from before the
+    /// unfold, read out of the predicate of the array without that element.
+    pub fn ref_to_index_frame<Curr, Next>(
+        &self,
+        self_ref: vir::ExprGenRef<'vir, Curr, Next>,
+        index: vir::ExprGenCSnap<'vir, Curr, Next>,
+    ) -> vir::ExprGenCSnap<'vir, Curr, Next> {
+        self.data.impure.index_frame.call()(
+            self_ref,
+            index,
+            self.args.get_ty(),
+            self.args.get_const(),
+        )
+    }
+
     /// The predicate of the array without its element at `index`.
     fn ref_to_index_frame_pred(
         &self,

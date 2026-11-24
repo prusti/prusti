@@ -1,10 +1,10 @@
 use crate::encoders::{
     TyUseImpureEnc,
     ty::{
-        RustTyDatas, RustTyDecomposition,
+        RustTy, RustTyDatas, RustTyDecomposition,
         data::{ArrayData, TyData},
         impure::{ImpureTyDatas, PredicateBuilder, TyImpureArrayData, TyImpureEnc},
-        kinds::opaque::set_opaque,
+        indirect_pred::IndirectPredEnc,
         pure::{DomainBuilder, PureTyDatas, TyPureArrayData, TyPureEnc},
     },
 };
@@ -82,12 +82,26 @@ pub(crate) fn ty_pure<'vir>(
 }
 
 pub(crate) fn ty_impure<'vir>(
+    rust_ty: RustTy<'vir>,
     task_key: &TyData<'vir, (RustTyDatas, PureTyDatas)>,
     data: &ArrayData<'vir, (RustTyDatas, PureTyDatas)>,
     deps: &mut TaskEncoderDependencies<'vir, TyImpureEnc>,
     builder: &mut PredicateBuilder<'vir>,
 ) -> Result<ArrayData<'vir, ImpureTyDatas>, EncodeFullError<'vir, TyImpureEnc>> {
-    set_opaque(builder);
+    builder.mk_predicate("", None);
+    // The elements' snapshots are those of their places, which hold no
+    // extensions, as `p_Param_snap` says, so making it shallow changes
+    // nothing.
+    let shallow = deps.require_ref::<IndirectPredEnc>(rust_ty)?.shallow;
+    let result = builder
+        .vcx
+        .mk_result(task_key.1.snapshot.downcast_ty::<vir::CSnap>());
+    let shallow = shallow.call()(
+        result.upcast_ty(),
+        builder.params.ty_exprs(),
+        builder.params.const_exprs(),
+    );
+    builder.mk_snap_function(None, &[builder.vcx.mk_eq_expr(shallow, result.upcast_ty())]);
     let ref_self_decl = builder.ref_self_decl();
     let ref_self = builder.vcx.mk_local_ex(ref_self_decl);
     let usize_ty = builder.vcx.tcx().types.usize;

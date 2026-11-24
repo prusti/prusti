@@ -592,8 +592,13 @@ impl IndirectPredEnc {
 /// The declarations of `graft` and `shallow` of a type.
 #[derive(Clone, Copy)]
 pub enum GraftShallowDecls<'vir> {
-    /// Functions with bodies.
-    Functions(vir::Function<'vir>, vir::Function<'vir>),
+    /// Functions with bodies, or, for an array, abstract ones with their
+    /// results given element by element, and a domain with facts about them.
+    Functions(
+        vir::Function<'vir>,
+        vir::Function<'vir>,
+        Option<vir::Domain<'vir>>,
+    ),
     /// At a type parameter, where they are abstract and do not depend on the
     /// heap: domain functions, with their facts as axioms.
     Domain(vir::Domain<'vir>),
@@ -819,6 +824,7 @@ impl TaskEncoder for IndirectPredEnc {
             // The postconditions of `extend`, `graft` and `shallow` of an
             // array, which state their results element by element.
             let mut array_posts = (Vec::new(), Vec::new(), Vec::new());
+            let mut array_axioms = Vec::new();
             let mut element_decl = None;
 
             let (body, extend_body, graft_body, shallow_body) = match &ty.specifics {
@@ -1148,6 +1154,29 @@ impl TaskEncoder for IndirectPredEnc {
                     array_posts
                         .2
                         .push(forall(result_i, vcx.mk_eq_expr(result_i, collapsed)));
+                    // Making an array shallow makes each element shallow, so
+                    // it commutes with replacing an element. The arrays are
+                    // equal because they have equal elements, which the
+                    // postcondition gives only element by element.
+                    let update = data.data.1.update;
+                    let a_decl = vcx.mk_local_decl("a", snapshot);
+                    let a: vir::ExprSnap<'vir> = vcx.mk_local_ex(a_decl);
+                    let updated = update.call()(a.downcast_ty(), i, v.downcast_ty()).upcast_ty();
+                    let shallow_updated =
+                        shallow.call()(updated, params.ty_exprs(), params.const_exprs());
+                    let shallow_a = shallow.call()(a, params.ty_exprs(), params.const_exprs());
+                    let shallow_v = Self::field_shallow(element_ty, v, deps)?;
+                    let updated_shallow =
+                        update.call()(shallow_a.downcast_ty(), i, shallow_v.downcast_ty());
+                    array_axioms.push(vcx.mk_domain_axiom(
+                        vir::vir_format_identifier!(vcx, "shallow_update_{}", task_key.name()),
+                        vir::expr! { vcx;
+                            forall [a_decl], [i_decl], [v_decl], ..[params.ty_decls()],
+                                ..[params.const_decls()]
+                                :: { [shallow_updated] }
+                                ([shallow_updated]) == ([updated_shallow.upcast_ty()])
+                        },
+                    ));
                     (Some(body), None, None, None)
                 }
                 // A shared reference or raw pointer has no lifetime positions.
@@ -1292,7 +1321,16 @@ impl TaskEncoder for IndirectPredEnc {
                     None,
                     shallow_body,
                 );
-                GraftShallowDecls::Functions(graft_decl, shallow_decl)
+                let axioms = (!array_axioms.is_empty()).then(|| {
+                    vcx.mk_domain(
+                        vir::vir_format_identifier!(vcx, "Indirect_{}", task_key.name()),
+                        &[],
+                        vcx.alloc_slice(&array_axioms),
+                        &[],
+                        None,
+                    )
+                });
+                GraftShallowDecls::Functions(graft_decl, shallow_decl, axioms)
             };
 
             Ok((
@@ -1316,9 +1354,12 @@ impl TaskEncoder for IndirectPredEnc {
             }
             program.add_function(extend);
             match graft_shallow {
-                GraftShallowDecls::Functions(graft, shallow) => {
+                GraftShallowDecls::Functions(graft, shallow, axioms) => {
                     program.add_function(graft);
                     program.add_function(shallow);
+                    if let Some(axioms) = axioms {
+                        program.add_domain(axioms);
+                    }
                 }
                 GraftShallowDecls::Domain(domain) => program.add_domain(domain),
             }
