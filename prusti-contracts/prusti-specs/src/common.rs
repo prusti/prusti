@@ -13,8 +13,8 @@ use uuid::Uuid;
 /// These allow for writing of generic code over these types.
 mod syn_extensions {
     use syn::{
-        Attribute, ForeignItemFn, Generics, ImplItemMacro, ImplItemMethod, ItemFn, ItemImpl,
-        ItemStruct, ItemTrait, Macro, Signature, TraitItemMacro, TraitItemMethod,
+        Attribute, ForeignItemFn, Generics, ImplItemFn, ImplItemMacro, ItemFn, ItemImpl,
+        ItemStruct, ItemTrait, Macro, Signature, TraitItemFn, TraitItemMacro,
     };
 
     /// Trait which signals that the corresponding syn item contains generics
@@ -70,7 +70,7 @@ mod syn_extensions {
         }
     }
 
-    impl HasSignature for ImplItemMethod {
+    impl HasSignature for ImplItemFn {
         fn sig(&self) -> &Signature {
             &self.sig
         }
@@ -82,7 +82,7 @@ mod syn_extensions {
         }
     }
 
-    impl HasSignature for TraitItemMethod {
+    impl HasSignature for TraitItemFn {
         fn sig(&self) -> &Signature {
             &self.sig
         }
@@ -116,13 +116,13 @@ mod syn_extensions {
         fn attrs(&self) -> &Vec<Attribute>;
     }
 
-    impl HasAttributes for TraitItemMethod {
+    impl HasAttributes for TraitItemFn {
         fn attrs(&self) -> &Vec<syn::Attribute> {
             &self.attrs
         }
     }
 
-    impl HasAttributes for ImplItemMethod {
+    impl HasAttributes for ImplItemFn {
         fn attrs(&self) -> &Vec<Attribute> {
             &self.attrs
         }
@@ -144,7 +144,7 @@ mod syn_extensions {
 /// See [SelfTypeRewriter]
 mod self_type_rewriter {
     use syn::{
-        parse_quote_spanned, spanned::Spanned, visit_mut::VisitMut, ImplItemMethod, ItemFn, Type,
+        parse_quote_spanned, spanned::Spanned, visit_mut::VisitMut, ImplItemFn, ItemFn, Type,
         TypePath, WhereClause,
     };
 
@@ -179,7 +179,7 @@ mod self_type_rewriter {
         }
     }
 
-    impl SelfTypeRewriter for ImplItemMethod {
+    impl SelfTypeRewriter for ImplItemFn {
         fn rewrite_self_type(&mut self, self_type: &Type, self_type_trait: Option<&TypePath>) {
             let mut rewriter = Rewriter {
                 self_type,
@@ -205,8 +205,8 @@ mod self_type_rewriter {
     }
 
     impl Rewriter<'_> {
-        pub fn rewrite_impl_item_method(&mut self, item: &mut ImplItemMethod) {
-            syn::visit_mut::visit_impl_item_method_mut(self, item);
+        pub fn rewrite_impl_item_method(&mut self, item: &mut ImplItemFn) {
+            syn::visit_mut::visit_impl_item_fn_mut(self, item);
         }
 
         pub fn rewrite_item_fn(&mut self, item: &mut syn::ItemFn) {
@@ -258,14 +258,15 @@ mod self_type_rewriter {
 /// See [RewritableReceiver]
 mod receiver_rewriter {
     use proc_macro2::{Ident, TokenStream, TokenTree};
-    use quote::{quote, quote_spanned};
     use syn::{
-        parse_quote_spanned, spanned::Spanned, visit_mut::VisitMut, FnArg, ImplItemMethod, ItemFn,
-        Macro, Type,
+        parse_quote_spanned, spanned::Spanned, visit_mut::VisitMut, FnArg, ImplItemFn, ItemFn,
+        Macro, ReceiverKind, Type,
     };
 
     /// Rewrites the receiver of a method-like item.
     /// This can be used to convert impl methods to free-standing functions.
+    /// A receiver of an explicit type, such as `self: Box<Self>`, keeps its
+    /// type. A kind of receiver that is not supported is reported as an error.
     ///
     /// # Example
     /// For a provided new type `T`, the function
@@ -281,30 +282,40 @@ mod receiver_rewriter {
     /// }
     /// ```
     pub(crate) trait RewritableReceiver {
-        fn rewrite_receiver(&mut self, new_ty: &Type);
+        fn rewrite_receiver(&mut self, new_ty: &Type) -> syn::Result<()>;
     }
 
-    impl RewritableReceiver for ImplItemMethod {
-        fn rewrite_receiver(&mut self, new_ty: &Type) {
-            let mut rewriter = Rewriter { new_ty };
+    impl RewritableReceiver for ImplItemFn {
+        fn rewrite_receiver(&mut self, new_ty: &Type) -> syn::Result<()> {
+            let mut rewriter = Rewriter {
+                new_ty,
+                error: None,
+            };
             rewriter.rewrite_impl_item_method(self);
+            rewriter.error.map_or(Ok(()), Err)
         }
     }
 
     impl RewritableReceiver for ItemFn {
-        fn rewrite_receiver(&mut self, new_ty: &Type) {
-            let mut rewriter = Rewriter { new_ty };
+        fn rewrite_receiver(&mut self, new_ty: &Type) -> syn::Result<()> {
+            let mut rewriter = Rewriter {
+                new_ty,
+                error: None,
+            };
             rewriter.rewrite_item_fn(self);
+            rewriter.error.map_or(Ok(()), Err)
         }
     }
 
     struct Rewriter<'a> {
         new_ty: &'a Type,
+        /// The error for a kind of receiver that cannot be rewritten.
+        error: Option<syn::Error>,
     }
 
     impl Rewriter<'_> {
-        fn rewrite_impl_item_method(&mut self, item: &mut ImplItemMethod) {
-            syn::visit_mut::visit_impl_item_method_mut(self, item);
+        fn rewrite_impl_item_method(&mut self, item: &mut ImplItemFn) {
+            syn::visit_mut::visit_impl_item_fn_mut(self, item);
         }
 
         fn rewrite_item_fn(&mut self, item: &mut ItemFn) {
@@ -336,15 +347,29 @@ mod receiver_rewriter {
         fn visit_fn_arg_mut(&mut self, fn_arg: &mut FnArg) {
             if let FnArg::Receiver(receiver) = fn_arg {
                 let span = receiver.span();
-                let and = match &receiver.reference {
-                    Some((_, Some(lifetime))) => quote_spanned! {span => &#lifetime},
-                    Some((_, None)) => quote_spanned! {span => &},
-                    None => quote! {},
-                };
+                // The `mut` of `mut self` makes the binding mutable; the one of
+                // `&mut self` is part of the reference type.
                 let mutability = &receiver.mutability;
                 let new_ty = self.new_ty;
-                let new_fn_arg: FnArg = parse_quote_spanned! {span=>
-                    _self : #and #mutability #new_ty
+                let new_fn_arg: FnArg = match &receiver.kind {
+                    ReceiverKind::Value => parse_quote_spanned! {span=>
+                        #mutability _self : #new_ty
+                    },
+                    ReceiverKind::Reference(and, lifetime, ref_mutability) => {
+                        parse_quote_spanned! {span=>
+                            _self : #and #lifetime #ref_mutability #new_ty
+                        }
+                    }
+                    ReceiverKind::Typed(_, ty) => parse_quote_spanned! {span=>
+                        #mutability _self : #ty
+                    },
+                    _ => {
+                        self.error = Some(syn::Error::new(
+                            span,
+                            "this kind of receiver is not supported",
+                        ));
+                        return;
+                    }
                 };
                 *fn_arg = new_fn_arg;
             } else {
@@ -502,9 +527,11 @@ pub(crate) fn add_phantom_data_for_generic_params(item_struct: &mut syn::ItemStr
         let field = syn::Field {
             vis: syn::Visibility::Inherited,
             attrs: Vec::default(),
+            modifiers: syn::FieldModifiers::default(),
             ident: generate_field_ident(generic_param.span()),
             colon_token: None,
             ty,
+            default: None,
         };
         fields.push(field);
     }

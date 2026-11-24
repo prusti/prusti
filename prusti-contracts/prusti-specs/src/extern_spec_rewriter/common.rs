@@ -1,16 +1,20 @@
 use crate::{
     common::{HasAttributes, HasSignature},
     extract_prusti_attributes, generate_spec_and_assertions,
-    span_overrider::SpanOverrider,
+    span_overrider::override_spans,
     untyped::AnyFnItem,
     ExternSpecKind, RewritableReceiver, SelfTypeRewriter,
 };
-use itertools::Itertools;
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote, quote_spanned, ToTokens};
 use syn::{
-    parse_quote_spanned, punctuated::Punctuated, spanned::Spanned, visit::Visit,
-    visit_mut::VisitMut, Expr, FnArg, GenericArgument, GenericParam, Pat, PatType, Token,
+    parse::{ParseStream, Parser},
+    parse_quote_spanned,
+    punctuated::Punctuated,
+    spanned::Spanned,
+    visit::Visit,
+    visit_mut::VisitMut,
+    Expr, FnArg, GenericArgument, GenericParam, Pat, PatType, ReceiverKind, Token,
 };
 
 /// Counts the number of elided lifetimes in receivers and types.
@@ -29,9 +33,10 @@ impl ElidedLifetimeCounter {
 
 impl syn::visit::Visit<'_> for ElidedLifetimeCounter {
     fn visit_receiver(&mut self, receiver: &syn::Receiver) {
-        if let Some((_, None)) = receiver.reference {
+        if let ReceiverKind::Reference(_, None, _) = receiver.kind {
             self.num_elided_lifetimes += 1;
         }
+        syn::visit::visit_receiver(self, receiver);
     }
 
     fn visit_type_reference(&mut self, reference: &syn::TypeReference) {
@@ -74,8 +79,10 @@ fn with_explicit_lifetimes(sig: &syn::Signature) -> Option<syn::Signature> {
         }
 
         fn visit_receiver_mut(&mut self, receiver: &mut syn::Receiver) {
-            receiver.reference.as_mut().unwrap().1 =
-                parse_quote_spanned! {receiver.span() => 'prusti_self_lifetime };
+            let span = receiver.span();
+            if let ReceiverKind::Reference(_, lifetime, _) = &mut receiver.kind {
+                *lifetime = parse_quote_spanned! {span => 'prusti_self_lifetime };
+            }
         }
     }
 
@@ -128,7 +135,7 @@ pub(crate) fn generate_extern_spec_method_stub<T: HasSignature + HasAttributes +
     self_type: &syn::Type,
     self_type_trait: Option<&syn::TypePath>,
     extern_spec_kind: ExternSpecKind,
-) -> syn::Result<(syn::ImplItemMethod, Vec<syn::ImplItemMethod>)> {
+) -> syn::Result<(syn::ImplItemFn, Vec<syn::ImplItemFn>)> {
     let method_sig = method.sig();
     let method_sig_span = method_sig.span();
     let method_ident = &method_sig.ident;
@@ -146,7 +153,7 @@ pub(crate) fn generate_extern_spec_method_stub<T: HasSignature + HasAttributes +
     // Build the method stub
     let stub_method =
         generate_extern_spec_function_stub(method, &method_path, extern_spec_kind, false, false);
-    let stub_method: syn::ImplItemMethod = syn::parse2(stub_method)?;
+    let stub_method: syn::ImplItemFn = syn::parse2(stub_method)?;
 
     // Eagerly extract and process specifications
     let mut stub_method = AnyFnItem::ImplMethod(stub_method);
@@ -160,28 +167,26 @@ pub(crate) fn generate_extern_spec_method_stub<T: HasSignature + HasAttributes +
     let mut stub_method = stub_method.expect_impl_item();
     stub_method.attrs.extend(generated_attributes);
     stub_method.rewrite_self_type(self_type, self_type_trait);
-    stub_method.rewrite_receiver(self_type);
+    stub_method.rewrite_receiver(self_type)?;
 
     // Set span of generated method to externally specified method for better error reporting
-    syn::visit_mut::visit_impl_item_method_mut(
-        &mut SpanOverrider::new(method_sig_span),
-        &mut stub_method,
-    );
+    let stub_method = override_spans(&stub_method, method_sig_span)?;
 
-    let rewritten_spec_items = spec_items.into_iter().map(|spec_item| {
-        match spec_item {
+    let rewritten_spec_items = spec_items
+        .into_iter()
+        .map(|spec_item| match spec_item {
             syn::Item::Fn(spec_item_fn) => {
-                let mut spec_item_fn: syn::ImplItemMethod = parse_quote_spanned! {spec_item_fn.span()=>
+                let mut spec_item_fn: syn::ImplItemFn = parse_quote_spanned! {spec_item_fn.span()=>
                     #spec_item_fn
                 };
                 spec_item_fn.rewrite_self_type(self_type, self_type_trait);
-                spec_item_fn.rewrite_receiver(self_type);
+                spec_item_fn.rewrite_receiver(self_type)?;
 
-                spec_item_fn
+                Ok(spec_item_fn)
             }
             _ => unreachable!(),
-        }
-    }).collect::<Vec<_>>();
+        })
+        .collect::<syn::Result<Vec<_>>>()?;
 
     Ok((stub_method, rewritten_spec_items))
 }
@@ -339,27 +344,31 @@ pub fn rewrite_generics(gens: &syn::Generics) -> syn::AngleBracketedGenericArgum
     syn::parse_quote! { < #(#args),* > }
 }
 
-/// Checks that the given block is a stub (`;`), returning an error otherwise.
-pub(super) fn check_is_stub(block: &syn::Block) -> Result<(), syn::Error> {
-    if is_stub(block) {
-        Ok(())
-    } else {
-        Err(syn::Error::new(
-            block.span(),
-            "Unexpected method body. (Extern specs only define specifications.)",
-        ))
-    }
+/// The error for the body of a function in an extern spec, where functions
+/// are declared without one (e.g. `fn foo();`).
+pub(super) fn unexpected_body(block: &syn::Block) -> syn::Error {
+    syn::Error::new(
+        block.span(),
+        "Unexpected method body. (Extern specs only define specifications.)",
+    )
 }
 
-/// Recognizes method stubs, e.g. `fn foo();`.
-///
-/// The absence of a body is represented in a roundabout way:
-/// They have a body comprising a single verbatim item containing a single semicolon token.
-fn is_stub(block: &syn::Block) -> bool {
-    if let Ok(Some(syn::Stmt::Item(syn::Item::Verbatim(tokens)))) = block.stmts.iter().at_most_one()
-    {
-        tokens.to_string() == ";"
-    } else {
-        false
-    }
+/// Parses a method without a body (`fn foo();`, possibly `default fn foo();`),
+/// which syn keeps as verbatim tokens in an impl block. It is returned as a
+/// foreign function, which has the same shape.
+pub(super) fn parse_method_stub(tokens: TokenStream) -> syn::Result<syn::ForeignItemFn> {
+    let parser = |input: ParseStream| {
+        let attrs = input.call(syn::Attribute::parse_outer)?;
+        let vis = input.parse()?;
+        let mut modifiers = syn::FnModifiers::default();
+        modifiers.defaultness = input.parse()?;
+        Ok(syn::ForeignItemFn {
+            attrs,
+            vis,
+            modifiers,
+            sig: input.parse()?,
+            semi_token: input.parse()?,
+        })
+    };
+    parser.parse2(tokens)
 }

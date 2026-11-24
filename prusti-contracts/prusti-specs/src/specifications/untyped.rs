@@ -12,8 +12,8 @@ pub use super::{
 #[derive(Debug, PartialEq, Eq)]
 pub enum AnyFnItem {
     Fn(syn::ItemFn),
-    TraitMethod(syn::TraitItemMethod),
-    ImplMethod(syn::ImplItemMethod),
+    TraitMethod(syn::TraitItemFn),
+    ImplMethod(syn::ImplItemFn),
     ForeignFn(syn::ForeignItemFn),
 }
 
@@ -70,7 +70,7 @@ impl AnyFnItem {
         }
     }
 
-    pub fn expect_impl_item(self) -> syn::ImplItemMethod {
+    pub fn expect_impl_item(self) -> syn::ImplItemFn {
         match self {
             AnyFnItem::ImplMethod(i) => i,
             _ => unreachable!(),

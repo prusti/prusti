@@ -96,7 +96,6 @@ fn generate_new_struct(
         }
         param.colon_token = None;
         param.bounds.clear();
-        param.eq_token = None;
         param.default = None;
     }
     new_generics.extend(parsed_generics.into_iter().map(syn::GenericParam::Type));
@@ -182,16 +181,16 @@ impl GeneratedStruct<'_> {
                         "Associated types in external trait specs should not be declared",
                     ));
                 }
-                syn::TraitItem::Method(trait_method) => {
+                syn::TraitItem::Fn(trait_method) => {
                     if let Some(default) = &trait_method.default {
-                        return Err(check_is_stub(default).expect_err("this cannot be a stub"));
+                        return Err(unexpected_body(default));
                     }
 
                     let (method, spec_fns) = self.generate_method_stub(trait_method)?;
-                    struct_impl.items.push(syn::ImplItem::Method(method));
+                    struct_impl.items.push(syn::ImplItem::Fn(method));
                     struct_impl
                         .items
-                        .extend(spec_fns.into_iter().map(syn::ImplItem::Method));
+                        .extend(spec_fns.into_iter().map(syn::ImplItem::Fn));
                 }
                 syn::TraitItem::Macro(makro) if is_predicate_macro(makro) => {
                     return Err(syn::Error::new(
@@ -208,8 +207,8 @@ impl GeneratedStruct<'_> {
 
     fn generate_method_stub(
         &self,
-        trait_method: &syn::TraitItemMethod,
-    ) -> syn::Result<(syn::ImplItemMethod, Vec<syn::ImplItemMethod>)> {
+        trait_method: &syn::TraitItemFn,
+    ) -> syn::Result<(syn::ImplItemFn, Vec<syn::ImplItemFn>)> {
         let self_type_ident = &self.self_type_ident;
         let self_type_path: syn::TypePath = parse_quote_spanned! {self_type_ident.span()=>
             #self_type_ident
