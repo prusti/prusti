@@ -1140,44 +1140,6 @@ impl<'tcx> VirCtxt<'tcx> {
         })
     }
 
-    /// `function` as a domain function with the same name, arguments and
-    /// `no_auto_trigger`, and an axiom
-    /// `forall args :: { function(args) } function(args) == body`. Panics if
-    /// `function` has no body, or has a pre- or postcondition.
-    pub fn mk_axiomatized_function<'vir>(
-        &'vir self,
-        function: Function<'vir>,
-    ) -> (DomainFunction<'vir>, DomainAxiom<'vir>) {
-        assert!(
-            function.pres.is_empty() && function.posts.is_empty(),
-            "an axiomatized function has no pre- or postcondition"
-        );
-        let body = function.expr.expect("an axiomatized function needs a body");
-        let args = function
-            .args
-            .iter()
-            .map(|&arg| self.mk_local_ex(arg))
-            .collect::<Vec<ExprDyn<'vir>>>();
-        let app = self.mk_func_app(function.name, self.alloc_slice(&args), function.ret, &[]);
-        let axiom = self.mk_domain_axiom(
-            ViperIdent::new(self.alloc_str(&format!("{}_definition", function.name))),
-            self.mk_forall_expr(
-                function.args,
-                self.alloc_slice(&[self.mk_trigger(&[app])]),
-                self.mk_eq_expr(app, body),
-            ),
-        );
-        let domain_function = self.alloc(DomainFunctionData {
-            unique: false,
-            name: ViperIdent::new(function.name),
-            args: self.alloc_slice(&function.args.iter().map(|arg| arg.ty).collect::<Vec<_>>()),
-            ret: function.ret,
-            interpretation: None,
-            no_auto_trigger: function.no_auto_trigger,
-        });
-        (domain_function, axiom)
-    }
-
     pub fn mk_predicate<'vir, Curr, Next, A: Arity + Debug>(
         &'vir self,
         ident: PredicateIdn<'vir, A>,
@@ -1630,38 +1592,5 @@ impl<'tcx> VirCtxt<'tcx> {
             exp = self.mk_bin_op_expr(BinOpKind::Sub, exp, half).downcast_ty();
         }
         exp
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::{gendata::*, refs::*, CastType, VirCtxt, TYPE_INT};
-
-    #[test]
-    fn axiomatized_function() {
-        crate::init_vcx(VirCtxt::new_without_tcx());
-        crate::with_vcx(|vcx| {
-            // `function f(a: Int): Int { a }`
-            let a = vcx.mk_local_decl("a", TYPE_INT).as_dyn();
-            let function: Function<'_> = vcx.alloc(FunctionGenData {
-                name: "f",
-                args: vcx.alloc_slice(&[a]),
-                ret: TYPE_INT.as_dyn(),
-                pres: &[],
-                posts: &[],
-                decreases: vcx.alloc(DecreasesGenData::None),
-                expr: Some(vcx.mk_local_ex(a)),
-                no_auto_trigger: true,
-            });
-            let (domain_function, axiom) = vcx.mk_axiomatized_function(function);
-            assert_eq!(domain_function.name.to_str(), "f");
-            assert_eq!(domain_function.args, &[TYPE_INT.as_dyn()]);
-            assert!(domain_function.no_auto_trigger);
-            let axiom = format!("{axiom:?}");
-            assert!(
-                axiom.contains("forall a: Int :: {f(a)} (f(a)) == (a)"),
-                "{axiom}"
-            );
-        });
     }
 }

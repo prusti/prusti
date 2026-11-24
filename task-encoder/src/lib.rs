@@ -63,6 +63,45 @@ struct Operator<'vir> {
     definition: vir::DomainAxiom<'vir>,
 }
 
+impl<'vir> Operator<'vir> {
+    /// `function`, whose body is `body`, as a domain function with the same
+    /// name, arguments and `no_auto_trigger`, defined by the axiom
+    /// `forall args :: { function(args) } function(args) == body`.
+    fn new(function: vir::Function<'vir>, body: vir::ExprDyn<'vir>) -> Self {
+        vir::with_vcx(|vcx| {
+            let name = vir::ViperIdent::new(function.name);
+            let tys = vcx.alloc_slice(&function.args.iter().map(|arg| arg.ty).collect::<Vec<_>>());
+            let idn = vir::FunctionIdn::<vir::ManyDyn, _>::new(name, tys, function.ret);
+            let args = function
+                .args
+                .iter()
+                .map(|&arg| vcx.mk_local_ex(arg))
+                .collect::<Vec<vir::ExprDyn<'vir>>>();
+            let app = idn.call()(&args);
+            let definition = vcx.mk_domain_axiom(
+                vir::ViperIdent::new(vcx.alloc_str(&format!("{}_definition", function.name))),
+                vcx.mk_forall_expr(
+                    function.args,
+                    vcx.alloc_slice(&[vcx.mk_trigger(&[app])]),
+                    vcx.mk_eq_expr(app, body),
+                ),
+            );
+            let function = vcx.alloc(vir::DomainFunctionData {
+                unique: false,
+                name,
+                args: tys,
+                ret: function.ret,
+                interpretation: None,
+                no_auto_trigger: function.no_auto_trigger,
+            });
+            Operator {
+                function,
+                definition,
+            }
+        })
+    }
+}
+
 /// The name of the domain of the [`Operator`]s.
 const OPERATORS_DOMAIN: &str = "operators";
 
@@ -128,8 +167,7 @@ impl<'vir> Program<'vir> {
     ///
     /// An operator with a body but no pre- or postcondition is added instead
     /// as a domain function of the user-level domain [`OPERATORS_DOMAIN`],
-    /// with an axiom for its body (see
-    /// [`vir::VirCtxt::mk_axiomatized_function`]). Silicon applies the body of
+    /// with an axiom for its body (see [`Operator::new`]). Silicon applies the body of
     /// a function only to the applications it has evaluated, which in a
     /// quantifier are those a trigger matches; an axiom applies to every
     /// application.
@@ -139,19 +177,15 @@ impl<'vir> Program<'vir> {
                 no_auto_trigger: true,
                 ..*function
             });
-            if function.expr.is_none() || !function.pres.is_empty() || !function.posts.is_empty() {
+            let (Some(body), [], []) = (function.expr, function.pres, function.posts) else {
                 self.add_user_function(function);
                 return;
-            }
+            };
             if self.operators.is_empty() {
                 self.user_level.insert(OPERATORS_DOMAIN);
                 self.code.push(CodeItem::Operators);
             }
-            let (function, definition) = vcx.mk_axiomatized_function(function);
-            self.operators.push(Operator {
-                function,
-                definition,
-            });
+            self.operators.push(Operator::new(function, body));
         });
     }
 
