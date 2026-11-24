@@ -19,6 +19,11 @@ pub extern "C" fn unsafe_attribute() -> i32 {
     1
 }
 
+#[ensures(true)]
+pub fn precise_capture() -> impl Sized + use<> {
+    0
+}
+
 #[requires(s != c"abc")]
 pub fn c_string_literal(s: &core::ffi::CStr) -> &core::ffi::CStr {
     c"def"
