@@ -14,7 +14,7 @@ use pcg::{
     pcg::{CapabilityKind, EvalStmtPhase, PcgNode},
     results::PcgBasicBlock,
     utils::{
-        HasCompilerCtxt, HasPlace, Place, maybe_old::MaybeLabelledPlace,
+        HasCompilerCtxt, HasPlace, Place, PrefixRelation, maybe_old::MaybeLabelledPlace,
         maybe_remote::MaybeRemotePlace,
     },
 };
@@ -168,8 +168,13 @@ impl<'vir: 'a, 'a, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         // the predicates' key, is kept above.
         for (proj, capability) in &loop_invariant_place_capabilities.lifetime_projections {
             let place = proj.base();
+            // A place behind `place` that the head holds keeps its value as a
+            // held place of its own; `place`'s predicates do not hold it then.
             if !capability.is_read()
                 || !held.contains(&place)
+                || held
+                    .iter()
+                    .any(|other| PrefixRelation::is_strict_prefix_of(place, *other))
                 || place.is_shared_ref(ctxt)
                 || place.projects_shared_ref(ctxt)
             {
