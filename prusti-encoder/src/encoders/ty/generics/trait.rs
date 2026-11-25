@@ -209,8 +209,9 @@ impl TaskEncoder for AssocTypeBoundEnc {
     const ENCODER_NAME: &'static str = "associated type bound encoder";
 
     type TaskDescription<'vir> = (DefId, usize);
-    /// `None` for a bound that states nothing (see
-    /// [`TraitImplEnc::clause_bounds`]).
+    /// `None` for a bound that [`TraitImplEnc::clause_bounds`] encodes as
+    /// nothing: a `PointeeSized` bound, which holds of every type, or a
+    /// negative bound.
     type OutputFullLocal<'vir> = Option<vir::Domain<'vir>>;
 
     fn task_to_key<'vir>(task: &Self::TaskDescription<'vir>) -> Self::TaskKey<'vir> {
