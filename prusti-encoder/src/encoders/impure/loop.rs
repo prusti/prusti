@@ -96,7 +96,9 @@ impl<'vir: 'a, 'a, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         // predicate holds; and the places on the way to the used places, e.g.
         // the reference `w.f` of a used `*w.f`.
         let reported = loop_invariant_place_capabilities
+            .places
             .iter()
+            .map(|(place, capability)| (*place, *capability))
             .filter(|(place, capability)| !capability.is_write() && held_at_head(*place))
             .collect::<Vec<_>>();
         let mut held = reported.iter().map(|(place, _)| *place).collect::<Vec<_>>();
