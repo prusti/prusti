@@ -296,7 +296,7 @@ impl<'vir> IndirectPredicateState<'vir> {
                 .retain(|node, _| end.created_at.contains_key(node));
         }
         disagreeing.retain(|node| {
-            let current = node.label().is_none();
+            let current = keys_read_as_current(*node);
             if current {
                 state.created_at.remove(node);
             }
@@ -408,18 +408,25 @@ impl<'vir> Child<'vir> {
     }
 }
 
+/// Whether the keys of `node`'s predicates are read in the current state: for
+/// a current node, and for a node labelled at a loop head, the version at the
+/// start of each iteration, which the invariant keys by the places' values at
+/// the head; on the edges entering the head, the current state is the head's.
+fn keys_read_as_current(node: NodeLp<'_>) -> bool {
+    match node.label() {
+        None => true,
+        Some(LifetimeProjectionLabel::Location(location)) => {
+            matches!(location, SnapshotLocation::Loop(_))
+        }
+        Some(LifetimeProjectionLabel::Future) => false,
+    }
+}
+
 /// Whether a loop invariant states `node`'s predicates: a node with an old
 /// label stands for a snapshot from before the loop, which the loop does not
 /// maintain, so its predicates, if held, are framed around the loop.
 fn maintained_by_loop(node: NodeLp<'_>) -> bool {
-    node.base().is_current()
-        && match node.label() {
-            None => true,
-            Some(LifetimeProjectionLabel::Location(location)) => {
-                matches!(location, SnapshotLocation::Loop(_))
-            }
-            Some(LifetimeProjectionLabel::Future) => false,
-        }
+    node.base().is_current() && keys_read_as_current(node)
 }
 
 /// The node of a lifetime projection of a local place.
@@ -1321,11 +1328,13 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         node: NodeLp<'vir>,
     ) -> EncodeResult<'vir, ((Pcg<'enc, 'vir>, Option<ReadPoint<'vir>>), ReadPoint<'vir>), E> {
         let point = match node.label() {
-            Some(LifetimeProjectionLabel::Location(at)) => Some(ReadPoint {
-                at,
-                label: self.get_location_label(at),
-                after_effect: false,
-            }),
+            Some(LifetimeProjectionLabel::Location(at)) if !keys_read_as_current(node) => {
+                Some(ReadPoint {
+                    at,
+                    label: self.get_location_label(at),
+                    after_effect: false,
+                })
+            }
             _ => self.phase_start.as_ref().map(|(_, point)| *point),
         };
         let state = match point {
@@ -3923,7 +3932,6 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 &[],
                 self.vcx.mk_goto_stmt(current_block_label),
             ));
-            let loop_head = loop_spec.original_head_block;
             // The permission part of the invariant, and errors encoding it, refer to the
             // loop head.
             let head_span = self
@@ -3938,7 +3946,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                     &cfpcs,
                     &entry_graph,
                     &loop_place_usages,
-                    (loop_id, loop_head),
+                    *entry_label,
                     self.pcg_ctxt(),
                 )
             })?;

@@ -10,15 +10,15 @@ use pcg::{
             PcgLifetimeProjectionBaseLike,
         },
     },
-    r#loop::{LoopId, PlaceUsages},
+    r#loop::PlaceUsages,
     pcg::{CapabilityKind, EvalStmtPhase, PcgNode},
     results::PcgBasicBlock,
     utils::{
-        HasCompilerCtxt, HasPlace, Place, SnapshotLocation, maybe_old::MaybeLabelledPlace,
+        HasCompilerCtxt, HasPlace, Place, maybe_old::MaybeLabelledPlace,
         maybe_remote::MaybeRemotePlace,
     },
 };
-use prusti_rustc_interface::{index::IndexVec, middle::mir};
+use prusti_rustc_interface::index::IndexVec;
 
 use task_encoder::TaskEncoder;
 
@@ -36,13 +36,14 @@ impl<'vir: 'a, 'a, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
     /// Calculate invariant at loop head, and the places whose permission it
     /// holds, which are the places the body invariants may read. A place
     /// behind a shared reference is held, and read, through the first shared
-    /// reference on its path.
+    /// reference on its path. `entry_label` labels the state in which the loop
+    /// was entered.
     pub(crate) fn get_loop_inv(
         &mut self,
         cfpcs: &PcgBasicBlock<'_, 'vir>,
         entry_graph: &BorrowsGraph<'vir>,
         loop_place_usages: &PlaceUsages<'vir>,
-        (loop_id, loop_head): (LoopId, mir::BasicBlock),
+        entry_label: vir::CfgBlockLabelData<'vir>,
         ctxt: impl HasCompilerCtxt<'a, 'vir>,
     ) -> EncodeResult<
         'vir,
@@ -142,27 +143,53 @@ impl<'vir: 'a, 'a, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         // A place's predicate is stated before those of the places behind it,
         // whose addresses are read from its snapshot.
         held.sort_by_key(|place| place.projection.len());
-        // The loop havocs the snapshots of the held places, which the keys of
-        // the indirect predicates are read from. A place with lifetimes that
-        // the loop keeps (see `loop_keeps`) keeps its snapshot from before
-        // the loop.
-        let entry = self.loop_entry_label(loop_id, loop_head);
+        // Viper checks the loop body in a state that holds only the invariant,
+        // so the invariant keeps the value of a place the loop only reads by
+        // equating it with its value when the loop was entered.
         for place in &held {
-            let (place_res, snap, _, ty_out) = self.encode_place_with_snap(*place)?;
+            let (place_res, _, _, ty_out) = self.encode_place_with_snap(*place)?;
             inv.push(ty_out.ref_to_pred(self.vcx, place_res.expr.expect_predicate(), None));
-            if let Some(entry) = entry
-                && place
-                    .ty(ctxt)
-                    .ty
-                    .walk()
-                    .any(|arg| arg.as_region().is_some())
-                && self.loop_keeps(loop_id, *place)
+            if held_places
+                .get(place)
+                .is_some_and(|capability| capability.is_read())
             {
-                let before = self.vcx.maybe_apply_label(snap, Some(entry));
+                // The snapshot of the predicate the invariant holds, not one
+                // assembled from the place's parts.
+                let snap = ty_out.ref_to_snap(place_res.expr.expect_predicate());
+                let before = self.vcx.mk_labelled_old_expr(snap, Some(entry_label));
                 inv.push(self.vcx.mk_eq_expr(snap, before));
             }
         }
         inv.extend(self.indirect_loop_invariant(&cfpcs.statements[0].entry_state)?);
+        // The referents of a lifetime projection the loop only reads keep their
+        // values as well: the place read through the predicates of its lifetime
+        // is the same as when the loop was entered. The PCG reports such a
+        // projection only for a place the loop does not write, whose snapshot,
+        // the predicates' key, is kept above.
+        for (proj, capability) in &loop_invariant_place_capabilities.lifetime_projections {
+            let place = proj.base();
+            if !capability.is_read()
+                || !held.contains(&place)
+                || place.is_shared_ref(ctxt)
+                || place.projects_shared_ref(ctxt)
+            {
+                continue;
+            }
+            let (place_res, _, ty, ty_out) = self.encode_place_with_snap(place)?;
+            let snap = ty_out.ref_to_snap(place_res.expr.expect_predicate());
+            let nodes =
+                NodePredicates::new(RustTyDecomposition::from_ty(ty.ty, self.def_id), self.deps)?
+                    .in_ty(ty.ty);
+            let lifetimes: IndexVec<_, GeneralizedLifetime<'vir>> =
+                self.pcg_ctxt().extract_regions(ty.ty);
+            let positions = nodes.positions_of(lifetimes[proj.region_idx()]);
+            if positions.is_empty() {
+                continue;
+            }
+            let read = nodes.deep_snap_at(snap, &positions);
+            let before = self.vcx.mk_labelled_old_expr(read, Some(entry_label));
+            inv.push(self.vcx.mk_eq_expr(read, before));
+        }
 
         for edge in state.borrow_pcg().graph().coupled_edges() {
             let mut let_bind = WandOldOuter::LetBind(Vec::new());
@@ -181,71 +208,6 @@ impl<'vir: 'a, 'a, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         }
 
         Ok((inv, held_places))
-    }
-
-    /// The label at the end of the block from which the loop `loop_id` with
-    /// head `head` is entered, if it is entered from only one.
-    fn loop_entry_label(
-        &self,
-        loop_id: LoopId,
-        head: mir::BasicBlock,
-    ) -> Option<vir::OldLabel<'vir>> {
-        let [entry] = self.body.basic_blocks.predecessors()[head]
-            .iter()
-            .filter(|&&block| !self.loop_analysis().in_loop(block, loop_id))
-            .collect::<Vec<_>>()[..]
-        else {
-            return None;
-        };
-        Some(self.get_location_label(SnapshotLocation::After(*entry)))
-    }
-
-    /// Whether the loop `loop_id` keeps the snapshot of `place`, which has no
-    /// dereference of a reference: no statement in the loop mutates a place
-    /// containing it or a part of it, except a part behind a reference, which
-    /// the snapshot does not include.
-    fn loop_keeps(&self, loop_id: LoopId, place: Place<'vir>) -> bool {
-        use mir::visit::Visitor;
-        struct Mutated<'vir>(Vec<mir::Place<'vir>>);
-        impl<'vir> Visitor<'vir> for Mutated<'vir> {
-            fn visit_place(
-                &mut self,
-                place: &mir::Place<'vir>,
-                context: mir::visit::PlaceContext,
-                _location: mir::Location,
-            ) {
-                if context.is_mutating_use() {
-                    self.0.push(*place);
-                }
-            }
-        }
-        let tcx = self.vcx.tcx();
-        // Whether `place` dereferences a reference or raw pointer at or after
-        // its `from`-th projection.
-        let behind_ref = |place: mir::Place<'vir>, from: usize| {
-            place.iter_projections().skip(from).any(|(base, elem)| {
-                matches!(elem, mir::ProjectionElem::Deref) && !base.ty(self.body, tcx).ty.is_box()
-            })
-        };
-        let place: mir::Place<'vir> = mir::Place {
-            local: place.local,
-            projection: tcx.mk_place_elems(place.projection),
-        };
-        if behind_ref(place, 0) {
-            return false;
-        }
-        let mut mutated = Mutated(Vec::new());
-        for (block, data) in self.body.basic_blocks.iter_enumerated() {
-            if self.loop_analysis().in_loop(block, loop_id) {
-                mutated.visit_basic_block_data(block, data);
-            }
-        }
-        !mutated.0.into_iter().any(|mutated| {
-            let n = mutated.projection.len().min(place.projection.len());
-            mutated.local == place.local
-                && mutated.projection[..n] == place.projection[..n]
-                && !behind_ref(mutated, n)
-        })
     }
 
     pub(crate) fn encode_pcg_node<T: PcgLifetimeProjectionBaseLike<'vir>>(
