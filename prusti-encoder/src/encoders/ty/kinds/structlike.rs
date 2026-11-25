@@ -121,8 +121,8 @@ pub(crate) fn ty_impure_variant<'vir>(
     deps: &mut TaskEncoderDependencies<'vir, TyImpureEnc>,
     builder: &mut PredicateBuilder<'vir>,
     // For an enum variant, the predicate of the enum's discriminant, which
-    // exchanging the enum's `$uninit` token at this variant yields besides the
-    // field tokens; `None` for a struct.
+    // collapsing the variant into the enum's `$uninit` token takes besides
+    // the field tokens; `None` for a struct.
     enum_discr_pred: Option<vir::ExprBool<'vir>>,
 ) -> Result<ImpureVariant<'vir>, EncodeFullError<'vir, TyImpureEnc>> {
     let fields = data
@@ -199,8 +199,9 @@ pub(crate) fn ty_impure_variant<'vir>(
     // The `$uninit` token of a struct stands for the `$uninit` tokens of its
     // fields. A `Box` without a value still owns its allocation, so its token
     // stands for the predicates of its fields other than the value (the last
-    // field) and the token of the value. An enum variant instead gets methods exchanging the enum's token
-    // for the discriminant's predicate and the field tokens, and back.
+    // field) and the token of the value. An enum variant instead gets a method
+    // exchanging the discriminant's predicate and the field tokens for the
+    // enum's token.
     let params = &builder.params;
     let self_uninit = builder.uninit_pred_expr(ref_self);
     let first_uninit_field = if box_data.is_some() {
@@ -229,24 +230,14 @@ pub(crate) fn ty_impure_variant<'vir>(
         }
         Some(discr) => {
             field_uninits.push(discr);
-            let uninit_args = (ref_self_decl.ty(), params.ty_args(), params.const_args());
-            let unfold = builder.inner.method(
-                &format!("{prefix}$uninit_unfold"),
-                uninit_args,
-                &[],
-                (ref_self_decl, params.ty_decls(), params.const_decls()),
-                &[self_uninit],
-                &field_uninits,
-            );
-            let fold = builder.inner.method(
+            TyImpureUninitExchange::Method(builder.inner.method(
                 &format!("{prefix}$uninit_fold"),
-                uninit_args,
+                (ref_self_decl.ty(), params.ty_args(), params.const_args()),
                 &[],
                 (ref_self_decl, params.ty_decls(), params.const_decls()),
                 &field_uninits,
                 &[self_uninit],
-            );
-            TyImpureUninitExchange::Methods { unfold, fold }
+            ))
         }
     };
 

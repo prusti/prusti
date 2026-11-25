@@ -73,22 +73,14 @@ impl<'vir> GArgCaster<'vir, Impure> {
     }
 
     pub fn cast_to_caller_ctx(&self, e: vir::ExprRef<'vir>) -> Option<vir::Stmt<'vir>> {
-        self.get().map(|c| {
-            (c.cast.make_concrete.value)(e, c.ty_args.get_ty(), c.ty_args.get_const()).alloc()
-        })
+        self.get()
+            .map(|c| (c.cast.make_concrete)(e, c.ty_args.get_ty(), c.ty_args.get_const()).alloc())
     }
 
     /// Like `cast_to_callee_ctx`, for the place's `$uninit` token.
     pub fn cast_uninit_to_callee_ctx(&self, e: vir::ExprRef<'vir>) -> Option<vir::Stmt<'vir>> {
         self.get().map(|c| {
             (c.cast.make_generic.uninit)(e, c.ty_args.get_ty(), c.ty_args.get_const()).alloc()
-        })
-    }
-
-    /// Like `cast_to_caller_ctx`, for the place's `$uninit` token.
-    pub fn cast_uninit_to_caller_ctx(&self, e: vir::ExprRef<'vir>) -> Option<vir::Stmt<'vir>> {
-        self.get().map(|c| {
-            (c.cast.make_concrete.uninit)(e, c.ty_args.get_ty(), c.ty_args.get_const()).alloc()
         })
     }
 }

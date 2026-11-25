@@ -60,21 +60,18 @@ pub struct TyImpureStructData<'vir> {
     pub uninit_exchange: TyImpureUninitExchange<'vir>,
 }
 
-/// How the token of a struct, or of the enum of a variant, is exchanged for
-/// the tokens of its parts.
+/// How the tokens of the parts of a struct, or of a variant, are exchanged for
+/// the token of the struct, or of the variant's enum.
 #[derive(Debug, Clone, Copy)]
 pub enum TyImpureUninitExchange<'vir> {
     /// The struct's token, whose body is the tokens of its parts: it is
-    /// unfolded and folded like the struct's predicate.
+    /// folded like the struct's predicate.
     Fold(PredicateIdn<'vir, (vir::Ref, vir::ManyTyVal, vir::ManyCSnap)>),
-    /// The methods exchanging the token of an enum for the predicate of its
-    /// discriminant and the tokens of this variant's fields (`unfold`), and
-    /// back (`fold`). The enum's token cannot have these as its body, since
-    /// an enum without a value has no variant.
-    Methods {
-        unfold: MethodIdn<'vir, (vir::Ref, vir::ManyTyVal, vir::ManyCSnap)>,
-        fold: MethodIdn<'vir, (vir::Ref, vir::ManyTyVal, vir::ManyCSnap)>,
-    },
+    /// The method exchanging the predicate of the enum's discriminant and the
+    /// tokens of this variant's fields for the enum's token. The enum's token
+    /// cannot have these as its body, since an enum without a value has no
+    /// variant.
+    Method(MethodIdn<'vir, (vir::Ref, vir::ManyTyVal, vir::ManyCSnap)>),
 }
 
 /// The hardcoded extras of a `Box`: the pointer metadata, read out of the
@@ -296,8 +293,8 @@ pub(crate) struct PredicateBuilder<'vir> {
     pub(super) ref_to_snap:
         FunctionIdn<'vir, (vir::Ref, vir::ManyTyVal, vir::ManyCSnap), vir::Snap>,
     pub(super) ref_to_uninit: PredicateIdn<'vir, (vir::Ref, vir::ManyTyVal, vir::ManyCSnap)>,
-    /// The body of the `$uninit` token predicate, if the token can be split
-    /// into the tokens of the type's parts; see `set_uninit_body`.
+    /// The body of the `$uninit` token predicate, if the token can be folded
+    /// from the tokens of the type's parts; see `set_uninit_body`.
     uninit_body: Option<vir::ExprBool<'vir>>,
 
     pub(super) inner: PredicateBuilderInner<'vir>,
@@ -362,8 +359,8 @@ impl<'vir> PredicateBuilder<'vir> {
     }
 
     /// Makes the `$uninit` token of the type stand for `body`, the tokens (or
-    /// predicates) of its parts, so that it is unfolded and folded like the
-    /// type's predicate. Without a body, the token cannot be split.
+    /// predicates) of its parts, so that the token is folded from them like
+    /// the type's predicate.
     pub(crate) fn set_uninit_body(&mut self, body: vir::ExprBool<'vir>) {
         assert!(self.uninit_body.replace(body).is_none());
     }

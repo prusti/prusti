@@ -41,12 +41,13 @@ impl PurityCasters for Pure {
 
 impl PurityCasters for Impure {
     type MakeGeneric<'vir> = ImpureCast<'vir>;
-    type MakeConcrete<'vir> = ImpureCast<'vir>;
+    type MakeConcrete<'vir> = MethodIdn<'vir, (vir::Ref, vir::ManyTyVal, vir::ManyCSnap)>;
 }
 
-/// An impure cast in one direction: a method exchanging the predicate of a
-/// place for its generic or concrete counterpart (`value`), and one doing the
-/// same for the place's `$uninit` token (`uninit`).
+/// The impure cast to the generic type: a method exchanging the predicate of
+/// a place for its generic counterpart (`value`), and one doing the same for
+/// the place's `$uninit` token (`uninit`). Tokens are only cast where a
+/// callee takes them, so they are never cast back to the concrete type.
 #[derive(Debug, Clone, Copy)]
 pub struct ImpureCast<'vir> {
     pub(super) value: MethodIdn<'vir, (vir::Ref, vir::ManyTyVal, vir::ManyCSnap)>,
@@ -352,11 +353,6 @@ impl TaskEncoder for CastersEnc<Impure> {
                 (vir::TYPE_REF, generics.ty_args(), generics.const_args()),
             );
 
-            let make_concrete_uninit_ident = MethodIdn::new(
-                vir::vir_format_identifier!(vcx, "make_concrete_{base_name}_$uninit"),
-                (vir::TYPE_REF, generics.ty_args(), generics.const_args()),
-            );
-
             deps.emit_output_ref(
                 *task_key,
                 GArgCasters {
@@ -364,10 +360,7 @@ impl TaskEncoder for CastersEnc<Impure> {
                         value: make_generic_ident,
                         uninit: make_generic_uninit_ident,
                     },
-                    make_concrete: ImpureCast {
-                        value: make_concrete_ident,
-                        uninit: make_concrete_uninit_ident,
-                    },
+                    make_concrete: make_concrete_ident,
                 },
             )?;
             let make_generic_pure = deps
@@ -453,23 +446,7 @@ impl TaskEncoder for CastersEnc<Impure> {
                 vcx.alloc_slice(&[generic_uninit]),
                 None,
             );
-            let make_concrete_uninit = vcx.mk_method(
-                make_concrete_uninit_ident,
-                decls,
-                &[],
-                vcx.alloc_slice(&[generic_uninit]),
-                vcx.alloc_slice(&[concrete_uninit]),
-                None,
-            );
-            Ok((
-                vec![
-                    make_generic,
-                    make_concrete,
-                    make_generic_uninit,
-                    make_concrete_uninit,
-                ],
-                (),
-            ))
+            Ok((vec![make_generic, make_concrete, make_generic_uninit], ()))
         })
     }
 

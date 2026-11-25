@@ -1399,35 +1399,39 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                     _ => unreachable!(),
                 };
                 if matches!(capability_kind, CapabilityKind::Write) {
+                    // A place without a value is only assigned or dies as a
+                    // whole. When the program gives a value to a part of it
+                    // (e.g. a field, after all fields were moved out), the PCG
+                    // must keep the parts separate instead of collapsing
+                    // them into the place and expanding it again.
+                    let RepackOp::Collapse(collapse) = repack_op else {
+                        return Err(EncodeFullError::internal(
+                            format!(
+                                "`{}` holds no value here, and accessing its parts separately \
+                                 is not supported yet",
+                                place.display_string(self.pcg_ctxt())
+                            ),
+                            vec![self.current_span()],
+                        ));
+                    };
                     // A place holding no value has an `$uninit` token instead
-                    // of a predicate, so expanding it exchanges its token for
-                    // its fields' tokens, and collapsing does the reverse. The PCG
-                    // expands an enum first to a variant and then to the
-                    // variant's fields; the variant's method exchanges the
-                    // token for the fields' tokens directly, so the first
-                    // step has nothing to do.
-                    let unfold = matches!(repack_op, RepackOp::Expand(..));
+                    // of a predicate, so collapsing it exchanges the tokens
+                    // of its fields for its token. The PCG collapses an enum
+                    // first from the variant's fields to the variant and then
+                    // to the enum; the variant's method exchanges the fields'
+                    // tokens for the enum's token directly, so the second step
+                    // has nothing to do.
                     let place_enc = self.encode_place(place)?;
                     let variant = place_enc.ty.variant_index;
                     let data = self.ty_use_impure(place_enc.ty.ty);
                     // Values are moved out of array elements only at constant
                     // indices, so a collapse at write capability has a
                     // constant-index guide.
-                    let index = match repack_op {
-                        RepackOp::Collapse(collapse) => match collapse.guide() {
-                            Some(guide @ RepackGuide::ConstantIndex(..)) => {
-                                self.expansion_index(guide)
-                            }
-                            _ => None,
-                        },
+                    let index = match collapse.guide() {
+                        Some(guide @ RepackGuide::ConstantIndex(..)) => self.expansion_index(guide),
                         _ => None,
                     };
-                    match data.uninit_repack(
-                        variant,
-                        place_enc.expr.expect_predicate(),
-                        index,
-                        unfold,
-                    ) {
+                    match data.uninit_fold(variant, place_enc.expr.expect_predicate(), index) {
                         Some(stmts) => self.stmts(stmts),
                         None if variant.is_none() && data.get_enumlike().is_some() => {
                             comment!(self, "{repack_op:?}: performed at the variant")
@@ -1435,8 +1439,8 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                         None => {
                             return Err(EncodeFullError::unsupported(
                                 format!(
-                                    "moving a value into or out of a part of `{}` (of type \
-                                     `{}`) is not supported yet",
+                                    "moving a value out of a part of `{}` (of type `{}`) is not \
+                                     supported yet",
                                     place.display_string(self.pcg_ctxt()),
                                     place_enc.ty.ty
                                 ),
