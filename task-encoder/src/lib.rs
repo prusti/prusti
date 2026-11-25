@@ -1,8 +1,12 @@
 #![feature(rustc_private)]
 #![feature(associated_type_defaults)]
+#![feature(never_type)]
 
 use core::panic;
-use prusti_rustc_interface::{data_structures::fx::FxIndexMap, span::Span};
+use prusti_rustc_interface::{
+    data_structures::fx::{FxHashSet, FxIndexMap},
+    span::Span,
+};
 use std::cell::RefCell;
 
 mod cache;
@@ -24,6 +28,14 @@ pub struct Program<'vir> {
     functions: Vec<vir::Function<'vir>>,
     methods: Vec<vir::Method<'vir>>,
     literal_inverses: Vec<vir::simplify::LiteralInverse<'vir>>,
+    /// The names of the adts, domains and functions that encode what the user
+    /// writes, which the simplifier never folds away (see `add_user_adt`).
+    user_level: FxHashSet<&'vir str>,
+    /// The operators with a body and no pre- or postcondition (see
+    /// `add_user_operator`). [`Self::all_domains`] makes them the domain
+    /// [`OPERATORS_DOMAIN`], placed
+    /// after the domains in `domains`.
+    operators: Vec<Operator<'vir>>,
 
     code: Vec<CodeItem>,
     encoder_errors: Vec<(String, Span)>,
@@ -40,7 +52,59 @@ enum CodeItem {
     Predicate(usize),
     Function(usize),
     Method(usize),
+    /// The domain [`OPERATORS_DOMAIN`].
+    Operators,
 }
+
+/// An operator with a body and no pre- or postcondition, as a domain function
+/// and the axiom that defines it (see [`Program::add_user_operator`]).
+#[derive(Debug)]
+struct Operator<'vir> {
+    function: vir::DomainFunction<'vir>,
+    definition: vir::DomainAxiom<'vir>,
+}
+
+impl<'vir> Operator<'vir> {
+    /// `function`, whose body is `body`, as a domain function with the same
+    /// name, arguments and `no_auto_trigger`, defined by the axiom
+    /// `forall args :: { function(args) } function(args) == body`.
+    fn new(function: vir::Function<'vir>, body: vir::ExprDyn<'vir>) -> Self {
+        vir::with_vcx(|vcx| {
+            let name = vir::ViperIdent::new(function.name);
+            let tys = vcx.alloc_slice(&function.args.iter().map(|arg| arg.ty).collect::<Vec<_>>());
+            let idn = vir::FunctionIdn::<vir::ManyDyn, _>::new(name, tys, function.ret);
+            let args = function
+                .args
+                .iter()
+                .map(|&arg| vcx.mk_local_ex(arg))
+                .collect::<Vec<vir::ExprDyn<'vir>>>();
+            let app = idn.call()(&args);
+            let definition = vcx.mk_domain_axiom(
+                vir::ViperIdent::new(vcx.alloc_str(&format!("{}_definition", function.name))),
+                vcx.mk_forall_expr(
+                    function.args,
+                    vcx.alloc_slice(&[vcx.mk_trigger(&[app])]),
+                    vcx.mk_eq_expr(app, body),
+                ),
+            );
+            let function = vcx.alloc(vir::DomainFunctionData {
+                unique: false,
+                name,
+                args: tys,
+                ret: function.ret,
+                interpretation: None,
+                no_auto_trigger: function.no_auto_trigger,
+            });
+            Operator {
+                function,
+                definition,
+            }
+        })
+    }
+}
+
+/// The name of the domain of the [`Operator`]s.
+const OPERATORS_DOMAIN: &str = "operators";
 
 impl<'vir> Program<'vir> {
     pub fn header(&mut self, title: &str) {
@@ -60,6 +124,101 @@ impl<'vir> Program<'vir> {
     pub fn add_domain(&mut self, domain: vir::Domain<'vir>) {
         self.code.push(CodeItem::Domain(self.domains.len()));
         self.domains.push(domain);
+    }
+
+    /// Adds an adt whose constructors and fields encode what the user writes,
+    /// such as the snapshot of a Rust struct. [`Self::simplify`] never folds
+    /// away an application of such a user-level adt, domain or function, so
+    /// that a trigger of a quantifier the user wrote still finds the terms the
+    /// user wrote. What rustc adds to the MIR, or the encoding introduces, is
+    /// not user-level and may be folded away.
+    ///
+    /// - User-level: the snapshots of structs, enums, arrays and slices, pure
+    ///   functions, operators, constants, ghost collection operations and
+    ///   value casts, which come from `as`.
+    /// - Not user-level: references, boxes, raw pointers, closures and
+    ///   tuples, which rustc and Prusti build and take apart themselves (e.g.
+    ///   auto-refs, the arguments of a closure call, the trigger sets of a
+    ///   quantifier); the snapshots of primitives and generic parameters,
+    ///   which wrap values for the encoding; and pointer coercions, which are
+    ///   mostly implicit (one written with `as` is encoded as the same
+    ///   function).
+    pub fn add_user_adt(&mut self, adt: vir::Adt<'vir>) {
+        self.user_level.insert(adt.name);
+        self.add_adt(adt);
+    }
+
+    /// Adds a domain whose functions are user-level (see
+    /// [`Self::add_user_adt`]).
+    pub fn add_user_domain(&mut self, domain: vir::Domain<'vir>) {
+        self.user_level.insert(domain.name);
+        self.add_domain(domain);
+    }
+
+    /// Adds a user-level function (see [`Self::add_user_adt`]).
+    pub fn add_user_function(&mut self, function: vir::Function<'vir>) {
+        self.user_level.insert(function.name);
+        self.add_function(function);
+    }
+
+    /// Adds a user-level function that encodes an operator or a cast (see
+    /// [`Self::add_user_adt`]), marked `no_auto_trigger`: a trigger on the
+    /// result of `i - 1` matches the subtraction that a recursive function
+    /// performs, and can instantiate its quantifier without end.
+    ///
+    /// An operator with a body but no pre- or postcondition is added instead
+    /// as a domain function of the user-level domain [`OPERATORS_DOMAIN`],
+    /// with an axiom for its body (see [`Operator::new`]). Silicon applies the body of
+    /// a function only to the applications it has evaluated, which in a
+    /// quantifier are those a trigger matches; an axiom applies to every
+    /// application.
+    pub fn add_user_operator(&mut self, function: vir::Function<'vir>) {
+        vir::with_vcx(|vcx| {
+            let function = vcx.alloc(vir::FunctionGenData {
+                no_auto_trigger: true,
+                ..*function
+            });
+            let (Some(body), [], []) = (function.expr, function.pres, function.posts) else {
+                self.add_user_function(function);
+                return;
+            };
+            if self.operators.is_empty() {
+                self.user_level.insert(OPERATORS_DOMAIN);
+                self.code.push(CodeItem::Operators);
+            }
+            self.operators.push(Operator::new(function, body));
+        });
+    }
+
+    /// The domain [`OPERATORS_DOMAIN`], if an operator was added to it.
+    fn operators_domain(&self) -> Option<vir::Domain<'vir>> {
+        if self.operators.is_empty() {
+            return None;
+        }
+        let (functions, definitions): (Vec<_>, Vec<_>) = self
+            .operators
+            .iter()
+            .map(|op| (op.function, op.definition))
+            .unzip();
+        Some(vir::with_vcx(|vcx| {
+            vcx.mk_domain(
+                vir::ViperIdent::new(OPERATORS_DOMAIN),
+                &[],
+                vcx.alloc_slice(&definitions),
+                vcx.alloc_slice(&functions),
+                None,
+            )
+        }))
+    }
+
+    /// The domains of the program: those in `domains`, then the domain
+    /// [`OPERATORS_DOMAIN`].
+    fn all_domains(&self) -> Vec<vir::Domain<'vir>> {
+        self.domains
+            .iter()
+            .copied()
+            .chain(self.operators_domain())
+            .collect()
     }
 
     /// Declares a literal inverse, which [`Self::simplify`] then folds.
@@ -100,9 +259,20 @@ impl<'vir> Program<'vir> {
                 }
                 CodeItem::Function(idx) => code.push_str(&format!("{:?}\n", self.functions[*idx])),
                 CodeItem::Method(idx) => code.push_str(&format!("{:?}\n", self.methods[*idx])),
+                CodeItem::Operators => {
+                    if let Some(domain) = self.operators_domain() {
+                        code.push_str(&format!("{domain:?}\n"));
+                    }
+                }
             }
         }
         code
+    }
+
+    /// Replaces the `let`s in the triggers of all items added so far by the
+    /// values they bind (see [`vir::InlineTriggerLets`]).
+    pub fn inline_trigger_lets(&mut self) {
+        vir::with_vcx(|vcx| self.fold(&mut vir::InlineTriggerLets::new(vcx)));
     }
 
     /// Simplifies the expressions of all domain axioms, predicates, functions
@@ -111,31 +281,42 @@ impl<'vir> Program<'vir> {
         vir::with_vcx(|vcx| {
             let ctx = vir::simplify::SimplifyCtx::new(
                 &self.adts,
-                &self.domains,
+                &self.all_domains(),
                 &self.functions,
                 &self.literal_inverses,
+                &self.user_level,
             );
-            for domain in self.domains.iter_mut() {
-                *domain = vir::simplify::simplify(vcx, &ctx, *domain);
-            }
-            for predicate in self.predicates.iter_mut() {
-                *predicate = vir::simplify::simplify(vcx, &ctx, *predicate);
-            }
-            for function in self.functions.iter_mut() {
-                *function = vir::simplify::simplify(vcx, &ctx, *function);
-            }
-            for method in self.methods.iter_mut() {
-                *method = vir::simplify::simplify(vcx, &ctx, *method);
-            }
+            self.fold(&mut vir::simplify::Simplify::new(vcx, &ctx));
         });
     }
 
-    pub fn mk_program(self) -> vir::Program<'vir> {
+    /// Folds the items added so far with `f`, in the order of
+    /// [`Self::mk_program`].
+    fn fold(&mut self, f: &mut impl vir::Folder<'vir, (), !>) {
+        fn fold_all<'a, 'vir, T: vir::Foldable<'vir, (), !> + 'a>(
+            items: impl IntoIterator<Item = &'a mut T>,
+            f: &mut impl vir::Folder<'vir, (), !>,
+        ) {
+            for item in items {
+                if let Some(folded) = item.fold_with(f) {
+                    *item = folded;
+                }
+            }
+        }
+        fold_all(&mut self.adts, f);
+        fold_all(&mut self.domains, f);
+        fold_all(self.operators.iter_mut().map(|op| &mut op.definition), f);
+        fold_all(&mut self.predicates, f);
+        fold_all(&mut self.functions, f);
+        fold_all(&mut self.methods, f);
+    }
+
+    pub fn mk_program(&self) -> vir::Program<'vir> {
         vir::with_vcx(|vcx| {
             vcx.mk_program(
                 vcx.alloc_slice(&self.fields),
                 vcx.alloc_slice(&self.adts),
-                vcx.alloc_slice(&self.domains),
+                vcx.alloc_slice(&self.all_domains()),
                 vcx.alloc_slice(&self.predicates),
                 vcx.alloc_slice(&self.functions),
                 vcx.alloc_slice(&self.methods),

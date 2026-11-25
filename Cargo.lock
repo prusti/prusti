@@ -2137,7 +2137,7 @@ version = "0.1.0"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 1.0.109",
+ "syn 3.0.10",
 ]
 
 [[package]]
@@ -2263,13 +2263,13 @@ dependencies = [
 
 [[package]]
 name = "prusti-specs"
-version = "0.3.4"
+version = "0.3.10"
 dependencies = [
  "itertools 0.10.5",
  "proc-macro2",
  "quote",
  "rustc-hash",
- "syn 1.0.109",
+ "syn 3.0.10",
  "uuid",
 ]
 
@@ -2825,6 +2825,17 @@ name = "syn"
 version = "2.0.106"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ede7c438028d4436d71104916910f5bb611972c5cfd7f89b8300a8186e6fada6"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "unicode-ident",
+]
+
+[[package]]
+name = "syn"
+version = "3.0.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4ae9ccbea3a7b0b09443036490c8f34a8b1b760fd345e5c0dae0aac718faea79"
 dependencies = [
  "proc-macro2",
  "quote",

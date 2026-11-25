@@ -10,9 +10,19 @@ fn test(a: bool, b: i32, c: i32) -> i32 {
         x = c;
         y = b;
     }
-    // x + y // TODO: PCG doesn't unpack the tuple?
-    x
+    x + 2 * y
 }
 
-#[requires(test(false, 42, 72) == 42)]
-fn main() {}
+// Only one branch assigns the argument, so the other one keeps its value from
+// before the branch.
+#[pure]
+fn assign_arg_in_one_branch(c: bool, mut a: u32, b: u32) -> u32 {
+    if c { a = b; }
+    a
+}
+
+#[ensures(test(false, 42, 72) == 186)]
+#[ensures(test(true, 42, 72) == 156)]
+#[ensures(assign_arg_in_one_branch(false, 1, 2) == 1)]
+#[ensures(assign_arg_in_one_branch(true, 1, 2) == 2)]
+fn test_branch_results() {}

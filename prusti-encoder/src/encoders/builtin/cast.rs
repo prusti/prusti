@@ -88,6 +88,10 @@ pub(super) struct MirBuiltinCastLocal<'vir> {
     cast: vir::Function<'vir>,
     unsize: Option<vir::Method<'vir>>,
     undo: Option<vir::Method<'vir>>,
+    /// Whether this encodes something the user writes rather than something
+    /// rustc or the encoding adds, which the simplifier may fold away (see
+    /// `add_user_adt`).
+    user_level: bool,
 }
 
 impl TaskEncoder for MirBuiltinCastEnc {
@@ -120,18 +124,18 @@ impl TaskEncoder for MirBuiltinCastEnc {
         let res_ty = deps.require_dep::<TyUsePureEnc>(res_ty)?;
         let res_ty_snap = res_ty.snapshot.downcast_ty::<vir::CSnap>();
 
-        let (name, ty_args) = match kind {
+        let (name, ty_args, user_level) = match kind {
             mir::CastKind::PointerCoercion(ty::adjustment::PointerCoercion::Unsize, ..) => {
-                ("unsize", CastTyArgs::Referents)
+                ("unsize", CastTyArgs::Referents, false)
             }
-            mir::CastKind::IntToInt => ("i2i", CastTyArgs::None),
-            mir::CastKind::PtrToPtr => ("p2p", CastTyArgs::Referents),
-            mir::CastKind::IntToFloat => ("i2f", CastTyArgs::None),
-            mir::CastKind::FloatToInt => ("f2i", CastTyArgs::None),
+            mir::CastKind::IntToInt => ("i2i", CastTyArgs::None, true),
+            mir::CastKind::PtrToPtr => ("p2p", CastTyArgs::Referents, true),
+            mir::CastKind::IntToFloat => ("i2f", CastTyArgs::None, true),
+            mir::CastKind::FloatToInt => ("f2i", CastTyArgs::None, true),
             mir::CastKind::PointerCoercion(
                 ty::adjustment::PointerCoercion::MutToConstPointer,
                 ..,
-            ) => ("mut2const", CastTyArgs::None),
+            ) => ("mut2const", CastTyArgs::None, false),
             mir::CastKind::PointerCoercion(coercion, _) => {
                 return Err(EncodeFullError::unsupported(
                     format!("the pointer coercion `{coercion:?}`"),
@@ -475,7 +479,12 @@ impl TaskEncoder for MirBuiltinCastEnc {
             let (unsize, unsize_idn) = unsize.unzip();
             let (undo, undo_idn) = undo.unzip();
             Ok((
-                MirBuiltinCastLocal { cast, unsize, undo },
+                MirBuiltinCastLocal {
+                    cast,
+                    unsize,
+                    undo,
+                    user_level,
+                },
                 MirBuiltinCastOutput {
                     cast: cast_idn,
                     unsize: unsize_idn,
@@ -488,7 +497,11 @@ impl TaskEncoder for MirBuiltinCastEnc {
 
     fn emit_outputs<'vir>(program: &mut task_encoder::Program<'vir>) {
         for local in Self::all_outputs_local(program) {
-            program.add_function(local.cast);
+            if local.user_level {
+                program.add_user_operator(local.cast);
+            } else {
+                program.add_function(local.cast);
+            }
             if let Some(unsize) = local.unsize {
                 program.add_method(unsize);
             }

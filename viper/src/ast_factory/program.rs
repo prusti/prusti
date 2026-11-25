@@ -85,6 +85,7 @@ impl<'a> AstFactory<'a> {
         posts: &[Expr],
         pos: Position,
         body: Option<Expr>,
+        no_auto_trigger: bool,
     ) -> Function<'a> {
         let obj = self.jni.unwrap_result(ast::Function::with(self.env).new(
             self.jni.new_string(name),
@@ -97,7 +98,7 @@ impl<'a> AstFactory<'a> {
                 Some(x) => self.jni.new_option(Some(x.to_jobject())),
             },
             pos.to_jobject(),
-            self.no_info(),
+            self.function_info(no_auto_trigger),
             self.no_trafos(),
         ));
         Function::new(obj)
@@ -198,6 +199,7 @@ impl<'a> AstFactory<'a> {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn domain_func(
         &self,
         name: &str,
@@ -206,6 +208,7 @@ impl<'a> AstFactory<'a> {
         unique: bool,
         domain_name: &str,
         interpretation: Option<&str>,
+        no_auto_trigger: bool,
     ) -> DomainFunc<'a> {
         let obj = self.jni.unwrap_result(
             ast::DomainFunc::with(self.env).new(
@@ -216,7 +219,7 @@ impl<'a> AstFactory<'a> {
                 self.jni
                     .new_option(interpretation.map(|i| self.jni.new_string(i))),
                 self.no_position().to_jobject(),
-                self.no_info(),
+                self.function_info(no_auto_trigger),
                 self.jni.new_string(domain_name),
                 self.no_trafos(),
             ),

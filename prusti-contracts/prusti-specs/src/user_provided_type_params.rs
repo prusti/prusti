@@ -19,7 +19,7 @@ impl UserAnnotatedTypeParam {
             ));
         }
 
-        let path = &from.attrs[0].path;
+        let path = from.attrs[0].path();
         if path.segments.len() != 1 {
             return Err(UserAnnotatedTypeParamParserError::InvalidAnnotation(
                 from.span(),

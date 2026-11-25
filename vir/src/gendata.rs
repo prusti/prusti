@@ -142,7 +142,7 @@ pub struct ExistsGenData<'vir, Curr, Next> {
     pub body: ExprGenBool<'vir, Curr, Next>,
 }
 
-#[derive(VirHash, VirReify, VirSerde, VirVisitable, VirFoldable)]
+#[derive(VirHash, VirReify, VirSerde, VirVisitable)]
 pub struct TriggerGenData<'vir, Curr, Next> {
     pub exprs: &'vir [ExprGenDyn<'vir, Curr, Next>],
 }
@@ -302,6 +302,15 @@ impl<'vir, Curr: 'vir, Next: 'vir, T: CompType> ExprGenData<'vir, Curr, Next, T>
                 ty: self.ty,
             })
         })
+    }
+
+    /// Whether this is a local or a constant, which means the same in any
+    /// state (e.g. under `old(..)`) and costs nothing to copy.
+    pub fn is_local_or_const(&self) -> bool {
+        matches!(
+            self.kind,
+            ExprKindGenData::Local(_) | ExprKindGenData::Const(_)
+        )
     }
 }
 
@@ -556,6 +565,11 @@ pub struct FunctionGenData<'vir, Curr, Next> {
     pub posts: &'vir [ExprGenBool<'vir, Curr, Next>],
     pub decreases: DecreasesGen<'vir, Curr, Next>,
     pub expr: Option<ExprGenDyn<'vir, Curr, Next>>,
+    /// Whether the function carries Viper's `@noAutoTrigger()` annotation: the
+    /// triggers that Viper infers never contain an application of it, as
+    /// they never contain Viper's own operators.
+    #[vir(reify_pass)]
+    pub no_auto_trigger: bool,
 }
 
 #[derive(VirHash, VirReify, VirSerde, VirVisitable, VirFoldable)]

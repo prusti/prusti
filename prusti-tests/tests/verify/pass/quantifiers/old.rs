@@ -1,6 +1,7 @@
 use prusti_contracts::*;
 // The builtin under another name, which the specification parser leaves alone,
-// to build a quantifier's closure as a `move` closure.
+// to build a quantifier's closure as a `move` closure or apart from the
+// quantifier.
 use prusti_contracts::forall as quantify;
 
 pub struct VecI32 {
@@ -75,13 +76,15 @@ fn nested_frame(arr: &mut VecI32) {
     prusti_assert!(arr.lookup(0) == x);
 }
 
-/// `old` around nested quantifiers reads both bodies in the pre-state.
+/// `old` around nested quantifiers reads both bodies in the pre-state. The
+/// outer trigger is `i < arr.len()` rather than `arr.lookup(i)`, with which
+/// Z3 fails to prove `old_around_quantifier` (prusti/prusti#1687).
 #[trusted]
 #[requires(0 < arr.len())]
 #[ensures(arr.len() == old(arr.len()))]
 #[ensures(old(forall(|i: usize| forall(|j: usize| (i < arr.len() && j == i) ==> arr.lookup(i) == 5 && arr.lookup(j) == 5,
                                        triggers = [(arr.lookup(j),)]),
-                     triggers = [(arr.lookup(i),)])) ==> arr.lookup(0) == 7)]
+                     triggers = [(i < arr.len(),)])) ==> arr.lookup(0) == 7)]
 fn set_if_all_five(arr: &mut VecI32) {}
 
 #[requires(0 < arr.len())]
@@ -134,4 +137,51 @@ fn by_value(n: usize) {}
 
 fn by_value_client() {
     by_value(3);
+}
+
+// A closure built apart from its quantifier captures the values where it is
+// built: `*r` in `c` reads `*a`, as `r` refers to `b` only afterwards.
+#[requires({
+    let mut r = a;
+    let c = |i: usize| (!below(i, *r) || below(i, *a));
+    r = b;
+    quantify((), &c) && *r == *b
+})]
+fn built_before_assignment(a: &usize, b: &usize) {}
+
+fn built_before_assignment_client() {
+    built_before_assignment(&1, &2);
+}
+
+// A closure can be quantified over twice, the second time in the branch of the
+// `&&`.
+#[requires({
+    let c = |i: usize| (!below(i, n) || i < n);
+    quantify((), &c) && quantify((), &c)
+})]
+fn quantified_twice(n: usize) {}
+
+fn quantified_twice_client() {
+    quantified_twice(3);
+}
+
+// A closure reads its captures in the modes where it is built, not in those
+// of its quantifier: built in `old`, it reads `*x` before the call ...
+#[requires(*x == 0)]
+#[ensures({
+    let c = old(|i: usize| (i != 0 || *x == 0));
+    quantify((), &c)
+})]
+fn built_in_old(x: &mut usize) {
+    *x = 5;
+}
+
+// ... and built outside `old`, after the call.
+#[requires(*x == 0)]
+#[ensures({
+    let c = |i: usize| (i != 0 || *x == 5);
+    old(quantify((), &c))
+})]
+fn quantified_in_old(x: &mut usize) {
+    *x = 5;
 }

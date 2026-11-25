@@ -1,9 +1,8 @@
 //! Process external specifications in Rust foreign modules marked with
 //! the #[extern_spec] attribute.
 
-use super::functions::rewrite_stub;
+use super::functions::rewrite_fn;
 use proc_macro2::TokenStream;
-use quote::ToTokens;
 use syn::spanned::Spanned;
 
 pub fn rewrite_extern_spec(
@@ -14,8 +13,13 @@ pub fn rewrite_extern_spec(
     for item in item_foreign_mod.items.iter() {
         match item {
             syn::ForeignItem::Fn(item_fn) => {
-                let tokens = rewrite_stub(&item_fn.to_token_stream(), path, true);
-                res.extend(tokens);
+                // The stub is a safe function outside the `extern` block. It
+                // calls the specified function in an `unsafe` block unless
+                // that function is declared `safe`.
+                let is_unsafe = !matches!(item_fn.sig.safety, syn::Safety::Safe(_));
+                let mut item_fn = item_fn.clone();
+                item_fn.sig.safety = syn::Safety::Default;
+                res.extend(rewrite_fn(&item_fn, path, is_unsafe))
             }
             // eventually: handle specs for foreign variables (statics)
             _ => return Err(syn::Error::new(item.span(), "unexpected item")),

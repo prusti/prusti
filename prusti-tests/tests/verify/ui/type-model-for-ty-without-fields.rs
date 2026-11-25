@@ -1,4 +1,3 @@
-//@ known-failure
 //@ compile-flags: --deny warnings
 use prusti_contracts::*;
 

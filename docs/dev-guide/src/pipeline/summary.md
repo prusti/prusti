@@ -11,12 +11,12 @@ This chapter summarizes the steps that take place when the user runs Prusti on a
     - `prusti_driver` registers callbacks and calls the Rust compiler.
     - The compiler expands all procedural macros, which includes the specifications.
     - The compiler does the type-checking.
-    - The Prusti callback is called.
+    - Prusti's last callback collects the specifications and starts the verification; three other callbacks run earlier.
 3. [Prusti processing stage](prusti.md)
     - The [MIR](https://rustc-dev-guide.rust-lang.org/mir/index.html) of functions that should be checked is obtained.
     - MIR is encoded into VIR - Prusti's intermediate representation.
-    - VIR is enriched with `fold`/`unfold` statements and other ghost code.
-    - VIR is simplified and optimized.
+    - `fold`/`unfold` statements and other ghost code are derived from the PCG.
+    - VIR is simplified.
 4. [Viper verification stage](viper.md)
     - (With Prusti server only) Send VIR to the server.
     - VIR is encoded into Viper.

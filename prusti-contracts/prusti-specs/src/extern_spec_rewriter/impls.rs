@@ -84,18 +84,19 @@ fn rewrite_plain_impl(impl_item: &mut syn::ItemImpl, new_ty: Box<syn::Type>) -> 
                     "Associated types in external impl specs should not be declared",
                 ));
             }
-            syn::ImplItem::Method(method) => {
-                check_is_stub(&method.block)?;
+            syn::ImplItem::Fn(method) => return Err(unexpected_body(&method.block)),
+            syn::ImplItem::Verbatim(tokens) => {
+                let method = parse_method_stub(tokens.clone())?;
 
                 let (rewritten_method, spec_items) = generate_extern_spec_method_stub(
-                    method,
+                    &method,
                     item_ty,
                     None,
                     ExternSpecKind::InherentImpl,
                 )?;
 
-                rewritten_items.extend(spec_items.into_iter().map(syn::ImplItem::Method));
-                rewritten_items.push(syn::ImplItem::Method(rewritten_method));
+                rewritten_items.extend(spec_items.into_iter().map(syn::ImplItem::Fn));
+                rewritten_items.push(syn::ImplItem::Fn(rewritten_method));
             }
             syn::ImplItem::Macro(makro) if is_predicate_macro(makro) => {
                 return Err(syn::Error::new(
@@ -104,8 +105,6 @@ fn rewrite_plain_impl(impl_item: &mut syn::ItemImpl, new_ty: Box<syn::Type>) -> 
                 ));
             }
             _ => {
-                // TODO: this case also covers methods with `pub` modifier
-                // show a more meaningful message if that is the case
                 return Err(syn::Error::new(
                     item.span(),
                     "expected a method".to_string(),
@@ -129,9 +128,12 @@ fn rewrite_trait_impl(
     let mut new_impl = impl_item.clone();
     new_impl.self_ty = new_ty;
     new_impl.trait_ = None;
+    // An inherent impl is neither `unsafe`, negative nor `default`.
+    new_impl.unsafety = None;
+    new_impl.modifiers = syn::ImplModifiers::default();
     new_impl.items.clear();
 
-    let item_trait_path = impl_item.trait_.as_ref().unwrap().1.clone();
+    let item_trait_path = impl_item.trait_.as_ref().unwrap().0.clone();
     let item_trait_typath: syn::TypePath =
         parse_quote_spanned! {item_trait_path.span()=> #item_trait_path };
 
@@ -144,8 +146,9 @@ fn rewrite_trait_impl(
                     "Associated types in external impl specs should not be declared",
                 ));
             }
-            syn::ImplItem::Method(method) => {
-                check_is_stub(&method.block)?;
+            syn::ImplItem::Fn(method) => return Err(unexpected_body(&method.block)),
+            syn::ImplItem::Verbatim(tokens) => {
+                let method = parse_method_stub(tokens)?;
 
                 let (rewritten_method, spec_items) = generate_extern_spec_method_stub(
                     &method,
@@ -156,12 +159,10 @@ fn rewrite_trait_impl(
 
                 new_impl
                     .items
-                    .extend(spec_items.into_iter().map(syn::ImplItem::Method));
-                new_impl.items.push(syn::ImplItem::Method(rewritten_method));
+                    .extend(spec_items.into_iter().map(syn::ImplItem::Fn));
+                new_impl.items.push(syn::ImplItem::Fn(rewritten_method));
             }
             _ => {
-                // TODO: this case also covers methods with `pub` modifier
-                // show a more meaningful message if that is the case
                 return Err(syn::Error::new(
                     item.span(),
                     "expected a method".to_string(),

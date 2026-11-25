@@ -297,6 +297,8 @@ pub struct DomainFunctionData<'vir> {
     #[serde(with = "crate::serde::serde_ref")]
     pub ret: TypeDyn<'vir>,
     pub interpretation: Option<InterpretationData<'vir>>,
+    /// See [`crate::FunctionGenData::no_auto_trigger`].
+    pub no_auto_trigger: bool,
 }
 
 #[derive(PartialEq, Eq, Clone, Copy, Serialize, Deserialize, Hash)]
@@ -311,6 +313,14 @@ pub enum CfgBlockLabelData<'vir> {
         #[serde(with = "crate::serde::serde_slice")] &'vir [&'vir usize],
     ),
     PreLoopBasicBlockTerminator(
+        usize,
+        #[serde(with = "crate::serde::serde_slice")] &'vir [&'vir usize],
+    ),
+    /// An empty block on the edges that enter the loop whose head is the given
+    /// basic block, but not on its back edges: the loop invariant refers to
+    /// the state at this label as the state in which the loop was entered.
+    LoopEntry(usize),
+    PreLoopLoopEntry(
         usize,
         #[serde(with = "crate::serde::serde_slice")] &'vir [&'vir usize],
     ),
@@ -330,6 +340,11 @@ impl<'vir> CfgBlockLabelData<'vir> {
             Self::PreLoopBasicBlockTerminator(idx, pres) => {
                 let pres = pres.iter().map(|l| format!("_pre{l}")).collect::<String>();
                 format!("bb_term_{idx}{pres}")
+            }
+            Self::LoopEntry(idx) => format!("bb_entry_{idx}"),
+            Self::PreLoopLoopEntry(idx, pres) => {
+                let pres = pres.iter().map(|l| format!("_pre{l}")).collect::<String>();
+                format!("bb_entry_{idx}{pres}")
             }
         }
     }

@@ -23,6 +23,7 @@ fn success_with_complex_program() {
         false,
         "Wrapper",
         None,
+        false,
     );
 
     let unwrap_domain_function = ast.domain_func(
@@ -32,6 +33,7 @@ fn success_with_complex_program() {
         false,
         "Wrapper",
         None,
+        false,
     );
 
     let wrapper_domain = ast.domain(
@@ -98,6 +100,7 @@ fn success_with_complex_program() {
                 ast.int_lit(0),
             ),
         ),
+        false,
     );
 
     let even_num_box_predicate = ast.predicate(

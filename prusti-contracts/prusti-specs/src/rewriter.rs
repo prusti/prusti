@@ -1,6 +1,6 @@
 use crate::{
     common::HasSignature,
-    span_overrider::SpanOverrider,
+    span_overrider::override_spans,
     specifications::{
         common::{SpecificationId, SpecificationIdGenerator},
         preparser::{parse_prusti, parse_prusti_assert_pledge, parse_prusti_pledge},
@@ -9,7 +9,7 @@ use crate::{
 };
 use proc_macro2::{Span, TokenStream};
 use quote::{quote, quote_spanned};
-use syn::{parse_quote_spanned, spanned::Spanned};
+use syn::{parse_quote_spanned, spanned::Spanned, visit_mut::VisitMut};
 
 pub(crate) struct AstRewriter {
     spec_id_generator: SpecificationIdGenerator,
@@ -68,10 +68,13 @@ impl AstRewriter {
 
     fn generate_result_arg<T: HasSignature + Spanned>(&self, item: &T) -> syn::FnArg {
         let item_span = item.span();
-        let output_ty = match &item.sig().output {
+        let mut output_ty = match &item.sig().output {
             syn::ReturnType::Default => parse_quote_spanned!(item_span=> ()),
             syn::ReturnType::Type(_, ty) => ty.clone(),
         };
+        // Precise-capturing bounds (`use<..>`) are only allowed on `impl Trait`
+        // types in return position, not on the `result` parameter.
+        PreciseCaptureRemover.visit_type_mut(&mut output_ty);
         let fn_arg = syn::FnArg::Typed(syn::PatType {
             attrs: Vec::new(),
             pat: Box::new(parse_quote_spanned!(item_span=> result)),
@@ -124,15 +127,13 @@ impl AstRewriter {
             }
         };
 
-        spec_item.sig.generics = item.sig().generics.clone();
-
         // Override span of the generics (incl. "where" clauses), so that errors
         // reported using the spec item's span don't extend to the declarations
-        // of type parameters and "where" clauses.
-        syn::visit_mut::visit_generics_mut(
-            &mut SpanOverrider::new(item_span),
-            &mut spec_item.sig.generics,
-        );
+        // of type parameters and "where" clauses. `Generics` does not print its
+        // "where" clause, so that is overridden separately.
+        let generics = &item.sig().generics;
+        spec_item.sig.generics = override_spans(generics, item_span)?;
+        spec_item.sig.generics.where_clause = override_spans(&generics.where_clause, item_span)?;
 
         spec_item.sig.inputs = item.sig().inputs.clone();
         match spec_type {
@@ -285,5 +286,19 @@ impl AstRewriter {
                 ));
             }
         })
+    }
+}
+
+/// Removes the precise-capturing bounds (`use<..>`) of the `impl Trait` types
+/// it visits.
+struct PreciseCaptureRemover;
+
+impl VisitMut for PreciseCaptureRemover {
+    fn visit_type_impl_trait_mut(&mut self, ty: &mut syn::TypeImplTrait) {
+        ty.bounds = std::mem::take(&mut ty.bounds)
+            .into_iter()
+            .filter(|bound| !matches!(bound, syn::TypeParamBound::PreciseCapture(_)))
+            .collect();
+        syn::visit_mut::visit_type_impl_trait_mut(self, ty);
     }
 }

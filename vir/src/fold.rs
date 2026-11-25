@@ -4,9 +4,10 @@ use crate::{gendata::*, genrefs::*, CastType, CompType};
 /// [`crate::Visitor`] in the style of rustc's `TypeFolder`:
 /// [`Foldable::fold_with`] hands each expression to [`Self::fold_expr`], whose
 /// default folds its subexpressions with [`ExprGenData::super_fold_with`]. An
-/// override calls that itself to continue. Magic wands, wherever they occur,
-/// are handed to [`Self::fold_wand`] likewise. `None` stands for unchanged
-/// data, so that it is never reallocated.
+/// override calls that itself to continue. Magic wands and the trigger sets of
+/// quantifiers, wherever they occur, are handed to [`Self::fold_wand`] and
+/// [`Self::fold_trigger`] likewise. `None` stands for unchanged data, so that
+/// it is never reallocated.
 pub trait Folder<'vir, Curr, Next> {
     fn fold_expr(
         &mut self,
@@ -17,6 +18,13 @@ pub trait Folder<'vir, Curr, Next> {
 
     fn fold_wand(&mut self, w: WandGen<'vir, Curr, Next>) -> Option<WandGen<'vir, Curr, Next>> {
         w.super_fold_with(self)
+    }
+
+    fn fold_trigger(
+        &mut self,
+        t: TriggerGen<'vir, Curr, Next>,
+    ) -> Option<TriggerGen<'vir, Curr, Next>> {
+        t.super_fold_with(self)
     }
 }
 
@@ -73,6 +81,23 @@ impl<'vir, Curr, Next> WandGenData<'vir, Curr, Next> {
 impl<'vir, Curr, Next> Foldable<'vir, Curr, Next> for &'vir WandGenData<'vir, Curr, Next> {
     fn fold_with<F: Folder<'vir, Curr, Next> + ?Sized>(&self, f: &mut F) -> Option<Self> {
         f.fold_wand(self)
+    }
+}
+
+impl<'vir, Curr, Next> TriggerGenData<'vir, Curr, Next> {
+    /// Folds the terms of this trigger set.
+    pub fn super_fold_with<F: Folder<'vir, Curr, Next> + ?Sized>(
+        &'vir self,
+        f: &mut F,
+    ) -> Option<&'vir Self> {
+        let exprs = self.exprs.fold_with(f)?;
+        Some(crate::with_vcx(|vcx| vcx.alloc(TriggerGenData { exprs })))
+    }
+}
+
+impl<'vir, Curr, Next> Foldable<'vir, Curr, Next> for &'vir TriggerGenData<'vir, Curr, Next> {
+    fn fold_with<F: Folder<'vir, Curr, Next> + ?Sized>(&self, f: &mut F) -> Option<Self> {
+        f.fold_trigger(self)
     }
 }
 

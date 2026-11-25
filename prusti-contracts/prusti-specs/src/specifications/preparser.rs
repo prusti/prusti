@@ -626,9 +626,9 @@ fn validate_predicate(predicate: syn::WherePredicate) -> syn::Result<syn::Predic
             Ok(type_bound)
         }
         Lifetime(lifetime_bound) => disallowed_lifetime_error(lifetime_bound.span()),
-        Eq(eq_bound) => err(
-            eq_bound.span(),
-            "equality constraints are not allowed in type-conditional spec refinements",
+        other => err(
+            other.span(),
+            "only trait bounds are allowed in type-conditional spec refinements",
         ),
     }
 }
@@ -653,6 +653,12 @@ fn validate_trait_bounds(trait_bounds: &syn::PredicateType) -> syn::Result<()> {
                 if let Some(lt) = &trait_bound.lifetimes {
                     return disallowed_lifetime_error(lt.span());
                 }
+            }
+            other => {
+                return err(
+                    other.span(),
+                    "only trait bounds are allowed in type-conditional spec refinements",
+                );
             }
         }
     }
@@ -824,9 +830,12 @@ impl Quantifier {
         let trigger_sets = triggers
             .into_iter()
             .map(|set| {
+                // Each trigger closure is passed by reference, like the body
+                // closure: the encoder takes that reference as the closure's
+                // first argument, through which its body reads the captures.
                 let triggers = TokenStream::from_iter(set.into_iter().map(|trigger| {
                     quote_spanned! { trigger.span() =>
-                    #[prusti::spec_only] | #args | ( #trigger ), }
+                    &( #[prusti::spec_only] | #args | ( #trigger ) ), }
                 }));
                 quote_spanned! { full_span => ( #triggers ) }
             })
@@ -1176,7 +1185,7 @@ mod tests {
         );
         assert_eq!(
             parse_prusti("forall(|x: i32| a ==> b, triggers = [(c,), (d, e)])".parse().unwrap()).unwrap().to_string(),
-            ":: prusti_contracts :: forall (((# [prusti :: spec_only] | x : i32 | (c) ,) , (# [prusti :: spec_only] | x : i32 | (d) , # [prusti :: spec_only] | x : i32 | (e) ,) ,) , & (# [prusti :: spec_only] | x : i32 | -> bool { ! (a) || (b) }) ,)",
+            ":: prusti_contracts :: forall (((& (# [prusti :: spec_only] | x : i32 | (c)) ,) , (& (# [prusti :: spec_only] | x : i32 | (d)) , & (# [prusti :: spec_only] | x : i32 | (e)) ,) ,) , & (# [prusti :: spec_only] | x : i32 | -> bool { ! (a) || (b) }) ,)",
         );
         assert_eq!(
             parse_prusti("assert!(a === b ==> b)".parse().unwrap())
@@ -1193,14 +1202,14 @@ mod tests {
 
         #[test]
         fn invalid_args() {
-            let err_invalid_bounds = "expected one of: `for`, parentheses, `fn`, `unsafe`, `extern`, identifier, `::`, `<`, square brackets, `*`, `&`, `!`, `impl`, `_`, lifetime";
+            let err_invalid_bounds = "expected one of: `for`, parentheses, `unsafe`, `fn`, `extern`, identifier, `::`, `<`, `dyn`, square brackets, `*`, `&`, `!`, `impl`, `_`, lifetime";
             assert_error!(
                 parse_type_cond_spec(quote! { [requires(false)] }),
                 "expected `where`"
             );
             assert_error!(
                 parse_type_cond_spec(quote! { where [requires(false)] }),
-                err_invalid_bounds
+                "expected `:`"
             );
             assert_error!(
                 parse_type_cond_spec(quote! { [requires(false)], T: A }),
@@ -1208,7 +1217,7 @@ mod tests {
             );
             assert_error!(
                 parse_type_cond_spec(quote! { where [requires(false)], T: A }),
-                err_invalid_bounds
+                "expected `:`"
             );
             assert_error!(
                 parse_type_cond_spec(quote! {}),

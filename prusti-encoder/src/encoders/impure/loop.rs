@@ -11,7 +11,7 @@ use pcg::{
     pcg::{CapabilityKind, EvalStmtPhase, PcgNode},
     results::PcgBasicBlock,
     utils::{
-        HasCompilerCtxt, HasPlace, Place, maybe_old::MaybeLabelledPlace,
+        HasCompilerCtxt, HasPlace, Place, PrefixRelation, maybe_old::MaybeLabelledPlace,
         maybe_remote::MaybeRemotePlace,
     },
 };
@@ -39,11 +39,13 @@ impl<'vir: 'a, 'a, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
     /// Calculate invariant at loop head, and the places whose permission it
     /// holds, which are the places the body invariants may read. A place
     /// behind a shared reference is held, and read, through the first shared
-    /// reference on its path.
+    /// reference on its path. `entry_label` labels the state in which the loop
+    /// was entered.
     pub(crate) fn get_loop_inv(
         &mut self,
         cfpcs: &PcgBasicBlock<'_, 'vir>,
         loop_place_usages: &PlaceUsages<'vir>,
+        entry_label: vir::CfgBlockLabelData<'vir>,
         ctxt: impl HasCompilerCtxt<'a, 'vir>,
     ) -> EncodeResult<
         'vir,
@@ -56,33 +58,63 @@ impl<'vir: 'a, 'a, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         let mut inv = Vec::new();
         let start = &cfpcs.statements[0];
         let state = &start.states[EvalStmtPhase::PreOperands];
-        let loop_invariant_place_capabilities =
-            cfpcs.loop_invariant_place_capabilities(loop_place_usages, ctxt);
+        // `reported` lists a place after the places it extends. Where the PCG unpacks a
+        // reference at the head, the places behind it are encoded through the reference's
+        // snapshot, so the invariant must hold the reference first.
+        let reported = cfpcs.loop_invariant_place_capabilities(loop_place_usages, ctxt);
 
-        let mut held_places = FxHashMap::default();
-        for (place, capability) in loop_invariant_place_capabilities.iter() {
+        // A place behind a shared reference has no predicate of its own: its value is
+        // part of the snapshot of the first shared reference on its path from the local.
+        // The invariant holds the predicate of that reference instead, only once even if
+        // the loop reads several places behind it, and at the reference's own capability
+        // if the PCG reports one for it (it is listed before the places behind it).
+        let mut held_places: Vec<(Place<'vir>, CapabilityKind)> = Vec::new();
+        for (&place, &capability) in &reported.places {
             if capability.is_write() {
                 continue; // No permissions are encoded for places with write capabilities currently
             }
-            // A place behind a shared reference has no predicate of its own: its value is
-            // part of the snapshot of the first shared reference on its path from the local.
-            // The invariant holds the predicate of that reference instead, only once even if
-            // the loop reads several places behind it.
             let place = place
                 .iter_projections()
                 .find_map(|(base, _)| {
                     let base = Place::from(base);
                     base.is_shared_ref(ctxt).then_some(base)
                 })
-                .unwrap_or(*place);
-            if held_places.insert(place, *capability).is_some() {
-                continue;
+                .unwrap_or(place);
+            if !held_places.iter().any(|&(held, _)| held == place) {
+                held_places.push((place, capability));
             }
-            let place = place.with_inherent_region(ctxt);
+        }
+
+        // Viper checks the loop body in a state that holds only the invariant, so the
+        // invariant keeps the value of a place the loop only reads by equating it with
+        // its value when the loop was entered.
+        let unchanged = |snap: vir::ExprSnap<'vir>| {
+            self.vcx
+                .mk_eq_expr(snap, self.vcx.mk_labelled_old_expr(snap, Some(entry_label)))
+        };
+
+        for &(held, capability) in &held_places {
+            let place = held.with_inherent_region(ctxt);
             let (place_res, _snap, ty, ty_out) = self.encode_place_with_snap(place)?;
             let task = RustTyDecomposition::from_ty(ty.ty, self.def_id);
             let pred = ty_out.ref_to_pred(self.vcx, place_res.expr.expect_predicate(), None);
             inv.push(pred);
+            // The pins and the indirect predicates are about the predicate the invariant
+            // holds, not about a snapshot assembled from the place's parts, which
+            // `encode_place_with_snap` may return.
+            let snap = ty_out.ref_to_snap(place_res.expr.expect_predicate());
+            if capability.is_read() {
+                inv.push(unchanged(snap));
+            }
+            // If other held places lie behind `held` (the PCG unpacked a mutable reference
+            // at the head), its indirect predicates would hold them a second time; they keep
+            // their values as held places of their own.
+            if held_places
+                .iter()
+                .any(|&(other, _)| PrefixRelation::is_strict_prefix_of(held, other))
+            {
+                continue;
+            }
             // gets all the lifetime projections of the place
             // for example, if we add an invariant for x and x is a reference, then we also want to add
             // an invariant for *x
@@ -90,12 +122,18 @@ impl<'vir: 'a, 'a, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             for proj in projs {
                 let region = proj.region(ctxt);
                 let indirect = self.indirect_predicates(task, region, ty.ty)?;
-                inv.extend(indirect.predicate_applications.iter().map(|p| {
-                    p.reify(
-                        self.vcx,
-                        ty_out.ref_to_snap(place_res.expr.expect_predicate()),
-                    )
-                }));
+                // The referents of the lifetime projection keep their values as well if
+                // the loop only reads them.
+                let pinned = reported
+                    .lifetime_projections
+                    .get(&proj)
+                    .is_some_and(|capability| capability.is_read());
+                for predicate in &indirect.predicates {
+                    inv.push(predicate.application.reify(self.vcx, snap));
+                    if pinned {
+                        inv.push(predicate.unchanged.reify(self.vcx, (snap, entry_label)));
+                    }
+                }
             }
         }
 
@@ -115,7 +153,7 @@ impl<'vir: 'a, 'a, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             inv.push(wand);
         }
 
-        Ok((inv, held_places))
+        Ok((inv, held_places.into_iter().collect()))
     }
 
     pub(crate) fn encode_pcg_node<T: PcgLifetimeProjectionBaseLike<'vir>>(
@@ -160,8 +198,7 @@ impl<'vir: 'a, 'a, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         let region = r.with_base(place).region(self.pcg_ctxt());
         let indirect = self.indirect_predicates(decomp, region, ty.ty)?;
         Ok(indirect
-            .predicate_applications
-            .into_iter()
+            .applications()
             .map(|expr| expr.reify(self.vcx, place_snap))
             .collect::<Vec<_>>())
     }
@@ -183,7 +220,7 @@ impl<'vir: 'a, 'a, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 .walk()
                 .any(|arg| arg.as_type().is_some_and(|ty| ty.is_closure()))
             {
-                return Ok(IndirectPredicatesEncOutputRef::new(vec![]));
+                return Ok(IndirectPredicatesEncOutputRef::default());
             }
             return Err(EncodeFullError::unsupported(
                 format!("a closure capturing a reference (`{ty}`)"),

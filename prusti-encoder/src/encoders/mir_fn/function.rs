@@ -213,7 +213,7 @@ impl TaskEncoder for FunctionEnc {
                 match deps.require_dep::<MirPureEnc>(MirPureEncTask {
                     encoding_depth: 0,
                     kind: PureKind::Pure,
-                    parent_def_id: def_id,
+                    def_id,
                     gargs: params.identity_args(),
                 }) {
                     Ok(out) => {
@@ -266,7 +266,7 @@ impl TaskEncoder for FunctionEnc {
 
     fn emit_outputs<'vir>(program: &mut task_encoder::Program<'vir>) {
         for output in Self::all_outputs_local(program) {
-            program.add_function(output.function);
+            program.add_user_function(output.function);
         }
     }
 }

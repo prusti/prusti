@@ -12,8 +12,8 @@ pub use super::{
 #[derive(Debug, PartialEq, Eq)]
 pub enum AnyFnItem {
     Fn(syn::ItemFn),
-    TraitMethod(syn::TraitItemMethod),
-    ImplMethod(syn::ImplItemMethod),
+    TraitMethod(syn::TraitItemFn),
+    ImplMethod(syn::ImplItemFn),
     ForeignFn(syn::ForeignItemFn),
 }
 
@@ -28,10 +28,15 @@ impl syn::parse::Parse for AnyFnItem {
                 input.advance_to(&fork);
                 Ok(AnyFnItem::Fn(res))
             }
-            Err(_) => {
-                // It is not a valid ItemFn.
-                let item_method = input.parse()?;
-                Ok(AnyFnItem::TraitMethod(item_method))
+            Err(item_fn_error) => {
+                // It is not a valid ItemFn. If it is not a trait method
+                // either, the error of parsing it as an ItemFn describes it
+                // better: a trait method has no visibility, so parsing one
+                // fails at the start of e.g. any `pub` function.
+                match input.parse() {
+                    Ok(item_method) => Ok(AnyFnItem::TraitMethod(item_method)),
+                    Err(_) => Err(item_fn_error),
+                }
             }
         }
     }
@@ -65,7 +70,7 @@ impl AnyFnItem {
         }
     }
 
-    pub fn expect_impl_item(self) -> syn::ImplItemMethod {
+    pub fn expect_impl_item(self) -> syn::ImplItemFn {
         match self {
             AnyFnItem::ImplMethod(i) => i,
             _ => unreachable!(),

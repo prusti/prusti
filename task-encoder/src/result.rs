@@ -166,6 +166,12 @@ impl<'vir, E: TaskEncoder + 'vir + ?Sized> EncodeFullError<'vir, E> {
         Self::root(message, spans, ErrorKind::Internal)
     }
 
+    /// The error for a mistake in the user's program, such as a specification
+    /// that calls an impure function, which `message` describes, at `spans`.
+    pub fn incorrect(message: String, spans: Vec<Span>) -> Self {
+        Self::root(message, spans, ErrorKind::Incorrect)
+    }
+
     fn root(message: String, spans: Vec<Span>, kind: ErrorKind) -> Self {
         Self::DependencyError(vec![DependencyErrorLink::new(
             E::ENCODER_NAME,

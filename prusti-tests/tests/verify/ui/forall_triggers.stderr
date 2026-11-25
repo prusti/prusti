@@ -1,20 +1,18 @@
-error: [Prusti: invalid specification] a trigger set must mention all bound variables
-  --> $DIR/forall_triggers.rs:13:79
+error: [Prusti: invalid specification] this trigger set does not mention the bound variable `res`
+  --> $DIR/forall_triggers.rs:12:79
    |
-13 | #[requires(forall(|n: usize, res: usize| count(n) == res ==> true, triggers=[(count(n),)]))]
+12 | #[requires(forall(|n: usize, res: usize| count(n) == res ==> true, triggers=[(count(n),)]))]
    |                                                                               ^^^^^^^^
-
-error: [Prusti: invalid specification] only function calls are allowed in triggers
-  --> $DIR/forall_triggers.rs:16:79
    |
-16 | #[requires(forall(|n: usize, res: usize| count(n) == res ==> true, triggers=[(if res == 5 {count(n)} else {3},)]))]
-   |                                                                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: all preconditions, postconditions and pledges of the function are skipped where this spec cannot be encoded
 
-error: [Prusti: invalid specification] only function calls are allowed in triggers
-  --> $DIR/forall_triggers.rs:19:79
+error: [Prusti: invalid specification] a trigger cannot contain a conditional (`if`, `match`, `&&` or `||`)
+  --> $DIR/forall_triggers.rs:15:82
    |
-19 | #[requires(forall(|n: usize, res: usize| count(n) == res ==> true, triggers=[(res == count(n),)]))]
-   |                                                                               ^^^^^^^^^^^^^^^
+15 | #[requires(forall(|n: usize, res: usize| count(n) == res ==> true, triggers=[(if res == 5 {count(n)} else {3},)]))]
+   |                                                                                  ^^^^^^^^
+   |
+   = note: all preconditions, postconditions and pledges of the function are skipped where this spec cannot be encoded
 
-error: aborting due to 3 previous errors
+error: aborting due to 2 previous errors
 

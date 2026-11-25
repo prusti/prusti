@@ -20,6 +20,7 @@ pub fn instrument(attr: TokenStream, tokens: TokenStream) -> TokenStream {
     if let Ok(mut item) = syn::parse2::<ItemFn>(tokens.clone()) {
         if let ReturnType::Type(a, ty) = item.sig.output {
             let new_ty = Type::Paren(TypeParen {
+                attrs: Vec::new(),
                 paren_token: Paren::default(),
                 elem: ty,
             });

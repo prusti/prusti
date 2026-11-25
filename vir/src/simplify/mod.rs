@@ -14,7 +14,10 @@
 //!    not values whose locals a binder (a quantifier or `let`) rebinds,
 //!  - the span of the root of an expression tree is kept, since Prusti
 //!    backtranslates Viper errors through it,
-//!  - quantifier triggers and magic wands are left as encoded.
+//!  - quantifier triggers are simplified like the body, so that they become
+//!    the same terms as the body contains, unless that would make them
+//!    invalid triggers,
+//!  - magic wands are left as encoded.
 //!
 //! Equations may drop subexpressions together with their well-definedness
 //! checks: Prusti checks all side conditions explicitly in impure code.
@@ -26,7 +29,7 @@ mod walk;
 
 use prusti_rustc_interface::data_structures::fx::{FxHashMap, FxHashSet};
 
-use crate::{refs::*, Foldable, ViperIdent, VirCtxt};
+use crate::{refs::*, Folder, ViperIdent, VirCtxt};
 
 /// A declaration that `outer(inner(k))` is `k` for every integer literal `k`
 /// in one of the inclusive `ranges` (pairs of literal bounds), such as for the
@@ -41,7 +44,11 @@ pub struct LiteralInverse<'vir> {
 
 /// What the simplification knows about the program: its adt constructors and
 /// destructors, its total functions and the literal inverses its encoder
-/// declares, used to recognize the foldable applications.
+/// declares, used to recognize the foldable applications. The definitions
+/// that the encoder declares user-level, which encode what the user writes,
+/// are left out: folding away an application of one would remove a term
+/// that a trigger the user wrote can match, and the solver finds matches
+/// only among the terms that exist.
 pub struct SimplifyCtx<'vir> {
     /// Constructor name to its ordered field (destructor) declarations.
     constructors: FxHashMap<&'vir str, &'vir [crate::LocalDeclDyn<'vir>]>,
@@ -49,8 +56,9 @@ pub struct SimplifyCtx<'vir> {
     destructors: FxHashMap<&'vir str, (&'vir str, usize)>,
     /// The constructors of single-constructor adts.
     eta: FxHashSet<&'vir str>,
-    /// Names of the total functions: domain functions and functions without
-    /// preconditions (which therefore cannot read the heap either).
+    /// Names of the total functions that are not user-level: domain functions
+    /// and functions without preconditions (which therefore cannot read the
+    /// heap either).
     total_functions: FxHashSet<&'vir str>,
     /// The declared literal inverses, by the name of `outer`.
     literal_inverses: FxHashMap<&'vir str, LiteralInverse<'vir>>,
@@ -62,21 +70,24 @@ impl<'vir> SimplifyCtx<'vir> {
         domains: &[Domain<'vir>],
         functions: &[Function<'vir>],
         literal_inverses: &[LiteralInverse<'vir>],
+        user_level: &FxHashSet<&'vir str>,
     ) -> Self {
+        let foldable = |name: &str| !user_level.contains(name);
         let total_functions = domains
             .iter()
+            .filter(|d| foldable(d.name))
             .flat_map(|d| d.functions.iter().map(|f| f.name.to_str()))
             .chain(
                 functions
                     .iter()
-                    .filter(|f| f.pres.is_empty())
+                    .filter(|f| f.pres.is_empty() && foldable(f.name))
                     .map(|f| f.name),
             )
             .collect();
         let mut constructors = FxHashMap::default();
         let mut destructors = FxHashMap::default();
         let mut eta = FxHashSet::default();
-        for adt in adts {
+        for adt in adts.iter().filter(|adt| foldable(adt.name)) {
             let eta_adt = adt.constructors.len() == 1;
             for cons in adt.constructors {
                 constructors.insert(cons.name, cons.args);
@@ -101,13 +112,24 @@ impl<'vir> SimplifyCtx<'vir> {
     }
 }
 
-/// Simplifies the expressions of a program item (a domain, predicate,
-/// function or method).
-pub fn simplify<'vir, 'tcx, T: Foldable<'vir, (), !> + Copy>(
-    vcx: &'vir VirCtxt<'tcx>,
-    ctx: &SimplifyCtx<'vir>,
-    item: T,
-) -> T {
-    let mut s = walk::Simplifier::new(vcx, ctx);
-    item.fold_with(&mut walk::Roots(&mut s)).unwrap_or(item)
+/// Simplifies the expressions of the items it folds (a program, or its
+/// domains, predicates, functions and methods): hands the roots of their
+/// expression trees (contract clauses, invariants, bodies, axioms and
+/// statement operands) to `Simplifier::root`.
+pub struct Simplify<'a, 'vir, 'tcx>(walk::Simplifier<'a, 'vir, 'tcx>);
+
+impl<'a, 'vir, 'tcx> Simplify<'a, 'vir, 'tcx> {
+    pub fn new(vcx: &'vir VirCtxt<'tcx>, ctx: &'a SimplifyCtx<'vir>) -> Self {
+        Self(walk::Simplifier::new(vcx, ctx))
+    }
+}
+
+impl<'vir> Folder<'vir, (), !> for Simplify<'_, 'vir, '_> {
+    fn fold_expr(&mut self, e: ExprDyn<'vir>) -> Option<ExprDyn<'vir>> {
+        self.0.root(e)
+    }
+
+    fn fold_wand(&mut self, _: Wand<'vir>) -> Option<Wand<'vir>> {
+        None
+    }
 }

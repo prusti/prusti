@@ -1,0 +1,434 @@
+//! Spec closures, their captures, and the builtins that only pure code encodes.
+
+use super::*;
+
+impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
+    /// A read of `place` in the body of a spec closure, where `place` is
+    /// rooted at one of the closure's captures, `(*_1).k`. The closure value
+    /// `_1` itself is never read: the enclosing body supplies the value of
+    /// capture `k` in the modes of each read of it (see
+    /// `Enc::encode_spec_closure`), so this read records its modes for `k`
+    /// and is not wrapped in them here.
+    pub(super) fn encode_capture_read(
+        &mut self,
+        curr_ver: &Versions<'vir>,
+        place: Place<'vir>,
+    ) -> EncodeResult<'vir, EncodedPlace<'vir>, MirPureEnc> {
+        use vir::Reify;
+        let [
+            mir::ProjectionElem::Deref,
+            mir::ProjectionElem::Field(field, field_ty),
+            ref rest @ ..,
+        ] = place.projection[..]
+        else {
+            unreachable!("an `Fn` closure body reads a capture `k` only as `(*_1).k`");
+        };
+        let modes = self.modes;
+        self.captures.as_mut().unwrap()[field].insert(modes);
+
+        // The enclosing body supplies a capture of a shared reference as the
+        // place it refers to, with the address and pointer metadata of the
+        // reference (see `Enc::encode_capture`), and any other capture as its
+        // value.
+        let shared_referent_ty = match *field_ty.kind() {
+            TyKind::Ref(_, referent_ty, ty::Mutability::Not) => Some(referent_ty),
+            _ => None,
+        };
+        let snap = self.vcx.mk_lazy_expr(
+            vir::vir_format!(self.vcx, "capture {field:?}"),
+            self.ty_use(shared_referent_ty.unwrap_or(field_ty))?
+                .snapshot,
+            Box::new(move |vcx, lctx: ExprInput<'vir>| {
+                let capture = lctx.captures[field][&modes].snap;
+                capture.reify(vcx, lctx.enclosing()).kind
+            }),
+        );
+        let Some(referent_ty) = shared_referent_ty else {
+            let value = EncodedPlace::new(snap, None);
+            let value_ty = mir::PlaceTy::from_ty(field_ty);
+            return self.encode_projection(curr_ver, value_ty, value, rest, Modes::empty());
+        };
+
+        let address = self.vcx.mk_lazy_expr(
+            vir::vir_format!(self.vcx, "address of capture {field:?}"),
+            vir::TYPE_REF,
+            Box::new(move |vcx, lctx: ExprInput<'vir>| {
+                let capture = lctx.captures[field][&modes].place_ref.unwrap();
+                capture.reify(vcx, lctx.enclosing()).kind
+            }),
+        );
+        let metadata_ty = self
+            .context
+            .normalize(field_ty.pointee_metadata_ty_or_projection(self.vcx.tcx()));
+        let metadata = self.vcx.mk_lazy_expr(
+            vir::vir_format!(self.vcx, "metadata of capture {field:?}"),
+            self.ty_use(metadata_ty)?.snapshot,
+            Box::new(move |vcx, lctx: ExprInput<'vir>| {
+                let capture = lctx.captures[field][&modes].metadata.unwrap();
+                capture.reify(vcx, lctx.enclosing()).kind
+            }),
+        );
+        // Only a `move` closure, which captures a reference by value, reads the
+        // reference itself; a capture by reference is only read through.
+        let [mir::ProjectionElem::Deref, ref rest @ ..] = rest[..] else {
+            return Err(by_value_ref_capture(self.current_span()));
+        };
+        let referent = EncodedPlace::new(snap, Some(address)).with_metadata(metadata);
+        let referent_ty = mir::PlaceTy::from_ty(referent_ty);
+        self.encode_projection(curr_ver, referent_ty, referent, rest, Modes::empty())
+    }
+
+    /// Encodes the closure argument of a quantifier/spec-block builtin: the
+    /// closure's arguments become the returned quantified variable
+    /// declarations (empty for `spec_block`) and its body the returned,
+    /// recursively encoded expression. `name` is the builtin's
+    /// `prusti_contracts` name, for error reporting.
+    ///
+    /// The closure body is part of this specification, so when it reads a
+    /// capture in some modes, it reads the operand this specification built
+    /// the capture from, in those modes (a quantified `old(arr.lookup(i))`
+    /// reads the reborrow `&*arr` in the pre-state). Those operands are
+    /// encoded here, in the state where the closure is built (the versions of
+    /// the locals and the modes there), which the walk records in `closures`
+    /// (see `Fragment::closures`), and passed to the closure body as its
+    /// captures (see `ExprInput`).
+    fn encode_spec_closure(
+        &mut self,
+        name: &str,
+        closure_ty: ty::Ty<'vir>,
+        closures: &FxHashMap<DefId, ClosureConstruction<'vir>>,
+    ) -> EncodeResult<'vir, SpecClosure<'vir>, MirPureEnc> {
+        let (qvar_tys, cl_kind, cl_def_id, cl_args) = match closure_ty.kind() {
+            TyKind::Closure(cl_def_id, cl_args) => (
+                match cl_args.as_closure().sig().skip_binder().inputs()[0].kind() {
+                    TyKind::Tuple(list) => list,
+                    _ => unreachable!(),
+                },
+                cl_args.as_closure().kind(),
+                *cl_def_id,
+                *cl_args,
+            ),
+            other => panic!("illegal prusti::{name}: expected closure, got {other:?}"),
+        };
+        // The builtins' signatures should enforce `Fn`-only closures.
+        assert_eq!(cl_kind, ty::ClosureKind::Fn);
+
+        let qvars = self.vcx.alloc_slice(
+            &qvar_tys
+                .iter()
+                .enumerate()
+                .map(|(idx, qvar_ty)| {
+                    let ty_out = self.ty_use(qvar_ty)?;
+                    Ok(self.vcx.mk_local_decl(
+                        vir::vir_format!(self.vcx, "qvar_{}_{idx}", self.encoding_depth),
+                        ty_out.snapshot,
+                    ))
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+        );
+
+        let kind = PureKind::Closure {
+            context: self.context_def_id,
+        };
+        let body = self.encode_closure_body(name, kind, cl_def_id, cl_args, qvars, closures)?;
+        let body = body.embed(
+            self.vcx,
+            vir::vir_format!(self.vcx, "spec closure body ({name})"),
+        );
+        Ok((qvars, body.downcast_ty::<vir::Bool>()))
+    }
+
+    /// Encodes the body of the spec closure `cl_def_id` with the generic
+    /// arguments `cl_args`, as a body of `kind` whose arguments after the
+    /// closure itself are the quantified variables `qvars`, together with its
+    /// captures, encoded from the closure's construction among `closures`
+    /// (see [`Self::encode_spec_closure`]). `name` is the builtin's
+    /// `prusti_contracts` name, for error reporting.
+    pub(super) fn encode_closure_body(
+        &mut self,
+        name: &str,
+        kind: PureKind,
+        cl_def_id: DefId,
+        cl_args: ty::GenericArgsRef<'vir>,
+        qvars: &'vir [vir::LocalDeclSnap<'vir>],
+        closures: &FxHashMap<DefId, ClosureConstruction<'vir>>,
+    ) -> EncodeResult<'vir, ClosureBody<'vir>, MirPureEnc> {
+        let mut reify_args = FxHashMap::default();
+        // The arguments to the closure are the closure itself, which gets no
+        // value as the body reads it only through its captures, and the
+        // qvars.
+        let qvar_local = |idx: usize| mir::Local::from_usize(idx + 2);
+        reify_args.extend(
+            qvars
+                .iter()
+                .enumerate()
+                .map(|(idx, qvar)| (qvar_local(idx), self.vcx.mk_local_ex(qvar))),
+        );
+
+        let out = self.deps.require_dep::<MirPureEnc>(MirPureEncTask {
+            encoding_depth: self.encoding_depth + 1,
+            kind,
+            def_id: cl_def_id,
+            // The body becomes part of this expression, so it is encoded
+            // in this context, in which `cl_args` are expressed.
+            gargs: GArgs::new(self.context, cl_args),
+        })?;
+        let mut captures = IndexVec::<abi::FieldIdx, _>::with_capacity(out.captures.len());
+        // A closure without captures needs no construction: its borrow may be
+        // promoted to a constant.
+        if !out.captures.is_empty() {
+            let Some(construction) = closures.get(&cl_def_id) else {
+                return Err(EncodeFullError::unsupported(
+                    format!(
+                        "a `{name}` whose closure is built in a conditional that ends before \
+                         it, or not in this body"
+                    ),
+                    vec![self.current_span()],
+                ));
+            };
+            let mir::Location {
+                block,
+                statement_index,
+            } = construction.location;
+            let statements = &self.body[block].statements;
+            let mir::StatementKind::Assign(box (_, mir::Rvalue::Aggregate(_, operands))) =
+                &statements[statement_index].kind
+            else {
+                unreachable!("a closure is built by an aggregate");
+            };
+            let before_closure = &statements[..statement_index];
+            for (capture, reads) in operands.iter().zip(&out.captures) {
+                let mut values = FxHashMap::default();
+                for &modes in reads {
+                    let value = self.encode_capture(
+                        capture,
+                        before_closure,
+                        construction.modes | modes,
+                        &construction.versions,
+                    )?;
+                    values.insert(modes, value);
+                }
+                captures.push(values);
+            }
+        }
+        Ok(ClosureBody {
+            def_id: cl_def_id,
+            expr: out.expr,
+            inputs: self.vcx.alloc(reify_args),
+            captures: self.vcx.alloc(captures),
+            reads: self.vcx.alloc_slice(
+                &(0..qvars.len())
+                    .map(|idx| out.inputs.contains(&qvar_local(idx)))
+                    .collect::<Vec<_>>(),
+            ),
+        })
+    }
+
+    /// Whether `local` is a variable or an argument rather than a temporary:
+    /// MIR building gives debug info to every variable, to every argument
+    /// bound to a name, and to no temporary. (An argument bound to a pattern
+    /// counts as a temporary; it is never captured, as the pattern's bindings
+    /// are variables of their own. `LocalDecl::is_user_variable` would panic
+    /// in bodies of other crates, where the local info it reads is cleared.)
+    fn is_variable(&self, local: mir::Local) -> bool {
+        self.body.var_debug_info.iter().any(|info| {
+            matches!(info.value, mir::VarDebugInfoContents::Place(place)
+                if place.as_local() == Some(local))
+        })
+    }
+
+    /// A capture of a spec closure, passed to the closure as `capture`,
+    /// encoded in `modes` at `curr_ver`: the modes the closure's body reads
+    /// it in together with the modes where the closure is built, and the
+    /// versions there. A capture of a shared reference is supplied as the
+    /// place it refers to, with the address and metadata of the reference,
+    /// which is what its reader expects (see `Enc::encode_capture_read`).
+    ///
+    /// MIR building passes a capture by reference as a temporary holding the
+    /// reference, such as `&*arr`, which it assigns in `before_closure`, the
+    /// statements that precede the closure's aggregate in its block; the
+    /// closure sees the last such assignment. The capture is encoded as the
+    /// borrowed place `*arr`, so that the modes reach the read of `arr`. A
+    /// shared reference captured by value, which only a `move` closure makes
+    /// (the specification syntax never does), is not supported. Any other
+    /// capture is encoded as its value.
+    fn encode_capture(
+        &mut self,
+        capture: &mir::Operand<'vir>,
+        before_closure: &[mir::Statement<'vir>],
+        modes: Modes,
+        curr_ver: &Versions<'vir>,
+    ) -> EncodeResult<'vir, EncodedPlace<'vir>, MirPureEnc> {
+        let temp = capture
+            .place()
+            .and_then(|place| place.as_local())
+            .filter(|&local| !self.is_variable(local));
+        let value = temp.and_then(|temp| {
+            before_closure
+                .iter()
+                .rev()
+                .find_map(|stmt| match &stmt.kind {
+                    mir::StatementKind::Assign(box (dest, value))
+                        if dest.as_local() == Some(temp) =>
+                    {
+                        Some(value)
+                    }
+                    _ => None,
+                })
+        });
+        let is_shared_ref = matches!(
+            capture.ty(self.body, self.vcx.tcx()).kind(),
+            TyKind::Ref(.., ty::Mutability::Not)
+        );
+
+        // A mode joined with itself (e.g. `old` inside `old`) reads the same
+        // state; only a `rel` of one execution inside the other's has no
+        // meaning. (Within one body, nesting a mode in itself is rejected only
+        // because the set of modes cannot count the nesting.)
+        if modes.contains(Modes::REL0 | Modes::REL1) {
+            return Err(EncodeFullError::unsupported(
+                "`rel` nested in `rel`".to_string(),
+                vec![self.current_span()],
+            ));
+        }
+        let outer_modes = std::mem::replace(&mut self.modes, modes);
+        let res = match value {
+            Some(value @ mir::Rvalue::Ref(_, _, place)) if is_shared_ref => {
+                let ref_ty = value.ty(self.body, self.vcx.tcx());
+                self.encode_borrowed_place(curr_ver, (*place).into(), ref_ty)
+                    .map(|(snap, place_ref, metadata)| {
+                        EncodedPlace::new(snap, Some(place_ref)).with_metadata(metadata)
+                    })
+            }
+            _ if is_shared_ref => Err(by_value_ref_capture(self.current_span())),
+            Some(value) => self
+                .encode_rvalue(curr_ver, value, self.current_span())
+                .map(|snap| EncodedPlace::new(snap, None)),
+            None => self
+                .encode_operand_snap(capture, curr_ver)
+                .map(|snap| EncodedPlace::new(snap, None)),
+        };
+        self.modes = outer_modes;
+        res
+    }
+
+    /// Encodes the pure-only `prusti_contracts` builtins (quantifiers, spec
+    /// blocks, and the old/rel/before-expiry mode markers), which need this
+    /// encoder's own state. The operand-based builtins are handled by the
+    /// shared [`PureRvalueEnc::encode_prusti_builtin`].
+    pub(super) fn encode_pure_only_builtin(
+        &mut self,
+        builtin: SpecBuiltin,
+        arg_tys: ty::GenericArgsRef<'vir>,
+        args: &[Spanned<mir::Operand<'vir>>],
+        closures: &FxHashMap<DefId, ClosureConstruction<'vir>>,
+    ) -> EncodeResult<'vir, ExprRet<'vir>, MirPureEnc> {
+        if self.trigger {
+            let span = self.current_span();
+            match builtin {
+                SpecBuiltin::Forall | SpecBuiltin::Exists => {
+                    return Err(EncodeFullError::incorrect(
+                        "a trigger cannot contain a quantifier".to_string(),
+                        vec![span],
+                    ));
+                }
+                SpecBuiltin::SpecBlock => {
+                    return Err(EncodeFullError::incorrect(
+                        "a trigger cannot contain a specification block".to_string(),
+                        vec![span],
+                    ));
+                }
+                // Viper allows `old` in a trigger; the other states are not
+                // supported in a trigger.
+                SpecBuiltin::ModeStart(mode) | SpecBuiltin::ModeEnd(mode) => {
+                    let keyword = match mode {
+                        Mode::Old => None,
+                        Mode::Rel(execution) => Some(format!("rel{execution}")),
+                        Mode::BeforeExpiry => Some("before_expiry".to_string()),
+                    };
+                    if let Some(keyword) = keyword {
+                        return Err(EncodeFullError::unsupported(
+                            format!("`{keyword}` in a trigger"),
+                            vec![span],
+                        ));
+                    }
+                }
+            }
+        }
+        let mk_bool = |prim: vir::ExprGenBool<'vir, _, _>| prim.upcast_ty::<vir::CSnap>();
+        Ok(match builtin {
+            SpecBuiltin::Forall | SpecBuiltin::Exists => {
+                assert_eq!(arg_tys.len(), 3);
+                // The operands are the triggers and the closure.
+                assert_eq!(args.len(), 2);
+
+                let name = if builtin == SpecBuiltin::Forall {
+                    "forall"
+                } else {
+                    "exists"
+                };
+                let (qvars, body) =
+                    self.encode_spec_closure(name, arg_tys[2].expect_ty(), closures)?;
+                let triggers =
+                    self.encode_trigger_sets(name, arg_tys[0].expect_ty(), qvars, closures)?;
+                let res = if builtin == SpecBuiltin::Forall {
+                    self.vcx.mk_forall_expr(qvars, triggers, body)
+                } else {
+                    self.vcx.mk_exists_expr(qvars, triggers, body)
+                };
+                mk_bool(res)
+            }
+            SpecBuiltin::SpecBlock => {
+                assert_eq!(arg_tys.len(), 2);
+                assert_eq!(args.len(), 1);
+
+                let (qvars, body) =
+                    self.encode_spec_closure("spec_block", arg_tys[1].expect_ty(), closures)?;
+                assert!(qvars.is_empty(), "`spec_block` closures take no arguments");
+                mk_bool(body)
+            }
+            SpecBuiltin::ModeStart(mode) => {
+                let modes = Modes::of(mode);
+                if self.modes.intersects(modes.conflicting()) {
+                    let name = match mode {
+                        Mode::Old => "old",
+                        Mode::Rel(_) => "rel",
+                        Mode::BeforeExpiry => "before_expiry",
+                    };
+                    return Err(EncodeFullError::unsupported(
+                        format!("`{name}` nested in `{name}`"),
+                        vec![self.current_span()],
+                    ));
+                }
+                self.modes.insert(modes);
+                self.unit_snap()?
+            }
+            SpecBuiltin::ModeEnd(mode) => {
+                let modes = Modes::of(mode);
+                assert!(
+                    self.modes.contains(modes),
+                    "a mode ends that was not entered"
+                );
+                self.modes.remove(modes);
+                self.unit_snap()?
+            }
+        }
+        .upcast_ty())
+    }
+
+    fn unit_snap(&mut self) -> EncodeResult<'vir, ExprRetAny<'vir, vir::CSnap>, MirPureEnc> {
+        Ok(self
+            .ty_use(self.vcx.tcx().types.unit)?
+            .zst_to_snap()
+            .unwrap())
+    }
+}
+
+/// The error for a shared reference that a spec closure captures by value (see
+/// `Enc::encode_capture`).
+fn by_value_ref_capture<'vir>(span: Span) -> EncodeFullError<'vir, MirPureEnc> {
+    EncodeFullError::unsupported(
+        "a reference captured by value in a spec closure".to_string(),
+        vec![span],
+    )
+}

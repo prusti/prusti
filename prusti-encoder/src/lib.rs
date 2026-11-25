@@ -25,7 +25,7 @@ use crate::encoders::{
             GArgsCastEnc,
             builtin_impls::BuiltinImplEnc,
             hrtb::{HrtbEnc, HrtbImplEnc},
-            r#trait::TraitEnc,
+            r#trait::{AssocTypeBoundEnc, TraitEnc},
             trait_fn::TraitFnEnc,
             trait_impls::{
                 TraitImplConditionEnc, TraitImplDefaultFnEnc, TraitImplEnc, TraitImplItemEnc,
@@ -137,6 +137,7 @@ pub fn test_entrypoint<'tcx>(
 
     program.header("traits");
     TraitEnc::emit_outputs(&mut program);
+    AssocTypeBoundEnc::emit_outputs(&mut program);
     BuiltinImplEnc::emit_outputs(&mut program);
     TraitFnEnc::emit_outputs(&mut program);
     TraitImplEnc::emit_outputs(&mut program);
@@ -146,6 +147,11 @@ pub fn test_entrypoint<'tcx>(
     HrtbEnc::emit_outputs(&mut program);
     HrtbImplEnc::emit_outputs(&mut program);
 
+    // Silicon finds a trigger among the terms of its quantifier's body, and
+    // so evaluates it under the body's conditions, only if it has no `let`s.
+    // This runs whether or not the simplifier does, and before it, as its
+    // check of the triggers it rewrites expects them without `let`s.
+    program.inline_trigger_lets();
     if config::simplify_encoding() {
         program.simplify();
     }

@@ -1092,6 +1092,7 @@ impl<'tcx> VirCtxt<'tcx> {
             args: self.alloc_slice(params.as_slice()),
             ret: ident.result().as_dyn(),
             interpretation: interpretation.map(|i| InterpretationData { interpretation: i }),
+            no_auto_trigger: false,
         })
     }
 
@@ -1135,6 +1136,7 @@ impl<'tcx> VirCtxt<'tcx> {
             posts,
             decreases: decreases.unwrap_or(&DecreasesGenData::None),
             expr: expr.map(|e| e.as_dyn()),
+            no_auto_trigger: false,
         })
     }
 
@@ -1305,6 +1307,21 @@ impl<'tcx> VirCtxt<'tcx> {
             self.alloc(CfgBlockLabelData::BasicBlockTerminator(block))
         } else {
             self.alloc(CfgBlockLabelData::PreLoopBasicBlockTerminator(block, pres))
+        }
+    }
+
+    /// The label of the block through which the edges entering the loop whose
+    /// head is `block` pass, see [CfgBlockLabelData::LoopEntry].
+    pub fn mk_loop_entry_label<'vir>(
+        &'vir self,
+        block: usize,
+        pres: impl IntoIterator<Item = usize>,
+    ) -> CfgBlockLabel<'vir> {
+        let pres = self.alloc(pres.into_iter().map(|l| self.alloc(l)).collect::<Vec<_>>());
+        if pres.is_empty() {
+            self.alloc(CfgBlockLabelData::LoopEntry(block))
+        } else {
+            self.alloc(CfgBlockLabelData::PreLoopLoopEntry(block, pres))
         }
     }
 

@@ -109,9 +109,18 @@ impl<'vir> Builder<'vir, '_> {
 
 /// Runs `f` with a fresh context and a [`SimplifyCtx`] for a program with
 /// the adt `P`, a function `h` without and a function `g` with a
-/// precondition, and the literal inverse `value`/`cons` on the bytes without
-/// `10..=19`.
+/// precondition, the domain `D` with the function `d`, and the literal
+/// inverse `value`/`cons` on the bytes without `10..=19`.
 fn with_ctx(f: impl for<'vir> FnOnce(&SimplifyCtx<'vir>, &Builder<'vir, 'vir>)) {
+    with_user_level(&[], f)
+}
+
+/// Like [`with_ctx`], with the definitions named `user_level` declared
+/// user-level.
+fn with_user_level(
+    user_level: &[&'static str],
+    f: impl for<'vir> FnOnce(&SimplifyCtx<'vir>, &Builder<'vir, 'vir>),
+) {
     crate::init_vcx(VirCtxt::new_without_tcx());
     crate::with_vcx(|vcx| {
         let fields = vcx.alloc_slice(&[
@@ -129,6 +138,7 @@ fn with_ctx(f: impl for<'vir> FnOnce(&SimplifyCtx<'vir>, &Builder<'vir, 'vir>)) 
                 posts: &[],
                 decreases: vcx.alloc(DecreasesGenData::None),
                 expr: None,
+                no_auto_trigger: false,
             })
         };
         let functions = [
@@ -143,7 +153,23 @@ fn with_ctx(f: impl for<'vir> FnOnce(&SimplifyCtx<'vir>, &Builder<'vir, 'vir>)) 
                 (vcx.mk_uint::<20>(), vcx.mk_uint::<255>()),
             ]),
         };
-        let ctx = SimplifyCtx::new(&[adt], &[], &functions, &[byte]);
+        let d = vcx.alloc(DomainFunctionData {
+            unique: false,
+            name: crate::ViperIdent::new("d"),
+            args: vcx.alloc_slice(&[TYPE_INT.as_dyn()]),
+            ret: TYPE_INT.as_dyn(),
+            interpretation: None,
+            no_auto_trigger: false,
+        });
+        let domain = vcx.mk_domain(
+            crate::ViperIdent::new("D"),
+            &[],
+            &[],
+            vcx.alloc_slice(&[d]),
+            None,
+        );
+        let user_level = user_level.iter().copied().collect();
+        let ctx = SimplifyCtx::new(&[adt], &[domain], &functions, &[byte], &user_level);
         let p_ty = vcx.alloc(TypeData::<Dyn>::new(TypeKind::Domain("P", &[])));
         f(&ctx, &Builder { vcx, p_ty });
     });
@@ -215,6 +241,9 @@ fn ternary() {
     check_prefix("h(c\n", |c| {
         c.ite(c.b("c"), c.app("h", &[c.i("x")]), c.app("h", &[c.i("y")]))
     });
+    check_prefix("d(c\n", |c| {
+        c.ite(c.b("c"), c.app("d", &[c.i("x")]), c.app("d", &[c.i("y")]))
+    });
     check_prefix("c\n? g(x)", |c| {
         c.ite(c.b("c"), c.app("g", &[c.i("x")]), c.app("g", &[c.i("y")]))
     });
@@ -255,6 +284,29 @@ fn app() {
     check("20", |c| c.app("value", &[c.app("cons", &[c.int(20)])]));
     check("value(cons(15))", |c| {
         c.app("value", &[c.app("cons", &[c.int(15)])])
+    });
+}
+
+#[test]
+fn user_level_definitions() {
+    // No application of a user-level definition is folded away: not a field
+    // of a constructor application, a constructor of the fields of a value,
+    // equal constructor applications, or a constructor or function moving
+    // out of a ternary.
+    with_user_level(&["P", "h", "D"], |ctx, c| {
+        let mut s = Simplifier::new(c.vcx, ctx);
+        let q = c.local("q", c.p_ty);
+        let p_xy = || c.p(&[c.i("x"), c.i("y")]);
+        for e in [
+            c.field(p_xy(), "f0"),
+            c.p(&[c.field(q, "f0"), c.field(q, "f1")]),
+            c.bin(CmpEq, p_xy(), c.p(&[c.i("z"), c.i("y")])),
+            c.ite(c.b("c"), p_xy(), c.p(&[c.i("x"), c.i("z")])),
+            c.ite(c.b("c"), c.app("h", &[c.i("x")]), c.app("h", &[c.i("y")])),
+            c.ite(c.b("c"), c.app("d", &[c.i("x")]), c.app("d", &[c.i("y")])),
+        ] {
+            assert!(s.simplify(e).is_none(), "{e:?} was simplified");
+        }
     });
 }
 
@@ -365,12 +417,35 @@ fn let_scopes() {
         },
         |actual| assert!(actual.contains("a.f0"), "{actual}"),
     );
-    // Uses in triggers and wands stay as encoded.
+    // Uses in triggers are substituted like those in the body.
+    check_with(
+        |c| {
+            let trigger = c.app("f", &[c.i("a"), c.i("q")]);
+            let body = c.bin(CmpEq, c.app("f", &[c.i("q")]), c.i("q"));
+            c.let_("a", c.i("x"), c.forall("q", &[trigger], body))
+        },
+        |actual| {
+            assert!(!actual.starts_with("(let"), "{actual}");
+            assert!(actual.contains("{f(x, q)}"), "{actual}");
+        },
+    );
+    // A trigger set stays as encoded if simplifying it would make it invalid:
+    // a substituted value contains an operator, or a term folds to a
+    // variable.
     check_prefix("(let a ==", |c| {
-        let trigger = c.app("f", &[c.i("a")]);
+        let trigger = c.app("f", &[c.i("a"), c.i("q")]);
         let body = c.bin(CmpEq, c.app("f", &[c.i("q")]), c.i("q"));
-        c.let_("a", c.i("x"), c.forall("q", &[trigger], body))
+        let val = c.bin(Add, c.i("x"), c.int(1));
+        c.let_("a", val, c.forall("q", &[trigger], body))
     });
+    check_with(
+        |c| {
+            let trigger = c.field(c.p(&[c.i("q"), c.int(0)]), "f0");
+            c.forall("q", &[trigger], c.bin(CmpEq, c.i("q"), c.i("q")))
+        },
+        |actual| assert!(actual.contains("{P_cons(q, 0).f0}"), "{actual}"),
+    );
+    // Uses in wands stay as encoded.
     check_prefix("(let a ==", |c| {
         let lhs = c.bin(CmpEq, c.i("a"), c.i("y"));
         let wand = c.vcx.mk_wand(lhs.inner_cast_ty(), c.vcx.mk_bool::<true>());
@@ -433,5 +508,43 @@ fn unchanged_expressions_are_not_reallocated() {
     with_ctx(|ctx, c| {
         let e = c.bin(CmpEq, c.i("x"), c.i("y"));
         assert!(Simplifier::new(c.vcx, ctx).simplify(e).is_none());
+    });
+}
+
+#[test]
+fn trigger_term_shape() {
+    with_ctx(|_, c| {
+        let shape = |e| crate::trigger_term_shape(crate::inline_lets(c.vcx, e));
+        // A `let` at the top is replaced by its value.
+        let s = shape(c.let_("a", c.app("f", &[c.i("q")]), c.i("a")));
+        assert!(s.valid_head && !s.forbidden && s.locals.contains("q"));
+        // A binding the term does not use disappears, with its locals.
+        let unused = c.bin(Add, c.i("q"), c.int(1));
+        let s = shape(c.let_("b", unused, c.app("f", &[c.i("x")])));
+        assert!(s.valid_head && !s.forbidden && !s.locals.contains("q"));
+        // A variable is not a valid trigger term, also behind a `let`.
+        assert!(!shape(c.let_("a", c.i("q"), c.i("a"))).valid_head);
+        // A `let` that the inlining keeps is looked through, like `old`.
+        let s = shape(c.let_("a", c.app("g", &[c.i("q")]), c.old(c.app("f", &[c.i("a")]))));
+        assert!(s.valid_head && !s.forbidden && s.locals.contains("q"));
+    });
+}
+
+#[test]
+fn inline_lets_under_old() {
+    with_ctx(|_, c| {
+        let inline = |e| format!("{:?}", crate::inline_lets(c.vcx, e));
+        // A local keeps its value under `old(..)`, so it is inlined there.
+        let e = c.let_("a", c.i("q"), c.old(c.app("f", &[c.i("a")])));
+        assert_eq!(inline(e), "old(f(q))");
+        // Another value is not, and keeps its `let`; it is still inlined
+        // outside the `old(..)`.
+        let in_old = c.old(c.app("f", &[c.i("a")]));
+        let e = c.let_(
+            "a",
+            c.app("h", &[c.i("q")]),
+            c.app("g", &[c.i("a"), in_old]),
+        );
+        assert_eq!(inline(e), "(let a == (h(q)) in\n  g(h(q), old(f(a))))");
     });
 }
