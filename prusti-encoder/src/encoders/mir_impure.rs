@@ -50,6 +50,7 @@ use vir::{CastType, CompType, LocalDeclData};
 use crate::encoders::{
     self, MirBuiltinUseCastEnc, MirBuiltinUseCastTask, MirPureEnc, MirPureEncTask, PrustiBuiltin,
     PureKind, TyUseImpureEnc, WandEnc, WandEncTask,
+    builtin::MirBuiltinUseCastOutput,
     impure::{WandOldOuter, assert_error_message},
     mir_fn::{CallTaskDescription, RustSignature, SpecBlockKind, SpecBlocks},
     mir_shared::{EncodeResult, PureRvalueEnc, RustcIntrinsic, unsupported_opaque},
@@ -212,12 +213,17 @@ where
     /// The new names of the nodes the actions encoded so far in the phase
     /// renamed, by their names in `phase_start`'s graph.
     pub phase_renames: FxHashMap<NodeLp<'vir>, NodeLp<'vir>>,
+    /// The results of the `&mut` unsizing coercions undone so far.
+    pub undone_coercions: FxHashSet<mir::Local>,
 
     pub encoded_blocks: Vec<vir::CfgBlock<'vir>>, // TODO: use IndexVec ?
 }
 
 /// A lifetime-projection node of a local place.
 pub(crate) type NodeLp<'vir> = LifetimeProjection<'vir, MaybeLabelledPlace<'vir>>;
+
+/// The operand and the cast of a `&mut` unsizing coercion.
+type Coercion<'vir> = (MaybeLabelledPlace<'vir>, MirBuiltinUseCastOutput<'vir>);
 
 /// Nodes of one place to fold, each from its children.
 type NodeFolds<'vir> = Vec<(NodeLp<'vir>, Vec<Child<'vir>>)>;
@@ -437,6 +443,33 @@ fn local_node<'vir>(
         PlaceOrConst::Place(MaybeRemotePlace::Local(place)) => Some(projection.with_base(place)),
         _ => None,
     }
+}
+
+/// The assignments in `graph` that move a borrower, as `(from, to, cast)`:
+/// those without a cast or with an unsizing coercion.
+fn borrow_moves<'a, 'vir>(
+    graph: &'a BorrowsGraph<'vir>,
+) -> impl Iterator<
+    Item = (
+        MaybeLabelledPlace<'vir>,
+        MaybeLabelledPlace<'vir>,
+        Option<mir::CastKind>,
+    ),
+> + 'a {
+    graph.edges().filter_map(|edge| match edge.kind() {
+        BorrowPcgEdgeKind::BorrowFlow(borrow_flow)
+            if let BorrowFlowEdgeKind::Assignment(assignment) = borrow_flow.kind()
+                && let kind @ (None
+                | Some(mir::CastKind::PointerCoercion(
+                    ty::adjustment::PointerCoercion::Unsize,
+                    _,
+                ))) = assignment.cast_kind() =>
+        {
+            let from = local_node(borrow_flow.long())?.base();
+            Some((from, borrow_flow.short().base(), kind))
+        }
+        _ => None,
+    })
 }
 
 /// Represents the translation of a MIR place. If the place crosses a shared
@@ -1074,6 +1107,8 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             })
             .unwrap_or_default();
         for borrower in borrowers {
+            // A coercion's result gives back its borrows once undone.
+            let coercion = self.coercion_of(borrower.base())?;
             let borrower = self
                 .phase_renames
                 .get(&borrower)
@@ -1083,8 +1118,77 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 node: current,
                 part: Part::Referent,
             };
-            self.fold_or_unfold_node(borrower, &[lender], FoldOrUnfold::Unfold)?;
+            if let Some((operand, cast)) = coercion {
+                self.undo_unsize_once(operand, borrower.base(), cast, None)?;
+            }
+            self.fold_or_unfold_node_as(borrower, &[lender], FoldOrUnfold::Unfold, coercion)?;
         }
+        Ok(())
+    }
+
+    /// The `&mut` unsizing coercion whose result `result` is, if any, in the
+    /// PCG state at the start of the phase.
+    fn coercion_of(
+        &mut self,
+        result: MaybeLabelledPlace<'vir>,
+    ) -> EncodeResult<'vir, Option<Coercion<'vir>>, E> {
+        let Some((pcg, _)) = &self.phase_start else {
+            return Ok(None);
+        };
+        let coercion = borrow_moves(pcg.borrow_pcg().graph())
+            .find(|(_, to, kind)| *to == result && kind.is_some());
+        let Some((operand, _, Some(kind))) = coercion else {
+            return Ok(None);
+        };
+        let cast = self.mut_unsize_cast(operand, result, kind)?;
+        Ok(cast.map(|cast| (operand, cast)))
+    }
+
+    /// The cast of the coercion `result = operand as _` of kind `kind`, if
+    /// `result` is a `&mut`.
+    fn mut_unsize_cast(
+        &mut self,
+        operand: MaybeLabelledPlace<'vir>,
+        result: MaybeLabelledPlace<'vir>,
+        kind: mir::CastKind,
+    ) -> EncodeResult<'vir, Option<MirBuiltinUseCastOutput<'vir>>, E> {
+        let ctxt = self.pcg_ctxt();
+        let result_ty = result.place().ty(ctxt).ty;
+        if !matches!(result_ty.kind(), ty::TyKind::Ref(_, _, ty::Mutability::Mut)) {
+            return Ok(None);
+        }
+        let task = MirBuiltinUseCastTask::new(
+            RustTyDecomposition::from_ty(result_ty, self.context()),
+            kind,
+            RustTyDecomposition::from_ty(operand.place().ty(ctxt).ty, self.context()),
+        );
+        Ok(Some(self.deps().require_dep::<MirBuiltinUseCastEnc>(task)?))
+    }
+
+    /// Undoes the `&mut` unsizing coercion `result = operand as _` with cast
+    /// `cast`, unless already done. `label` is the state of a package script.
+    fn undo_unsize_once(
+        &mut self,
+        operand: MaybeLabelledPlace<'vir>,
+        result: MaybeLabelledPlace<'vir>,
+        cast: MirBuiltinUseCastOutput<'vir>,
+        label: Option<&'vir str>,
+    ) -> EncodeResult<'vir, (), E> {
+        if !self.undone_coercions.insert(result.place().local) {
+            return Ok(());
+        }
+        let operand_label = if let MaybeLabelledPlace::Labelled(snap) = operand {
+            Some(self.get_location_label(snap.at()))
+        } else {
+            label.map(vir::OldLabel::Label)
+        };
+        let operand_snap = self
+            .encode_place_with_snap(operand.place())?
+            .1
+            .downcast_ty();
+        let operand_snap = self.vcx.maybe_apply_label(operand_snap, operand_label);
+        let undo = cast.undo(operand_snap, self.deps())?;
+        self.stmts(undo);
         Ok(())
     }
 
@@ -1427,30 +1531,29 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         });
         // A borrower moved since, e.g. by `r2 = r`, holds the borrow in the
         // place it was moved into, which the assignment edges of its lifetime
-        // projections lead to. A cast, e.g. an unsizing coercion, changes the
-        // type, and undoing it gives the predicates back to the operand.
-        let moved_into = |borrower: MaybeLabelledPlace<'vir>| {
-            graph.edges().find_map(|edge| match edge.kind() {
-                BorrowPcgEdgeKind::BorrowFlow(borrow_flow)
-                    if matches!(borrow_flow.kind(),
-                        BorrowFlowEdgeKind::Assignment(assignment) if assignment.cast_kind().is_none())
-                        && local_node(borrow_flow.long())
-                            .is_some_and(|node| node.base() == borrower) =>
-                {
-                    Some(borrow_flow.short().base())
-                }
-                _ => None,
-            })
-        };
+        // projections lead to. Through a `&mut` unsizing coercion, the value
+        // is read back by the cast's inverse.
+        let borrower_ty = borrower.map(|borrower| borrower.place().ty(ctxt).ty);
         let mut borrower = borrower;
-        while let Some(MaybeLabelledPlace::Labelled(_)) = borrower
-            && let Some(next) = moved_into(borrower.unwrap())
+        let mut casts = Vec::new();
+        while let Some(MaybeLabelledPlace::Labelled(from)) = borrower
+            && let Some((_, next, kind)) =
+                borrow_moves(graph).find(|(other, ..)| *other == from.into())
         {
+            if let Some(kind) = kind {
+                let Some(cast) = self.mut_unsize_cast(from.into(), next, kind)? else {
+                    break;
+                };
+                casts.push(cast);
+            }
             borrower = Some(next);
         }
         if let Some(borrower) = borrower {
-            let value = self.place_value_in(borrower, pcg, at)?;
-            let mutref = self.ty_use_pure(borrower.place().ty(ctxt).ty);
+            let mut value = self.place_value_in(borrower, pcg, at)?;
+            for cast in casts.iter().rev() {
+                value = cast.uncast(value.downcast_ty()).upcast_ty();
+            }
+            let mutref = self.ty_use_pure(borrower_ty.unwrap());
             let value = mutref.expect_mutref().value_access(value.downcast_ty());
             return Ok(PlaceRead::Value(value));
         }
@@ -2217,6 +2320,18 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         children: &[Child<'vir>],
         fold_or_unfold: FoldOrUnfold,
     ) -> EncodeResult<'vir, (), E> {
+        self.fold_or_unfold_node_as(base, children, fold_or_unfold, None)
+    }
+
+    /// As `fold_or_unfold_node`; for the result `base` of an undone
+    /// `coercion`, with the operand's predicates, keyed by `uncast`.
+    fn fold_or_unfold_node_as(
+        &mut self,
+        base: NodeLp<'vir>,
+        children: &[Child<'vir>],
+        fold_or_unfold: FoldOrUnfold,
+        coercion: Option<Coercion<'vir>>,
+    ) -> EncodeResult<'vir, (), E> {
         if base.label() == Some(LifetimeProjectionLabel::Future) {
             return Err(EncodeFullError::unsupported(
                 format!(
@@ -2244,6 +2359,19 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         let (ty, nodes, positions) = self.node_positions(base)?;
         let (state, point) = self.keys_state(base)?;
         let keys = self.place_keys(place, &nodes, &positions, &state)?;
+        let (ty, nodes, keys) = match coercion {
+            None => (ty, nodes, keys),
+            Some((operand, cast)) => {
+                let ty = operand.place().ty(self.pcg_ctxt()).ty;
+                let decomposition = RustTyDecomposition::from_ty(ty, self.def_id);
+                let nodes = NodePredicates::new(decomposition, self.deps)?.in_ty(ty);
+                let keys = keys
+                    .into_iter()
+                    .map(|(p, key)| (p, cast.uncast(key.downcast_ty()).upcast_ty()))
+                    .collect();
+                (ty, nodes, keys)
+            }
+        };
         let elements = self.array_elements(ty, children)?;
         let element_predicates = self.element_predicates(ty, &nodes, &keys, &elements);
         // The rest's predicates hold the parts the other children do not.
@@ -2394,16 +2522,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                         .require_dep::<MirBuiltinUseCastEnc>(MirBuiltinUseCastTask::new(
                             rvalue_ty, kind, operand_ty,
                         ))?;
-                let src_place = src.place();
-                let src_label = if let MaybeLabelledPlace::Labelled(snap) = src {
-                    Some(self.get_location_label(snap.at()))
-                } else {
-                    label.map(vir::OldLabel::Label)
-                };
-                let src_snap = self.encode_place_with_snap(src_place)?.1.downcast_ty();
-                let src_enc = self.vcx.maybe_apply_label(src_snap, src_label);
-                let undo = cast_output.undo(src_enc, self.deps())?;
-                self.stmts(undo);
+                self.undo_unsize_once(src, dst, cast_output, label)?;
                 return Ok(());
             }
             // An aggregate edge joins the nodes of the parts into the node of

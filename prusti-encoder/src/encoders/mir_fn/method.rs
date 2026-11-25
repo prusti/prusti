@@ -374,6 +374,7 @@ impl TaskEncoder for MethodEnc {
                     package_label: None,
                     phase_start: None,
                     phase_renames: Default::default(),
+                    undone_coercions: Default::default(),
                     encoded_blocks,
                 };
                 // if we encountered an error/cycle during encoding, we don't

@@ -82,6 +82,9 @@ pub(super) struct MirBuiltinCastOutput<'vir> {
     /// transfer permission between the original and the coerced reference.
     pub(super) unsize: Option<vir::MethodIdn<'vir, (vir::CSnap, vir::ManyTyVal, vir::ManyCSnap)>>,
     pub(super) undo: Option<vir::MethodIdn<'vir, (vir::CSnap, vir::ManyTyVal, vir::ManyCSnap)>>,
+    /// The inverse of `cast`, for a `&mut` unsizing coercion.
+    pub(super) uncast:
+        Option<FunctionIdn<'vir, (vir::CSnap, vir::ManyTyVal, vir::ManyCSnap), vir::CSnap>>,
     /// The type arguments that `cast`, `unsize` and `undo` take.
     pub(super) ty_args: CastTyArgs,
 }
@@ -93,6 +96,8 @@ pub(super) struct MirBuiltinCastLocal<'vir> {
     cast: vir::Function<'vir>,
     unsize: Option<vir::Method<'vir>>,
     undo: Option<vir::Method<'vir>>,
+    /// The domain of `uncast`.
+    uncast: Option<vir::Domain<'vir>>,
     /// Whether this encodes something the user writes rather than something
     /// rustc or the encoding adds, which the simplifier may fold away (see
     /// `add_user_adt`).
@@ -454,6 +459,67 @@ impl TaskEncoder for MirBuiltinCastEnc {
                         let undo_value =
                             vcx.mk_eq_expr(vcx.mk_old_expr(v_snap), value_cast(u_snap));
 
+                        // Names the operand's keys by the result's.
+                        let uncast_idn = FunctionIdn::new(
+                            vir::vir_format_identifier!(
+                                vcx,
+                                "mir_uncast_unsize_{}_to_{}",
+                                operand_ty.name(),
+                                result_ty.name()
+                            ),
+                            (res_ty_snap, params.ty_args(), params.const_args()),
+                            op_ty_snap,
+                        );
+                        let k_decl = vcx.mk_local_decl("k", op_ty_snap);
+                        let k_ex = vcx.mk_local_ex(k_decl);
+                        let casted = cast_idn.call()(k_ex, params.ty_exprs(), params.const_exprs());
+                        let uncasted =
+                            uncast_idn.call()(casted, params.ty_exprs(), params.const_exprs());
+                        let inverse = vir::expr! { vcx;
+                            forall [k_decl], ..[params.ty_decls()], ..[params.const_decls()]
+                                :: { [casted] }
+                                ([uncasted]) == ([k_ex])
+                        };
+                        let uncast_domain = vcx.mk_domain(
+                            vir::vir_format_identifier!(
+                                vcx,
+                                "Uncast_unsize_{}_to_{}",
+                                operand_ty.name(),
+                                result_ty.name()
+                            ),
+                            &[],
+                            vcx.alloc_slice(&[vcx.mk_domain_axiom(
+                                vir::vir_format_identifier!(
+                                    vcx,
+                                    "uncast_unsize_{}_to_{}",
+                                    operand_ty.name(),
+                                    result_ty.name()
+                                ),
+                                inverse,
+                            )]),
+                            vcx.alloc_slice(&[vcx.mk_domain_function(uncast_idn, false, None)]),
+                            None,
+                        );
+                        // The contents survive the coercion and its undo.
+                        let mut unsize_contents = Vec::new();
+                        let mut undo_contents = Vec::new();
+                        for p in u_nodes.positions() {
+                            let u_deep = u_nodes.deep_snap_at(src_ex.upcast_ty(), &[p]);
+                            let v_deep = v_nodes.deep_snap_at(cast_ex.upcast_ty(), &[p]);
+                            let cast_old = cast_idn.call()(
+                                vcx.mk_old_expr(u_deep).downcast_ty(),
+                                params.ty_exprs(),
+                                params.const_exprs(),
+                            );
+                            let uncast_old = uncast_idn.call()(
+                                vcx.mk_old_expr(v_deep).downcast_ty(),
+                                params.ty_exprs(),
+                                params.const_exprs(),
+                            );
+                            unsize_contents.push(vcx.mk_eq_expr(v_deep, cast_old.upcast_ty()));
+                            undo_contents.push(vcx.mk_eq_expr(u_deep, uncast_old.upcast_ty()));
+                        }
+
                         let unsize_idn = MethodIdn::new(
                             vir::vir_format_identifier!(
                                 vcx,
@@ -477,7 +543,14 @@ impl TaskEncoder for MirBuiltinCastEnc {
                             (src_decl, params.ty_decls(), params.const_decls()),
                             &[],
                             vcx.alloc_slice(&u_preds),
-                            vcx.alloc_slice(&[v_preds.as_slice(), &[unsize_value]].concat()),
+                            vcx.alloc_slice(
+                                &[
+                                    v_preds.as_slice(),
+                                    &[unsize_value],
+                                    unsize_contents.as_slice(),
+                                ]
+                                .concat(),
+                            ),
                             None,
                         );
                         let undo_method = vcx.mk_method(
@@ -485,10 +558,17 @@ impl TaskEncoder for MirBuiltinCastEnc {
                             (src_decl, params.ty_decls(), params.const_decls()),
                             &[],
                             vcx.alloc_slice(&v_preds),
-                            vcx.alloc_slice(&[u_preds.as_slice(), &[undo_value]].concat()),
+                            vcx.alloc_slice(
+                                &[u_preds.as_slice(), &[undo_value], undo_contents.as_slice()]
+                                    .concat(),
+                            ),
                             None,
                         );
-                        Some(((unsize_method, unsize_idn), (undo_method, undo_idn)))
+                        Some((
+                            (unsize_method, unsize_idn),
+                            (undo_method, undo_idn),
+                            (uncast_domain, uncast_idn),
+                        ))
                     } else {
                         None
                     };
@@ -505,20 +585,26 @@ impl TaskEncoder for MirBuiltinCastEnc {
                 None,
                 Some(expr),
             );
-            let (unsize, undo) = methods.unzip();
+            let (unsize, undo, uncast) = match methods {
+                Some((unsize, undo, uncast)) => (Some(unsize), Some(undo), Some(uncast)),
+                None => (None, None, None),
+            };
             let (unsize, unsize_idn) = unsize.unzip();
             let (undo, undo_idn) = undo.unzip();
+            let (uncast, uncast_idn) = uncast.unzip();
             Ok((
                 MirBuiltinCastLocal {
                     cast,
                     unsize,
                     undo,
+                    uncast,
                     user_level,
                 },
                 MirBuiltinCastOutput {
                     cast: cast_idn,
                     unsize: unsize_idn,
                     undo: undo_idn,
+                    uncast: uncast_idn,
                     ty_args,
                 },
             ))
@@ -537,6 +623,9 @@ impl TaskEncoder for MirBuiltinCastEnc {
             }
             if let Some(undo) = local.undo {
                 program.add_method(undo);
+            }
+            if let Some(uncast) = local.uncast {
+                program.add_domain(uncast);
             }
         }
     }

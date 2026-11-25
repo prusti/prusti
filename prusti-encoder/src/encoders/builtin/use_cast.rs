@@ -142,6 +142,15 @@ impl<'vir> MirBuiltinUseCastOutput<'vir> {
         self.builtin.cast.call()(input, self.ty_args.get_ty(), self.ty_args.get_const())
     }
 
+    /// The inverse of `cast`; only for a `&mut` unsizing coercion.
+    pub fn uncast<Curr, Next>(
+        &self,
+        result: vir::ExprGenCSnap<'vir, Curr, Next>,
+    ) -> vir::ExprGenCSnap<'vir, Curr, Next> {
+        let uncast = self.builtin.uncast.expect("not a `&mut` unsizing coercion");
+        uncast.call()(result, self.ty_args.get_ty(), self.ty_args.get_const())
+    }
+
     /// The statements of a `&mut` unsizing coercion of the reference with
     /// snapshot `operand`, which move its predicates to the result's.
     pub fn unsize<E: TaskEncoder>(
