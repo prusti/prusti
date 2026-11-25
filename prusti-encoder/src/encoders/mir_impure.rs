@@ -445,6 +445,27 @@ fn local_node<'vir>(
     }
 }
 
+/// The current place that `place` was moved into as the operand of an
+/// aggregate, with the operand's index, by the aggregate edges of `graph`.
+fn aggregated_into<'vir>(
+    graph: &BorrowsGraph<'vir>,
+    place: MaybeLabelledPlace<'vir>,
+) -> Option<(Place<'vir>, usize)> {
+    graph.edges().find_map(|edge| match edge.kind() {
+        BorrowPcgEdgeKind::Aggregate(aggregate) => {
+            let MaybeLabelledPlace::Current(target) = aggregate.target().base() else {
+                return None;
+            };
+            aggregate
+                .sources_with_operand_indices()
+                .find_map(|(source, index)| {
+                    (local_node(source)?.base() == place).then_some((target, index?))
+                })
+        }
+        _ => None,
+    })
+}
+
 /// The assignments in `graph` that move a borrower, as `(from, to, cast)`:
 /// those without a cast or with an unsizing coercion.
 fn borrow_moves<'a, 'vir>(
@@ -1586,6 +1607,19 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             {
                 return self.place_read_in(labelled.place().into(), pcg, at);
             }
+            // A place moved into an aggregate, e.g. `_3` by `y = [move _3]`,
+            // has the value of its operand of the aggregate's current value,
+            // which may have changed it since, once the aggregate joins it:
+            // from the phase after the one that adds the aggregate edge.
+            MaybeLabelledPlace::Labelled(_)
+                if let Some((target, index)) = aggregated_into(graph, place)
+                    && self.phase_start.as_ref().is_some_and(|(start, _)| {
+                        aggregated_into(start.borrow_pcg().graph(), place) == Some((target, index))
+                    })
+                    && let Some(value) = self.operand_value_in(target, index, pcg, at)? =>
+            {
+                return Ok(PlaceRead::Value(value));
+            }
             // A labelled place has its shallow snapshot from its label, read
             // where the state there has it.
             MaybeLabelledPlace::Labelled(labelled) => {
@@ -1913,6 +1947,32 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             }
             PlaceRead::Value(value) => value,
         })
+    }
+
+    /// The value of the operand `index` of the aggregate `target` in the PCG
+    /// state `pcg`: an element of an array or a field of a struct or tuple.
+    /// `None` for an enum, whose operands are the fields of a variant.
+    fn operand_value_in(
+        &mut self,
+        target: Place<'vir>,
+        index: usize,
+        pcg: &Pcg<'_, 'vir>,
+        at: Option<SnapshotLocation>,
+    ) -> EncodeResult<'vir, Option<vir::ExprSnap<'vir>>, E> {
+        let ty = target.ty(self.pcg_ctxt());
+        if ty.ty.is_enum() {
+            return Ok(None);
+        }
+        let value = self.place_value_in(target.into(), pcg, at)?.downcast_ty();
+        let pure = self.ty_use_pure(ty.ty);
+        Ok(Some(if ty.ty.is_array() {
+            let index = self.usize_const_snap(index as u64);
+            pure.expect_array().index(value, index)
+        } else {
+            pure.expect_variant_opt(ty.variant_index).fields[index]
+                .read(value)
+                .upcast_ty()
+        }))
     }
 
     /// The value of the current `place`, which the PCG state `pcg` holds whole
@@ -2465,7 +2525,23 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 // For a borrow e.g. let x = &mut y; the capability to `y` is
                 // folded into the Rvalue `&mut y` that is stored in `x`. This
                 // reverses that effect
-                self.unfold(borrow.assigned_ref(), label)?;
+                let assigned = borrow.assigned_ref();
+                // A reference moved into an aggregate has the value of its
+                // operand of the aggregate (see `place_read_in`).
+                if footprint.is_none()
+                    && let MaybeLabelledPlace::Labelled(_) = assigned
+                    && let Some((pcg, point)) = self.phase_start.clone()
+                    && aggregated_into(pcg.borrow_pcg().graph(), assigned).is_some()
+                    && let PlaceRead::Value(value) =
+                        self.place_read_in(assigned, &pcg, Some(point.at))?
+                {
+                    let value = self.vcx.maybe_apply_label(value, Some(point.label));
+                    let ty = assigned.place().ty(self.pcg_ctxt()).ty;
+                    let unfold = self.ty_use_impure(ty).expect_mutref().unfold_value(value);
+                    self.stmts(unfold);
+                } else {
+                    self.unfold(assigned, label)?;
+                }
             }
             BorrowPcgEdgeKind::BorrowFlow(borrow_flow)
                 if let BorrowFlowEdgeKind::Assignment(assignment_data) = borrow_flow.kind()
@@ -2533,9 +2609,13 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 // A labelled target holds no predicates: a target with a
                 // version label was expanded since, and its parts' nodes hold
                 // them; one whose place is labelled passed them on with its
-                // value, e.g. when it was moved into another place.
-                if edge_action.is_remove()
-                    && (target.label().is_some() || !target.base().is_current())
+                // value, e.g. when it was moved into another place. A future
+                // node holds none either: an aggregate is moved to it when
+                // its target is lent or expanded, and takes its predicates
+                // once it becomes current.
+                if target.label() == Some(LifetimeProjectionLabel::Future)
+                    || (edge_action.is_remove()
+                        && (target.label().is_some() || !target.base().is_current()))
                 {
                     return Ok(());
                 }

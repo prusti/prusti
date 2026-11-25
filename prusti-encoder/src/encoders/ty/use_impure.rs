@@ -909,6 +909,19 @@ impl<'vir> TyUseImpureMutRef<'vir> {
         stmts
     }
 
+    /// As `unfold`, for a reference whose value, with its referent's, is
+    /// `value`: the predicate is keyed by it, and the referent is at its
+    /// address.
+    pub fn unfold_value(&self, value: vir::ExprSnap<'vir>) -> Vec<vir::Stmt<'vir>> {
+        let own = self.nodes.positions()[0];
+        let key = self.nodes.key_of_value(own, value);
+        let pred = self.nodes.predicate_with_key(own, key);
+        let addr = self.impure.pure.deref_access.call()(value.downcast_ty());
+        let mut stmts = vec![vir::with_vcx(|vcx| vcx.mk_unfold_stmt(pred))];
+        stmts.extend(self.referent_caster.cast_to_caller_ctx(addr));
+        stmts
+    }
+
     /// Take the referent out of the reference: unfold the predicate of the
     /// reference's own lifetime, then cast the referent to concrete.
     fn unfold(
