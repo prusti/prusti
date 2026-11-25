@@ -54,5 +54,3 @@ pub trait Family {
 pub fn via_gat<F: Family>(w: &Wrapper<F::Of<u32>>) {
     assert!(w.f() == 5);
 }
-
-fn main() {}
