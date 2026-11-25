@@ -24,7 +24,7 @@ use crate::encoders::{
         generics::{
             GArgsCastEnc,
             builtin_impls::BuiltinImplEnc,
-            r#trait::TraitEnc,
+            r#trait::{AssocTypeBoundEnc, TraitEnc},
             trait_fn::TraitFnEnc,
             trait_impls::{
                 TraitImplConditionEnc, TraitImplDefaultFnEnc, TraitImplEnc, TraitImplItemEnc,
@@ -136,6 +136,7 @@ pub fn test_entrypoint<'tcx>(
 
     program.header("traits");
     TraitEnc::emit_outputs(&mut program);
+    AssocTypeBoundEnc::emit_outputs(&mut program);
     BuiltinImplEnc::emit_outputs(&mut program);
     TraitFnEnc::emit_outputs(&mut program);
     TraitImplEnc::emit_outputs(&mut program);
