@@ -1108,14 +1108,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                         && Self::in_unfolded_array_rest(actions, idx, weaken.place())
                     {
                         comment!(self, "[PCG] {op:?} (dropped with the array)");
-                    } else if !self.maybe_defer_join_weaken(
-                        actions,
-                        idx,
-                        op,
-                        pcg,
-                        deferral.as_mut(),
-                    )? && !self.regain_w_drop(actions, idx, op)?
-                    {
+                    } else if !self.maybe_defer_join_weaken(op, pcg, deferral.as_mut())? {
                         self.pcg_repack(op, pcg)?
                     }
                 }
@@ -1201,76 +1194,6 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         })
     }
 
-    /// Handles a place regaining only write capability when a loan of it
-    /// expires. This happens after a join of two paths, where the place was
-    /// lent out (mutably or shared) on one path and moved out of on the other.
-    /// On the lending paths the place holds its value again, which is then
-    /// dropped, under the path conditions of the expired borrows (whose
-    /// removals come earlier in `actions`). Returns whether `repack_op` was
-    /// such a regain.
-    fn regain_w_drop(
-        &mut self,
-        actions: &PcgActions<'vir>,
-        idx: usize,
-        repack_op: &RepackOp<'vir>,
-    ) -> EncodeResult<'vir, bool, E> {
-        let RepackOp::RegainLoanedCapability(rc) = repack_op else {
-            return Ok(false);
-        };
-        let place = rc.place();
-        if !rc.capability().is_write() {
-            return Ok(false);
-        }
-        let removed_edges = actions[..idx]
-            .iter()
-            .filter_map(|action| {
-                if let PcgAction::Borrow(action) = action
-                    && let BorrowPcgActionKind::RemoveEdge(edge) = action.kind()
-                    && let BorrowPcgEdgeKind::Borrow(borrow) = edge.kind()
-                    && borrow.blocked_place() == MaybeLabelledPlace::Current(place)
-                {
-                    Some(edge)
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<_>>();
-        if removed_edges.is_empty() {
-            let local = Place::from(mir::Place::from(place.local));
-            return Err(EncodeFullError::unsupported(
-                format!(
-                    "overwriting or dropping `{}` here is not supported yet: on one of the \
-                     paths that lead here, a part of `{}` was moved out, and on another, a \
-                     part of it was borrowed",
-                    place.display_string(self.pcg_ctxt()),
-                    local.display_string(self.pcg_ctxt()),
-                ),
-                vec![self.current_span()],
-            ));
-        }
-        let place_ty = place.ty(self.pcg_ctxt());
-        let ty_out = self.ty_use_impure(place_ty.ty);
-        let place_ref = self.encode_place(place)?.expr.expect_predicate();
-        comment!(
-            self,
-            "the loan expiry regains only write capability: drop the restored value"
-        );
-        let drop_stmt = ty_out.apply_method_drop(self.vcx, place_ref);
-        // The place holds the value on the paths where any of the expired
-        // borrows existed; a borrow without a path condition existed on all.
-        let conds = removed_edges
-            .into_iter()
-            .map(|edge| {
-                let conjuncts = self.edge_condition(edge);
-                (!conjuncts.is_empty()).then(|| self.vcx.mk_conj(self.vcx.alloc_slice(&conjuncts)))
-            })
-            .collect::<Option<Vec<_>>>();
-        let cond = conds.map(|conds| self.vcx.mk_disj(&conds));
-        let stmts = self.guarded(cond, vec![drop_stmt]);
-        self.stmts(stmts);
-        Ok(true)
-    }
-
     /// `stmts`, executed only if `cond` holds (if any).
     fn guarded(
         &self,
@@ -1294,8 +1217,6 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
     /// recorded again. Returns whether `repack_op` was handled here.
     fn maybe_defer_join_weaken(
         &mut self,
-        actions: &PcgActions<'vir>,
-        idx: usize,
         repack_op: &RepackOp<'vir>,
         pcg: &Pcg<'_, 'vir>,
         deferral: Option<&mut JoinDeferral>,
@@ -1314,9 +1235,6 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             {
                 Some(weaken.place().local)
             }
-            RepackOp::RegainLoanedCapability(rc) if rc.capability().is_write() => {
-                Some(rc.place().local)
-            }
             op if deferral.locals.contains(&op.affected_place().local) => None,
             _ => return Ok(false),
         };
@@ -1328,9 +1246,6 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         let stmts = self.block(|self_| match repack_op {
             RepackOp::Weaken(weaken) if dropped_local.is_some() => {
                 self_.pcg_weaken(weaken.place(), true)
-            }
-            RepackOp::RegainLoanedCapability(_) if dropped_local.is_some() => {
-                self_.regain_w_drop(actions, idx, repack_op).map(|_| ())
             }
             _ => self_.pcg_repack(repack_op, pcg),
         })?;
@@ -1442,6 +1357,21 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         pcg: &Pcg<'_, 'vir>,
     ) -> EncodeResult<'vir, (), E> {
         comment!(self, "[PCG] {repack_op:?}");
+        // A borrow ends while the lent place still holds the value the
+        // reference pointed to, so the place gets back at least read
+        // capability. Getting back only write capability means the PCG lost
+        // on which paths the place holds a value.
+        if let RepackOp::RegainLoanedCapability(rc) = repack_op
+            && rc.capability().is_write()
+        {
+            return Err(EncodeFullError::internal(
+                format!(
+                    "the value of `{}` was lost when a borrow ended",
+                    rc.place().display_string(self.pcg_ctxt())
+                ),
+                vec![self.current_span()],
+            ));
+        }
 
         fn should_ignore(repack_op: &RepackOp<'_>) -> bool {
             match repack_op {
