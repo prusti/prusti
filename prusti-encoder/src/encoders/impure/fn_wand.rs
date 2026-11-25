@@ -178,11 +178,12 @@ pub struct WandEncOutput<'vir> {
 pub type WandCallContext<'vir> = Option<GArgs<'vir>>;
 
 /// Whether a call's predicates are turned into the callee's before the call,
-/// or back into the caller's after it.
+/// or back into the caller's after it, with their keys read at a label, if
+/// any, and otherwise in the current state.
 #[derive(Clone, Copy)]
-enum CallSide {
+enum CallSide<'vir> {
     Before,
-    After,
+    After(Option<&'vir str>),
 }
 
 impl<'vir> WandEncOutput<'vir> {
@@ -350,7 +351,70 @@ impl<'vir> WandEncOutput<'vir> {
             .map(|g| (g, result));
         let mut stmts = Vec::new();
         for (g, snap) in inputs.chain(outputs).collect::<Vec<_>>() {
-            stmts.extend(self.call_adjustments(vcx, deps, g, snap, call_ctx, CallSide::After)?);
+            stmts.extend(self.call_adjustments(
+                vcx,
+                deps,
+                g,
+                snap,
+                call_ctx,
+                CallSide::After(None),
+            )?);
+        }
+        Ok(stmts)
+    }
+
+    /// The statements that give the wands of a call with generic arguments
+    /// `call_ctx` the predicates their left-hand sides require of the result,
+    /// whose snapshot after the call is `result`, where they differ from the
+    /// caller's: as before a call, but for the result.
+    pub fn before_apply<E: TaskEncoder>(
+        &self,
+        vcx: &'vir vir::VirCtxt<'vir>,
+        deps: &mut TaskEncoderDependencies<'vir, E>,
+        result: vir::ExprSnap<'vir>,
+        call_ctx: GArgs<'vir>,
+    ) -> Result<Vec<vir::Stmt<'vir>>, EncodeFullError<'vir, E>> {
+        let mut stmts = Vec::new();
+        for g in self
+            .outputs()
+            .filter(|g| g.mir_local() == mir::RETURN_PLACE)
+            .collect::<Vec<_>>()
+        {
+            stmts.extend(self.call_adjustments(
+                vcx,
+                deps,
+                g,
+                result,
+                call_ctx,
+                CallSide::Before,
+            )?);
+        }
+        Ok(stmts)
+    }
+
+    /// The statements that turn the predicates the wands of a call give back
+    /// into the caller's: those of the inputs blocked by the result, which
+    /// `after_call` leaves to the wands, keyed as before the call, at the
+    /// label `label_pre`, where the arguments had the snapshots `arguments`.
+    pub fn after_apply<E: TaskEncoder>(
+        &self,
+        vcx: &'vir vir::VirCtxt<'vir>,
+        deps: &mut TaskEncoderDependencies<'vir, E>,
+        arguments: &[vir::ExprSnap<'vir>],
+        label_pre: &'vir str,
+        call_ctx: GArgs<'vir>,
+    ) -> Result<Vec<vir::Stmt<'vir>>, EncodeFullError<'vir, E>> {
+        let mut stmts = Vec::new();
+        for g in self.blocked_inputs() {
+            let arg = arguments[g.mir_local().as_usize() - 1];
+            stmts.extend(self.call_adjustments(
+                vcx,
+                deps,
+                g.into(),
+                arg,
+                call_ctx,
+                CallSide::After(Some(label_pre)),
+            )?);
         }
         Ok(stmts)
     }
@@ -370,7 +434,7 @@ impl<'vir> WandEncOutput<'vir> {
         g: FunctionShapeNode<Generalized>,
         snap: vir::ExprSnap<'vir>,
         call_ctx: GArgs<'vir>,
-        side: CallSide,
+        side: CallSide<'vir>,
     ) -> Result<Vec<vir::Stmt<'vir>>, EncodeFullError<'vir, E>> {
         let Some((nodes, lifetime)) = self.node(vcx, deps, g) else {
             return Ok(Vec::new());
@@ -433,14 +497,18 @@ impl<'vir> WandEncOutput<'vir> {
                 MergeTarget::Param => snap,
                 MergeTarget::Own => {
                     let key = nodes.key(p, placeholder);
-                    vcx.with_local_subst(subst, || {
+                    let key = vcx.with_local_subst(subst, || {
                         key.lazy::<(), vir::ExprKind<'vir>>().reify(vcx, ())
-                    })
+                    });
+                    match side {
+                        CallSide::After(Some(label)) => vcx.mk_local_labelled_old_expr(key, label),
+                        _ => key,
+                    }
                 }
             };
             let method = match side {
                 CallSide::Before => merge_split.merge,
-                CallSide::After => merge_split.split,
+                CallSide::After(_) => merge_split.split,
             };
             stmts.push(method(key, args.get_ty(), args.get_const()).alloc());
         }

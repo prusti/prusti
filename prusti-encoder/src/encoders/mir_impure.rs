@@ -2482,14 +2482,28 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                                 .collect::<EncodeResult<'vir, Vec<_>, E>>()?;
                         let (label_pre, label_post) = self.call_labels[&call.location().block];
                         let call_ctx = self.gargs(caller_substs);
-                        let wands =
+                        // The wands take the result's predicates and give back
+                        // the arguments' in the callee's terms, keyed by their
+                        // snapshots after and before the call.
+                        let vcx = self.vcx;
+                        let result = vcx.mk_local_labelled_old_expr(dest_snap, label_post);
+                        let arg_snaps = wand_args[1..]
+                            .iter()
+                            .map(|&arg| vcx.mk_local_labelled_old_expr(arg, label_pre))
+                            .collect::<Vec<_>>();
+                        let before = wands.before_apply(vcx, self.deps, result, call_ctx)?;
+                        let after =
+                            wands.after_apply(vcx, self.deps, &arg_snaps, label_pre, call_ctx)?;
+                        let call_wands =
                             wands.call_wands(&wand_args, label_pre, label_post, call_ctx, self)?;
-                        for wand in wands {
+                        self.stmts(before);
+                        for wand in call_wands {
                             if let Some(footprint) = &mut footprint {
                                 footprint.parts.push(self.vcx.mk_wand_expr(wand));
                             }
                             self.stmt(self.vcx.mk_apply_stmt(wand));
                         }
+                        self.stmts(after);
                     }
                     _ => unreachable!(),
                 }
