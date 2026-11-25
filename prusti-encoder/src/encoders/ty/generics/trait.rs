@@ -243,32 +243,18 @@ impl TaskEncoder for AssocTypeBoundEnc {
             }
             let guard = TraitImplEnc::context_bounds(vcx, deps, item_params, None)?;
             let item_generics = deps.require_dep::<GenericParamsEnc>(item_params)?;
-            let projection: vir::ExprDyn = trait_.assoc_types[&item_did](
+            let projection = trait_.assoc_types[&item_did](
                 item_generics.ty_exprs(),
                 item_generics.const_exprs(),
-            )
-            .upcast_ty();
+            );
             let guard = vcx.mk_conj(&guard);
             let body = vcx.mk_conj(&bounds);
-            let body = vir::expr! { (guard) ==> (body) };
-            let qvars = item_generics
-                .ty_decls()
-                .iter()
-                .map(|decl| decl.upcast_ty())
-                .chain(
-                    item_generics
-                        .const_decls()
-                        .iter()
-                        .map(|decl| decl.upcast_ty()),
-                )
-                .collect::<Vec<vir::LocalDeclDyn<'_>>>();
             // Triggering on the associated type avoids a matching loop for
             // bounds like `type A: Tr;` in `Tr`.
-            let axiom = vcx.mk_forall_expr(
-                vcx.alloc_slice(&qvars),
-                vcx.alloc_slice(&[vcx.mk_trigger(&[projection])]),
-                body,
-            );
+            let axiom = vir::expr! {
+                forall ..[item_generics.ty_decls()], ..[item_generics.const_decls()] :: {[projection]}
+                    (guard) ==> (body)
+            };
             let trait_name = trait_.trait_name;
             let item_name = ViperIdent::from_def_id(vcx, item_did);
             let name =
