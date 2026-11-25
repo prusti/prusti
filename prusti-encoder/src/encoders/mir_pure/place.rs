@@ -145,7 +145,8 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
     }
 
     /// Whether reading `place` reads a mutable reference: it dereferences one,
-    /// or the value read contains one.
+    /// or the value read may contain one, as a field of a type with lifetimes
+    /// does, whose fields `walk` does not visit.
     fn reads_mut_ref(&self, place: Place<'vir>) -> bool {
         let mut place_ty = mir::PlaceTy::from_ty(self.body.local_decls[place.local].ty);
         let derefs = place.projection.iter().fold(false, |derefs, elem| {
@@ -154,11 +155,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
             place_ty = place_ty.projection_ty(self.vcx.tcx(), *elem);
             derefs || deref
         });
-        derefs
-            || place_ty.ty.walk().any(|arg| {
-                arg.as_type()
-                    .is_some_and(|ty| matches!(ty.kind(), TyKind::Ref(.., ty::Mutability::Mut)))
-            })
+        derefs || place_ty.ty.walk().any(|arg| arg.as_region().is_some())
     }
 
     /// The snapshot `snap` of `place`'s local, extended through the local's
