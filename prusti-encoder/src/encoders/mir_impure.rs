@@ -1236,10 +1236,14 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             })
             .collect::<Vec<_>>();
         if removed_edges.is_empty() {
+            let local = Place::from(mir::Place::from(place.local));
             return Err(EncodeFullError::unsupported(
                 format!(
-                    "`{place:?}` regains only write capability without the expiry of a \
-                     borrow of it"
+                    "overwriting or dropping `{}` here is not supported yet: on one of the \
+                     paths that lead here, a part of `{}` was moved out, and on another, a \
+                     part of it was borrowed",
+                    place.display_string(self.pcg_ctxt()),
+                    local.display_string(self.pcg_ctxt()),
                 ),
                 vec![self.current_span()],
             ));
@@ -1501,8 +1505,9 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                         None => {
                             return Err(EncodeFullError::unsupported(
                                 format!(
-                                    "a place of type `{}` that holds no value cannot be \
-                                     (un)packed, e.g. when moving out of a part of it",
+                                    "moving a value into or out of a part of `{}` (of type \
+                                     `{}`) is not supported yet",
+                                    place.display_string(self.pcg_ctxt()),
                                     place_enc.ty.ty
                                 ),
                                 vec![self.current_span()],
