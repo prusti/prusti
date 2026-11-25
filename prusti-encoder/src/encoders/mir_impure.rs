@@ -2592,7 +2592,8 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                             .iter()
                             .map(|&arg| vcx.mk_local_labelled_old_expr(arg, label_pre))
                             .collect::<Vec<_>>();
-                        let before = wands.before_apply(vcx, self.deps, result, call_ctx)?;
+                        let before =
+                            wands.before_apply(vcx, self.deps, result, label_post, call_ctx)?;
                         let after =
                             wands.after_apply(vcx, self.deps, &arg_snaps, label_pre, call_ctx)?;
                         let call_wands =
