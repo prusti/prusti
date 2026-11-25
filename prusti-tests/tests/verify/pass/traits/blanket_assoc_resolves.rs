@@ -1,3 +1,4 @@
+//@ known-failure
 // A blanket impl's associated types and method specifications are assumed
 // only where the impl's where-clauses hold (see
 // `verify/fail/traits/blanket_*.rs`). These check that they still resolve

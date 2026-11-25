@@ -500,6 +500,20 @@ impl<'vir> TyUsePureMutRef<'vir> {
         self.cast_to_caller_ctx(self.pure.value_access.call()(snap))
     }
 
+    /// The snapshot `snap` with its value replaced by `val`: the inverse of
+    /// `value_access`. The address and metadata are kept as they are.
+    pub fn with_value<Curr, Next>(
+        &self,
+        snap: vir::ExprGenCSnap<'vir, Curr, Next>,
+        val: vir::ExprGenSnap<'vir, Curr, Next>,
+    ) -> vir::ExprGenCSnap<'vir, Curr, Next> {
+        self.pure.prim_to_snap.call()(
+            self.pure.deref_access.call()(snap),
+            self.pure.metadata_access.call()(snap),
+            self.cast_to_callee_ctx(val),
+        )
+    }
+
     pub fn cast_to_caller_ctx<Curr, Next>(
         &self,
         inner_snap: vir::ExprGenPSnap<'vir, Curr, Next>,
@@ -526,6 +540,17 @@ impl<'vir> TyUsePureArray<'vir> {
     ) -> vir::ExprGenSnap<'vir, Curr, Next> {
         let res = self.pure.index_access.call()(snap, index);
         self.caster.cast_to_caller_ctx(res.upcast_ty())
+    }
+
+    /// The array-like `snap` with the element at `index` replaced by `value`.
+    pub fn update<Curr, Next>(
+        &self,
+        snap: vir::ExprGenCSnap<'vir, Curr, Next>,
+        index: vir::ExprGenCSnap<'vir, Curr, Next>,
+        value: vir::ExprGenSnap<'vir, Curr, Next>,
+    ) -> vir::ExprGenCSnap<'vir, Curr, Next> {
+        let value = self.caster.cast_to_callee_ctx(value).downcast_ty();
+        self.pure.update.call()(snap, index, value)
     }
 
     /// The element snapshot at `index` in its generic (`p_Param`) form, i.e.

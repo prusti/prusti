@@ -1,10 +1,10 @@
 use crate::encoders::{
     TyUseImpureEnc,
     ty::{
-        RustTyDatas, RustTyDecomposition,
+        RustTy, RustTyDatas, RustTyDecomposition,
         data::{ArrayData, TyData},
         impure::{ImpureTyDatas, PredicateBuilder, TyImpureArrayData, TyImpureEnc},
-        kinds::opaque::set_opaque,
+        indirect_pred::IndirectPredEnc,
         pure::{DomainBuilder, PureTyDatas, TyPureArrayData, TyPureEnc},
     },
 };
@@ -46,23 +46,62 @@ pub(crate) fn ty_pure<'vir>(
                     ==> (([index_access](([from_seq](s)), i)) == (((s)[i_value]) as PSnap))
         },
     );
+    // The array-like with the element at an index replaced, for the keys of
+    // indirect predicates rebuilt from an element's key.
+    let update = builder.function(
+        "update",
+        (builder.self_type(), usize_snap, vir::TYPE_PSNAP),
+        builder.self_type(),
+    );
+    builder.axiom(
+        "update",
+        vir::expr! {
+            forall a: [builder.self_type()], i: [usize_snap], v: PSnap, j: [usize_snap] :: {[index_access](([update](a, i, v)), j)}
+                ([index_access](([update](a, i, v)), j))
+                    == (((i) == (j)) ? (v) : ([index_access](a, j)))
+        },
+    );
+    // Replacing an element by itself gives the same array-like, which the
+    // elements alone do not determine.
+    builder.axiom(
+        "update_same",
+        vir::expr! {
+            forall a: [builder.self_type()], i: [usize_snap] :: {[update](a, i, ([index_access](a, i)))}
+                ([update](a, i, ([index_access](a, i)))) == (a)
+        },
+    );
     Ok(ArrayData::new(
         TyPureArrayData {
             index_access,
             ref_to_index_ref,
             from_seq,
+            update,
         },
         data.slice,
     ))
 }
 
 pub(crate) fn ty_impure<'vir>(
+    rust_ty: RustTy<'vir>,
     task_key: &TyData<'vir, (RustTyDatas, PureTyDatas)>,
     data: &ArrayData<'vir, (RustTyDatas, PureTyDatas)>,
     deps: &mut TaskEncoderDependencies<'vir, TyImpureEnc>,
     builder: &mut PredicateBuilder<'vir>,
 ) -> Result<ArrayData<'vir, ImpureTyDatas>, EncodeFullError<'vir, TyImpureEnc>> {
-    set_opaque(builder);
+    builder.mk_predicate("", None);
+    // The elements' snapshots are those of their places, which hold no
+    // extensions, as `p_Param_snap` says, so making it shallow changes
+    // nothing.
+    let shallow = deps.require_ref::<IndirectPredEnc>(rust_ty)?.shallow;
+    let result = builder
+        .vcx
+        .mk_result(task_key.1.snapshot.downcast_ty::<vir::CSnap>());
+    let shallow = shallow.call()(
+        result.upcast_ty(),
+        builder.params.ty_exprs(),
+        builder.params.const_exprs(),
+    );
+    builder.mk_snap_function(None, &[builder.vcx.mk_eq_expr(shallow, result.upcast_ty())]);
     let ref_self_decl = builder.ref_self_decl();
     let ref_self = builder.vcx.mk_local_ex(ref_self_decl);
     let usize_ty = builder.vcx.tcx().types.usize;
@@ -149,13 +188,14 @@ pub(crate) fn ty_impure<'vir>(
             ],
             &[
                 vir::expr! { [builder.ref_to_pred](ref_self, [..[builder.params.ty_exprs()]], [..[builder.params.const_exprs()]]) },
+                // The whole snapshot, not just its elements, so that it equals
+                // the snapshot before the unfold if the element is unchanged.
                 vir::expr! {
-                    forall idx: [usize_snap] :: {[data.1.index_access](array_snap, idx)}
-                        ([data.1.index_access](array_snap, idx)) == (
-                            ((idx) == (index))
-                            ? ([old_element])
-                            : (old([data.1.index_access](([frame]), idx)))
-                        )
+                    (array_snap) == ([data.1.update](
+                        (old([frame])),
+                        index,
+                        ([old_element])
+                    ))
                 },
                 // The elements determine the array, so folding back an unchanged
                 // element gives back the array that was unfolded.

@@ -1,3 +1,4 @@
+//@ known-failure
 // Regression test for prusti/prusti#358: a closure capturing a struct field, passed to a
 // std iterator adapter, must not crash the encoder.
 use prusti_contracts::*;

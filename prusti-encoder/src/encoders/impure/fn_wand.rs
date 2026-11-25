@@ -1,25 +1,40 @@
 use crate::encoders::{
-    EncodeResult, ImpureEncVisitor, MirLocalDefEncOutput, MirSpecEnc,
-    mir_fn::report_dep_error,
+    EncodeResult, ImpureEncVisitor, MirLocalDefEncOutput, MirSpecEnc, Pure,
+    mir_fn::{RustSignature, report_dep_error},
     pure::spec::{EncodedPledge, MirSpecEncMode, PledgeArgs, PledgeExpr},
     ty::{
         RustTyDecomposition,
-        generics::{GArgs, GArgsTyEnc, GParams, GenericParamsEnc},
-        indirect::{IndirectPredicatesEnc, projection_for_generalized_idx},
+        generics::{
+            GArgs, GArgsCastEnc, GArgsTyEnc, GParams, GenericParamsEnc,
+            lifetime_position::{
+                GeneralizedLifetime as TyLifetime, LifetimePosition, LifetimePositionEnc,
+            },
+            merge_split::{MergeSplitEnc, MergeTarget},
+        },
+        indirect_nodes::NodePredicates,
     },
 };
-use pcg::borrow_pcg::{
-    FunctionData, FunctionShape, FunctionShapeInput, FunctionShapeNode, FunctionShapeOutput,
-    MakeFunctionShapeError, region_projection::Generalized, state::BorrowsState,
+use pcg::{
+    borrow_pcg::{
+        FunctionData, FunctionShape, FunctionShapeInput, FunctionShapeNode, FunctionShapeOutput,
+        GeneralizedLifetime, MakeFunctionShapeError,
+        borrow_pcg_edge::BlockedNode,
+        region_projection::{
+            ExtractRegionsCtxt, Generalized, LifetimeProjection, LifetimeProjectionIdx,
+        },
+        state::BorrowsState,
+    },
+    utils::place::remote::RemotePlace,
 };
 use prusti_interface::PrustiError;
 use prusti_rustc_interface::{
     data_structures::fx::{FxHashMap, FxHashSet},
+    index::{Idx, IndexVec},
     middle::{mir, ty},
     span::def_id::DefId,
 };
 use task_encoder::{EncodeFullError, EncodeFullResult, TaskEncoder, TaskEncoderDependencies};
-use vir::{CastType, HasType};
+use vir::{CastType, HasType, Reify};
 
 /// Encodes the magic wands given a function signature.
 pub struct WandEnc;
@@ -55,27 +70,41 @@ impl<'vir, E: TaskEncoder> ImpureEncVisitor<'vir, '_, E> {
         let args = PledgeExpr::pledge_args(result, args);
 
         for wand_data in self.wands.viper_wands() {
-            let Some(wand) = self
-                .wands
-                .mk_wand(&wand_data, args, None, None, self.vcx, self.deps)
-            else {
+            let Some(wand) = self.wands.mk_wand(
+                &wand_data,
+                args,
+                None,
+                LhsKeys::AtLabel(vir::OldLabel::Label(label)),
+                None,
+                self.vcx,
+                self.deps,
+            ) else {
                 continue;
             };
             let rhs = wand_data
                 .rhs
                 .iter()
-                .map(|g| {
+                .filter_map(|g| {
+                    let region_idx = self.wands.body_region_idx(self.vcx, (*g).into())?;
                     let resources = self.wands.encode_predicates_for_function_shape_node(
                         self.vcx,
                         self.deps,
                         *g,
                         None,
                         |i| args[i],
+                        Some(vir::OldLabel::None),
                     );
-                    (
-                        mir::Place::from(g.mir_local()),
-                        resources.into_iter().collect(),
-                    )
+                    // The caller's view of the argument's lifetime projection,
+                    // which the PCG blocks by the argument's own projection
+                    // (`InitialBorrows`): unblocking it gives the argument's
+                    // predicates back along the edges into the result.
+                    let node: BlockedNode<'vir> =
+                        LifetimeProjection::<'vir, RemotePlace>::from_index(
+                            RemotePlace::new(g.mir_local()),
+                            region_idx,
+                        )
+                        .into();
+                    Some((node, resources.into_iter().collect()))
                 })
                 .collect();
             let mut package_script = self.pcs_package_script(final_borrow_state, rhs, label)?;
@@ -107,6 +136,18 @@ impl<'vir, E: TaskEncoder> ImpureEncVisitor<'vir, '_, E> {
 
 type EncodedPledges<'vir> = Vec<EncodedPledge<'vir>>;
 
+/// How the keys of a wand's left side are fixed. A wand must be
+/// self-framing, but a key can read the predicates of other lifetimes, which
+/// are not in its left side: it is read under a label, or bound outside the
+/// wand.
+enum LhsKeys<'vir, 'a> {
+    /// The keys as they are, for a wand that is only displayed.
+    #[cfg(test)]
+    InPlace,
+    AtLabel(vir::OldLabel<'vir>),
+    Bound(&'a mut Vec<(vir::LocalDecl<'vir, vir::Snap>, vir::ExprSnap<'vir>)>),
+}
+
 /// Not tied to a caller or callee context. `indirect_pres`, `indirect_posts`,
 /// `wand_posts`, and `package_wands` are identity-substituted and intended for
 /// use in the callee's own contract; `call_wands` is for caller use and
@@ -135,6 +176,15 @@ pub struct WandEncOutput<'vir> {
 /// generic parameters, so that placeholders like `Self` or other callee
 /// generics are replaced by concrete types from the caller's perspective.
 pub type WandCallContext<'vir> = Option<GArgs<'vir>>;
+
+/// Whether a call's predicates are turned into the callee's before the call,
+/// or back into the caller's after it, with their keys read at a label, if
+/// any, and otherwise in the current state.
+#[derive(Clone, Copy)]
+enum CallSide<'vir> {
+    Before,
+    After(Option<&'vir str>),
+}
 
 impl<'vir> WandEncOutput<'vir> {
     pub(crate) fn fn_sig(
@@ -165,50 +215,304 @@ impl<'vir> WandEncOutput<'vir> {
         }
     }
 
-    /// The (unreified) predicates associated with the given node, or `None` if
-    /// there are no resources associated with it.
-    #[allow(clippy::type_complexity)]
-    fn predicates_for_function_shape_node(
+    /// The node predicates of the type of `g`'s local and the PCG lifetime of
+    /// `g`, in the callee's own context, or `None` if `g` has no positions:
+    /// e.g. the lifetime of a shared reference, or a lifetime in the trait
+    /// bounds of a type parameter, which is part of `RegionsIn` of the
+    /// parameter. The PCG's lifetimes are matched by value, which needs the
+    /// distinct regions of the callee's signature; at a call site, the
+    /// regions of the generic arguments are erased.
+    fn node<E: TaskEncoder>(
         &self,
         vcx: &'vir vir::VirCtxt<'vir>,
-        deps: &mut TaskEncoderDependencies<'vir, impl TaskEncoder>,
+        deps: &mut TaskEncoderDependencies<'vir, E>,
         g: FunctionShapeNode<Generalized>,
-        call_ctx: WandCallContext<'vir>,
-    ) -> Option<Vec<vir::ExprGenBool<'vir, vir::ExprSnap<'vir>, vir::ExprKind<'vir>>>> {
-        let arg_ty = g.ty(self.fn_sig(vcx, call_ctx));
-        let decomp = RustTyDecomposition::from_ty(arg_ty, self.g_params(vcx, call_ctx));
-        let region_proj =
-            projection_for_generalized_idx(arg_ty, g.region_idx(), decomp, vcx.tcx())?;
-        let predicates = deps
-            .require_dep::<IndirectPredicatesEnc>(region_proj)
-            .unwrap()
-            .applications()
-            .collect::<Vec<_>>();
-        (!predicates.is_empty()).then_some(predicates)
+    ) -> Option<(NodePredicates<'vir>, GeneralizedLifetime<'vir>)> {
+        let ty = g.ty(self.fn_sig(vcx, None));
+        let lifetime = self
+            .function_data
+            .shape_node_lifetime(g, vcx.tcx())
+            .ok()??;
+        let decomp = RustTyDecomposition::from_ty(ty, self.g_params(vcx, None));
+        let nodes = NodePredicates::new(decomp, deps).unwrap();
+        nodes.has_positions(lifetime).then_some((nodes, lifetime))
     }
 
-    fn encode_predicates_for_function_shape_node(
+    /// The index of `g`'s lifetime among the lifetimes of its local's type as
+    /// the function's body numbers them: unlike the shape, without those in a
+    /// type parameter's trait bounds, for which there is none.
+    // TODO: once the PCG gives the lifetimes in a type parameter's trait bounds
+    // nodes in bodies too (see `FunctionData::shape_node_lifetime`), a shape
+    // node's index is the body's, and this translation is unnecessary.
+    fn body_region_idx(
         &self,
         vcx: &'vir vir::VirCtxt<'vir>,
-        deps: &mut TaskEncoderDependencies<'vir, impl TaskEncoder>,
+        g: FunctionShapeNode<Generalized>,
+    ) -> Option<LifetimeProjectionIdx<Generalized>> {
+        let lifetime = self
+            .function_data
+            .shape_node_lifetime(g, vcx.tcx())
+            .ok()??;
+        let ty = g.ty(self.fn_sig(vcx, None));
+        let lifetimes: IndexVec<LifetimeProjectionIdx<Generalized>, GeneralizedLifetime<'vir>> =
+            vcx.tcx().extract_regions(ty);
+        lifetimes
+            .iter_enumerated()
+            .find_map(|(idx, l)| (*l == lifetime).then_some(idx))
+    }
+
+    /// The predicates of `g` on the snapshot `snap` of its local, with keys
+    /// that extend the snapshot in the state `state`. An input node refers to
+    /// the state before the call, so the extension of its key must read that
+    /// state's heap, not only the local's snapshot.
+    fn encode_predicates_for_function_shape_node<E: TaskEncoder>(
+        &self,
+        vcx: &'vir vir::VirCtxt<'vir>,
+        deps: &mut TaskEncoderDependencies<'vir, E>,
+        g: impl Into<FunctionShapeNode<Generalized>>,
+        call_ctx: WandCallContext<'vir>,
+        snap: impl FnMut(mir::Local) -> vir::ExprSnap<'vir>,
+        state: Option<vir::OldLabel<'vir>>,
+    ) -> Option<vir::ExprBool<'vir>> {
+        self.encode_predicates_with_keys(vcx, deps, g, call_ctx, snap, |key| {
+            vcx.maybe_apply_label(key, state)
+        })
+    }
+
+    /// Like `encode_predicates_for_function_shape_node`, with each key given
+    /// by `key` applied to its extension of the snapshot.
+    fn encode_predicates_with_keys<E: TaskEncoder>(
+        &self,
+        vcx: &'vir vir::VirCtxt<'vir>,
+        deps: &mut TaskEncoderDependencies<'vir, E>,
         g: impl Into<FunctionShapeNode<Generalized>>,
         call_ctx: WandCallContext<'vir>,
         mut snap: impl FnMut(mir::Local) -> vir::ExprSnap<'vir>,
+        key: impl FnMut(vir::ExprSnap<'vir>) -> vir::ExprSnap<'vir>,
     ) -> Option<vir::ExprBool<'vir>> {
-        use vir::Reify;
         let g = g.into();
-        let predicates = self.predicates_for_function_shape_node(vcx, deps, g, call_ctx)?;
+        let (nodes, lifetime) = self.node(vcx, deps, g)?;
+        // The predicates are in terms of the callee's generic parameters, the
+        // snapshot in the caller's.
+        let (placeholder, subst) = self.placeholder_subst(call_ctx, snap(g.mir_local()), vcx, deps);
+        let predicates = vcx.mk_conj(&nodes.of(lifetime, placeholder, key));
+        Some(vcx.with_local_subst(subst, || {
+            predicates.lazy::<(), vir::ExprKind<'vir>>().reify(vcx, ())
+        }))
+    }
 
-        let local = g.mir_local();
-        let local_snap = snap(local);
-        Some(
-            vcx.mk_conj(
-                &predicates
-                    .iter()
-                    .map(|p| p.reify(vcx, local_snap))
-                    .collect::<Vec<_>>(),
-            ),
-        )
+    /// The statements that give a call with generic arguments `call_ctx` the
+    /// predicates its precondition requires of the arguments, whose snapshots
+    /// `arguments` are in order, where they differ from the caller's.
+    pub fn before_call<E: TaskEncoder>(
+        &self,
+        vcx: &'vir vir::VirCtxt<'vir>,
+        deps: &mut TaskEncoderDependencies<'vir, E>,
+        arguments: &[vir::ExprSnap<'vir>],
+        call_ctx: GArgs<'vir>,
+    ) -> Result<Vec<vir::Stmt<'vir>>, EncodeFullError<'vir, E>> {
+        let mut stmts = Vec::new();
+        for g in self.inputs() {
+            // The callee's argument locals start after the return place.
+            let arg = arguments[g.mir_local().as_usize() - 1];
+            stmts.extend(self.call_adjustments(
+                vcx,
+                deps,
+                g.into(),
+                arg,
+                call_ctx,
+                CallSide::Before,
+            )?);
+        }
+        Ok(stmts)
+    }
+
+    /// The statements that turn the predicates a call's postcondition gives
+    /// back into the caller's: those of the inputs not blocked by the result,
+    /// on the arguments' snapshots before the call `arguments`, and those of
+    /// the result, with snapshot `result`. The predicates of nested lifetimes
+    /// in the arguments that the postcondition gives back are not handled yet.
+    pub fn after_call<E: TaskEncoder>(
+        &self,
+        vcx: &'vir vir::VirCtxt<'vir>,
+        deps: &mut TaskEncoderDependencies<'vir, E>,
+        arguments: &[vir::ExprSnap<'vir>],
+        result: vir::ExprSnap<'vir>,
+        call_ctx: GArgs<'vir>,
+    ) -> Result<Vec<vir::Stmt<'vir>>, EncodeFullError<'vir, E>> {
+        let blocked = self.blocked_inputs();
+        let inputs = self
+            .inputs()
+            .filter(|g| !blocked.contains(g))
+            .map(|g| (g.into(), arguments[g.mir_local().as_usize() - 1]));
+        let outputs = self
+            .outputs()
+            .filter(|g| g.mir_local() == mir::RETURN_PLACE)
+            .map(|g| (g, result));
+        let mut stmts = Vec::new();
+        for (g, snap) in inputs.chain(outputs).collect::<Vec<_>>() {
+            stmts.extend(self.call_adjustments(
+                vcx,
+                deps,
+                g,
+                snap,
+                call_ctx,
+                CallSide::After(None),
+            )?);
+        }
+        Ok(stmts)
+    }
+
+    /// The statements that give the wands of a call with generic arguments
+    /// `call_ctx` the predicates their left-hand sides require of the result,
+    /// whose snapshot after the call is `result`, where they differ from the
+    /// caller's: as before a call, but for the result.
+    pub fn before_apply<E: TaskEncoder>(
+        &self,
+        vcx: &'vir vir::VirCtxt<'vir>,
+        deps: &mut TaskEncoderDependencies<'vir, E>,
+        result: vir::ExprSnap<'vir>,
+        call_ctx: GArgs<'vir>,
+    ) -> Result<Vec<vir::Stmt<'vir>>, EncodeFullError<'vir, E>> {
+        let mut stmts = Vec::new();
+        for g in self
+            .outputs()
+            .filter(|g| g.mir_local() == mir::RETURN_PLACE)
+            .collect::<Vec<_>>()
+        {
+            stmts.extend(self.call_adjustments(
+                vcx,
+                deps,
+                g,
+                result,
+                call_ctx,
+                CallSide::Before,
+            )?);
+        }
+        Ok(stmts)
+    }
+
+    /// The statements that turn the predicates the wands of a call give back
+    /// into the caller's: those of the inputs blocked by the result, which
+    /// `after_call` leaves to the wands, keyed as before the call, at the
+    /// label `label_pre`, where the arguments had the snapshots `arguments`.
+    pub fn after_apply<E: TaskEncoder>(
+        &self,
+        vcx: &'vir vir::VirCtxt<'vir>,
+        deps: &mut TaskEncoderDependencies<'vir, E>,
+        arguments: &[vir::ExprSnap<'vir>],
+        label_pre: &'vir str,
+        call_ctx: GArgs<'vir>,
+    ) -> Result<Vec<vir::Stmt<'vir>>, EncodeFullError<'vir, E>> {
+        let mut stmts = Vec::new();
+        for g in self.blocked_inputs() {
+            let arg = arguments[g.mir_local().as_usize() - 1];
+            stmts.extend(self.call_adjustments(
+                vcx,
+                deps,
+                g.into(),
+                arg,
+                call_ctx,
+                CallSide::After(Some(label_pre)),
+            )?);
+        }
+        Ok(stmts)
+    }
+
+    /// The statements that turn the caller's predicates of the node `g` on a
+    /// value with snapshot `snap` into the callee's before a call with generic
+    /// arguments `call_ctx`, or the callee's back into the caller's after it.
+    /// A callee position of the lifetimes in a type parameter covers the block
+    /// of the caller's positions that the parameter's instantiation occupies,
+    /// which may be empty or have several positions: it is merged into the
+    /// callee's predicate before the call, and split after it. For a value of
+    /// a type parameter's type, the callee's predicate is the parameter's.
+    fn call_adjustments<E: TaskEncoder>(
+        &self,
+        vcx: &'vir vir::VirCtxt<'vir>,
+        deps: &mut TaskEncoderDependencies<'vir, E>,
+        g: FunctionShapeNode<Generalized>,
+        snap: vir::ExprSnap<'vir>,
+        call_ctx: GArgs<'vir>,
+        side: CallSide<'vir>,
+    ) -> Result<Vec<vir::Stmt<'vir>>, EncodeFullError<'vir, E>> {
+        let Some((nodes, lifetime)) = self.node(vcx, deps, g) else {
+            return Ok(Vec::new());
+        };
+        if !matches!(lifetime, GeneralizedLifetime::RegionsIn(_)) {
+            return Ok(Vec::new());
+        }
+        let callee_ty = g.ty(self.fn_sig(vcx, None));
+        let target = if matches!(callee_ty.kind(), ty::TyKind::Param(_)) {
+            MergeTarget::Param
+        } else {
+            MergeTarget::Own
+        };
+        let callee_decomp = RustTyDecomposition::from_ty(callee_ty, self.g_params(vcx, None));
+        let graph = deps.require_dep::<LifetimePositionEnc>(callee_decomp)?;
+        let caller_ty = g.ty(self.fn_sig(vcx, Some(call_ctx)));
+        let caller_decomp = RustTyDecomposition::from_ty(caller_ty, call_ctx.context());
+        let mut blocks: IndexVec<LifetimePosition, (usize, usize)> = IndexVec::new();
+        let mut end = 0;
+        for p in graph.positions() {
+            let width = match graph.lifetime_in(p, caller_ty, call_ctx.context()) {
+                TyLifetime::Region(_) => 1,
+                TyLifetime::RegionsIn(ty) => deps
+                    .require_dep::<LifetimePositionEnc>(ty)?
+                    .positions()
+                    .count(),
+            };
+            blocks.push((end, end + width));
+            end += width;
+        }
+        let caller_graph = deps.require_dep::<LifetimePositionEnc>(caller_decomp)?;
+        assert_eq!(
+            end,
+            caller_graph.positions().count(),
+            "the callee's positions do not cover the caller's"
+        );
+        // The merge/split methods are shared by the instantiations with the
+        // same canonical form and take its type parameters.
+        let (_, params) = caller_decomp
+            .canonical_with_params()
+            .expect("the merge/split encoder rejects const parameters");
+        let params = vcx
+            .tcx()
+            .mk_args_from_iter(params.into_iter().map(ty::GenericArg::from));
+        let args = deps.require_dep::<GArgsTyEnc>(GArgs::new(call_ctx.context(), params))?;
+        let (placeholder, subst) = self.placeholder_subst(Some(call_ctx), snap, vcx, deps);
+        let mut stmts = Vec::new();
+        for p in nodes.positions_of(lifetime) {
+            let (first, end) = blocks[p];
+            let block = (
+                caller_decomp,
+                LifetimePosition::new(first),
+                LifetimePosition::new(end),
+                target,
+            );
+            let merge_split = deps.require_ref::<MergeSplitEnc>(block)?;
+            // A type parameter's only position is keyed by the value's
+            // snapshot, which the methods cast to the generic one themselves.
+            let key = match target {
+                MergeTarget::Param => snap,
+                MergeTarget::Own => {
+                    let key = nodes.key(p, placeholder);
+                    let key = vcx.with_local_subst(subst, || {
+                        key.lazy::<(), vir::ExprKind<'vir>>().reify(vcx, ())
+                    });
+                    match side {
+                        CallSide::After(Some(label)) => vcx.mk_local_labelled_old_expr(key, label),
+                        _ => key,
+                    }
+                }
+            };
+            let method = match side {
+                CallSide::Before => merge_split.merge,
+                CallSide::After(_) => merge_split.split,
+            };
+            stmts.push(method(key, args.get_ty(), args.get_const()).alloc());
+        }
+        Ok(stmts)
     }
 
     pub fn indirect_pres<'a, E: TaskEncoder>(
@@ -218,9 +522,14 @@ impl<'vir> WandEncOutput<'vir> {
         deps: &'a mut TaskEncoderDependencies<'vir, E>,
     ) -> impl Iterator<Item = vir::ExprBool<'vir>> + 'a {
         self.inputs().filter_map(|g| {
-            self.encode_predicates_for_function_shape_node(vcx, deps, g, None, |i| {
-                local_defs[i].impure_snap
-            })
+            self.encode_predicates_for_function_shape_node(
+                vcx,
+                deps,
+                g,
+                None,
+                |i| local_defs[i].impure_snap,
+                None,
+            )
         })
     }
 
@@ -239,17 +548,28 @@ impl<'vir> WandEncOutput<'vir> {
             .inputs()
             .filter(|i| !self.blocked_inputs().contains(i))
             .filter_map(|lp| {
-                self.encode_predicates_for_function_shape_node(vcx, deps, lp, None, |i| {
-                    vcx.mk_old_expr(local_defs[i].impure_snap)
-                })
+                // Unblocked inputs are given back in the post-state.
+                self.encode_predicates_for_function_shape_node(
+                    vcx,
+                    deps,
+                    lp,
+                    None,
+                    |i| vcx.mk_old_expr(local_defs[i].impure_snap),
+                    None,
+                )
             })
             .collect::<Vec<_>>()
             .into_iter();
 
         let output_posts = self.outputs().filter_map(|g| {
-            self.encode_predicates_for_function_shape_node(vcx, deps, g, None, |i| {
-                local_defs[i].impure_snap
-            })
+            self.encode_predicates_for_function_shape_node(
+                vcx,
+                deps,
+                g,
+                None,
+                |i| local_defs[i].impure_snap,
+                None,
+            )
         });
         unblocked_input_posts.chain(output_posts)
     }
@@ -270,12 +590,26 @@ impl<'vir> WandEncOutput<'vir> {
 
         // TODO: wands for late-bound regions
         self.viper_wands().into_iter().filter_map(move |wand_data| {
-            let wand = self.mk_wand(&wand_data, args, None, None, vcx, deps)?;
-            Some(vcx.mk_let_expr(
-                wand_result,
-                local_defs[mir::RETURN_PLACE].impure_snap,
-                vcx.mk_wand_expr(wand),
-            ))
+            // The keys of the left side are bound outside the wand, which
+            // must be self-framing: they read the result's predicates of the
+            // other lifetimes, which are not in its left side.
+            let mut bindings = Vec::new();
+            let wand = self.mk_wand(
+                &wand_data,
+                args,
+                None,
+                LhsKeys::Bound(&mut bindings),
+                None,
+                vcx,
+                deps,
+            )?;
+            let wand = bindings
+                .into_iter()
+                .rev()
+                .fold(vcx.mk_wand_expr(wand), |expr, (decl, key)| {
+                    vcx.mk_let_expr(decl, key, expr)
+                });
+            Some(vcx.mk_let_expr(wand_result, local_defs[mir::RETURN_PLACE].impure_snap, wand))
         })
     }
 
@@ -286,7 +620,13 @@ impl<'vir> WandEncOutput<'vir> {
         label_post: &'vir str,
         call_ctx: GArgs<'vir>,
         visitor: &mut ImpureEncVisitor<'vir, '_, E>,
-    ) -> Vec<vir::Wand<'vir>> {
+    ) -> Result<Vec<vir::Wand<'vir>>, EncodeFullError<'vir, E>> {
+        // The wands are in the callee's terms.
+        let arguments = arguments
+            .iter()
+            .enumerate()
+            .map(|(local, &snap)| self.snap_in_callee(visitor.deps, local.into(), snap, call_ctx))
+            .collect::<Result<Vec<_>, _>>()?;
         let result = visitor
             .vcx
             .mk_local_labelled_old_expr(arguments[mir::RETURN_PLACE.as_usize()], label_post);
@@ -302,6 +642,7 @@ impl<'vir> WandEncOutput<'vir> {
                 &wand_data,
                 args,
                 Some(label_pre),
+                LhsKeys::AtLabel(vir::OldLabel::Label(label_post)),
                 Some(call_ctx),
                 visitor.vcx,
                 visitor.deps,
@@ -310,14 +651,37 @@ impl<'vir> WandEncOutput<'vir> {
             };
             wands.push(wand);
         }
-        wands
+        Ok(wands)
     }
 
+    /// `snap`, the caller's snapshot of the callee's local `local` at a call
+    /// with generic arguments `call_ctx`, in the callee's terms: the value of a
+    /// type parameter of the callee is a generic snapshot, cast as for the
+    /// call's arguments.
+    fn snap_in_callee<E: TaskEncoder>(
+        &self,
+        deps: &mut TaskEncoderDependencies<'vir, E>,
+        local: mir::Local,
+        snap: vir::ExprSnap<'vir>,
+        call_ctx: GArgs<'vir>,
+    ) -> Result<vir::ExprSnap<'vir>, EncodeFullError<'vir, E>> {
+        let signature = RustSignature::new(self.function_data.def_id());
+        let ty = match local.as_usize() {
+            0 => signature.output,
+            arg => signature.inputs[arg - 1],
+        };
+        let normalized = ty.decompose_compare_normalize(signature.gparams, call_ctx);
+        let caster = deps.require_dep::<GArgsCastEnc<Pure>>(normalized)?;
+        Ok(caster.cast_to_callee_ctx(snap))
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn mk_wand<E: TaskEncoder>(
         &self,
         wand_data: &WandData<'vir>,
         pledge_args: PledgeArgs<'vir>,
         pledge_old_label: Option<&'vir str>,
+        mut lhs_keys: LhsKeys<'vir, '_>,
         call_ctx: WandCallContext<'vir>,
         vcx: &'vir vir::VirCtxt<'vir>,
         deps: &mut TaskEncoderDependencies<'vir, E>,
@@ -330,10 +694,17 @@ impl<'vir> WandEncOutput<'vir> {
             }
             None => pledge.expr(pledge_args),
         };
+        // The right side gives back inputs, as they were before the call.
+        let pre = Some(pledge_old_label.map_or(vir::OldLabel::None, vir::OldLabel::Label));
         let rhs = wand_data.rhs.iter().filter_map(|g| {
-            self.encode_predicates_for_function_shape_node(vcx, deps, *g, call_ctx, |i| {
-                pledge_args[i]
-            })
+            self.encode_predicates_for_function_shape_node(
+                vcx,
+                deps,
+                *g,
+                call_ctx,
+                |i| pledge_args[i],
+                pre,
+            )
         });
         let rhs = rhs
             .chain(
@@ -350,12 +721,30 @@ impl<'vir> WandEncOutput<'vir> {
             return None;
         }
         let rhs = vcx.mk_conj(&rhs);
-        let lhs = wand_data.lhs.iter().filter_map(|g| {
-            self.encode_predicates_for_function_shape_node(vcx, deps, *g, call_ctx, |i| {
-                pledge_args[i]
-            })
-        });
+        let mut lhs = Vec::new();
+        for g in &wand_data.lhs {
+            let key = |key: vir::ExprSnap<'vir>| match &mut lhs_keys {
+                #[cfg(test)]
+                LhsKeys::InPlace => key,
+                LhsKeys::AtLabel(label) => vcx.maybe_apply_label(key, Some(*label)),
+                LhsKeys::Bound(bindings) => {
+                    let name = vir::vir_format!(vcx, "wand_key_{}", bindings.len());
+                    let decl = vcx.mk_local_decl(name, key.ty());
+                    bindings.push((decl, key));
+                    vcx.mk_local_ex(decl)
+                }
+            };
+            lhs.extend(self.encode_predicates_with_keys(
+                vcx,
+                deps,
+                *g,
+                call_ctx,
+                |i| pledge_args[i],
+                key,
+            ));
+        }
         let lhs = lhs
+            .into_iter()
             .chain(
                 wand_data
                     .pledges
@@ -395,6 +784,32 @@ impl<'vir> WandEncOutput<'vir> {
             .zip(args.get_const::<(), !>())
             .map(|(decl, arg)| (decl.name, arg.as_dyn()));
         vcx.alloc(tys.chain(consts).collect())
+    }
+
+    /// A placeholder for `snap`, a snapshot in the caller's terms, and the
+    /// substitution of `generics_subst` that also replaces the placeholder by
+    /// `snap`. An expression built on the placeholder in the callee's terms
+    /// and reified under the substitution has `snap` in it, which the
+    /// substitution does not apply to: its type parameters are the caller's,
+    /// which may have the names of the callee's. Without a call context,
+    /// nothing is substituted, and `snap` is its own placeholder.
+    fn placeholder_subst<E: TaskEncoder>(
+        &self,
+        call_ctx: WandCallContext<'vir>,
+        snap: vir::ExprSnap<'vir>,
+        vcx: &'vir vir::VirCtxt<'vir>,
+        deps: &mut TaskEncoderDependencies<'vir, E>,
+    ) -> (
+        vir::ExprSnap<'vir>,
+        &'vir FxHashMap<&'vir str, vir::ExprDyn<'vir>>,
+    ) {
+        if call_ctx.is_none() {
+            return (snap, self.generics_subst(call_ctx, vcx, deps));
+        }
+        let placeholder = vcx.mk_local_decl("call_arg", snap.ty());
+        let mut subst = self.generics_subst(call_ctx, vcx, deps).clone();
+        subst.insert(placeholder.name, snap.as_dyn());
+        (vcx.mk_local_ex(placeholder), vcx.alloc(subst))
     }
 }
 
@@ -487,19 +902,24 @@ impl TaskEncoder for WandEnc {
                 .into_iter()
                 .filter_map(|hyper_edge| {
                     let (sources, mut targets) = hyper_edge.into_tuple();
-                    // We don't want to emit an identity wand, like P --* P. This can happen when
-                    // PCG returns self-edges, like for fn(x: &'a mut &'b i32) where 'b is in
-                    // invariant position and we therefore have an edge x|'b -> x|'b.
-                    // Currently, these edges also prevent us from emitting indirect postconditions.
+                    // The PCG gives an argument's lifetime projection in an
+                    // invariant position an edge to the argument's own
+                    // post-state (e.g. `x|'b -> x|'b` for `x: &'a mut &'b i32`,
+                    // or `x|RegionsIn(T) -> x|RegionsIn(T)` for `x: T`). The
+                    // encoding gives the post-state the predicate of the
+                    // pre-state, so such a target is the source the wand gives
+                    // back: requiring it on the left would make the wand
+                    // unappliable (the argument's predicate was given to the
+                    // callee, e.g. moved into the result). These targets are
+                    // left out, and a wand without other targets is not emitted.
                     // TODO: we might want to emit these identity wands in the future to attach functional
-                    // specifications to them. We still need to emit the resources on the wand's LHS.
-                    let mut sources_as_nodes = sources
+                    // specifications to them.
+                    let sources_as_nodes = sources
                         .iter()
                         .map(|&s| s.to_function_shape_node())
                         .collect::<Vec<_>>();
-                    sources_as_nodes.sort();
-                    targets.sort();
-                    if sources_as_nodes == targets {
+                    targets.retain(|target| !sources_as_nodes.contains(target));
+                    if targets.is_empty() {
                         return None;
                     }
                     Some(WandData::new(targets, sources, pledges.clone()))
@@ -531,10 +951,8 @@ impl<'vir> WandEncOutput<'vir> {
         vcx: &'vir vir::VirCtxt<'vir>,
         deps: &mut TaskEncoderDependencies<'vir, E>,
     ) -> Result<Vec<WandData<'vir>>, String> {
-        let mut has_resources = |g: FunctionShapeNode<Generalized>| {
-            self.predicates_for_function_shape_node(vcx, deps, g, None)
-                .is_some()
-        };
+        let mut has_resources =
+            |g: FunctionShapeNode<Generalized>| self.node(vcx, deps, g).is_some();
         // A wand is only needed if it gives back a resource, or to carry the
         // pledges if none does (e.g. for shared references).
         let (mut wands, resourceless): (Vec<_>, Vec<_>) = wands
@@ -611,5 +1029,397 @@ impl<'vir> WandEncOutput<'vir> {
 
     pub fn outputs(&self) -> impl Iterator<Item = FunctionShapeOutput<Generalized>> + '_ {
         self.outputs.iter().copied()
+    }
+}
+
+/// Tests that show the wands `WandEnc` builds for a function's signature.
+#[cfg(test)]
+mod tests {
+    use pcg::borrow_pcg::FunctionData;
+    use prusti_rustc_interface::{
+        hir::def::DefKind,
+        span::{DUMMY_SP, def_id::DefId},
+    };
+    use task_encoder::{EncodeFullError, EncodeFullResult, TaskEncoder, TaskEncoderDependencies};
+    use vir::CastType;
+
+    use super::{LhsKeys, WandEnc, WandEncTask};
+    use crate::encoders::{
+        MirLocalDefEnc, MirLocalDefEncTask, TyUseImpureEnc,
+        pure::spec::PledgeExpr,
+        ty::{
+            RustTyDecomposition,
+            test_util::{dedent, simplified, with_crate},
+        },
+    };
+
+    /// The wands and the contract of a function, as shown by `assert_wands`
+    /// and `assert_contract`.
+    #[derive(Clone)]
+    struct Shown {
+        wands: Vec<String>,
+        contract: Vec<String>,
+    }
+
+    impl Shown {
+        fn error(message: &str) -> Self {
+            let lines = vec![format!("error: {message}")];
+            Self {
+                wands: lines.clone(),
+                contract: lines,
+            }
+        }
+    }
+
+    /// The wands and the contract of a function, or the error of `WandEnc`.
+    /// As in `wand_posts`, the wands are on the result's snapshot and the old
+    /// snapshots of the arguments, each named after its parameter. The
+    /// contract consists of the predicates that `method.rs` adds to the
+    /// method's pre- and postconditions with `indirect_pres` and
+    /// `indirect_posts`, on the method's own locals. Building them requires
+    /// the dependencies of an encoder.
+    struct WandTestEnc;
+
+    impl TaskEncoder for WandTestEnc {
+        task_encoder::encoder_cache!(WandTestEnc);
+        const ENCODER_NAME: &'static str = "wand test encoder";
+
+        type TaskDescription<'vir> = DefId;
+        type OutputFullDependency<'vir> = Shown;
+
+        fn task_to_key<'vir>(task: &Self::TaskDescription<'vir>) -> Self::TaskKey<'vir> {
+            *task
+        }
+
+        fn do_encode_full<'vir>(
+            task_key: &Self::TaskKey<'vir>,
+            deps: &mut TaskEncoderDependencies<'vir, Self>,
+        ) -> EncodeFullResult<'vir, Self> {
+            let def_id = *task_key;
+            deps.emit_output_ref(def_id, ())?;
+            let task = WandEncTask {
+                data: FunctionData::new(def_id),
+            };
+            let wands = match deps.require_dep::<WandEnc>(task) {
+                Ok(wands) => wands,
+                // The error of `WandEnc` itself comes last, after its context.
+                Err(EncodeFullError::DependencyError(errors)) => {
+                    let message = &errors.last().unwrap().message;
+                    return Ok(((), Shown::error(message)));
+                }
+                Err(error) => return Err(error),
+            };
+            vir::with_vcx(|vcx| {
+                let sig = wands.fn_sig(vcx, None);
+                let params = vcx.tcx().fn_arg_idents(def_id).iter();
+                let names = std::iter::once("result".to_string())
+                    .chain(params.map(|ident| ident.unwrap().to_string()));
+                let tys = std::iter::once(sig.output()).chain(sig.inputs().iter().copied());
+                let mut snaps = Vec::new();
+                for (ty, name) in tys.zip(names) {
+                    let ty = RustTyDecomposition::from_ty(ty, def_id);
+                    let snapshot = deps.require_dep::<TyUseImpureEnc>(ty)?.snapshot();
+                    let decl = vcx.mk_local_decl(vcx.alloc_str(&name), snapshot);
+                    snaps.push(vcx.mk_local_ex(decl));
+                }
+                let args = snaps[1..].iter().map(|&snap| vcx.mk_old_expr(snap));
+                let args = PledgeExpr::pledge_args(snaps[0], args);
+                let mut lines = Vec::new();
+                for wand_data in wands.viper_wands() {
+                    if let Some(wand) =
+                        wands.mk_wand(&wand_data, args, None, LhsKeys::InPlace, None, vcx, deps)
+                    {
+                        let mut wand_lines = show(wand.lhs);
+                        wand_lines.push("--*".to_string());
+                        wand_lines.extend(show(wand.rhs));
+                        lines.push(wand_lines.join("\n"));
+                    }
+                }
+                let local_defs = deps.require_dep::<MirLocalDefEnc>(MirLocalDefEncTask::Local {
+                    def_id,
+                    all_locals: false,
+                })?;
+                let pres = wands
+                    .indirect_pres(vcx, &local_defs, deps)
+                    .collect::<Vec<_>>();
+                let posts = wands
+                    .indirect_posts(vcx, &local_defs, deps)
+                    .collect::<Vec<_>>();
+                let pres = pres
+                    .into_iter()
+                    .flat_map(show)
+                    .map(|c| format!("requires {c}"));
+                let posts = posts
+                    .into_iter()
+                    .flat_map(show)
+                    .map(|c| format!("ensures {c}"));
+                let contract = pres.chain(posts).collect();
+                Ok((
+                    (),
+                    Shown {
+                        wands: lines,
+                        contract,
+                    },
+                ))
+            })
+        }
+    }
+
+    /// Replaces `inhabited(..)` by `true`, which the simplifier then drops:
+    /// it is not about borrows.
+    struct DropInhabited;
+
+    impl<'vir> vir::Folder<'vir, (), !> for DropInhabited {
+        fn fold_expr(
+            &mut self,
+            e: vir::ExprGenDyn<'vir, (), !>,
+        ) -> Option<vir::ExprGenDyn<'vir, (), !>> {
+            match e.kind {
+                vir::ExprKindGenData::FuncApp(app) if app.target == "inhabited" => {
+                    Some(vir::with_vcx(|vcx| vcx.mk_bool::<true>().as_dyn()))
+                }
+                _ => e.super_fold_with(self),
+            }
+        }
+    }
+
+    /// The conjuncts of the simplified `e`, one per line.
+    fn show(e: vir::ExprBool<'_>) -> Vec<String> {
+        use vir::Foldable;
+        let e = simplified(e.fold_with(&mut DropInhabited).unwrap_or(e));
+        let mut conjuncts = Vec::new();
+        collect_conjuncts(e.as_dyn(), &mut conjuncts);
+        conjuncts.iter().map(|c| format!("{c:?}")).collect()
+    }
+
+    fn collect_conjuncts<'vir>(e: vir::ExprDyn<'vir>, conjuncts: &mut Vec<vir::ExprDyn<'vir>>) {
+        match e.kind {
+            vir::ExprKindGenData::BinOp(b) if b.kind == vir::BinOpKind::And => {
+                collect_conjuncts(b.lhs, conjuncts);
+                collect_conjuncts(b.rhs, conjuncts);
+            }
+            _ => conjuncts.push(e),
+        }
+    }
+
+    /// What `WandTestEnc` shows for the function `f` defined in `src`.
+    fn shown(src: &str) -> Shown {
+        with_crate(src, |tcx| {
+            let f = tcx
+                .hir_crate_items(())
+                .definitions()
+                .find(|&def_id| {
+                    tcx.def_kind(def_id) == DefKind::Fn && tcx.item_name(def_id).as_str() == "f"
+                })
+                .expect("the input defines no function `f`")
+                .to_def_id();
+            let (_, _, shown) = WandTestEnc::encode(f, true, DUMMY_SP).unwrap().unwrap();
+            shown
+        })
+    }
+
+    /// Asserts that the wands of the function `f` defined in `src` are
+    /// `expected`: each wand lists the conjuncts of its left side, `--*`, and
+    /// the conjuncts of its right side on lines of their own, and wands are
+    /// separated by an empty line.
+    fn assert_wands(src: &str, expected: &str) {
+        assert_eq!(shown(src).wands.join("\n\n"), dedent(expected));
+    }
+
+    /// Asserts that the contract of the function `f` defined in `src` is
+    /// `expected`, one conjunct of a pre- or postcondition per line.
+    fn assert_contract(src: &str, expected: &str) {
+        assert_eq!(shown(src).contract.join("\n"), dedent(expected));
+    }
+
+    #[test]
+    fn reborrow() {
+        assert_wands(
+            "fn f<'a>(x: &'a mut i32) -> &'a mut i32 { x }",
+            r#"
+            p_Ref_mutable_ind(result, s_Int_i32_type(), 0, 1)
+            --*
+            p_Ref_mutable_ind(old(x), s_Int_i32_type(), 0, 1)
+            "#,
+        );
+    }
+
+    #[test]
+    fn nested_references_reborrow() {
+        assert_wands(
+            "fn f<'a, 'b>(x: &'a mut &'b mut i32) -> &'a mut i32 { *x }",
+            r#"
+            error: borrows in the result that expire separately but depend on a common argument are not supported
+            "#,
+        );
+    }
+
+    #[test]
+    fn lifetime_in_struct() {
+        assert_wands(
+            "struct S<'a> { r: &'a mut i32 }
+             fn f<'a, 'b>(s: &'b mut S<'a>) -> &'b mut i32 { s.r }",
+            r#"
+            error: borrows in the result that expire separately but depend on a common argument are not supported
+            "#,
+        );
+    }
+
+    /// The lifetimes in `T` are nested in `*x`, like `'b` in
+    /// `&'a mut S<'b>`, and expire separately from `'a`.
+    #[test]
+    fn generic_referent() {
+        assert_wands(
+            "fn f<'a, T>(x: &'a mut T) -> &'a mut T { x }",
+            r#"
+            error: borrows in the result that expire separately but depend on a common argument are not supported
+            "#,
+        );
+    }
+
+    #[test]
+    fn reborrow_into_adt() {
+        assert_wands(
+            "fn f<'a, T>(x: &'a mut Option<T>) -> Option<&'a mut T> { x.as_mut() }",
+            r#"
+            p_Option_ind(result, s_Ref_mutable_type(T$0), 0, 1)
+            --*
+            p_Ref_mutable_ind(old(x), s_Option_type(T$0), 0, 1)
+
+            p_Ref_mutable_ind(extend_Ref_mutable(old(x), s_Option_type(T$0), 0, 1), s_Option_type(T$0), 1, (1) + (arity(T$0)))
+            p_Option_ind(extend_Option(result, s_Ref_mutable_type(T$0), 0, 1), s_Ref_mutable_type(T$0), 1, (1) + (arity(T$0)))
+            --*
+            p_Ref_mutable_ind(old(extend_Ref_mutable(old(x), s_Option_type(T$0), 0, 1)), s_Option_type(T$0), 1, (1) + (arity(T$0)))
+            "#,
+        );
+    }
+    /// Result borrows that expire separately get a wand each.
+    #[test]
+    fn two_wands() {
+        assert_wands(
+            "fn f<'a, 'b>(x: &'a mut i32, y: &'b mut i32) -> (&'a mut i32, &'b mut i32) { (x, y) }",
+            r#"
+            p_2_Tuple_ind(result, s_Ref_mutable_type(s_Int_i32_type()), s_Ref_mutable_type(s_Int_i32_type()), 0, 1)
+            --*
+            p_Ref_mutable_ind(old(x), s_Int_i32_type(), 0, 1)
+
+            p_2_Tuple_ind(result, s_Ref_mutable_type(s_Int_i32_type()), s_Ref_mutable_type(s_Int_i32_type()), 1, 2)
+            --*
+            p_Ref_mutable_ind(old(y), s_Int_i32_type(), 0, 1)
+            "#,
+        );
+    }
+
+    /// The result may borrow from both arguments, which have different
+    /// lifetimes.
+    #[test]
+    fn two_sources() {
+        assert_wands(
+            "fn f<'a, 'b: 'a>(x: &'a mut i32, y: &'b mut i32) -> &'a mut i32 { x }",
+            r#"
+            p_Ref_mutable_ind(result, s_Int_i32_type(), 0, 1)
+            --*
+            p_Ref_mutable_ind(old(x), s_Int_i32_type(), 0, 1)
+            p_Ref_mutable_ind(old(y), s_Int_i32_type(), 0, 1)
+            "#,
+        );
+    }
+
+    /// Two result lifetimes that both borrow from the same argument are given
+    /// back together.
+    #[test]
+    fn two_targets() {
+        assert_wands(
+            "fn f<'a: 'b + 'c, 'b, 'c>(x: &'a mut i32) -> (&'b mut i32, &'c mut i32) { (x, todo!()) }",
+            r#"
+            p_2_Tuple_ind(result, s_Ref_mutable_type(s_Int_i32_type()), s_Ref_mutable_type(s_Int_i32_type()), 0, 1)
+            p_2_Tuple_ind(result, s_Ref_mutable_type(s_Int_i32_type()), s_Ref_mutable_type(s_Int_i32_type()), 1, 2)
+            --*
+            p_Ref_mutable_ind(old(x), s_Int_i32_type(), 0, 1)
+            "#,
+        );
+    }
+
+    /// A lifetime that occurs twice in the result is one node.
+    #[test]
+    fn lifetime_twice() {
+        assert_wands(
+            "fn f<'a>(x: &'a mut (i32, i32)) -> (&'a mut i32, &'a mut i32) { (&mut x.0, &mut x.1) }",
+            r#"
+            p_2_Tuple_ind(result, s_Ref_mutable_type(s_Int_i32_type()), s_Ref_mutable_type(s_Int_i32_type()), 0, 1)
+            p_2_Tuple_ind(result, s_Ref_mutable_type(s_Int_i32_type()), s_Ref_mutable_type(s_Int_i32_type()), 1, 2)
+            --*
+            p_Ref_mutable_ind(old(x), s_2_Tuple_type(s_Int_i32_type(), s_Int_i32_type()), 0, 1)
+            "#,
+        );
+    }
+
+    /// The callee stores `y` in `*x`, so the caller gets back `**x` from
+    /// before the call, and `*y`, once it gives up `**x` after the call. The
+    /// key of `**x` on the right side reads `*x` before the call.
+    #[test]
+    fn store_into_argument() {
+        assert_wands(
+            "fn f<'a, 'b>(x: &'a mut &'b mut i32, y: &'b mut i32) { *x = y; }",
+            r#"
+            p_Ref_mutable_ind(extend_Ref_mutable(old(x), s_Ref_mutable_type(s_Int_i32_type()), 0, 1), s_Ref_mutable_type(s_Int_i32_type()), 1, 2)
+            --*
+            p_Ref_mutable_ind(old(extend_Ref_mutable(old(x), s_Ref_mutable_type(s_Int_i32_type()), 0, 1)), s_Ref_mutable_type(s_Int_i32_type()), 1, 2)
+            p_Ref_mutable_ind(old(y), s_Int_i32_type(), 0, 1)
+            "#,
+        );
+    }
+
+    #[test]
+    fn contract_reborrow() {
+        assert_contract(
+            "fn f<'a>(x: &'a mut i32) -> &'a mut i32 { x }",
+            r#"
+            requires p_Ref_mutable_ind(p_Ref_mutable_snap(_1p, s_Int_i32_type()), s_Int_i32_type(), 0, 1)
+            ensures p_Ref_mutable_ind(p_Ref_mutable_snap(_0p, s_Int_i32_type()), s_Int_i32_type(), 0, 1)
+            "#,
+        );
+    }
+
+    /// The nested lifetime is given back by the postcondition, on the referent
+    /// of `x` after the call.
+    #[test]
+    fn contract_nested_references() {
+        assert_contract(
+            "fn f<'a, 'b>(x: &'a mut &'b mut i32) {}",
+            r#"
+            requires p_Ref_mutable_ind(p_Ref_mutable_snap(_1p, s_Ref_mutable_type(s_Int_i32_type())), s_Ref_mutable_type(s_Int_i32_type()), 0, 1)
+            requires p_Ref_mutable_ind(extend_Ref_mutable(p_Ref_mutable_snap(_1p, s_Ref_mutable_type(s_Int_i32_type())), s_Ref_mutable_type(s_Int_i32_type()), 0, 1), s_Ref_mutable_type(s_Int_i32_type()), 1, 2)
+            ensures p_Ref_mutable_ind(old(p_Ref_mutable_snap(_1p, s_Ref_mutable_type(s_Int_i32_type()))), s_Ref_mutable_type(s_Int_i32_type()), 0, 1)
+            ensures p_Ref_mutable_ind(extend_Ref_mutable(old(p_Ref_mutable_snap(_1p, s_Ref_mutable_type(s_Int_i32_type()))), s_Ref_mutable_type(s_Int_i32_type()), 0, 1), s_Ref_mutable_type(s_Int_i32_type()), 1, 2)
+            "#,
+        );
+    }
+
+    /// The nested lifetimes are given back by the wand, not the postcondition.
+    #[test]
+    fn contract_store_into_argument() {
+        assert_contract(
+            "fn f<'a, 'b>(x: &'a mut &'b mut i32, y: &'b mut i32) { *x = y; }",
+            r#"
+            requires p_Ref_mutable_ind(p_Ref_mutable_snap(_1p, s_Ref_mutable_type(s_Int_i32_type())), s_Ref_mutable_type(s_Int_i32_type()), 0, 1)
+            requires p_Ref_mutable_ind(extend_Ref_mutable(p_Ref_mutable_snap(_1p, s_Ref_mutable_type(s_Int_i32_type())), s_Ref_mutable_type(s_Int_i32_type()), 0, 1), s_Ref_mutable_type(s_Int_i32_type()), 1, 2)
+            requires p_Ref_mutable_ind(p_Ref_mutable_snap(_2p, s_Int_i32_type()), s_Int_i32_type(), 0, 1)
+            ensures p_Ref_mutable_ind(old(p_Ref_mutable_snap(_1p, s_Ref_mutable_type(s_Int_i32_type()))), s_Ref_mutable_type(s_Int_i32_type()), 0, 1)
+            "#,
+        );
+    }
+
+    #[test]
+    fn contract_generic_referent() {
+        assert_contract(
+            "fn f<T>(x: &mut T) {}",
+            r#"
+            requires p_Ref_mutable_ind(p_Ref_mutable_snap(_1p, T$0), T$0, 0, 1)
+            requires p_Ref_mutable_ind(extend_Ref_mutable(p_Ref_mutable_snap(_1p, T$0), T$0, 0, 1), T$0, 1, (1) + (arity(T$0)))
+            ensures p_Ref_mutable_ind(old(p_Ref_mutable_snap(_1p, T$0)), T$0, 0, 1)
+            ensures p_Ref_mutable_ind(extend_Ref_mutable(old(p_Ref_mutable_snap(_1p, T$0)), T$0, 0, 1), T$0, 1, (1) + (arity(T$0)))
+            "#,
+        );
     }
 }

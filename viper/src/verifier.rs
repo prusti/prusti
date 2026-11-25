@@ -427,6 +427,67 @@ impl<'a> Verifier<'a> {
     }
 }
 
+/// Verifies the Viper program in a file with Silicon, from parsing to
+/// verification, as `SiliconRunner` does with the command line arguments
+/// `args`, which end with the file. Returns the messages of the errors.
+pub fn verify_file_with_silicon(
+    env: &JNIEnv<'_>,
+    args: &[String],
+) -> std::result::Result<(), Vec<String>> {
+    let jni = JniUtils::new(env);
+    let frontend_wrapper = silver::frontend::SilFrontend::with(env);
+    let abstract_error_wrapper = silver::verifier::AbstractError::with(env);
+    let messages = |errors: JObject<'_>| -> Vec<String> {
+        jni.seq_to_vec(errors)
+            .into_iter()
+            .map(|error| {
+                jni.to_string(jni.unwrap_result(abstract_error_wrapper.call_readableMessage(error)))
+            })
+            .collect()
+    };
+    let mut result = Ok(());
+    jni.unwrap_result(env.with_local_frame(32, || {
+        let reporter =
+            jni.unwrap_result(silver::reporter::NoopReporter_object::with(env).singleton());
+        let logger_singleton =
+            jni.unwrap_result(silver::logger::SilentLogger_object::with(env).singleton());
+        let logger_factory = jni.unwrap_result(
+            silver::logger::SilentLogger_object::with(env).call_apply(logger_singleton),
+        );
+        let logger =
+            jni.unwrap_result(silver::logger::ViperLogger::with(env).call_get(logger_factory));
+        let frontend = jni.unwrap_result(silicon::SiliconFrontend::with(env).new(reporter, logger));
+        let args = jni.new_seq(
+            &args
+                .iter()
+                .map(|arg| jni.new_string(arg))
+                .collect::<Vec<_>>(),
+        );
+        jni.unwrap_result(frontend_wrapper.call_execute(frontend, args, jni.new_option(None)));
+        let result_option =
+            jni.unwrap_result(frontend_wrapper.call_getVerificationResult(frontend));
+        let is_empty = jni.unwrap_result(scala::Option::with(env).call_isEmpty(result_option));
+        if is_empty {
+            // The file was rejected before verification, e.g. by the parser.
+            result = Err(messages(
+                jni.unwrap_result(frontend_wrapper.call_errors(frontend)),
+            ));
+        } else {
+            let viper_result = jni.unwrap_result(scala::Some::with(env).call_get(result_option));
+            if jni.is_instance_of(viper_result, "viper/silver/verifier/Failure") {
+                result = Err(messages(jni.unwrap_result(
+                    silver::verifier::Failure::with(env).call_errors(viper_result),
+                )));
+            }
+        }
+        // Stop the verifier's threads and its prover processes.
+        let verifier = jni.unwrap_result(frontend_wrapper.call_verifier(frontend));
+        jni.unwrap_result(silver::verifier::Verifier::with(env).call_stop(verifier));
+        Ok(JObject::null())
+    }));
+    result
+}
+
 impl<'a, State> Verifier<'a, State> {
     pub fn verifier_instance(&self) -> &JObject<'a> {
         &self.verifier_instance

@@ -223,7 +223,10 @@ impl TaskEncoder for MirLocalDefEnc {
                         if spec_only_locals.contains(&local) {
                             return None;
                         }
-                        let rust_ty = body.local_decls[local].ty;
+                        let rust_ty = pcg::utils::normalize::normalize_opaque_types(
+                            vcx.tcx(),
+                            body.local_decls[local].ty,
+                        );
                         let rust_ty_task = RustTyDecomposition::from_ty(rust_ty, task_key.def_id());
                         let ty = deps.require_dep::<TyUseImpureEnc>(rust_ty_task).unwrap();
                         Some(mk_local_def(vcx, local, ty))

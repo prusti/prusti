@@ -95,3 +95,51 @@ fn boxes() {
         None => assert!(false),
     }
 }
+
+// Generic fields instantiated with mutable references: their predicates are
+// cast between the generic and the concrete type with the fields.
+
+fn generic_field_body(foo: Foo<&mut i32>) {
+    *foo.f = 1;
+}
+
+fn generic_field_construct() {
+    let mut a = 1;
+    let foo = Foo { f: &mut a };
+    *foo.f = 2;
+    assert!(a == 2);
+}
+
+fn tuple_construct() {
+    let mut a = 1;
+    let mut b = 1;
+    let t = (&mut a, &mut b);
+    *t.0 = 2;
+    *t.1 = 3;
+    assert!(a == 2 && b == 3);
+}
+
+fn option_construct() {
+    let mut a = 1;
+    let o = Some(&mut a);
+    if let Some(r) = o {
+        *r = 2;
+    }
+    assert!(a == 2);
+}
+
+fn consume_foo(_foo: Foo<&mut i32>) {}
+
+fn consume_option(_o: Option<&mut i32>) {}
+
+fn generic_field_moved() {
+    let mut a = 1;
+    consume_foo(Foo { f: &mut a });
+    let _b = a;
+}
+
+fn option_moved() {
+    let mut a = 1;
+    consume_option(Some(&mut a));
+    let _b = a;
+}

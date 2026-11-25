@@ -1,7 +1,7 @@
 use prusti_rustc_interface::{middle::ty, span::def_id::DefId};
 use rustc_hash::FxHashMap;
 use task_encoder::{EncodeFullResult, OutputRefAny, TaskEncoder, TaskEncoderDependencies};
-use vir::{FunctionIdn, ViperIdent, vir_format_identifier};
+use vir::{CastType, FunctionIdn, ViperIdent, vir_format_identifier};
 
 use crate::encoders::{
     TyUsePureEnc,
@@ -9,7 +9,7 @@ use crate::encoders::{
         RustTyDecomposition,
         generics::{
             GParams, GenericParamsEnc,
-            trait_impls::{self, TraitImplConditionEnc},
+            trait_impls::{self, TraitImplConditionEnc, TraitImplEnc},
         },
         lifted::TyConstructorEnc,
     },
@@ -120,6 +120,32 @@ impl TaskEncoder for TraitEnc {
                 },
             )?;
 
+            // Each bound of an associated type is stated by its own axiom
+            // (see `AssocTypeBoundEnc`), once the trait the bound names is
+            // requested for another reason. A bound only helps a proof that
+            // mentions its trait, and stating all of them would pull every
+            // bound trait and its impls into every program.
+            for item in tcx.associated_items(*task_key).in_definition_order() {
+                if !matches!(item.kind, ty::AssocKind::Type { .. }) {
+                    continue;
+                }
+                let item_did = item.def_id;
+                let span = tcx.def_span(item_did);
+                let item_bounds = tcx.item_bounds(item_did).instantiate_identity();
+                for (idx, clause) in item_bounds.skip_normalization().iter().enumerate() {
+                    let bound_trait = if let Some(pred) = clause.as_trait_clause() {
+                        pred.skip_binder().def_id()
+                    } else if let Some(pred) = clause.as_projection_clause() {
+                        pred.skip_binder().trait_def_id(tcx)
+                    } else {
+                        continue;
+                    };
+                    TraitEnc::on_task_requested(bound_trait, move || {
+                        let _ = AssocTypeBoundEnc::encode((item_did, idx), false, span);
+                    });
+                }
+            }
+
             // Each relevant impl contributes an axiom stating where it makes
             // `impl_fun` hold (see `impl_unlock_keys` for the gating).
             for impl_did in trait_impls::implementing_impls(tcx, *task_key) {
@@ -170,5 +196,97 @@ impl TaskEncoder for TraitEnc {
 impl TraitEnc {
     pub(super) fn trait_params<'tcx>(trait_did: DefId) -> GParams<'tcx> {
         GParams::from(trait_did).with_suffix("trait")
+    }
+}
+
+/// The axiom stating one bound of an associated type (`type A: Bound;`) where
+/// the item's where-clauses hold. The task is the associated type and the
+/// bound's index in its `item_bounds`.
+pub struct AssocTypeBoundEnc;
+
+impl TaskEncoder for AssocTypeBoundEnc {
+    task_encoder::encoder_cache!(AssocTypeBoundEnc);
+    const ENCODER_NAME: &'static str = "associated type bound encoder";
+
+    type TaskDescription<'vir> = (DefId, usize);
+    /// `None` for a bound that states nothing (see
+    /// [`TraitImplEnc::clause_bounds`]).
+    type OutputFullLocal<'vir> = Option<vir::Domain<'vir>>;
+
+    fn task_to_key<'vir>(task: &Self::TaskDescription<'vir>) -> Self::TaskKey<'vir> {
+        *task
+    }
+
+    fn do_encode_full<'vir>(
+        task_key: &Self::TaskKey<'vir>,
+        deps: &mut TaskEncoderDependencies<'vir, Self>,
+    ) -> EncodeFullResult<'vir, Self> {
+        deps.emit_output_ref(*task_key, ())?;
+        vir::with_vcx(|vcx| {
+            let tcx = vcx.tcx();
+            let (item_did, idx) = *task_key;
+            let trait_ = deps.require_ref::<TraitEnc>(tcx.parent(item_did))?;
+            let item_params = GParams::from(item_did);
+            let clause = tcx
+                .item_bounds(item_did)
+                .instantiate_identity()
+                .skip_normalization()[idx];
+            let bounds = TraitImplEnc::clause_bounds(
+                vcx,
+                deps,
+                item_params,
+                tcx.mk_clauses(&[clause]),
+                None,
+            )?;
+            if bounds.is_empty() {
+                return Ok((None, ()));
+            }
+            let guard = TraitImplEnc::context_bounds(vcx, deps, item_params, None)?;
+            let item_generics = deps.require_dep::<GenericParamsEnc>(item_params)?;
+            let projection: vir::ExprDyn = trait_.assoc_types[&item_did](
+                item_generics.ty_exprs(),
+                item_generics.const_exprs(),
+            )
+            .upcast_ty();
+            let guard = vcx.mk_conj(&guard);
+            let body = vcx.mk_conj(&bounds);
+            let body = vir::expr! { (guard) ==> (body) };
+            let qvars = item_generics
+                .ty_decls()
+                .iter()
+                .map(|decl| decl.upcast_ty())
+                .chain(
+                    item_generics
+                        .const_decls()
+                        .iter()
+                        .map(|decl| decl.upcast_ty()),
+                )
+                .collect::<Vec<vir::LocalDeclDyn<'_>>>();
+            // Triggering on the associated type avoids a matching loop for
+            // bounds like `type A: Tr;` in `Tr`.
+            let axiom = vcx.mk_forall_expr(
+                vcx.alloc_slice(&qvars),
+                vcx.alloc_slice(&[vcx.mk_trigger(&[projection])]),
+                body,
+            );
+            let trait_name = trait_.trait_name;
+            let item_name = ViperIdent::from_def_id(vcx, item_did);
+            let name =
+                vir_format_identifier!(vcx, "{trait_name}_assoc_type_{item_name}_bound_{idx}");
+            let domain = vcx.mk_domain(
+                vir_format_identifier!(vcx, "trait_{name}"),
+                &[],
+                vcx.alloc_slice(&[vcx.mk_domain_axiom(name, axiom)]),
+                &[],
+                None,
+            );
+            Ok((Some(domain), ()))
+        })
+    }
+
+    fn emit_outputs<'vir>(program: &mut task_encoder::Program<'vir>) {
+        for domain in Self::all_outputs_local(program).into_iter().flatten() {
+            program.add_domain(domain);
+        }
     }
 }

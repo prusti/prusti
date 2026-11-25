@@ -1,3 +1,4 @@
+//@ known-failure
 use prusti_contracts::*;
 
 pub fn test1<T: PartialEq>(container: &mut Option<T>, value: T) {

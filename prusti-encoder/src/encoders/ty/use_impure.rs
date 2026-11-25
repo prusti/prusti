@@ -15,8 +15,12 @@ use crate::encoders::{
 use super::{
     TyUseEnc, UseTyDatas,
     data::*,
-    generics::{GArgCaster, GArgsTy},
+    generics::{
+        GArgCaster, GArgsTy, IndirectCastIdn, IndirectCasters, IndirectCastersEnc,
+        lifetime_position::{LifetimePosition, LifetimePositionEnc},
+    },
     impure::{ImpureTyDatas, TyImpureEnc},
+    indirect_nodes::NodePredicates,
     rust_ty::RustTySpecial,
 };
 
@@ -71,6 +75,51 @@ pub struct TyUseImpureMutRef<'vir> {
     args: GArgsTy<'vir>,
     impure: <ImpureTyDatas as TyDatas<'vir>>::MutRefData,
     ref_to_snap: vir::FunctionIdn<'vir, (vir::Ref, vir::ManyTyVal, vir::ManyCSnap), vir::Snap>,
+    /// The predicates of the reference type's positions. Position 0, the
+    /// reference's own lifetime, holds the referent; the others hold the
+    /// referent's predicates, at the generic type.
+    nodes: &'vir NodePredicates<'vir>,
+    /// The casts of the referent's predicates, if the referent is a concrete
+    /// type with positions.
+    referent: Option<IndirectCasts<'vir>>,
+}
+
+/// The predicates of the positions of a concrete type at a place of generic
+/// type, a referent or a field, and their casts from and to the generic type.
+/// The positions are numbered as in the concrete type.
+#[derive(Debug, Clone, Copy)]
+pub struct IndirectCasts<'vir> {
+    nodes: &'vir NodePredicates<'vir>,
+    casters: IndirectCasters<'vir>,
+    args: GArgsTy<'vir>,
+}
+
+impl<'vir> IndirectCasts<'vir> {
+    /// Cast the predicate at `q` with key `key` to concrete, or to generic if
+    /// `to_generic`.
+    pub fn cast_at(
+        &self,
+        key: vir::ExprSnap<'vir>,
+        q: LifetimePosition,
+        to_generic: bool,
+    ) -> vir::Stmt<'vir> {
+        let cast = if to_generic {
+            self.casters.make_generic
+        } else {
+            self.casters.make_concrete
+        };
+        self.cast_with_key(cast, key, q)
+    }
+
+    fn cast_with_key(
+        &self,
+        cast: IndirectCastIdn<'vir>,
+        key: vir::ExprSnap<'vir>,
+        q: LifetimePosition,
+    ) -> vir::Stmt<'vir> {
+        let (lo, hi) = self.nodes.interval(q);
+        cast(key, self.args.get_ty(), self.args.get_const(), lo, hi).alloc()
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -90,6 +139,9 @@ pub struct TyUseImpureArrayData<'vir> {
     #[allow(dead_code)]
     impure: <ImpureTyDatas as TyDatas<'vir>>::ArrayData,
     element_caster: FieldCaster<'vir>,
+    /// The casts of the elements' predicates, if the element type is a
+    /// concrete type with positions.
+    element_indirect: Option<IndirectCasts<'vir>>,
 }
 
 /// Use-side data for the hardcoded extras of a `Box`.
@@ -114,6 +166,9 @@ pub struct TyUseImpureField<'vir> {
     caster: FieldCaster<'vir>,
     args: GArgsTy<'vir>,
     impure: <ImpureTyDatas as TyDatas<'vir>>::FieldData,
+    /// The casts of the field's predicates, if the field's type is a type
+    /// parameter instantiated with a concrete type with positions.
+    pub indirect: Option<IndirectCasts<'vir>>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -153,7 +208,7 @@ impl TaskEncoder for TyUseImpureEnc {
 
         let ty_impure = deps.require_dep::<TyImpureEnc>(task_key.ty)?;
         let inhabited = deps.require_ref::<TyUseInhabitedEnc>(*task_key)?;
-        let mut walker = TyUseImpureWalker::new(deps, task_key.args, inhabited)?;
+        let mut walker = TyUseImpureWalker::new(deps, *task_key, inhabited)?;
         let ty_use_impure = walker.encode_ty(task_key.ty.zip(ty_impure))?;
         Ok(((), ty_use_impure.alloc()))
     }
@@ -165,6 +220,7 @@ impl TaskEncoder for TyUseImpureEnc {
 
 struct TyUseImpureWalker<'a, 'vir> {
     deps: &'a mut TaskEncoderDependencies<'vir, TyUseImpureEnc>,
+    decomp: RustTyDecomposition<'vir>,
     args_t: GArgsTy<'vir>,
     args: GArgs<'vir>,
     inhabited: TyUseInhabitedRef<'vir>,
@@ -173,12 +229,14 @@ struct TyUseImpureWalker<'a, 'vir> {
 impl<'a, 'vir> TyUseImpureWalker<'a, 'vir> {
     fn new(
         deps: &'a mut TaskEncoderDependencies<'vir, TyUseImpureEnc>,
-        args: GArgs<'vir>,
+        decomp: RustTyDecomposition<'vir>,
         inhabited: TyUseInhabitedRef<'vir>,
     ) -> EncResult<'vir, Self> {
+        let args = decomp.args;
         let args_t = deps.require_dep::<GArgsTyEnc>(args)?;
         Ok(Self {
             deps,
+            decomp,
             args_t,
             args,
             inhabited,
@@ -212,6 +270,8 @@ impl<'a, 'vir> TyUseImpureWalker<'a, 'vir> {
                     args: self.args_t,
                     impure: *data.1,
                     ref_to_snap: ty.1.ref_to_snap,
+                    nodes: self.alloc_nodes(self.decomp)?,
+                    referent: self.indirect_casts(data.0.referent, ty.0.params)?,
                 })
             }
             TySpecifics::Raw(data) => {
@@ -259,6 +319,43 @@ impl<'a, 'vir> TyUseImpureWalker<'a, 'vir> {
         Ok(TyData::new(data, specifics))
     }
 
+    fn alloc_nodes(
+        &mut self,
+        ty: RustTyDecomposition<'vir>,
+    ) -> EncResult<'vir, &'vir NodePredicates<'vir>> {
+        let nodes = NodePredicates::new(ty, self.deps)?;
+        Ok(vir::with_vcx(|vcx| vcx.alloc(nodes)))
+    }
+
+    /// The casts of the predicates of a referent or field of type `inner`, if
+    /// it is a type parameter instantiated with a concrete type with positions;
+    /// a type parameter's predicate needs no cast.
+    fn indirect_casts(
+        &mut self,
+        inner: LazyRustTy<'vir>,
+        params: GParams<'vir>,
+    ) -> EncResult<'vir, Option<IndirectCasts<'vir>>> {
+        let Some(normalized) = inner.decompose_compare_normalize(params, self.args) else {
+            return Ok(None);
+        };
+        // Checked before encoding the predicates, which most fields lack.
+        let graph = self
+            .deps
+            .require_dep::<LifetimePositionEnc>(normalized.concrete)?;
+        if graph.positions().next().is_none() {
+            return Ok(None);
+        }
+        Ok(Some(IndirectCasts {
+            nodes: self.alloc_nodes(normalized.concrete)?,
+            casters: self
+                .deps
+                .require_ref::<IndirectCastersEnc>((normalized.param, normalized.concrete.ty))?,
+            args: self
+                .deps
+                .require_dep::<GArgsTyEnc>(normalized.concrete.args)?,
+        }))
+    }
+
     fn encode_normalized(
         &mut self,
         inner: LazyRustTy<'vir>,
@@ -285,11 +382,13 @@ impl<'a, 'vir> TyUseImpureWalker<'a, 'vir> {
         params: GParams<'vir>,
     ) -> EncResult<'vir, ArrayData<'vir, UseImpureTyDatas>> {
         let caster = self.encode_normalized(*data.0, params)?;
+        let element_indirect = self.indirect_casts(*data.0, params)?;
         let slice = data.slice;
         let data = TyUseImpureArrayData {
             args: self.args_t,
             impure: *data.data.1,
             element_caster: caster,
+            element_indirect,
         };
         Ok(ArrayData::new(data, slice))
     }
@@ -310,6 +409,7 @@ impl<'a, 'vir> TyUseImpureWalker<'a, 'vir> {
                     caster,
                     args: self.args_t,
                     impure: *field.1,
+                    indirect: self.indirect_casts(field.0.ty(), params)?,
                 })
             })
             .collect::<EncResult<'vir, Vec<_>>>()?;
@@ -506,7 +606,7 @@ impl<'vir> TyData<'vir, UseImpureTyDatas> {
                     .collect()
             }
             TySpecifics::ImmRef(..) | TySpecifics::Raw(..) => Vec::new(),
-            TySpecifics::MutRef(data) => data.fold(self_ref, label).into_iter().collect(),
+            TySpecifics::MutRef(data) => data.fold(self_ref, label),
             TySpecifics::StructLike(data) => data.fold(self_ref, perm).collect(),
             TySpecifics::EnumLike(..) => {
                 let pred_app = self.ref_to_pred_app(self_ref, perm);
@@ -557,7 +657,7 @@ impl<'vir> TyData<'vir, UseImpureTyDatas> {
                 .collect()
             }
             TySpecifics::ImmRef(..) | TySpecifics::Raw(..) => Vec::new(),
-            TySpecifics::MutRef(data) => data.unfold(self_ref, old).into_iter().collect(),
+            TySpecifics::MutRef(data) => data.unfold(self_ref, old),
             TySpecifics::StructLike(data) => data.unfold(self_ref, perm).collect(),
             TySpecifics::EnumLike(data) => {
                 let pred_app = self.ref_to_pred_app(self_ref, perm);
@@ -588,6 +688,12 @@ impl<'vir> TyData<'vir, UseImpureTyDatas> {
 }
 
 impl<'vir> TyUseImpureArray<'vir> {
+    /// The casts of the elements' predicates, if the element type is a
+    /// concrete type with positions.
+    pub fn element_indirect(&self) -> Option<IndirectCasts<'vir>> {
+        self.data.element_indirect
+    }
+
     /// Get the (Ref) address of an index. Identical to the function one would
     /// call in `use_pure`.
     pub fn ref_to_index_ref<Curr, Next>(
@@ -596,6 +702,21 @@ impl<'vir> TyUseImpureArray<'vir> {
         index: vir::ExprGenCSnap<'vir, Curr, Next>,
     ) -> vir::ExprGenRef<'vir, Curr, Next> {
         self.data.impure.ref_to_index_ref.call()(self_ref, index, self.args.get_ty())
+    }
+
+    /// The snapshot of the array, unfolded at `index`, from before the
+    /// unfold, read out of the predicate of the array without that element.
+    pub fn ref_to_index_frame<Curr, Next>(
+        &self,
+        self_ref: vir::ExprGenRef<'vir, Curr, Next>,
+        index: vir::ExprGenCSnap<'vir, Curr, Next>,
+    ) -> vir::ExprGenCSnap<'vir, Curr, Next> {
+        self.data.impure.index_frame.call()(
+            self_ref,
+            index,
+            self.args.get_ty(),
+            self.args.get_const(),
+        )
     }
 
     /// The predicate of the array without its element at `index`.
@@ -678,7 +799,7 @@ impl<'vir> TyUseImpureStruct<'vir> {
     ) -> impl Iterator<Item = vir::Stmt<'vir>> {
         self.fields
             .iter()
-            .filter_map(|f| f.cast_to_caller_ctx(self_ref))
+            .flat_map(move |f| f.cast_to_caller_ctx(self_ref))
     }
 
     fn cast_to_callee_ctx(
@@ -687,7 +808,7 @@ impl<'vir> TyUseImpureStruct<'vir> {
     ) -> impl Iterator<Item = vir::Stmt<'vir>> {
         self.fields
             .iter()
-            .filter_map(|f| f.cast_to_callee_ctx(self_ref))
+            .flat_map(move |f| f.cast_to_callee_ctx(self_ref))
     }
 }
 
@@ -701,12 +822,15 @@ impl<'vir> TyUseImpureField<'vir> {
         self.impure.ref_to_field_ref.call()(self_ref, self.args.get_ty(), self.args.get_const())
     }
 
-    fn cast_to_caller_ctx(&self, self_ref: vir::ExprRef<'vir>) -> Option<vir::Stmt<'vir>> {
-        self.caster.cast_to_caller_ctx(self.field_ref(self_ref))
+    /// Cast the field to concrete. Its predicates are cast when the lifetime
+    /// projections of the struct are expanded.
+    fn cast_to_caller_ctx(&self, self_ref: vir::ExprRef<'vir>) -> Vec<vir::Stmt<'vir>> {
+        Vec::from_iter(self.caster.cast_to_caller_ctx(self.field_ref(self_ref)))
     }
 
-    fn cast_to_callee_ctx(&self, self_ref: vir::ExprRef<'vir>) -> Option<vir::Stmt<'vir>> {
-        self.caster.cast_to_callee_ctx(self.field_ref(self_ref))
+    /// Cast the field to generic.
+    fn cast_to_callee_ctx(&self, self_ref: vir::ExprRef<'vir>) -> Vec<vir::Stmt<'vir>> {
+        Vec::from_iter(self.caster.cast_to_callee_ctx(self.field_ref(self_ref)))
     }
 }
 
@@ -748,21 +872,54 @@ impl<'vir> TyUseImpureMutRef<'vir> {
         )
     }
 
+    /// The casts of the referent's predicates, if the referent is a concrete
+    /// type with positions.
+    pub fn referent(&self) -> Option<IndirectCasts<'vir>> {
+        self.referent
+    }
+
+    /// The predicate of the reference's own lifetime, which holds the
+    /// referent, keyed by the reference's snapshot at `label`.
+    fn own_predicate(
+        &self,
+        self_ref: vir::ExprRef<'vir>,
+        label: Option<vir::OldLabel<'vir>>,
+    ) -> vir::PredicateApp<'vir> {
+        vir::with_vcx(|vcx| {
+            let snap = self.ref_to_snap.call()(self_ref, self.args.get_ty(), self.args.get_const());
+            let snap = vcx.maybe_apply_label(snap, label);
+            let own = self.nodes.positions()[0];
+            self.nodes.predicate(own, snap)
+        })
+    }
+
+    /// Give the referent back to the reference: cast it to generic, then fold
+    /// the predicate of the reference's own lifetime. The predicates of the
+    /// referent's lifetimes are moved by the expansions of the reference's
+    /// lifetime projections.
     fn fold(
         &self,
         self_ref: vir::ExprRef<'vir>,
         label: Option<vir::OldLabel<'vir>>,
-    ) -> Option<vir::Stmt<'vir>> {
-        self.referent_caster
-            .cast_to_callee_ctx(self.deref(self_ref, label))
+    ) -> Vec<vir::Stmt<'vir>> {
+        let addr = self.deref(self_ref, label);
+        let mut stmts = Vec::from_iter(self.referent_caster.cast_to_callee_ctx(addr));
+        let pred = self.own_predicate(self_ref, label);
+        stmts.push(vir::with_vcx(|vcx| vcx.mk_fold_stmt(pred)));
+        stmts
     }
 
+    /// Take the referent out of the reference: unfold the predicate of the
+    /// reference's own lifetime, then cast the referent to concrete.
     fn unfold(
         &self,
         self_ref: vir::ExprRef<'vir>,
         label: Option<vir::OldLabel<'vir>>,
-    ) -> Option<vir::Stmt<'vir>> {
-        self.referent_caster
-            .cast_to_caller_ctx(self.deref(self_ref, label))
+    ) -> Vec<vir::Stmt<'vir>> {
+        let addr = self.deref(self_ref, label);
+        let pred = self.own_predicate(self_ref, label);
+        let mut stmts = vec![vir::with_vcx(|vcx| vcx.mk_unfold_stmt(pred))];
+        stmts.extend(self.referent_caster.cast_to_caller_ctx(addr));
+        stmts
     }
 }

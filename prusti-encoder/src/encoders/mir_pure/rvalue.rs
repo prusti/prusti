@@ -80,7 +80,7 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                 // holds no predicates, so only the value (`.1`) is used.
                 Ok(self
                     .encode_cast_snap(rvalue_ty, *kind, operand, curr_ver)?
-                    .1)
+                    .2)
             }
             mir::Rvalue::RawPtr(_, place) => {
                 let (_, place_ref, metadata) =

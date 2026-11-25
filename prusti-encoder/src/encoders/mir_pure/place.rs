@@ -50,28 +50,11 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
                                 vec![self.current_span()],
                             ));
                         }
-                        let val_expr = {
-                            // The snapshot is shallow and doesn't contain the
-                            // value behind the mutable reference, so we need to
-                            // take an extra snapshot here.
-                            // TODO: avoid all of this by using shallow and deep snapshots
-                            let ty_task = RustTyDecomposition::from_ty(place_ty.ty, self.context);
-                            let inner = ty_task.ty.expect_mutref();
-                            let normalized = inner
-                                .referent
-                                .decompose_compare_normalize(ty_task.ty.params, ty_task.args);
-                            let caster = self
-                                .deps
-                                .require_dep::<crate::GArgsCastEnc<crate::Pure>>(normalized)?;
-                            let inner_ty_task = inner
-                                .referent
-                                .decompose_context(ty_task.ty.params, ty_task.args);
-                            let inner_ty = self
-                                .deps
-                                .require_dep::<crate::encoders::TyUseImpureEnc>(inner_ty_task)?;
-                            caster.cast_to_caller_ctx(inner_ty.ref_to_snap(ref_expr))
-                        };
-                        EncodedPlace::new(val_expr, Some(ref_expr)).with_metadata(metadata)
+                        // In an impure context, every mutable reference's
+                        // snapshot is read from a deep snapshot (see
+                        // `deep_snap`), whose value field holds the referent.
+                        EncodedPlace::new(e_ty.value_access(snap), Some(ref_expr))
+                            .with_metadata(metadata)
                     }
                     TyKind::RawPtr(..) => {
                         return Err(EncodeFullError::unsupported(
@@ -161,6 +144,105 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
         Ok((encoded_place.snap, place_ref, metadata))
     }
 
+    /// Whether reading `place` reads a mutable reference: it dereferences one,
+    /// or the value read contains one.
+    fn reads_mut_ref(&self, place: Place<'vir>) -> bool {
+        let mut place_ty = mir::PlaceTy::from_ty(self.body.local_decls[place.local].ty);
+        let derefs = place.projection.iter().fold(false, |derefs, elem| {
+            let deref = matches!(elem, mir::ProjectionElem::Deref)
+                && matches!(place_ty.ty.kind(), TyKind::Ref(.., ty::Mutability::Mut));
+            place_ty = place_ty.projection_ty(self.vcx.tcx(), *elem);
+            derefs || deref
+        });
+        derefs
+            || place_ty.ty.walk().any(|arg| {
+                arg.as_type()
+                    .is_some_and(|ty| matches!(ty.kind(), TyKind::Ref(.., ty::Mutability::Mut)))
+            })
+    }
+
+    /// The snapshot `snap` of `place`'s local, extended through the local's
+    /// indirect predicates so that the `&mut`s that `place` reads hold their
+    /// referents. Only the positions the read needs are extended (see
+    /// `read_positions`): the others may not be held where it is read, e.g.
+    /// a field lent to the result in the post-state.
+    fn deep_snap(
+        &mut self,
+        place: Place<'vir>,
+        snap: ExprRet<'vir>,
+    ) -> EncodeResult<'vir, ExprRet<'vir>, MirPureEnc> {
+        let ty = RustTyDecomposition::from_ty(self.body.local_decls[place.local].ty, self.context);
+        let nodes = NodePredicates::new(ty, self.deps)?;
+        let positions = self.read_positions(nodes.clone(), place);
+        Ok(self.vcx.mk_lazy_expr(
+            "deep_snap",
+            snap.ty(),
+            Box::new(move |vcx, lctx: ExprInput<'vir>| {
+                use vir::Reify;
+                let snap = snap.reify(vcx, lctx);
+                match &positions {
+                    Some(positions) => nodes.deep_snap_at(snap, positions),
+                    None => nodes.deep_snap(snap),
+                }
+                .kind
+            }),
+        ))
+    }
+
+    /// The positions of `place`'s local whose predicates reading `place`
+    /// needs: those of the `&mut`s it dereferences and those in the type of
+    /// the value read. The regions come from the specification's signature,
+    /// since the body's are erased. `None` if they cannot be matched, in
+    /// which case all positions are read.
+    fn read_positions(
+        &self,
+        nodes: NodePredicates<'vir>,
+        place: Place<'vir>,
+    ) -> Option<Vec<LifetimePosition>> {
+        let tcx = self.vcx.tcx();
+        let arg = place.local.as_usize().checked_sub(1)?;
+        let mut ty = *self.arg_tys?.get(arg)?;
+        let nodes = nodes.in_ty(ty);
+        let mut variant = None;
+        let mut positions = Vec::new();
+        for elem in place.projection {
+            ty = match (*elem, ty.kind()) {
+                (mir::ProjectionElem::Deref, TyKind::Ref(region, inner, mutability)) => {
+                    if mutability.is_mut() {
+                        let region_positions =
+                            nodes.positions_of(PcgLifetime::Region((*region).into()));
+                        if region_positions.is_empty() {
+                            return None;
+                        }
+                        positions.extend(region_positions);
+                    }
+                    *inner
+                }
+                (mir::ProjectionElem::Deref, _) if ty.is_box() => ty.expect_boxed_ty(),
+                (mir::ProjectionElem::Field(field, _), TyKind::Adt(..) | TyKind::Tuple(_)) => {
+                    mir::PlaceTy::field_ty(tcx, ty, variant, field).skip_normalization()
+                }
+                (mir::ProjectionElem::Downcast(_, index), TyKind::Adt(..)) => {
+                    variant = Some(index);
+                    continue;
+                }
+                (
+                    mir::ProjectionElem::Index(_)
+                    | mir::ProjectionElem::ConstantIndex { .. }
+                    | mir::ProjectionElem::Subslice { .. },
+                    _,
+                ) => ty.builtin_index()?,
+                _ => return None,
+            };
+            variant = None;
+        }
+        let lifetimes: IndexVec<_, PcgLifetime<'vir>> = tcx.extract_regions(ty);
+        for lifetime in lifetimes {
+            positions.extend(nodes.positions_of(lifetime));
+        }
+        Some(positions)
+    }
+
     /// A read of `place` at the versions `curr_ver` of the locals, in the
     /// current modes: its snapshot, with the address and pointer metadata
     /// that the dereferences in `place` give it.
@@ -192,6 +274,43 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
             self.uses.read(local, 0);
             self.input(local)?
         };
+        // Only reads of a `&mut` need the extension; the dereferences read
+        // the referents out of it (see `encode_place_element`). A spec block's
+        // inputs are deep snapshots already, read in the state of the block
+        // (see the impure encoder's `place_value_in`). The extension and those
+        // inputs read the heap, so they are wrapped in the mode's state. The
+        // snapshots of a contract's arguments and result are pinned to a
+        // state: an `old` around one alone is a no-op, but breaks the match
+        // with the callee's wand at a call site, where the `old` is labelled.
+        // The label is only known at instantiation (`ExprInput::old`).
+        // Silicon evaluates the heap-independent parts of a wand when inhaling
+        // it, where `old[lhs]` is undefined.
+        let spec_block = matches!(self.kind, PureKind::SpecBlock(_));
+        let snap = if (self.has_deep_snap(local) || spec_block) && self.reads_mut_ref(place) {
+            let mut snap = if spec_block {
+                snap
+            } else {
+                self.deep_snap(place, snap)?
+            };
+            if modes.contains(Modes::OLD) {
+                let inner = snap;
+                snap = self.vcx.mk_lazy_expr(
+                    "old_mode_wrap",
+                    inner.ty(),
+                    Box::new(move |vcx, lctx: ExprInput<'vir>| {
+                        use vir::Reify;
+                        let reified = inner.reify(vcx, lctx);
+                        vcx.mk_old(reified, lctx.old).kind
+                    }),
+                );
+            }
+            if modes.contains(Modes::BEFORE_EXPIRY) {
+                snap = self.vcx.mk_old_lhs_expr(snap);
+            }
+            snap
+        } else {
+            snap
+        };
         let local_ty = mir::PlaceTy::from_ty(self.body.local_decls[local].ty);
         self.encode_projection(
             curr_ver,
@@ -217,36 +336,8 @@ impl<'vir: 'enc, 'enc> Enc<'vir, 'enc> {
         let mut place_ty = base_ty;
         let mut encoded_place = base;
         for &elem in projection {
-            // The snapshots of the arguments and the result are pinned to a
-            // state, so the only read of the heap is the dereference of a
-            // mutable reference in an impure context; only that is wrapped.
-            let heap_read = self.impure_context
-                && matches!(elem, mir::ProjectionElem::Deref)
-                && matches!(place_ty.ty.kind(), TyKind::Ref(.., ty::Mutability::Mut));
             encoded_place = self.encode_place_element(curr_ver, place_ty, elem, encoded_place)?;
             place_ty = place_ty.projection_ty(self.vcx.tcx(), elem);
-            if heap_read && modes.contains(Modes::OLD) {
-                // An `old` around a pinned snapshot would be a no-op, but would
-                // break the match with the callee's wand at a call site, where
-                // the `old` is labelled. The label is only known at
-                // instantiation (`ExprInput::old`).
-                let inner = encoded_place.snap;
-                encoded_place.snap = self.vcx.mk_lazy_expr(
-                    "old_mode_wrap",
-                    inner.ty(),
-                    Box::new(move |vcx, lctx: ExprInput<'vir>| {
-                        use vir::Reify;
-                        let reified = inner.reify(vcx, lctx);
-                        vcx.mk_old(reified, lctx.old).kind
-                    }),
-                );
-            }
-            if heap_read && modes.contains(Modes::BEFORE_EXPIRY) {
-                // Silicon evaluates the heap-independent parts of a wand when
-                // inhaling it, where `old[lhs]` is undefined, so an `old[lhs]`
-                // around a pinned snapshot would be ill-defined there.
-                encoded_place.snap = self.vcx.mk_old_lhs_expr(encoded_place.snap);
-            }
         }
         // A downcast is always followed by a field of the variant, so no
         // place that is read ends in one.

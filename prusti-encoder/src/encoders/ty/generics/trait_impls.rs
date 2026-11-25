@@ -441,11 +441,22 @@ impl TraitImplEnc {
         vcx: &'vir vir::VirCtxt<'vir>,
         deps: &mut TaskEncoderDependencies<'vir, E>,
         ctx: GParams<'vir>,
+        bind_points: Option<&mut FxIndexMap<u32, vir::ExprDyn<'vir>>>,
+    ) -> Result<Vec<vir::ExprBool<'vir>>, EncodeFullError<'vir, E>> {
+        let caller_bounds = ctx.typing_env().param_env.caller_bounds();
+        Self::clause_bounds(vcx, deps, ctx, caller_bounds, bind_points)
+    }
+
+    /// Like [`Self::context_bounds`], for the given clauses.
+    pub(crate) fn clause_bounds<'vir, E: TaskEncoder + 'vir + ?Sized>(
+        vcx: &'vir vir::VirCtxt<'vir>,
+        deps: &mut TaskEncoderDependencies<'vir, E>,
+        ctx: GParams<'vir>,
+        caller_bounds: ty::Clauses<'vir>,
         mut bind_points: Option<&mut FxIndexMap<u32, vir::ExprDyn<'vir>>>,
     ) -> Result<Vec<vir::ExprBool<'vir>>, EncodeFullError<'vir, E>> {
         let tcx = vcx.tcx();
         let params = deps.require_dep::<GenericParamsEnc>(ctx)?;
-        let caller_bounds = ctx.typing_env().param_env.caller_bounds();
         let mut checks = Vec::new();
 
         let trait_preds = caller_bounds

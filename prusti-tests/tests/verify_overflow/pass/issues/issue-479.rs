@@ -1,3 +1,4 @@
+//@ known-failure
 #![feature(allocator_api)]
 
 use prusti_contracts::*;

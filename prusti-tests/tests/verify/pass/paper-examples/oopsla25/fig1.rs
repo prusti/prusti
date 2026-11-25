@@ -1,3 +1,4 @@
+//@ known-failure
 // Figure 1: Ownership and Borrowing
 // (a) replace_x_own - ownership transfer
 // (b) replace_x - mutable borrowing

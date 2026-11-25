@@ -71,7 +71,6 @@ pub struct TyImpureBoxData<'vir> {
 pub struct TyImpureArrayData<'vir> {
     /// Function to access the ref at the given index.
     pub ref_to_index_ref: vir::FunctionIdn<'vir, (vir::Ref, vir::CSnap, vir::ManyTyVal), vir::Ref>,
-    #[allow(dead_code)]
     pub index_frame:
         vir::FunctionIdn<'vir, (vir::Ref, vir::CSnap, vir::ManyTyVal, vir::ManyCSnap), vir::CSnap>,
     #[allow(dead_code)]
@@ -184,14 +183,17 @@ impl TaskEncoder for TyImpureEnc {
             deps.emit_output_ref(*task_key, data)?;
 
             let specifics = match &ty.specifics {
-                TySpecifics::Param(param) => {
-                    TySpecifics::Param(super::kinds::param::ty_impure(param, deps, &mut builder)?)
-                }
+                TySpecifics::Param(param) => TySpecifics::Param(super::kinds::param::ty_impure(
+                    task_key,
+                    param,
+                    deps,
+                    &mut builder,
+                )?),
                 TySpecifics::Opaque(opaque) => TySpecifics::Opaque(
                     super::kinds::opaque::ty_impure(opaque, deps, &mut builder)?,
                 ),
                 TySpecifics::ArrayLike(array) => TySpecifics::ArrayLike(
-                    super::kinds::arraylike::ty_impure(&ty, array, deps, &mut builder)?,
+                    super::kinds::arraylike::ty_impure(task_key, &ty, array, deps, &mut builder)?,
                 ),
                 TySpecifics::Primitive(prim) => TySpecifics::Primitive(
                     super::kinds::primitive::ty_impure(prim, deps, &mut builder)?,

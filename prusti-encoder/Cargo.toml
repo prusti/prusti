@@ -28,6 +28,9 @@ tracing = { path = "../tracing" }
 # This crate uses #[feature(rustc_private)]
 rustc_private = true
 
+[dev-dependencies]
+viper = { path = "../viper" }
+
 [features]
 # default = ["mono_function_encoding"]
 vir_debug = ["vir/vir_debug"]
