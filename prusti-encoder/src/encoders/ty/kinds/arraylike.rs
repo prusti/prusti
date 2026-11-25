@@ -122,6 +122,10 @@ pub(crate) fn ty_impure<'vir>(
 
     let array_snap = vir::expr! { [builder.ref_to_snap](ref_self, [..[builder.params.ty_exprs()]], [..[builder.params.const_exprs()]]) }.downcast_ty();
     let array_index = data.1.index_access.call()(array_snap, index);
+    let old_element = builder
+        .vcx
+        .mk_old_expr(element_ty_out.ref_to_snap(index_ref).downcast_ty());
+    let frame = vir::expr! { [index_frame](ref_self, index, [..[builder.params.ty_exprs()]], [..[builder.params.const_exprs()]]) };
     let method_fold = builder
         .inner
         .method::<(vir::CSnap, vir::Ref, vir::ManyTyVal, vir::ManyCSnap)>(
@@ -149,9 +153,15 @@ pub(crate) fn ty_impure<'vir>(
                     forall idx: [usize_snap] :: {[data.1.index_access](array_snap, idx)}
                         ([data.1.index_access](array_snap, idx)) == (
                             ((idx) == (index))
-                            ? ([builder.vcx.mk_old_expr(element_ty_out.ref_to_snap(index_ref).downcast_ty())])
-                            : (old([data.1.index_access](([index_frame](ref_self, index, [..[builder.params.ty_exprs()]], [..[builder.params.const_exprs()]])), idx)))
+                            ? ([old_element])
+                            : (old([data.1.index_access](([frame]), idx)))
                         )
+                },
+                // The elements determine the array, so folding back an unchanged
+                // element gives back the array that was unfolded.
+                vir::expr! {
+                    (([old_element]) == (old([data.1.index_access](([frame]), index))))
+                        ==> ((array_snap) == (old([frame])))
                 },
             ],
         );

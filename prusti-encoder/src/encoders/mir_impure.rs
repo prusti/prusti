@@ -1765,8 +1765,11 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                             self.loop_analysis().loops(succ).collect::<FxHashSet<_>>();
                         let mut succ_heads_hit = heads_hit.clone();
                         succ_heads_hit.retain(|l| succ_in_loops.contains(l));
+                        // An edge to a loop head enters the loop unless the path
+                        // already went through that head, i.e. it is a back edge.
+                        let mut enters_loop = false;
                         if let Some(loop_spec) = self.spec_blocks.loop_specs.get(&succ) {
-                            succ_heads_hit.insert(loop_spec.loop_id);
+                            enters_loop = succ_heads_hit.insert(loop_spec.loop_id);
                         }
                         let succ_pre_loops = succ_in_loops
                             .iter()
@@ -1774,10 +1777,13 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                             .filter(|l| !succ_heads_hit.contains(l))
                             .map(|l| l.index())
                             .sorted();
-                        (
-                            succ,
-                            self.vcx.mk_block_label(succ.as_usize(), succ_pre_loops),
-                        )
+                        let label = if enters_loop {
+                            self.vcx
+                                .mk_loop_entry_label(succ.as_usize(), succ_pre_loops)
+                        } else {
+                            self.vcx.mk_block_label(succ.as_usize(), succ_pre_loops)
+                        };
+                        (succ, label)
                     })
                     .collect(),
             );
@@ -1974,6 +1980,20 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 .clone();
             let invariants = loop_spec.invariants.clone();
             let loop_id = loop_spec.loop_id;
+            // The edges entering the loop go to an empty block `bb_entry_N` that jumps to
+            // the head; the invariant refers to its label for the state in which the loop
+            // was entered. The label must match the one `visit_body` gives the successors
+            // of those edges.
+            let entry_label = self.vcx.mk_loop_entry_label(
+                block.as_usize(),
+                self.current_block_pres.as_ref().unwrap().iter().copied(),
+            );
+            self.encoded_blocks.push(self.vcx.mk_cfg_block(
+                entry_label,
+                &[],
+                &[],
+                self.vcx.mk_goto_stmt(current_block_label),
+            ));
             // The permission part of the invariant, and errors encoding it, refer to the
             // loop head.
             let head_span = self
@@ -1981,7 +2001,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 .source_info(loop_spec.original_head_block.start_location())
                 .span;
             let (permissions, place_capabilities) = self.vcx.with_span(head_span, |_| {
-                self.get_loop_inv(&cfpcs, &loop_place_usages, self.pcg_ctxt())
+                self.get_loop_inv(&cfpcs, &loop_place_usages, *entry_label, self.pcg_ctxt())
             })?;
             let pcg_state = &cfpcs.statements[0].states[EvalStmtPhase::PreOperands];
             // The Viper loop havocs the edge flags set in the loop, including

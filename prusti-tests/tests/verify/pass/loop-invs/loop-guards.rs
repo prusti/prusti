@@ -75,7 +75,6 @@ fn test_complex_guard() {
         while {
             let old_i = i;
             while i < old_i + 10 {
-                body_invariant!(old_i < 55); // TODO: loop framing should guarantee this
                 body_invariant!(i < old_i + 10);
                 if i == 123123 {
                     break;
