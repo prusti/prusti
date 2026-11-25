@@ -443,12 +443,14 @@ impl<'vir> WandEncOutput<'vir> {
             return Ok(Vec::new());
         }
         let callee_ty = g.ty(self.fn_sig(vcx, None));
-        let target = if matches!(callee_ty.kind(), ty::TyKind::Param(_)) {
+        let callee_decomp = RustTyDecomposition::from_ty(callee_ty, self.g_params(vcx, None));
+        // The callee's predicate of a value whose type is a type parameter or
+        // an alias, such as an associated type, is the parameter's.
+        let target = if callee_decomp.ty.specifics.is_param() {
             MergeTarget::Param
         } else {
             MergeTarget::Own
         };
-        let callee_decomp = RustTyDecomposition::from_ty(callee_ty, self.g_params(vcx, None));
         let graph = deps.require_dep::<LifetimePositionEnc>(callee_decomp)?;
         let caller_ty = g.ty(self.fn_sig(vcx, Some(call_ctx)));
         let caller_decomp = RustTyDecomposition::from_ty(caller_ty, call_ctx.context());
