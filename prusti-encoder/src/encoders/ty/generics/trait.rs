@@ -1,7 +1,7 @@
 use prusti_rustc_interface::{middle::ty, span::def_id::DefId};
 use rustc_hash::FxHashMap;
 use task_encoder::{EncodeFullResult, OutputRefAny, TaskEncoder, TaskEncoderDependencies};
-use vir::{CastType, FunctionIdn, ViperIdent, vir_format_identifier};
+use vir::{FunctionIdn, ViperIdent, vir_format_identifier};
 
 use crate::encoders::{
     TyUsePureEnc,
