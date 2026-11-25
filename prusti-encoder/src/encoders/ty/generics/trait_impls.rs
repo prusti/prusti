@@ -452,14 +452,14 @@ impl TraitImplEnc {
         vcx: &'vir vir::VirCtxt<'vir>,
         deps: &mut TaskEncoderDependencies<'vir, E>,
         ctx: GParams<'vir>,
-        caller_bounds: ty::Clauses<'vir>,
+        clauses: ty::Clauses<'vir>,
         mut bind_points: Option<&mut FxIndexMap<u32, vir::ExprDyn<'vir>>>,
     ) -> Result<Vec<vir::ExprBool<'vir>>, EncodeFullError<'vir, E>> {
         let tcx = vcx.tcx();
         let params = deps.require_dep::<GenericParamsEnc>(ctx)?;
         let mut checks = Vec::new();
 
-        let trait_preds = caller_bounds
+        let trait_preds = clauses
             .iter()
             .filter_map(ty::Clause::as_trait_clause)
             .map(ty::Binder::skip_binder)
@@ -473,7 +473,7 @@ impl TraitImplEnc {
             checks.push((trait_.impl_fun)(gargs.get_ty(), gargs.get_const()));
         }
 
-        let mut proj_preds: Vec<_> = caller_bounds
+        let mut proj_preds: Vec<_> = clauses
             .iter()
             .filter_map(ty::Clause::as_projection_clause)
             .map(ty::Binder::skip_binder)
