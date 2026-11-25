@@ -101,11 +101,9 @@ pub(super) fn with_type_alias<R: Send>(
 /// The expression `e` as it appears in the final program, which is simplified.
 pub(crate) fn simplified<'vir, E: Foldable<'vir, (), !> + Copy>(e: E) -> E {
     vir::with_vcx(|vcx| {
-        vir::simplify::simplify(
-            vcx,
-            &SimplifyCtx::new(&[], &[], &[], &[], &Default::default()),
-            e,
-        )
+        let ctx = SimplifyCtx::new(&[], &[], &[], &[], &Default::default());
+        e.fold_with(&mut vir::simplify::Simplify::new(vcx, &ctx))
+            .unwrap_or(e)
     })
 }
 
