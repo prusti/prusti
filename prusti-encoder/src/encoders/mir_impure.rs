@@ -1711,6 +1711,33 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             })
     }
 
+    /// The current places into whose lifetime projections the PCG state `pcg`
+    /// has expanded the current lifetime projection of the current `place`:
+    /// a view that reading through `place` creates, and keeps after `place`
+    /// is collapsed again. While it is expanded, the predicates of the parts
+    /// hold what `place` refers to, not those of `place`.
+    fn view_parts_in(&self, place: Place<'vir>, pcg: &Pcg<'_, 'vir>) -> Vec<Place<'vir>> {
+        pcg.borrow_pcg()
+            .graph()
+            .edges()
+            .filter_map(|edge| match edge.kind() {
+                BorrowPcgEdgeKind::BorrowPcgExpansion(expansion)
+                    if let PcgNode::LifetimeProjection(base) = expansion.base()
+                        && base.label().is_none()
+                        && base.base() == MaybeLabelledPlace::Current(place) =>
+                {
+                    Some(expansion.expansion())
+                }
+                _ => None,
+            })
+            .flatten()
+            .filter_map(|part| match part {
+                PcgNode::LifetimeProjection(part) => part.base().as_current_place(),
+                PcgNode::Place(_) => None,
+            })
+            .collect()
+    }
+
     /// Whether the PCG state `pcg` has the current `place` expanded into its
     /// parts, as an owned place or by a borrowed expansion.
     fn is_expanded_in(&self, place: Place<'vir>, pcg: &Pcg<'_, 'vir>) -> bool {
@@ -1741,6 +1768,12 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         Ok(match self.place_read_in(place, pcg, at)? {
             // The predicates of the place's nodes that an action created after
             // `at` are not held at `at`.
+            PlaceRead::Held(snap)
+                if let MaybeLabelledPlace::Current(current) = place
+                    && !self.view_parts_in(current, pcg).is_empty() =>
+            {
+                self.view_value(current, snap, pcg)?
+            }
             PlaceRead::Held(snap) => {
                 let ty = place.place().ty(self.pcg_ctxt()).ty;
                 let decomposition = RustTyDecomposition::from_ty(ty, self.def_id);
@@ -1777,6 +1810,65 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             }
             PlaceRead::Value(value) => value,
         })
+    }
+
+    /// The value of the current `place`, which the PCG state `pcg` holds whole
+    /// with the snapshot `snap`, where a view of its lifetime projection may be
+    /// expanded (see `view_parts_in`): the fields have the snapshots read out
+    /// of `snap`, and those that are parts of the view also what they refer
+    /// to, read through their own predicates; an enum is its variant's value.
+    fn view_value(
+        &mut self,
+        place: Place<'vir>,
+        snap: vir::ExprSnap<'vir>,
+        pcg: &Pcg<'_, 'vir>,
+    ) -> EncodeResult<'vir, vir::ExprSnap<'vir>, E> {
+        let ctxt = self.pcg_ctxt();
+        let ty = place.ty(ctxt);
+        let parts = self.view_parts_in(place, pcg);
+        if parts.is_empty() {
+            let decomposition = RustTyDecomposition::from_ty(ty.ty, self.def_id);
+            return Ok(NodePredicates::new(decomposition, self.deps)?
+                .in_ty(ty.ty)
+                .deep_snap(snap));
+        }
+        if ty.ty.is_enum() && ty.variant_index.is_none() {
+            let variant = parts.into_iter().find(|part| {
+                part.projection.len() == place.projection.len() + 1
+                    && matches!(
+                        part.projection.last(),
+                        Some(mir::ProjectionElem::Downcast(..))
+                    )
+            });
+            return match variant {
+                Some(variant) => self.view_value(variant, snap, pcg),
+                None => Err(EncodeFullError::unsupported(
+                    format!("INTERNAL ERROR: no variant in the view of `{place:?}`"),
+                    vec![self.current_span()],
+                )),
+            };
+        }
+        let fields = place.expand_field(None, ctxt).map_err(|_| {
+            EncodeFullError::unsupported(
+                format!("INTERNAL ERROR: no fields in the view of `{place:?}`"),
+                vec![self.current_span()],
+            )
+        })?;
+        let pure = self.ty_use_pure(ty.ty);
+        let variant = pure.expect_variant_opt(ty.variant_index);
+        let mut values = Vec::with_capacity(fields.len());
+        for field in fields {
+            let Some((_, mir::ProjectionElem::Field(index, _))) = field.last_projection() else {
+                unreachable!("a field place ends with its field")
+            };
+            let shallow = variant.fields[index.index()].read(snap.downcast_ty());
+            values.push(if parts.contains(&field) {
+                self.view_value(field, shallow.upcast_ty(), pcg)?
+            } else {
+                shallow.upcast_ty()
+            });
+        }
+        Ok(variant.field_snaps_to_snap(values).upcast_ty())
     }
 
     /// The value of `place` read in the PCG state of `state` under its label.
