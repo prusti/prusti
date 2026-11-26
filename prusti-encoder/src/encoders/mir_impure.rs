@@ -400,16 +400,6 @@ pub(crate) struct Child<'vir> {
     part: Part,
 }
 
-/// Which of a node's positions a fold or unfold covers.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Positions {
-    All,
-    /// Those that no other position of the node's place encloses.
-    TopLevel,
-    /// Those behind a reference in the node's place.
-    Enclosed,
-}
-
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Part {
     Field(abi::FieldIdx),
@@ -1213,19 +1203,13 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             if let Some((operand, cast)) = coercion {
                 self.undo_unsize_once(operand, borrower.base(), cast, None)?;
             }
-            let ty = borrower.base().place().ty(self.pcg_ctxt()).ty;
-            if !matches!(ty.kind(), ty::Ref(_, _, mir::Mutability::Mut))
-                && self.hand_back_through_parts(borrower, lender)?
-            {
+            // A borrower that an aggregate edge leads into got its future
+            // edge from the aggregate's parts; the removal of the aggregate
+            // edge gives them back what it holds, and they give it on.
+            if self.is_aggregate_target(borrower) {
                 continue;
             }
-            self.fold_or_unfold_node_as(
-                borrower,
-                &[lender],
-                FoldOrUnfold::Unfold,
-                coercion,
-                Positions::All,
-            )?;
+            self.fold_or_unfold_node_as(borrower, &[lender], FoldOrUnfold::Unfold, coercion)?;
         }
         Ok(())
     }
@@ -2528,19 +2512,17 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         children: &[Child<'vir>],
         fold_or_unfold: FoldOrUnfold,
     ) -> EncodeResult<'vir, (), E> {
-        self.fold_or_unfold_node_as(base, children, fold_or_unfold, None, Positions::All)
+        self.fold_or_unfold_node_as(base, children, fold_or_unfold, None)
     }
 
     /// As `fold_or_unfold_node`; for the result `base` of an undone
-    /// `coercion`, with the operand's predicates, keyed by `uncast`. Only
-    /// the positions of `base` that `which` selects take part.
+    /// `coercion`, with the operand's predicates, keyed by `uncast`.
     fn fold_or_unfold_node_as(
         &mut self,
         base: NodeLp<'vir>,
         children: &[Child<'vir>],
         fold_or_unfold: FoldOrUnfold,
         coercion: Option<Coercion<'vir>>,
-        which: Positions,
     ) -> EncodeResult<'vir, (), E> {
         if base.label() == Some(LifetimeProjectionLabel::Future) {
             return Err(EncodeFullError::unsupported(
@@ -2557,17 +2539,9 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         }
         let unfold = matches!(fold_or_unfold, FoldOrUnfold::Unfold);
         let (ty, nodes, positions) = self.node_positions(base)?;
-        let toward = self
-            .positions_toward(ty, &nodes, &positions, children)?
-            .into_iter()
-            .filter(|&p| match which {
-                Positions::All => true,
-                Positions::TopLevel => nodes.enclosing(p).is_empty(),
-                Positions::Enclosed => !nodes.enclosing(p).is_empty(),
-            })
-            .collect::<Vec<_>>();
-        // An edge that none of the node's positions take part in does
-        // nothing.
+        let toward = self.positions_toward(ty, &nodes, &positions, children)?;
+        // An edge to referent nodes that none of the node's positions take
+        // part in does nothing.
         if toward.is_empty() && !positions.is_empty() {
             return Ok(());
         }
@@ -2732,68 +2706,10 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             .collect()
     }
 
-    /// Gives `lender` back what `holder`, a node of a place that is not a
-    /// `&mut`, holds of it, if `holder` got it by an aggregate edge in the PCG
-    /// state at the start of the phase: the aggregate's parts passed their
-    /// future edges into `lender` on to it. Unfolds `holder`'s positions
-    /// behind a reference into the parts' nodes (its top-level ones go back
-    /// to the parts when the aggregate edge is removed), and each part in
-    /// turn: a borrow gives `lender` its referent's positions, an aggregate
-    /// recurses. Returns whether `holder` got its contents by an aggregate.
-    fn hand_back_through_parts(
-        &mut self,
-        holder: NodeLp<'vir>,
-        lender: Child<'vir>,
-    ) -> EncodeResult<'vir, bool, E> {
-        let Some((pcg, _)) = self.phase_start.as_ref() else {
-            return Ok(false);
-        };
-        let aggregate = pcg
-            .borrow_pcg()
-            .graph()
-            .edges()
-            .find_map(|edge| match edge.kind() {
-                BorrowPcgEdgeKind::Aggregate(aggregate)
-                    if aggregate.target() == holder
-                        || self.phase_renames.get(&aggregate.target()) == Some(&holder) =>
-                {
-                    Some(aggregate.clone())
-                }
-                _ => None,
-            });
-        let Some(aggregate) = aggregate else {
-            return Ok(false);
-        };
-        let parts = self.aggregate_parts(&aggregate, holder);
-        self.fold_or_unfold_node_as(
-            holder,
-            &parts,
-            FoldOrUnfold::Unfold,
-            None,
-            Positions::Enclosed,
-        )?;
-        for part in parts {
-            let ty = part.node.base().place().ty(self.pcg_ctxt()).ty;
-            if matches!(ty.kind(), ty::Ref(_, _, mir::Mutability::Mut)) {
-                self.fold_or_unfold_node_as(
-                    part.node,
-                    &[lender],
-                    FoldOrUnfold::Unfold,
-                    None,
-                    Positions::All,
-                )?;
-            } else {
-                self.hand_back_through_parts(part.node, lender)?;
-            }
-        }
-        Ok(true)
-    }
-
-    /// Whether a `FromBorrow` future edge leads out of `node` in the PCG
-    /// state at the start of the phase, also under a name that an earlier
-    /// action of the phase renamed to `node` (e.g. its future node, which
-    /// became current when a borrow of it ended).
-    fn returns_to_lender(&self, node: NodeLp<'vir>) -> bool {
+    /// Whether an aggregate edge leads into `node` in the PCG state at the
+    /// start of the phase, also under a name that an earlier action of the
+    /// phase renamed to `node`.
+    fn is_aggregate_target(&self, node: NodeLp<'vir>) -> bool {
         let Some((pcg, _)) = self.phase_start.as_ref() else {
             return false;
         };
@@ -2801,12 +2717,9 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             .graph()
             .edges()
             .any(|edge| match edge.kind() {
-                BorrowPcgEdgeKind::BorrowFlow(borrow_flow)
-                    if borrow_flow.kind().is_future_from_borrow() =>
-                {
-                    local_node(borrow_flow.long()).is_some_and(|long| {
-                        long == node || self.phase_renames.get(&long) == Some(&node)
-                    })
+                BorrowPcgEdgeKind::Aggregate(aggregate) => {
+                    let target = aggregate.target();
+                    target == node || self.phase_renames.get(&target) == Some(&node)
                 }
                 _ => false,
             })
@@ -2924,39 +2837,24 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             // packed, and removing it splits them again.
             BorrowPcgEdgeKind::Aggregate(aggregate) => {
                 let target = aggregate.target();
-                // A labelled target holds no predicates: a target with a
-                // version label was expanded since, and its parts' nodes hold
-                // them; one whose place is labelled passed them on with its
-                // value, e.g. when it was moved into another place. A future
-                // node holds none either: an aggregate is moved to it when
-                // its target is lent or expanded, and takes its predicates
-                // once it becomes current.
+                // A target with a version label holds no predicates: it is an
+                // earlier version of its place, which passed them on to the
+                // later versions, and the PCG never leaves it as a leaf. A
+                // future node holds none either: an aggregate is moved to it
+                // when its target is lent or expanded, and takes its
+                // predicates once it becomes current. A target whose place is
+                // labelled holds them like a current one, e.g. the value of a
+                // place moved into another aggregate once that gave it back.
                 if target.label() == Some(LifetimeProjectionLabel::Future)
-                    || (edge_action.is_remove()
-                        && (target.label().is_some() || !target.base().is_current()))
+                    || (edge_action.is_remove() && target.label().is_some())
                 {
                     return Ok(());
                 }
                 let sources = self.aggregate_parts(aggregate, target);
-                // A target whose contents return to a lender along its future
-                // edge (see `take_from_borrowers`) gives the parts back only
-                // its top-level positions: those of the parts' own
-                // references, which the parts' borrows give back. What is
-                // behind them returns to the lender, to which the parts
-                // passed that edge on when they were moved into the
-                // aggregate; aggregates add no enclosure, so it is behind a
-                // reference in the target too.
-                let which = if edge_action.is_remove() && self.returns_to_lender(target) {
-                    Positions::TopLevel
-                } else {
-                    Positions::All
-                };
-                self.fold_or_unfold_node_as(
+                self.fold_or_unfold_node(
                     target,
                     &sources,
                     FoldOrUnfold::for_joining_action(edge_action),
-                    None,
-                    which,
                 )?;
             }
             // An equals edge from a referent's node to a reborrow's node of the
