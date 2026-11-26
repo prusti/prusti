@@ -9,19 +9,16 @@ use task_encoder::{
 };
 use vir::{FunctionIdn, MethodIdn, ViperIdent, vir_format_identifier};
 
-use crate::{
-    encoders::{
-        FunctionCallEnc, MirLocalDefEnc, MirLocalDefEncTask, MirSpecEnc, WandEnc, WandEncTask,
-        mir_fn::CallTaskDescription,
-        pure::spec::MirSpecEncMode,
-        ty::{
-            RustTyDecomposition,
-            generics::{GArgs, GParams, GenericParamsEnc, r#trait::TraitEnc, trait_impls},
-            lifted::TyConstructorEnc,
-            use_inhabited::TyUseInhabitedEnc,
-        },
+use crate::encoders::{
+    FunctionCallEnc, MirLocalDefEnc, MirLocalDefEncTask, MirSpecEnc, WandEnc, WandEncTask,
+    mir_fn::CallTaskDescription,
+    pure::spec::MirSpecEncMode,
+    ty::{
+        RustTyDecomposition,
+        generics::{GArgs, GParams, GenericParamsEnc, r#trait::TraitEnc, trait_impls},
+        lifted::TyConstructorEnc,
+        use_inhabited::TyUseInhabitedEnc,
     },
-    trait_support::is_function_with_body,
 };
 
 pub struct TraitFnEnc;
@@ -179,7 +176,7 @@ impl TaskEncoder for TraitFnEnc {
             // with a local body, trait methods with a default body included.
             // For the trait methods without one, they are reported here; the
             // stub does not use them, and each call reports its own failure.
-            let has_body = is_function_with_body(tcx, def_id);
+            let has_body = tcx.defaultness(def_id).has_value();
             if !(def_id.is_local() && has_body) {
                 let wands_task = WandEncTask {
                     data: FunctionData::new(def_id),

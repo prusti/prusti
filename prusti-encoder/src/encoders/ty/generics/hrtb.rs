@@ -320,7 +320,7 @@ impl TaskEncoder for HrtbImplEnc {
                 deps,
                 ctx,
                 ctx,
-                matched.args.iter(),
+                matched.args,
                 &[],
                 app.upcast_ty(),
                 app,

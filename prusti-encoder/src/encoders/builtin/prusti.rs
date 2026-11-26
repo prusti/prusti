@@ -1050,12 +1050,7 @@ impl<'enc, 'vir> BuiltinCtxt<'enc, 'vir> {
 
     /// The float snapshot domain for a `FloatTy`.
     fn float_domain(&mut self, fl: ty::FloatTy) -> EncResult<'vir, FloatDomain<'vir>> {
-        let ty = match fl {
-            ty::FloatTy::F16 => self.vcx.tcx().types.f16,
-            ty::FloatTy::F32 => self.vcx.tcx().types.f32,
-            ty::FloatTy::F64 => self.vcx.tcx().types.f64,
-            ty::FloatTy::F128 => self.vcx.tcx().types.f128,
-        };
+        let ty = ty::Ty::new_float(self.vcx.tcx(), fl);
         let ty = self
             .deps
             .require_dep::<TyUsePureEnc>(RustTyDecomposition::from_prim_ty(ty))?;
