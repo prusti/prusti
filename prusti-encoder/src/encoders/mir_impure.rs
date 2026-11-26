@@ -2491,20 +2491,10 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             ));
         }
         let place = base.base();
-        if place.place().is_shared_ref(self.pcg_ctxt())
-            || place.place().projects_shared_ref(self.pcg_ctxt())
-        {
+        if !self.has_own_predicates(base) {
             return Ok(());
         }
         let unfold = matches!(fold_or_unfold, FoldOrUnfold::Unfold);
-        // The node of an enum's variant holds the enum's predicates, which
-        // the edge between the enum's node and the variant's moves.
-        if matches!(
-            place.place().projection.last(),
-            Some(mir::ProjectionElem::Downcast(..))
-        ) {
-            return Ok(());
-        }
         let (ty, nodes, positions) = self.node_positions(base)?;
         let (state, point) = self.keys_state(base)?;
         let keys = self.place_keys(place, &nodes, &positions, &state)?;
@@ -2595,6 +2585,20 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             self.stmts(folds);
         }
         Ok(())
+    }
+
+    /// Whether `node` is folded and unfolded by its own predicates: a node of
+    /// a place behind a shared reference has none, and the node of an enum's
+    /// variant holds the enum's predicates, which the edge between the
+    /// enum's node and the variant's moves.
+    fn has_own_predicates(&self, node: NodeLp<'vir>) -> bool {
+        let place = node.base().place();
+        !(place.is_shared_ref(self.pcg_ctxt())
+            || place.projects_shared_ref(self.pcg_ctxt())
+            || matches!(
+                place.projection.last(),
+                Some(mir::ProjectionElem::Downcast(..))
+            ))
     }
 
     fn pcs_handle_edge_conditionless(
@@ -3165,11 +3169,26 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                             PcgNode::LifetimeProjection(node) => Some(node),
                             PcgNode::Place(_) => None,
                         })
-                        .filter(|node| node.label().is_none())
+                        .filter(|&node| node.label().is_none() && self.has_own_predicates(node))
                         .collect(),
                     _ => Vec::new(),
                 },
                 PcgAction::Owned(_) => Vec::new(),
+            })
+            .collect::<Vec<_>>();
+        // Only the nodes of a place that the phase adds edges into more than
+        // one node of can enclose each other.
+        let mut per_place: FxHashMap<_, FxHashSet<NodeLp<'vir>>> = FxHashMap::default();
+        for &node in targets.iter().flatten() {
+            per_place.entry(node.base()).or_default().insert(node);
+        }
+        let targets = targets
+            .into_iter()
+            .map(|nodes| {
+                nodes
+                    .into_iter()
+                    .filter(|node| per_place[&node.base()].len() > 1)
+                    .collect::<Vec<_>>()
             })
             .collect::<Vec<_>>();
         // For each target node, its own positions and the positions enclosing
