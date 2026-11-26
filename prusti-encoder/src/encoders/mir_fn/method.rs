@@ -321,7 +321,7 @@ impl TaskEncoder for MethodEnc {
                         vcx.mk_local_decl_stmt(vir::vir_local_decl! { vcx; [name_p] : Ref }, None),
                     );
                     if always_live.contains(local) {
-                        start_stmts.push(vcx.mk_inhale_stmt(local_defs[local].impure_uninit));
+                        start_stmts.push(vcx.mk_inhale_stmt(local_def.impure_uninit));
                     }
                 }
                 // This will be overwritten later.

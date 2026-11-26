@@ -203,7 +203,6 @@ pub(crate) fn ty_impure_variant<'vir>(
     // exchanging the discriminant's predicate and the field tokens for the
     // enum's token.
     let params = &builder.params;
-    let self_uninit = builder.uninit_pred_expr(ref_self);
     let first_uninit_field = if box_data.is_some() {
         fields.len() - 1
     } else {
@@ -236,7 +235,7 @@ pub(crate) fn ty_impure_variant<'vir>(
                 &[],
                 (ref_self_decl, params.ty_decls(), params.const_decls()),
                 &field_uninits,
-                &[self_uninit],
+                &[builder.uninit_pred_expr(ref_self)],
             ))
         }
     };
