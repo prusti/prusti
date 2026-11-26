@@ -143,6 +143,11 @@ impl<'vir> NodePredicates<'vir> {
         self.graph.positions_outermost_first().collect()
     }
 
+    /// The positions enclosing `p`, whose predicates its key reads through.
+    pub fn enclosing(&self, p: LifetimePosition) -> &[LifetimePosition] {
+        self.graph.ancestors(p)
+    }
+
     /// The positions of the node of `lifetime`, each after the positions
     /// enclosing it.
     pub fn positions_of(&self, lifetime: PcgLifetime<'vir>) -> Vec<LifetimePosition> {

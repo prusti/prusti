@@ -1528,6 +1528,13 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
     /// enclosing each position. Where the state holds the place by its own
     /// predicates, the values are read through them, as a contract reads
     /// them; otherwise they are taken from the place's value.
+    ///
+    /// A key read through the predicate of an enclosing position that an
+    /// action of the current phase created is read where it is used instead:
+    /// the predicate is not held at the start of the phase, and the value is
+    /// the same, since it only changes between the phases. The folds of a
+    /// phase create enclosing positions first (see `fold_order`), so the
+    /// predicate is held where the key is used.
     fn place_keys(
         &mut self,
         place: MaybeLabelledPlace<'vir>,
@@ -1537,6 +1544,12 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
     ) -> EncodeResult<'vir, Vec<(LifetimePosition, vir::ExprSnap<'vir>)>, E> {
         let read = self.place_read_in(place, pcg, point.map(|point| point.at))?;
         let label = point.map(|point| point.label);
+        let created = match read {
+            PlaceRead::Held(_) if point.is_some() && *point == self.phase_start_point() => {
+                self.positions_created_in_phase(place)?
+            }
+            _ => FxHashSet::default(),
+        };
         Ok(positions
             .iter()
             .map(|&p| {
@@ -1544,9 +1557,44 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                     PlaceRead::Held(snap) => nodes.key(p, snap),
                     PlaceRead::Value(value) => nodes.key_of_value(p, value),
                 };
+                let label = if nodes.enclosing(p).iter().any(|q| created.contains(q)) {
+                    None
+                } else {
+                    label
+                };
                 (p, self.vcx.maybe_apply_label(key, label))
             })
             .collect())
+    }
+
+    /// The point at the start of the current phase, where the keys of
+    /// current nodes are read.
+    fn phase_start_point(&self) -> Option<ReadPoint<'vir>> {
+        self.phase_start.as_ref().map(|(_, point)| *point)
+    }
+
+    /// The positions of `place` whose predicates an action of the current
+    /// phase created.
+    fn positions_created_in_phase(
+        &mut self,
+        place: MaybeLabelledPlace<'vir>,
+    ) -> EncodeResult<'vir, FxHashSet<LifetimePosition>, E> {
+        let start = self.phase_start_point();
+        let nodes = self
+            .indirect_predicate_state
+            .current
+            .created_at
+            .iter()
+            .filter(|(node, created)| {
+                node.base() == place && created.after_point && Some(created.point) == start
+            })
+            .map(|(node, _)| *node)
+            .collect::<Vec<_>>();
+        let mut positions = FxHashSet::default();
+        for node in nodes {
+            positions.extend(self.node_positions(node)?.2);
+        }
+        Ok(positions)
     }
 
     /// The keys of `node`'s predicates, read in `state` (see `place_keys`).
@@ -3088,13 +3136,86 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         edge_to_loop: bool,
     ) -> EncodeResult<'vir, (), E> {
         self.phase_renames.clear();
-        for action in actions.iter() {
-            match action {
+        let actions = actions.iter().collect::<Vec<_>>();
+        for i in self.fold_order(&actions)? {
+            match actions[i] {
                 PcgAction::Borrow(action) => self.borrow_action(pcg, action, edge_to_loop)?,
                 PcgAction::Owned(action) => self.pcg_repack(action.kind())?,
             }
         }
         Ok(())
+    }
+
+    /// The order in which the `actions` of a phase are encoded: the PCG's,
+    /// except that an edge added into a node comes after the edges the phase
+    /// adds into the nodes of the same place at positions enclosing the
+    /// node's. The node's predicates are folded when the edge is added, and
+    /// their keys read through the predicates of the enclosing positions,
+    /// which the PCG may add later in the phase (it adds the edges into a
+    /// place's nodes in the order of the lifetimes in the place's type).
+    fn fold_order(&mut self, actions: &[&PcgAction<'vir>]) -> EncodeResult<'vir, Vec<usize>, E> {
+        let ctxt = self.pcg_ctxt();
+        let targets = actions
+            .iter()
+            .map(|action| match action {
+                PcgAction::Borrow(action) => match action.kind() {
+                    BorrowPcgActionKind::AddEdge { edge } => edge
+                        .blocked_by_nodes(ctxt)
+                        .filter_map(|node| match node {
+                            PcgNode::LifetimeProjection(node) => Some(node),
+                            PcgNode::Place(_) => None,
+                        })
+                        .filter(|node| node.label().is_none())
+                        .collect(),
+                    _ => Vec::new(),
+                },
+                PcgAction::Owned(_) => Vec::new(),
+            })
+            .collect::<Vec<_>>();
+        // For each target node, its own positions and the positions enclosing
+        // them.
+        let mut positions = FxHashMap::default();
+        for &node in targets.iter().flatten() {
+            if let std::collections::hash_map::Entry::Vacant(entry) = positions.entry(node) {
+                let (_, nodes, own) = self.node_positions(node)?;
+                let enclosing = own
+                    .iter()
+                    .flat_map(|&p| nodes.enclosing(p).iter().copied())
+                    .collect::<FxHashSet<_>>();
+                entry.insert((own, enclosing));
+            }
+        }
+        let encloses = |outer: NodeLp<'vir>, inner: NodeLp<'vir>| {
+            outer.base() == inner.base()
+                && positions[&outer]
+                    .0
+                    .iter()
+                    .any(|p| positions[&inner].1.contains(p))
+        };
+        // The later actions each action waits for.
+        let waits_for = (0..actions.len())
+            .map(|i| {
+                (i + 1..actions.len())
+                    .filter(|&j| {
+                        targets[i]
+                            .iter()
+                            .any(|&inner| targets[j].iter().any(|&outer| encloses(outer, inner)))
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        // Take the first action in the PCG's order whose awaited actions are
+        // all encoded.
+        let mut done = vec![false; actions.len()];
+        let mut order = Vec::with_capacity(actions.len());
+        while order.len() < actions.len() {
+            let next = (0..actions.len())
+                .find(|&i| !done[i] && waits_for[i].iter().all(|&j| done[j]))
+                .expect("an action only waits for later ones");
+            done[next] = true;
+            order.push(next);
+        }
+        Ok(order)
     }
 
     /// Emit the repacks of `phase` at `location`.
