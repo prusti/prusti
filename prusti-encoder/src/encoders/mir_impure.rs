@@ -1388,10 +1388,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         }
 
         match repack_op {
-            RepackOp::StorageDead(local) => {
-                self.encode_storage_dead(pcg, *local);
-                Ok(())
-            }
+            RepackOp::StorageDead(local) => self.encode_storage_dead(pcg, *local),
             RepackOp::Expand(_) | RepackOp::Collapse(_) => {
                 let (place, capability_kind) = match repack_op {
                     RepackOp::Expand(expand) => (expand.from(), expand.capability()),
@@ -1542,14 +1539,20 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         );
     }
 
-    /// Releases the storage of `local`, where the PCG state is `pcg`. This
-    /// happens at a MIR `StorageDead` statement, and at a `StorageDead` op that
-    /// the PCG places on an edge into a join block. The PCG has dropped the
-    /// local's value by then, so at write capability it holds its `$uninit`
-    /// token; a local that is not allocated holds nothing.
-    fn encode_storage_dead(&mut self, pcg: &Pcg<'_, 'vir>, local: mir::Local) {
+    /// Releases the storage of `local`. This happens at a MIR `StorageDead`
+    /// statement, where `pcg` is the state before it, and at a `StorageDead`
+    /// op that the PCG places on an edge into a join block, where `pcg` is the
+    /// state at the end of the source block. A local without a value (write
+    /// capability) holds its `$uninit` token; a local that is not allocated
+    /// holds nothing. Any other state is not expected: on an edge, `pcg` would
+    /// not show the edge's own ops that drop the value.
+    fn encode_storage_dead(
+        &mut self,
+        pcg: &Pcg<'_, 'vir>,
+        local: mir::Local,
+    ) -> EncodeResult<'vir, (), E> {
         if self.spec_blocks.spec_arms.is_spec_only_local(local) {
-            return;
+            return Ok(());
         }
         let place = Place::from(mir::Place::from(local));
         match pcg.place_capability(place, self.pcg_ctxt()) {
@@ -1558,11 +1561,17 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                     .mk_exhale_stmt(self.local_defs[local].impure_uninit),
             ),
             None if !pcg.local_is_expanded(local) => {}
-            capability => unreachable!(
-                "`StorageDead({local:?})` with capability {capability:?} (expanded: {})",
-                pcg.local_is_expanded(local)
-            ),
+            _ => {
+                return Err(EncodeFullError::internal(
+                    format!(
+                        "the storage of `{}` ended while it might still hold a value",
+                        place.display_string(self.pcg_ctxt())
+                    ),
+                    vec![self.current_span()],
+                ));
+            }
         }
+        Ok(())
     }
 
     fn loop_analysis(&self) -> &LoopAnalysis {
@@ -2607,8 +2616,9 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                     let current_fpcs = self.current_fpcs.take().unwrap();
                     let state = &current_fpcs.statements[location.statement_index].states
                         [EvalStmtPhase::PreMain];
-                    self.encode_storage_dead(state, *local);
+                    let result = self.encode_storage_dead(state, *local);
                     self.current_fpcs = Some(current_fpcs);
+                    result?;
                 }
 
                 // no-ops
@@ -2800,10 +2810,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 // `let f = S; f(0)`, moves it, but the call does not pass it
                 // on, so its value is dropped here.
                 if let mir::Operand::Move(func_place) = func {
-                    let func_place = Place::from(*func_place);
-                    let ty_out = self.ty_use_impure(func_place.ty(self.pcg_ctxt()).ty);
-                    let place_ref = self.encode_place(func_place)?.expr.expect_predicate();
-                    self.stmt(ty_out.apply_method_drop(self.vcx, place_ref));
+                    self.pcg_weaken(Place::from(*func_place), true)?;
                 }
 
                 let dest = self
