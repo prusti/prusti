@@ -205,75 +205,16 @@ pub fn find_trait_method_substs<'tcx>(
     impl_method_def_id: ProcedureDefId, // what are we calling?
     impl_method_substs: &'tcx [GenericArg<'tcx>], // what are the substs on the call?
 ) -> Option<(ProcedureDefId, &'tcx [GenericArg<'tcx>])> {
-    let impl_def_id = tcx.impl_of_assoc(impl_method_def_id)?;
-    let trait_ref = tcx.impl_opt_trait_ref(impl_def_id)?.skip_binder();
-
-    // At this point, we know that the given method:
-    // - belongs to an impl block and
-    // - the impl block implements a trait.
-    // For the `get_assoc_item` call, we therefore `unwrap`, as not finding
-    // the associated item would be a (compiler) internal error.
-    let trait_def_id = trait_ref.def_id;
-    let trait_method_def_id = get_assoc_item(tcx, trait_def_id, impl_method_def_id)
-        .unwrap()
-        .def_id;
-
-    // sanity check: have we been given the correct number of substs?
-    let identity_impl_method = ty::List::identity_for_item(tcx, impl_method_def_id);
-    assert_eq!(identity_impl_method.len(), impl_method_substs.len());
-
-    // Given:
-    // ```
-    // trait Trait<Tp> {
-    //     fn f<Tx, Ty, Tz>();
-    // }
-    // struct Struct<Ex, Ey> { ... }
-    // impl<A, B, C> Trait<A> for Struct<B, C> {
-    //     fn f<X, Y, Z>() { ... }
-    // }
-    // ```
-    //
-    // The various substs look like this:
-    // - identity for Trait:           `[Self, Tp]`
-    // - identity for Trait::f:        `[Self, Tp, Tx, Ty, Tz]`
-    // - substs of the impl trait ref: `[Struct<B, C>, A]`
-    // - identity for the impl:        `[A, B, C]`
-    // - identity for Struct::f:       `[A, B, C, X, Y, Z]`
-    //
-    // What we need is a substs suitable for a call to Trait::f, which is in
-    // this case `[Struct<B, C>, A, X, Y, Z]`. More generally, it is the
-    // concatenation of the trait ref substs with the identity of the impl
-    // method after skipping the identity of the impl.
-    //
-    // We also need to subst the prefix (`[Struct<B, C>, A]` in the example
-    // above) with call substs, so that we get the trait's type parameters
-    // more precisely.
-    let call_trait_substs =
-        ty::EarlyBinder::bind(tcx, trait_ref.args).instantiate(tcx, impl_method_substs);
-    let impl_substs = ty::List::identity_for_item(tcx, impl_def_id);
-    let trait_method_substs = tcx.mk_args_from_iter(
-        call_trait_substs
-            .skip_normalization()
-            .iter()
-            .chain(impl_method_substs.iter().copied().skip(impl_substs.len())),
-    );
-
-    // sanity check: do we now have the correct number of substs?
-    let identity_trait_method = ty::List::identity_for_item(tcx, trait_method_def_id);
-    assert_eq!(trait_method_substs.len(), identity_trait_method.len());
-
+    let trait_method_def_id = tcx.trait_item_of(impl_method_def_id)?;
+    let impl_def_id = tcx.parent(impl_method_def_id);
+    let impl_method_substs = tcx.mk_args(impl_method_substs);
+    // The trait method's substs are the impl's trait ref, instantiated with
+    // the call's substs (whose prefix is the impl's), followed by the impl
+    // method's own substs.
+    let trait_ref = tcx
+        .impl_trait_ref(impl_def_id)
+        .instantiate(tcx, impl_method_substs)
+        .skip_normalization();
+    let trait_method_substs = impl_method_substs.rebase_onto(tcx, impl_def_id, trait_ref.args);
     Some((trait_method_def_id, trait_method_substs))
-}
-
-pub fn get_assoc_item<'tcx>(
-    tcx: ty::TyCtxt<'tcx>,
-    trait_id: DefId,
-    item_id: DefId,
-) -> Option<ty::AssocItem> {
-    // FIXME: Probably we should use https://doc.rust-lang.org/nightly/nightly-rustc/rustc_middle/ty/struct.AssociatedItems.html#method.find_by_name_and_namespace
-    // instead.
-    tcx.associated_items(trait_id)
-        .filter_by_name_unhygienic(tcx.item_name(item_id))
-        .next()
-        .cloned()
 }

@@ -5,7 +5,6 @@
 #![allow(clippy::needless_lifetimes)]
 
 mod encoders;
-mod trait_support;
 pub mod request;
 
 use prusti_interface::{

@@ -51,12 +51,7 @@ impl TaskEncoder for FloatBitVecConvEnc {
         let (float, size) = *task_key;
         deps.emit_output_ref(*task_key, ())?;
         vir::with_vcx(|vcx| {
-            let float_ty = match float {
-                ty::FloatTy::F16 => vcx.tcx().types.f16,
-                ty::FloatTy::F32 => vcx.tcx().types.f32,
-                ty::FloatTy::F64 => vcx.tcx().types.f64,
-                ty::FloatTy::F128 => vcx.tcx().types.f128,
-            };
+            let float_ty = ty::Ty::new_float(vcx.tcx(), float);
             let float_snap = deps
                 .require_ref::<TyUsePureEnc>(RustTyDecomposition::from_prim_ty(float_ty))?
                 .snapshot

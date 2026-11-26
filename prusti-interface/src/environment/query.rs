@@ -155,36 +155,6 @@ impl<'tcx> EnvQuery<'tcx> {
             .predicate_must_hold_modulo_regions(&obligation)
     }
 
-    /// Given some procedure `proc_def_id` which is called, this method returns the actual method which will be executed when `proc_def_id` is defined on a trait.
-    /// Returns `None` if this method can not be found or the provided `proc_def_id` is no trait item. Returns `proc_def_id` if a default implementation is called.
-    #[tracing::instrument(level = "debug", skip(self, caller_def_id))]
-    pub fn find_impl_of_trait_method_call(
-        self,
-        caller_def_id: impl IntoParam<ProcedureDefId>, // where are we calling from?
-        proc_def_id: impl IntoParam<ProcedureDefId> + Debug,
-        substs: GenericArgsRef<'tcx>,
-    ) -> Option<ProcedureDefId> {
-        let proc_def_id = proc_def_id.into_param();
-        let typing_env = ty::TypingEnv::post_analysis(self.tcx, caller_def_id.into_param());
-        let impl_def_id = self.find_trait_impl_of_method_call(typing_env, proc_def_id, substs)?;
-        for item in self.tcx.associated_items(impl_def_id).in_definition_order() {
-            if let Some(id) = item.trait_item_def_id() {
-                if id == proc_def_id {
-                    return Some(item.def_id);
-                }
-            }
-        }
-        if self
-            .tcx
-            .associated_item(proc_def_id)
-            .defaultness(self.tcx)
-            .has_value()
-        {
-            return Some(proc_def_id);
-        }
-        unreachable!()
-    }
-
     /// Given the `called_def_id` of a function, called from `caller_def_id`,
     /// and some substitutions `call_substs` applied for that call, returns
     /// `true` if the call is to a function in the specified crate
@@ -228,14 +198,10 @@ impl<'tcx> EnvQuery<'tcx> {
         let called_def_id = called_def_id.into_param();
 
         (|| {
-            // trait resolution does not depend on lifetimes, and in fact fails in the presence of uninferred regions
-            let clean_substs = self.tcx.erase_and_anonymize_regions(call_substs);
-
             let typing_env = ty::TypingEnv::post_analysis(self.tcx, caller_def_id.into_param());
-            let instance = self
-                .tcx
-                .resolve_instance_raw(typing_env.as_query_input((called_def_id, clean_substs)))
-                .ok()??;
+            let instance =
+                ty::Instance::try_resolve(self.tcx, typing_env, called_def_id, call_substs)
+                    .ok()??;
             let resolved_def_id = instance.def_id();
             let resolved_substs = if resolved_def_id == called_def_id {
                 // if no trait resolution occurred, we can keep the non-erased substs
