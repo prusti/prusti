@@ -156,15 +156,56 @@ impl FoldOrUnfold {
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum LocationLabelPrefix {
-    Before,
     BeforeRefReassignment,
 }
 
 impl LocationLabelPrefix {
     pub(crate) fn to_str(self) -> &'static str {
         match self {
-            LocationLabelPrefix::Before => "before",
             LocationLabelPrefix::BeforeRefReassignment => "before_ref_reassignment",
+        }
+    }
+}
+
+/// A point of a statement where the encoder emits a label. A statement has
+/// two effects in the encoding, the evaluation of its operands (between
+/// `PreOperands` and `PostOperands`) and its main effect (between `PreMain`
+/// and `PostMain`). The label of a phase is at the start of its actions, and
+/// that of an effect right before it, at the end of the phase preceding it.
+#[derive(Clone, Copy, Debug)]
+enum StmtPoint {
+    Phase(EvalStmtPhase),
+    Effect(StmtEffect),
+}
+
+/// One of the two effects of a statement in the encoding (see `StmtPoint`).
+#[derive(Clone, Copy, Debug)]
+enum StmtEffect {
+    Operands,
+    Main,
+}
+
+impl StmtPoint {
+    /// The point of the state that the PCG snapshots `before phase`. The PCG
+    /// takes the snapshots before a phase following an effect (e.g. a moved
+    /// operand's, a lender's at a borrow, the arguments' at a call) before
+    /// that effect.
+    fn pcg_before(phase: EvalStmtPhase) -> Self {
+        match phase {
+            EvalStmtPhase::PostOperands => StmtPoint::Effect(StmtEffect::Operands),
+            EvalStmtPhase::PostMain => StmtPoint::Effect(StmtEffect::Main),
+            EvalStmtPhase::PreOperands | EvalStmtPhase::PreMain => StmtPoint::Phase(phase),
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            StmtPoint::Phase(EvalStmtPhase::PreOperands) => "pre_operands",
+            StmtPoint::Effect(StmtEffect::Operands) => "operands_effect",
+            StmtPoint::Phase(EvalStmtPhase::PostOperands) => "post_operands",
+            StmtPoint::Phase(EvalStmtPhase::PreMain) => "pre_main",
+            StmtPoint::Effect(StmtEffect::Main) => "main_effect",
+            StmtPoint::Phase(EvalStmtPhase::PostMain) => "post_main",
         }
     }
 }
@@ -976,7 +1017,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
     /// effect of the call at `location`.
     fn record_call_results(&mut self, location: mir::Location, locals: &[mir::Local]) {
         let pres = self.current_block_pres.as_ref().unwrap();
-        let label = self.phase_start_label(location, EvalStmtPhase::PostMain, pres);
+        let label = self.stmt_label(location, StmtPoint::Phase(EvalStmtPhase::PostMain), pres);
         let point = ReadPoint {
             at: SnapshotLocation::Before(AnalysisLocation::new(location, EvalStmtPhase::PostMain)),
             label: vir::OldLabel::Label(label),
@@ -1443,7 +1484,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
     /// read. The keys are the value the node's place had while the node was
     /// current, read at the last point where it was current: at the start of
     /// the phase for a current node, and just before its label for an
-    /// earlier version, which the PCG labels (see `phase_label`). If the
+    /// earlier version, which the PCG labels (see `StmtPoint::pcg_before`). If the
     /// place has ended there, it is read at its own label (see
     /// `place_read_in`). The value does not change while the node is current,
     /// since the PCG labels the node whenever its place can change.
@@ -3062,17 +3103,18 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         location: mir::Location,
         phase: EvalStmtPhase,
     ) -> EncodeResult<'vir, (), E> {
-        let pres = self.current_block_pres.as_ref().unwrap();
         // The label of `PreOperands` is emitted by the caller, at the start of
         // the statement.
         if phase != EvalStmtPhase::PreOperands {
-            let label = self.phase_start_label(location, phase, pres);
-            self.stmt(self.vcx.mk_label_stmt(label));
+            self.emit_stmt_label(location, StmtPoint::Phase(phase));
         }
         let current_fpcs = self.current_fpcs.take().unwrap();
         let cfpcs = &current_fpcs.statements[location.statement_index];
-        let label =
-            self.phase_start_label(location, phase, self.current_block_pres.as_ref().unwrap());
+        let label = self.stmt_label(
+            location,
+            StmtPoint::Phase(phase),
+            self.current_block_pres.as_ref().unwrap(),
+        );
         let point = ReadPoint {
             at: SnapshotLocation::Before(AnalysisLocation::new(location, phase)),
             label: vir::OldLabel::Label(label),
@@ -3099,17 +3141,16 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         self.phase_start = None;
         self.current_fpcs = Some(current_fpcs);
         // The effects are encoded right after the `PreOperands` and `PreMain`
-        // actions; the snapshots of the next phase are taken before them.
-        let next = match phase {
-            EvalStmtPhase::PreOperands => Some(EvalStmtPhase::PostOperands),
-            EvalStmtPhase::PreMain => Some(EvalStmtPhase::PostMain),
+        // actions.
+        let effect = match phase {
+            EvalStmtPhase::PreOperands => Some(StmtEffect::Operands),
+            EvalStmtPhase::PreMain => Some(StmtEffect::Main),
             _ => None,
         };
         if result.is_ok()
-            && let Some(next) = next
+            && let Some(effect) = effect
         {
-            let label = self.phase_label(location, next, self.current_block_pres.as_ref().unwrap());
-            self.stmt(self.vcx.mk_label_stmt(label));
+            self.emit_stmt_label(location, StmtPoint::Effect(effect));
         }
         result
     }
@@ -3685,9 +3726,11 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 vir::OldLabel::Block(*self.vcx.mk_block_label(bb.as_usize(), pres))
             }
             SnapshotLocation::After(bb) => vir::OldLabel::Label(self.block_end_label(bb, &pres)),
-            SnapshotLocation::Before(at) => {
-                vir::OldLabel::Label(self.phase_label(at.location(), at.eval_stmt_phase(), &pres))
-            }
+            SnapshotLocation::Before(at) => vir::OldLabel::Label(self.stmt_label(
+                at.location(),
+                StmtPoint::pcg_before(at.eval_stmt_phase()),
+                &pres,
+            )),
             SnapshotLocation::BeforeRefReassignment(location) => vir::OldLabel::Label(
                 self.location_label(LocationLabelPrefix::BeforeRefReassignment, location, &pres),
             ),
@@ -3747,53 +3790,26 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         )
     }
 
-    /// The label where the snapshots that the PCG labels `before phase` of
-    /// the statement at `location` are taken. A statement has two effects in
-    /// the encoding, the evaluation of its operands (between `PreOperands` and
-    /// `PostOperands`) and its main effect (between `PreMain` and `PostMain`).
-    /// The PCG's snapshots before the phase following an effect are those
-    /// before the effect (e.g. a moved operand's, a lender's at a borrow, the
-    /// arguments' at a call), so their label precedes the effect.
-    fn phase_label(
+    /// The label at `point` of the statement at `location`.
+    fn stmt_label(
         &self,
         location: mir::Location,
-        phase: EvalStmtPhase,
+        point: StmtPoint,
         loop_pres: &[usize],
     ) -> &'vir str {
-        let before = self.location_label(LocationLabelPrefix::Before, location, loop_pres);
-        match phase {
-            EvalStmtPhase::PreOperands => before,
-            EvalStmtPhase::PostOperands => vir::vir_format!(self.vcx, "{before}_operands"),
-            EvalStmtPhase::PreMain => vir::vir_format!(self.vcx, "{before}_pre_main"),
-            EvalStmtPhase::PostMain => vir::vir_format!(self.vcx, "{before}_main"),
-        }
+        let pres = Self::loop_pres_suffix(loop_pres);
+        vir::vir_format!(
+            self.vcx,
+            "_bb{}_{}{pres}_{}",
+            location.block.index(),
+            location.statement_index,
+            point.name()
+        )
     }
 
-    /// The label at the start of the actions of `phase` of the statement at
-    /// `location`. It differs from [Self::phase_label] for the phases
-    /// following an effect: it lies after the effect.
-    fn phase_start_label(
-        &self,
-        location: mir::Location,
-        phase: EvalStmtPhase,
-        loop_pres: &[usize],
-    ) -> &'vir str {
-        let before = self.location_label(LocationLabelPrefix::Before, location, loop_pres);
-        match phase {
-            EvalStmtPhase::PostOperands => vir::vir_format!(self.vcx, "{before}_post_operands"),
-            EvalStmtPhase::PostMain => vir::vir_format!(self.vcx, "{before}_post_main"),
-            EvalStmtPhase::PreOperands | EvalStmtPhase::PreMain => {
-                self.phase_label(location, phase, loop_pres)
-            }
-        }
-    }
-
-    fn new_before_label(&mut self, location: mir::Location) {
-        let label = self.location_label(
-            LocationLabelPrefix::Before,
-            location,
-            self.current_block_pres.as_ref().unwrap(),
-        );
+    /// Emits the label at `point` of the statement at `location`.
+    fn emit_stmt_label(&mut self, location: mir::Location, point: StmtPoint) {
+        let label = self.stmt_label(location, point, self.current_block_pres.as_ref().unwrap());
         self.stmt(self.vcx.mk_label_stmt(label));
     }
 
@@ -4369,7 +4385,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         self.vcx.with_span(statement.source_info.span, |_| {
             self.deps().check_cycle()?;
 
-            self.new_before_label(location);
+            self.emit_stmt_label(location, StmtPoint::Phase(EvalStmtPhase::PreOperands));
 
             comment!(self, "[MIR] {location:?}: {statement:?}");
 
@@ -4462,7 +4478,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
     ) -> EncodeResult<'vir, (), E> {
         self.deps().check_cycle()?;
 
-        self.new_before_label(location);
+        self.emit_stmt_label(location, StmtPoint::Phase(EvalStmtPhase::PreOperands));
         comment!(self, "[MIR] {location:?}: {:?}", terminator.kind);
         let span = terminator.source_info.span;
 
