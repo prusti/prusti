@@ -52,8 +52,11 @@ pub enum ExternSpecResolverError {
     /// the spec's call to it.
     InvalidGenerics(DefId, Span, String, String),
 
-    /// Occurs when a trait impl extern spec resolves to the trait method.
-    ResolvedToDefault(DefId, Span),
+    /// Occurs when an impl block's extern spec of a trait method does not
+    /// resolve to a method of an impl block, e.g. because the trait's default
+    /// method, the compiler (as for `Clone` on tuples) or a where-clause
+    /// provides the method.
+    NoImplMethod(DefId, Span),
 
     /// Occurs when the extern spec declares a trait bound that does not follow
     /// from the target definition's. The spec would otherwise be applied at
@@ -82,23 +85,16 @@ pub enum ExternSpecDeclaration {
 }
 
 impl ExternSpecDeclaration {
-    /// Constructs [ExternSpecDeclaration] from a method call (within the
-    /// extern-spec function `caller_def_id`) with the given substitutions.
-    fn from_method_call<'tcx>(
-        caller_def_id: DefId,
-        def_id: DefId,
-        substs: GenericArgsRef<'tcx>,
-        env_query: EnvQuery<'tcx>,
-    ) -> Self {
+    /// Constructs [ExternSpecDeclaration] from a method call to `def_id`
+    /// (within the extern-spec function) that resolves to `resolved_def_id`.
+    fn from_method_call(def_id: DefId, resolved_def_id: DefId, env_query: EnvQuery<'_>) -> Self {
         let is_impl_method = env_query.is_trait_method_impl(def_id);
         let is_trait_method = env_query.get_trait_of_assoc(def_id).is_some();
-        let maybe_impl_def_id =
-            env_query.find_impl_of_trait_method_call(caller_def_id, def_id, substs);
 
-        if is_trait_method && maybe_impl_def_id.is_none() {
+        if is_trait_method && resolved_def_id == def_id {
             Self::Trait(def_id)
-        } else if is_trait_method && maybe_impl_def_id.is_some() {
-            Self::TraitImpl(def_id, maybe_impl_def_id.unwrap())
+        } else if is_trait_method {
+            Self::TraitImpl(def_id, resolved_def_id)
         } else if is_impl_method {
             Self::Inherent(def_id)
         } else {
@@ -168,10 +164,12 @@ impl<'tcx> ExternSpecResolver<'tcx> {
         visitor.visit_fn(fn_kind, fn_decl, body_id, span, local_id);
         let current_def_id = local_id.to_def_id();
         if let Some((target_def_id, substs, span)) = visitor.spec_found {
+            let (resolved_def_id, resolved_substs) =
+                self.env_query
+                    .resolve_method_call(current_def_id, target_def_id, substs);
             let extern_spec_decl = ExternSpecDeclaration::from_method_call(
-                current_def_id,
                 target_def_id,
-                substs,
+                resolved_def_id,
                 self.env_query,
             );
 
@@ -181,65 +179,52 @@ impl<'tcx> ExternSpecResolver<'tcx> {
                 unreachable!(
                     "External specification declared on a trait did not resolve to a trait method"
                 );
-            } else if matches!(extern_spec_kind, ExternSpecKind::TraitImpl)
-                && !matches!(extern_spec_decl, ExternSpecDeclaration::TraitImpl(_, _))
+            } else if matches!(
+                extern_spec_kind,
+                ExternSpecKind::TraitImpl | ExternSpecKind::InherentImpl
+            ) && matches!(extern_spec_decl, ExternSpecDeclaration::Trait(_))
             {
-                unreachable!("External specification declared on a trait implementation did not resolve to a concrete type");
+                self.errors
+                    .push(ExternSpecResolverError::NoImplMethod(target_def_id, span));
+                return;
             }
 
+            // The spec is applied at every use of the target, and its items
+            // are instantiated with the target's generic arguments by
+            // position. So the stub must pass its own type and const
+            // parameters to the target, in order. Lifetimes are erased in
+            // Prusti, so they need not match.
+            let non_regions = |args: GenericArgsRef<'tcx>| {
+                args.iter()
+                    .filter(|arg| arg.as_region().is_none())
+                    .collect::<Vec<_>>()
+            };
+            let declared = non_regions(self.env_query.identity_substs(current_def_id));
+            let target = non_regions(resolved_substs);
+            if declared != target {
+                let render = |args: Vec<ty::GenericArg<'tcx>>| {
+                    let _trimmed_paths = ty::print::ForceTrimmedGuard::new();
+                    args.into_iter()
+                        .map(|arg| arg.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                };
+                self.errors.push(ExternSpecResolverError::InvalidGenerics(
+                    resolved_def_id,
+                    span,
+                    render(declared),
+                    render(target),
+                ));
+            } else if let Some((unimplied, target)) =
+                self.bounds_mismatch(current_def_id, span, resolved_def_id, resolved_substs)
             {
-                // TODO: this resolution happens here but also in SpecCollector
-                // maybe it can be done once only?
-                let (resolved_def_id, resolved_substs) =
-                    self.env_query
-                        .resolve_method_call(current_def_id, target_def_id, substs);
-                if matches!(extern_spec_kind, ExternSpecKind::TraitImpl)
-                    && resolved_def_id == target_def_id
-                {
-                    // should have resolved but did not: resolved to default
-                    self.errors.push(ExternSpecResolverError::ResolvedToDefault(
-                        target_def_id,
-                        span,
+                for (bound_span, bound) in unimplied {
+                    self.errors.push(ExternSpecResolverError::MismatchedBounds(
+                        resolved_def_id,
+                        bound_span,
+                        bound,
+                        target.clone(),
                     ));
-                } else {
-                    // The spec is applied at every use of the target, and its
-                    // items are instantiated with the target's generic
-                    // arguments by position. So the stub must pass its own type
-                    // and const parameters to the target, in order. Lifetimes
-                    // are erased in Prusti, so they need not match.
-                    let non_regions = |args: GenericArgsRef<'tcx>| {
-                        args.iter()
-                            .filter(|arg| arg.as_region().is_none())
-                            .collect::<Vec<_>>()
-                    };
-                    let declared = non_regions(self.env_query.identity_substs(current_def_id));
-                    let target = non_regions(resolved_substs);
-                    if declared != target {
-                        let render = |args: Vec<ty::GenericArg<'tcx>>| {
-                            let _trimmed_paths = ty::print::ForceTrimmedGuard::new();
-                            args.into_iter()
-                                .map(|arg| arg.to_string())
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        };
-                        self.errors.push(ExternSpecResolverError::InvalidGenerics(
-                            resolved_def_id,
-                            span,
-                            render(declared),
-                            render(target),
-                        ));
-                    } else if let Some((unimplied, target)) =
-                        self.bounds_mismatch(current_def_id, span, resolved_def_id, resolved_substs)
-                    {
-                        for (bound_span, bound) in unimplied {
-                            self.errors.push(ExternSpecResolverError::MismatchedBounds(
-                                resolved_def_id,
-                                bound_span,
-                                bound,
-                                target.clone(),
-                            ));
-                        }
-                    }
                 }
             }
 
@@ -518,9 +503,9 @@ impl<'tcx> ExternSpecResolver<'tcx> {
                     .add_note(err_note, None)
                     .emit(env_diagnostic);
                 }
-                ExternSpecResolverError::ResolvedToDefault(def_id, span) => {
+                ExternSpecResolverError::NoImplMethod(def_id, span) => {
                     let function_name = self.env_name.get_item_name(*def_id);
-                    let err_note = format!("Specified method ('{function_name}') resolved to the trait's implementation. Add specification to the trait instead.");
+                    let err_note = format!("Specified method ('{function_name}') does not resolve to a method of an impl block, e.g. because the trait's default method, the compiler or a where-clause provides it. Add the specification to the trait instead.");
                     PrustiError::incorrect(
                         "Invalid external specification",
                         MultiSpan::from_span(*span),

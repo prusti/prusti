@@ -2,8 +2,6 @@ use pcg::pcg::BodyWithBorrowckFacts;
 use prusti_interface::environment::{EnvQuery, body::MirBody};
 use prusti_rustc_interface::span::def_id::{DefId, LocalDefId};
 
-use crate::trait_support::is_function_with_body;
-
 /// Whether the body of `def_id` is encoded, rather than only its contract.
 /// It is not if the function is trusted (we take its contract on faith), or
 /// if it has no body of its own to encode (an external function, or a trait
@@ -13,9 +11,7 @@ pub fn encodes_body(def_id: DefId) -> bool {
         tracing::info!("function {def_id:?} is trusted, not encoding its body");
         return false;
     }
-    vir::with_vcx(|vcx| {
-        is_function_with_body(vcx.tcx(), def_id) && EnvQuery::new(vcx.tcx()).has_body(def_id)
-    })
+    vir::with_vcx(|vcx| EnvQuery::new(vcx.tcx()).has_body(def_id))
 }
 
 /// The MIR body of `def_id` to encode, or `None` if there is none (see

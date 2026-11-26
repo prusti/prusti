@@ -8,22 +8,19 @@ use prusti_rustc_interface::{
 use task_encoder::{EncodeFullError, EncodeFullResult, TaskEncoder, TaskEncoderDependencies};
 use vir::{CastType, Domain, Method, MethodIdn, ViperIdent, vir_format_identifier};
 
-use crate::{
-    encoders::{
-        ConstEnc, FunctionCallEnc, MirLocalDefEnc, MirLocalDefEncTask, MirSpecEnc, Pure,
-        r#const::ConstEncTask,
-        mir_fn::{CallTaskDescription, RustSignature},
-        pure::spec::MirSpecEncMode,
-        ty::{
-            RustTy, RustTyDecomposition,
-            generics::{
-                GArgs, GArgsCastEnc, GArgsTyEnc, GParams, GenericParamsEnc, r#trait::TraitEnc,
-                trait_fn::TraitFnEnc,
-            },
-            lifted::TyConstructorEnc,
+use crate::encoders::{
+    ConstEnc, FunctionCallEnc, MirLocalDefEnc, MirLocalDefEncTask, MirSpecEnc, Pure,
+    r#const::ConstEncTask,
+    mir_fn::{CallTaskDescription, RustSignature},
+    pure::spec::MirSpecEncMode,
+    ty::{
+        RustTy, RustTyDecomposition,
+        generics::{
+            GArgs, GArgsCastEnc, GArgsTyEnc, GParams, GenericParamsEnc, r#trait::TraitEnc,
+            trait_fn::TraitFnEnc,
         },
+        lifted::TyConstructorEnc,
     },
-    trait_support::is_function_with_body,
 };
 
 /// Encodes the behavioral-subtyping proof obligations of a trait impl:
@@ -97,8 +94,6 @@ impl TaskEncoder for TraitImplEnc {
                     impl_item_def_id,
                     GArgs::new(impl_item_context, impl_item_context.rust_params()),
                 );
-
-                let impl_item_has_body = is_function_with_body(vcx.tcx(), impl_item_def_id);
 
                 let trait_item_spec = deps.require_dep_spanned::<MirSpecEnc>(
                     (trait_item_def_id, impl_item_def_id, MirSpecEncMode::Impure),
@@ -192,7 +187,7 @@ impl TaskEncoder for TraitImplEnc {
                 for post in impl_item_spec.post_exprs() {
                     stmts.push(vcx.mk_inhale_stmt(post));
                 }
-                if impl_item_has_body && impl_item_is_pure {
+                if impl_item_is_pure {
                     let pure_func = deps.require_dep::<FunctionCallEnc>(
                         CallTaskDescription::new(
                             impl_item_def_id,
@@ -603,11 +598,12 @@ impl TraitImplEnc {
             .impl_trait_ref(impl_did)
             .instantiate_identity()
             .skip_normalization();
-        let item_args = &item_ctx.rust_params()[impl_ctx.rust_params().len()..];
-        let pinned = trait_ref.args.iter().chain(item_args.iter().copied());
+        let pinned = item_ctx
+            .rust_params()
+            .rebase_onto(vcx.tcx(), impl_did, trait_ref.args);
 
         let mut bind_points = FxIndexMap::default();
-        for arg in pinned.flat_map(|arg| arg.walk()) {
+        for arg in pinned.iter().flat_map(|arg| arg.walk()) {
             let idx = match arg.kind() {
                 ty::GenericArgKind::Type(ty) if let ty::TyKind::Param(p) = ty.kind() => p.index,
                 ty::GenericArgKind::Const(c) if let ty::ConstKind::Param(p) = c.kind() => p.index,
@@ -923,9 +919,9 @@ impl TaskEncoder for TraitImplItemEnc {
             // the parameter indices must match the `impl_item_context` used in
             // `GArgs::new` below.
             let trait_item_context = GParams::from(trait_item_def_id);
-            let item_args = &impl_item_context.rust_params()[impl_context.rust_params().len()..];
-            let args = trait_ref.args.iter().chain(item_args.iter().copied());
-            let args = tcx.mk_args_from_iter(args);
+            let args = impl_item_context
+                .rust_params()
+                .rebase_onto(tcx, impl_did, trait_ref.args);
             let impl_item_args = GArgs::new(impl_item_context, args);
             let args = deps.require_dep::<GArgsTyEnc>(impl_item_args)?;
 
@@ -1000,7 +996,6 @@ impl TaskEncoder for TraitImplItemEnc {
                         impl_item_def_id,
                         GArgs::new(impl_item_context, impl_item_context.rust_params()),
                     );
-                    let impl_item_has_body = is_function_with_body(vcx.tcx(), impl_item_def_id);
 
                     let impl_item_spec = deps.require_dep_spanned::<MirSpecEnc>(
                         (
@@ -1051,7 +1046,7 @@ impl TaskEncoder for TraitImplItemEnc {
                         ));
                     }
                     let mut posts = impl_item_spec.post_exprs().collect::<Vec<_>>();
-                    if impl_item_has_body && impl_item_is_pure {
+                    if impl_item_is_pure {
                         let pure_func = deps.require_dep::<FunctionCallEnc>(
                             CallTaskDescription::new(
                                 impl_item_def_id,
