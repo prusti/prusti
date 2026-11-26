@@ -1143,31 +1143,50 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
     /// Gives `node`, a future node that becomes current under the name
     /// `current`, the predicates of the borrowers whose `FromBorrow` edges
     /// lead into it: once a borrow expires, the lender's nested lifetime
-    /// projections hold what the borrower's hold then.
+    /// projections hold what the borrower's hold then. A borrower that is a
+    /// future node itself, e.g. that of a reference whose storage ended while
+    /// its referent was reborrowed, never becomes current: what flows into it
+    /// along future edges flows on into `node`, so its own borrowers give it.
     fn take_from_borrowers(
         &mut self,
         node: NodeLp<'vir>,
         current: NodeLp<'vir>,
     ) -> EncodeResult<'vir, (), E> {
-        let borrowers = self
-            .phase_start
-            .as_ref()
-            .map(|(pcg, _)| {
-                pcg.borrow_pcg()
-                    .graph()
-                    .edges()
-                    .filter_map(|edge| match edge.kind() {
-                        BorrowPcgEdgeKind::BorrowFlow(borrow_flow)
-                            if borrow_flow.kind().is_future_from_borrow()
-                                && borrow_flow.short() == node =>
-                        {
-                            local_node(borrow_flow.long())
-                        }
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
+        let mut borrowers = Vec::new();
+        if let Some((pcg, _)) = self.phase_start.as_ref() {
+            let graph = pcg.borrow_pcg().graph();
+            let mut todo = vec![(node, false)];
+            let mut seen = FxHashSet::default();
+            while let Some((target, transit)) = todo.pop() {
+                if !seen.insert(target) {
+                    continue;
+                }
+                for edge in graph.edges() {
+                    let BorrowPcgEdgeKind::BorrowFlow(borrow_flow) = edge.kind() else {
+                        continue;
+                    };
+                    let kind = borrow_flow.kind();
+                    if borrow_flow.short() != target
+                        || !(kind.is_future_from_borrow()
+                            || transit && kind.is_future_from_expansion())
+                    {
+                        continue;
+                    }
+                    let Some(source) = local_node(borrow_flow.long()) else {
+                        continue;
+                    };
+                    // A future node that became current earlier in the
+                    // phase holds what flowed into it.
+                    if source.label() == Some(LifetimeProjectionLabel::Future)
+                        && !self.phase_renames.contains_key(&source)
+                    {
+                        todo.push((source, true));
+                    } else {
+                        borrowers.push(source);
+                    }
+                }
+            }
+        }
         for borrower in borrowers {
             // A coercion's result gives back its borrows once undone.
             let coercion = self.coercion_of(borrower.base())?;
@@ -2264,7 +2283,8 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         to_generic: bool,
     ) -> EncodeResult<'vir, (), E> {
         let data = self.ty_use_impure(ty);
-        let mut children_keys = Vec::new();
+        let mut children_keys: Vec<(Part, Vec<(LifetimePosition, vir::ExprSnap<'vir>)>)> =
+            Vec::new();
         for child in children.iter().filter(|child| child.part != Part::Rest) {
             let keys = if to_generic {
                 let (child_state, _) = self.keys_state(child.node)?;
@@ -2272,7 +2292,15 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             } else {
                 self.node_keys(child.node, state)?
             };
-            children_keys.push((child.part, keys));
+            // Several nodes of one part can be children, e.g. those of an
+            // aggregate's operand whose lifetimes are all equal.
+            match children_keys
+                .iter_mut()
+                .find(|(part, _)| *part == child.part)
+            {
+                Some((_, part_keys)) => part_keys.extend(keys),
+                None => children_keys.push((child.part, keys)),
+            }
         }
         let child_keys = |part: Part| {
             children_keys
@@ -2292,11 +2320,19 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             let Some(referent) = data.expect_mutref().referent() else {
                 return Ok(());
             };
-            let Some(keys) = child_keys(Part::Referent) else {
+            let Some(referent_keys) = child_keys(Part::Referent) else {
                 return Ok(());
             };
-            let casts = keys
+            // Only the referent's positions that are `base`'s are cast; the
+            // others belong to other nodes of the reference.
+            let in_referent = nodes.referent_positions();
+            let casts = referent_keys
                 .into_iter()
+                .filter(|&(q, _)| {
+                    in_referent
+                        .get(q.index())
+                        .is_some_and(|p| keys.iter().any(|&(own, _)| own == *p))
+                })
                 .map(|(q, key)| referent.cast_at(key, q, to_generic))
                 .collect();
             self.stmts(order(casts));
@@ -2496,6 +2532,13 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         }
         let unfold = matches!(fold_or_unfold, FoldOrUnfold::Unfold);
         let (ty, nodes, positions) = self.node_positions(base)?;
+        let toward = self.positions_toward(ty, &nodes, &positions, children)?;
+        // An edge to referent nodes that none of the node's positions take
+        // part in does nothing.
+        if toward.is_empty() && !positions.is_empty() {
+            return Ok(());
+        }
+        let positions = toward;
         let (state, point) = self.keys_state(base)?;
         let keys = self.place_keys(place, &nodes, &positions, &state)?;
         let (ty, nodes, keys) = match coercion {
@@ -2585,6 +2628,69 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             self.stmts(folds);
         }
         Ok(())
+    }
+
+    /// Of the `positions` of a node of a `&mut` place of type `ty`, those that
+    /// correspond to a position of its `children`'s referent nodes (the
+    /// referent's own, or a lender's that it borrows): only these take part
+    /// in the edge to them. The reference's own position corresponds to none,
+    /// as the borrow itself folds it, and a child covers only the referent's
+    /// positions of its lifetime, while the node may cover more, e.g. `y↓'b`
+    /// for `y: &'b mut Node2<'b, 'b>`, whose positions are filled by the edges
+    /// from the lender's nodes of each lifetime in turn. All `positions` for
+    /// other nodes.
+    fn positions_toward(
+        &mut self,
+        ty: ty::Ty<'vir>,
+        nodes: &NodePredicates<'vir>,
+        positions: &[LifetimePosition],
+        children: &[Child<'vir>],
+    ) -> EncodeResult<'vir, Vec<LifetimePosition>, E> {
+        let referents = children
+            .iter()
+            .filter(|child| child.part == Part::Referent)
+            .collect::<Vec<_>>();
+        if referents.is_empty() || !matches!(ty.kind(), ty::Ref(_, _, mir::Mutability::Mut)) {
+            return Ok(positions.to_vec());
+        }
+        let in_referent = nodes.referent_positions();
+        let mut of_referents = FxHashSet::default();
+        for referent in referents {
+            let (_, _, of_referent) = self.node_positions(referent.node)?;
+            of_referents.extend(
+                of_referent
+                    .iter()
+                    .filter_map(|q| in_referent.get(q.index()).copied()),
+            );
+        }
+        Ok(positions
+            .iter()
+            .copied()
+            .filter(|p| of_referents.contains(p))
+            .collect())
+    }
+
+    /// Whether a `FromBorrow` future edge leads out of `node` in the PCG
+    /// state at the start of the phase, also under a name that an earlier
+    /// action of the phase renamed to `node` (e.g. its future node, which
+    /// became current when a borrow of it ended).
+    fn returns_to_lender(&self, node: NodeLp<'vir>) -> bool {
+        let Some((pcg, _)) = self.phase_start.as_ref() else {
+            return false;
+        };
+        pcg.borrow_pcg()
+            .graph()
+            .edges()
+            .any(|edge| match edge.kind() {
+                BorrowPcgEdgeKind::BorrowFlow(borrow_flow)
+                    if borrow_flow.kind().is_future_from_borrow() =>
+                {
+                    local_node(borrow_flow.long()).is_some_and(|long| {
+                        long == node || self.phase_renames.get(&long) == Some(&node)
+                    })
+                }
+                _ => false,
+            })
     }
 
     /// Whether `node` is folded and unfolded by its own predicates: a node of
@@ -2710,6 +2816,14 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                     || (edge_action.is_remove()
                         && (target.label().is_some() || !target.base().is_current()))
                 {
+                    return Ok(());
+                }
+                // A target whose contents return to a lender along its future
+                // edge (see `take_from_borrowers`) does not give them to the
+                // parts: the parts passed that edge on to it when they were
+                // moved into the aggregate. Removing the edge then only
+                // forgets it, as for an equals edge.
+                if edge_action.is_remove() && self.returns_to_lender(target) {
                     return Ok(());
                 }
                 let is_array = target.base().place().ty(self.pcg_ctxt()).ty.is_array();
