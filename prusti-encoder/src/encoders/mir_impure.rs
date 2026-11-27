@@ -234,13 +234,6 @@ where
     /// that a later encoding of the same edge does not record it again.
     pub deferred_join_stmts:
         FxHashMap<vir::CfgBlockLabel<'vir>, Vec<(mir::BasicBlock, Vec<vir::Stmt<'vir>>)>>,
-    /// While the PCG actions of a statement or edge, or a package script, are
-    /// encoded: for each array expansion of the PCG
-    /// whose index local died or was overwritten after the expansion, the
-    /// point the PCG labelled as still holding the index, keyed by the
-    /// expanded place and the index local. A place indexed by such a local
-    /// reads the index there (see [Self::index_labels_of]).
-    pub index_labels: FxHashMap<(Place<'vir>, mir::Local), SnapshotLocation>,
 
     // for the current basic block
     pub current_fpcs: Option<PcgBasicBlock<'enc, 'vir>>,
@@ -589,6 +582,34 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         Ok(())
     }
 
+    /// Rejects (un)folding `base` at a runtime index whose local has died when
+    /// `base` itself is reached through a runtime index, as in `&mut a[i][j]`
+    /// after the statement. The PCG labels a dead index local only in the
+    /// guide of the expansion it indexes (see [Self::expansion_index]), not in
+    /// the places that contain it, so the address of `base` would read the
+    /// lost value of its own index. This should be fixed in the PCG, by
+    /// labelling dead index locals in places too.
+    fn check_no_dead_index_in_base(
+        &self,
+        base: Place<'vir>,
+        guide: Option<RepackGuide>,
+    ) -> EncodeResult<'vir, (), E> {
+        let dead_index =
+            matches!(guide, Some(RepackGuide::Index(index, _)) if index.label().is_some());
+        if dead_index
+            && base
+                .iter_projections()
+                .any(|(_, elem)| matches!(elem, mir::ProjectionElem::Index(_)))
+        {
+            return Err(EncodeFullError::unsupported(
+                "borrowing an element of a nested array at runtime indices is not supported yet"
+                    .to_string(),
+                vec![self.current_span()],
+            ));
+        }
+        Ok(())
+    }
+
     /// The index argument for folding or unfolding an array-typed place,
     /// if the expansion is guided by an indexing projection.
     fn expansion_index(&mut self, guide: RepackGuide) -> Option<vir::ExprCSnap<'vir>> {
@@ -652,9 +673,12 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             return Err(unsupported_opaque(place_ty.ty, self.current_span()));
         }
 
-        let index = expansion
-            .and_then(|expansion| expansion.guide())
-            .and_then(|guide| self.expansion_index(guide));
+        let guide = expansion.and_then(|expansion| expansion.guide());
+        // A labelled base is read at its label, where its index is still held.
+        if !matches!(base, MaybeLabelledPlace::Labelled(_)) {
+            self.check_no_dead_index_in_base(place, guide)?;
+        }
+        let index = guide.and_then(|guide| self.expansion_index(guide));
 
         let (stmts, frame) = match fold_or_unfold {
             FoldOrUnfold::Unfold => (
@@ -976,10 +1000,6 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
     ) -> EncodeResult<'vir, Vec<vir::Stmt<'vir>>, E> {
         let mut parts = Vec::new();
         let mut unblock = Vec::new();
-        let outer_index_labels = std::mem::replace(
-            &mut self.index_labels,
-            Self::index_labels_of(borrows_state, &[]),
-        );
         for (node, resources) in rhs {
             let node = node.into();
             let ug = UnblockGraph::for_node(node, borrows_state, self.pcg_ctxt());
@@ -1000,7 +1020,6 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             );
             parts.extend(footprint.parts);
         }
-        self.index_labels = outer_index_labels;
         let mut script = Vec::new();
         if !parts.is_empty() {
             script.push(self.vcx.mk_assert_stmt(self.vcx.mk_conj(&parts)));
@@ -1093,10 +1112,6 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 locals: FxHashSet::default(),
             }
         });
-        let outer_index_labels = std::mem::replace(
-            &mut self.index_labels,
-            Self::index_labels_of(pcg.borrow_pcg(), actions),
-        );
         for (idx, action) in actions.iter().enumerate() {
             match action {
                 PcgAction::Borrow(action) => self.borrow_action(pcg, action, edge_to_loop)?,
@@ -1119,58 +1134,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 }
             }
         }
-        self.index_labels = outer_index_labels;
         Ok(())
-    }
-
-    /// The index labels (see [Self::index_labels]) of the array expansions in
-    /// `borrows` and of those that `actions` add, remove, expand or collapse.
-    /// The latter are needed because `actions` can fold an element back into
-    /// an array place before removing the expansion that created that place.
-    /// The owned expansions of the state are not visible outside the PCG, so
-    /// only those changed by `actions` are covered.
-    fn index_labels_of(
-        borrows: &BorrowsState<'_, 'vir>,
-        actions: &[PcgAction<'vir>],
-    ) -> FxHashMap<(Place<'vir>, mir::Local), SnapshotLocation> {
-        fn borrow_expansion<'vir>(
-            kind: &BorrowPcgEdgeKind<'vir>,
-        ) -> Option<(Place<'vir>, Option<RepackGuide>)> {
-            match kind {
-                BorrowPcgEdgeKind::BorrowPcgExpansion(expansion)
-                    if let PcgNode::Place(base) = expansion.base() =>
-                {
-                    Some((base.place(), expansion.guide()))
-                }
-                _ => None,
-            }
-        }
-        let in_state = borrows
-            .graph()
-            .edges()
-            .filter_map(|edge| borrow_expansion(edge.kind()));
-        let in_actions = actions.iter().filter_map(|action| match action {
-            PcgAction::Borrow(action) => match action.kind() {
-                BorrowPcgActionKind::AddEdge { edge } | BorrowPcgActionKind::RemoveEdge(edge) => {
-                    borrow_expansion(edge.kind())
-                }
-                _ => None,
-            },
-            PcgAction::Owned(action) => match action.kind() {
-                RepackOp::Expand(expand) => Some((expand.from(), expand.guide())),
-                RepackOp::Collapse(collapse) => Some((collapse.to(), collapse.guide())),
-                _ => None,
-            },
-        });
-        in_state
-            .chain(in_actions)
-            .filter_map(|(base, guide)| match guide? {
-                RepackGuide::Index(index_local, _) => {
-                    Some(((base, index_local.local()), index_local.label()?))
-                }
-                _ => None,
-            })
-            .collect()
     }
 
     /// Whether `place` is an array element (at a constant index) that a later
@@ -1456,6 +1420,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                     pcg::free_pcs::RepackOp::Collapse(collapse) => collapse.guide(),
                     _ => None,
                 };
+                self.check_no_dead_index_in_base(place, guide)?;
                 let index = guide.and_then(|guide| self.expansion_index(guide));
                 if matches!(repack_op, pcg::free_pcs::RepackOp::Expand(..)) {
                     self.stmts(data.unfold(place_ty.variant_index, place_enc, index, None, None));
@@ -1796,16 +1761,12 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 }
             }
 
-            mir::ProjectionElem::Index(idx_local) => {
+            mir::ProjectionElem::Index(idx) => {
                 let e_ty = self.ty_use_impure(place_ty.ty).expect_array();
                 let idx = self
-                    .encode_place_with_snap(mir::Place::from(idx_local).into())?
-                    .1;
-                let label = self
-                    .index_labels
-                    .get(&(place, idx_local))
-                    .map(|&at| self.get_location_label(at));
-                let idx = self.vcx.maybe_apply_label(idx, label).downcast_ty();
+                    .encode_place_with_snap(mir::Place::from(idx).into())?
+                    .1
+                    .downcast_ty();
                 PlaceExpr {
                     address: e_ty.ref_to_index_ref(expr.address, idx),
                     metadata: None,

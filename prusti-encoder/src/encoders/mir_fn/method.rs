@@ -358,7 +358,6 @@ impl TaskEncoder for MethodEnc {
                     from_to_vars: Default::default(),
                     deferred_join_stmts: Default::default(),
                     entry_vars: Default::default(),
-                    index_labels: Default::default(),
 
                     current_block: None,
                     current_block_pres: None,
