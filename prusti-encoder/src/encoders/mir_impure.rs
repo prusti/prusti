@@ -236,8 +236,9 @@ where
         FxHashMap<vir::CfgBlockLabel<'vir>, Vec<(mir::BasicBlock, Vec<vir::Stmt<'vir>>)>>,
     /// While the PCG actions of a statement or edge, or the wand packages at
     /// the end of the body, are encoded: the `usize` locals that hold no value
-    /// in the PCG state they are encoded against. A place indexed by such a local is
-    /// not supported (see the `Index` case of [Self::encode_place]).
+    /// in the PCG state they are encoded against. A place indexed by such a
+    /// local cannot be folded or unfolded (see
+    /// [Self::check_index_locals_hold_values]).
     pub locals_without_value: FxHashSet<mir::Local>,
 
     // for the current basic block
@@ -589,7 +590,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
 
     /// The `usize` locals, the only ones that can be runtime indices, that hold
     /// no value in `pcg`.
-    fn locals_without_value(&self, pcg: &Pcg<'_, 'vir>) -> FxHashSet<mir::Local> {
+    fn compute_locals_without_value(&self, pcg: &Pcg<'_, 'vir>) -> FxHashSet<mir::Local> {
         self.local_decls
             .indices()
             .filter(|&local| {
@@ -603,15 +604,15 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             .collect()
     }
 
-    /// Rejects (un)folding `base` when `base` is reached
-    /// through a runtime index whose local holds no value, as in `&mut a[i].x`
-    /// once the borrow's statement is over: `base`'s address reads the index.
-    /// The PCG labels a dead index local only in the guide of the expansion it
+    /// Rejects (un)folding `place` when it is reached through a runtime index
+    /// whose local holds no value, as in `&mut a[i].x` once the borrow's
+    /// statement is over: the address of `place` reads the index. The PCG
+    /// labels a dead index local only in the guide of the expansion it
     /// indexes (see [Self::expansion_index]), not in the places that contain
     /// it. This should be fixed in the PCG, by labelling dead index locals in
     /// places too.
-    fn check_index_locals_hold_values(&self, base: Place<'vir>) -> EncodeResult<'vir, (), E> {
-        let dead_index = base.iter_projections().any(|(_, elem)| {
+    fn check_index_locals_hold_values(&self, place: Place<'vir>) -> EncodeResult<'vir, (), E> {
+        let dead_index = place.iter_projections().any(|(_, elem)| {
             matches!(elem, mir::ProjectionElem::Index(local) if self.locals_without_value.contains(&local))
         });
         if dead_index {
@@ -671,8 +672,8 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         } else {
             label.map(vir::OldLabel::Label)
         };
-        // A snapshot of the base is read where the base existed, so its index
-        // is still held there.
+        // A labelled base is read at its label, where its index locals still
+        // held their values, so only an unlabelled base is checked.
         if !matches!(base, MaybeLabelledPlace::Labelled(_)) {
             self.check_index_locals_hold_values(place)?;
         }
@@ -1110,6 +1111,9 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         )
     }
 
+    /// Encodes `actions` against the state `pcg`. For the actions of an edge,
+    /// `defer_to` is the edge's target if value drops move to the start of
+    /// the target (see [Self::maybe_defer_join_weaken]).
     fn pcg_actions(
         &mut self,
         pcg: &Pcg<'_, 'vir>,
@@ -1129,7 +1133,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 locals: FxHashSet::default(),
             }
         });
-        let locals_without_value = self.locals_without_value(pcg);
+        let locals_without_value = self.compute_locals_without_value(pcg);
         let outer_locals_without_value =
             std::mem::replace(&mut self.locals_without_value, locals_without_value);
         for action in actions.iter() {
@@ -1172,9 +1176,8 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
     /// expiry of a borrow) must still see the value, and that label comes
     /// after the edge's statements. In a block with several predecessors the
     /// moved ops are guarded on the block having been entered by this edge.
-    /// If an earlier
-    /// encoding of the same edge already recorded the ops, they are not
-    /// recorded again. Returns whether `repack_op` was handled here.
+    /// If an earlier encoding of the same edge already recorded the ops, they
+    /// are not recorded again. Returns whether `repack_op` was handled here.
     fn maybe_defer_join_weaken(
         &mut self,
         repack_op: &RepackOp<'vir>,
@@ -1471,9 +1474,10 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         Ok(ty_out.uninit_pred(self.vcx, place_ref))
     }
 
-    /// Allocates `local` at `StorageLive`: it gets its `$uninit` token. Its
-    /// `Ref` is not changed, since labelled reads `old[l](..)` of earlier
-    /// values use the current `Ref` (`old` does not affect local variables).
+    /// Allocates `local` at `StorageLive`: it gets its `$uninit` token. The
+    /// local keeps its Viper `Ref` rather than getting a fresh one, since a
+    /// labelled read `old[l](..)` of an earlier value evaluates the local
+    /// variable in the current state.
     fn encode_storage_live(&mut self, local: mir::Local) {
         if self.spec_blocks.spec_arms.is_spec_only_local(local) {
             return;
@@ -2735,7 +2739,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 let current_fpcs = self.current_fpcs.take().unwrap();
                 let final_state =
                     &current_fpcs.statements.last().unwrap().states[EvalStmtPhase::PostMain];
-                self.locals_without_value = self.locals_without_value(final_state);
+                self.locals_without_value = self.compute_locals_without_value(final_state);
                 let wand_packages = self.package_wands(final_state.borrow_pcg())?;
                 self.current_fpcs = Some(current_fpcs);
                 self.stmts(wand_packages);
@@ -2783,9 +2787,9 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                     PrustiError::verification("precondition might not hold.", span.into())
                 };
 
-                // Calling a function item or function pointer held in a local
-                // (`let f = foo; f(0)`) moves a copy of it into the call, which
-                // does not pass it on, so its value is dropped here.
+                // A call `f(0)` through a local `f` holding a function item or
+                // pointer moves `f`, but the callee does not receive it as an
+                // argument, so its value is dropped here.
                 if let mir::Operand::Move(func_place) = func {
                     self.pcg_weaken(Place::from(*func_place), true)?;
                 }

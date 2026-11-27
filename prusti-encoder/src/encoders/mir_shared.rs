@@ -401,8 +401,9 @@ pub(crate) trait PureRvalueEnc<'vir> {
                 if e_enum_ty.specifics.is_opaque() {
                     return Err(unsupported_opaque(enum_ty, args[0].span));
                 }
-                // Read through the operand, so that a moved reference is
-                // consumed.
+                // Read the enum through the operand rather than through
+                // `*place`, so that a moved reference is consumed like any
+                // other moved operand.
                 let arg_ty = args[0].node.ty(self.body(), self.vcx().tcx());
                 let ref_snap = self.encode_operand_snap(&args[0].node, ctxt)?;
                 let snap = self

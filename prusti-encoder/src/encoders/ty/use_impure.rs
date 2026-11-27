@@ -493,8 +493,9 @@ impl<'vir> TyData<'vir, UseImpureTyDatas> {
     /// Statements exchanging the `$uninit` tokens of the place's parts for
     /// the place's token. Returns `None` when there is no such exchange: for
     /// an enum place that is not downcast to a variant, whose exchange happens
-    /// at the variant, and for a type without fields, e.g. an array (whose
-    /// elements are not separate places in the encoding) or an opaque type.
+    /// at the variant, and for a type that is not struct-like, e.g. an array
+    /// (whose elements are not separate places in the encoding) or an opaque
+    /// type.
     pub fn uninit_fold(
         &self,
         variant: Option<abi::VariantIdx>,
@@ -700,7 +701,7 @@ impl<'vir> TyUseImpureStruct<'vir> {
             if self
                 .impure
                 .box_data
-                .is_some_and(|box_data| idx != box_data.value_field)
+                .is_some_and(|box_data| box_data.is_own_field(idx))
             {
                 field.caster.cast_to_callee_ctx(field_ref)
             } else {

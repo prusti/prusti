@@ -60,8 +60,9 @@ pub struct TyImpureStructData<'vir> {
     /// Exchanges the parts of a place without a value for its `$uninit`
     /// token: the tokens of the fields and, for an enum variant, the
     /// predicate of the enum's discriminant (an enum without a value has no
-    /// variant). For a `Box`, its own fields are exchanged with their
-    /// predicates, since a box without a value has no heap slot.
+    /// variant). For a `Box`, the predicates of its own fields (`Unique` and
+    /// the allocator) are consumed instead of their tokens, since a box
+    /// without a value owns no heap slot.
     pub uninit_fold: MethodIdn<'vir, (vir::Ref, vir::ManyTyVal, vir::ManyCSnap)>,
 }
 
@@ -74,6 +75,13 @@ pub struct TyImpureBoxData<'vir> {
     /// The index of the boxed value's field, the one with a dynamic address.
     /// The other fields are the box's own (`Unique` and the allocator).
     pub value_field: usize,
+}
+
+impl TyImpureBoxData<'_> {
+    /// Whether field `idx` is one of the box's own fields.
+    pub fn is_own_field(&self, idx: usize) -> bool {
+        idx != self.value_field
+    }
 }
 
 #[derive(Debug, Clone, Copy)]

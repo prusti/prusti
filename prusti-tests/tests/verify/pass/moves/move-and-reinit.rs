@@ -138,6 +138,8 @@ fn reassign_in_loop_no_body_invariant() {
     prusti_refute!(false);
 }
 
+// `body_invariant!` is the first statement of a `loop`, so the invariant is at
+// the loop head itself.
 fn reassign_in_loop_invariant_at_head() {
     let mut c = 0;
     let mut i = 0;
