@@ -375,15 +375,7 @@ impl MirBuiltinBinOpEnc {
             Mul => (float.fp_mul)(lhs, rhs),
             MulUnchecked | MulWithOverflow => unreachable!(),
             Div => (float.fp_div)(lhs, rhs),
-            Rem => {
-                // SMT uses n = x / y -> round to nearest
-                // Rust truncates
-                // Therefore we cannot use SMT rem
-                let div_res = (float.fp_div)(lhs, rhs);
-                let div_trunc = (float.fp_trunc)(div_res);
-                let mul_res = (float.fp_mul)(div_trunc, rhs);
-                (float.fp_sub)(lhs, mul_res)
-            }
+            Rem => (float.rem)(lhs, rhs),
             BitXor | BitAnd | BitOr | Shl | ShlUnchecked | Shr | ShrUnchecked => unreachable!(),
             Eq => {
                 let prim_res = (float.fp_eq)(lhs, rhs);
