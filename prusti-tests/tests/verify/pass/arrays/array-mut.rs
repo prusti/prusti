@@ -101,3 +101,22 @@ struct S {
 fn get_field(s: &mut S, i: usize) -> &mut u8 {
     &mut s.arr[i]
 }
+
+struct P {
+    x: u32,
+    y: u32,
+}
+
+// Borrowing a part of an array element through a borrow of the element.
+#[requires(i < 2)]
+fn element_then_field(a: &mut [P; 2], i: usize) {
+    let r = &mut (&mut a[i]).x;
+    *r = 5;
+    assert!(a[i].x == 5);
+}
+
+#[requires(i < 2)]
+fn shared_element_then_field(a: [P; 2], i: usize) -> u32 {
+    let e = &a[i];
+    e.x
+}

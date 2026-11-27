@@ -357,6 +357,7 @@ impl TaskEncoder for MethodEnc {
                     wandless_calls: Default::default(),
                     from_to_vars: Default::default(),
                     deferred_join_stmts: Default::default(),
+                    locals_without_value: Default::default(),
                     entry_vars: Default::default(),
 
                     current_block: None,

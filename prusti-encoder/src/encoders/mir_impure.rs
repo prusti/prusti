@@ -234,6 +234,11 @@ where
     /// that a later encoding of the same edge does not record it again.
     pub deferred_join_stmts:
         FxHashMap<vir::CfgBlockLabel<'vir>, Vec<(mir::BasicBlock, Vec<vir::Stmt<'vir>>)>>,
+    /// While the PCG actions of a statement or edge, or the wand packages at
+    /// the end of the body, are encoded: the locals that hold no value in the
+    /// PCG state they are encoded against. A place indexed by such a local is
+    /// not supported (see the `Index` case of [Self::encode_place]).
+    pub locals_without_value: FxHashSet<mir::Local>,
 
     // for the current basic block
     pub current_fpcs: Option<PcgBasicBlock<'enc, 'vir>>,
@@ -582,27 +587,35 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         Ok(())
     }
 
-    /// Rejects (un)folding `base` at a runtime index whose local has died when
-    /// `base` itself is reached through a runtime index, as in `&mut a[i][j]`
-    /// after the statement. The PCG labels a dead index local only in the
-    /// guide of the expansion it indexes (see [Self::expansion_index]), not in
-    /// the places that contain it, so the address of `base` would read the
-    /// lost value of its own index. This should be fixed in the PCG, by
-    /// labelling dead index locals in places too.
-    fn check_no_dead_index_in_base(
-        &self,
-        base: Place<'vir>,
-        guide: Option<RepackGuide>,
-    ) -> EncodeResult<'vir, (), E> {
-        let dead_index =
-            matches!(guide, Some(RepackGuide::Index(index, _)) if index.label().is_some());
-        if dead_index
-            && base
-                .iter_projections()
-                .any(|(_, elem)| matches!(elem, mir::ProjectionElem::Index(_)))
-        {
+    /// The locals that hold no value in `pcg`.
+    fn locals_without_value(&self, pcg: &Pcg<'_, 'vir>) -> FxHashSet<mir::Local> {
+        self.local_decls
+            .indices()
+            .filter(|&local| {
+                !pcg.local_is_expanded(local)
+                    && matches!(
+                        pcg.place_capability(Place::from(mir::Place::from(local)), self.pcg_ctxt()),
+                        None | Some(CapabilityKind::Write)
+                    )
+            })
+            .collect()
+    }
+
+    /// Rejects (un)folding `base` when `base` is reached
+    /// through a runtime index whose local holds no value, as in `&mut a[i].x`
+    /// once the borrow's statement is over: `base`'s address reads the index.
+    /// The PCG labels a dead index local only in the guide of the expansion it
+    /// indexes (see [Self::expansion_index]), not in the places that contain
+    /// it. This should be fixed in the PCG, by labelling dead index locals in
+    /// places too.
+    fn check_index_locals_hold_values(&self, base: Place<'vir>) -> EncodeResult<'vir, (), E> {
+        let dead_index = base.iter_projections().any(|(_, elem)| {
+            matches!(elem, mir::ProjectionElem::Index(local) if self.locals_without_value.contains(&local))
+        });
+        if dead_index {
             return Err(EncodeFullError::unsupported(
-                "borrowing an element of a nested array at runtime indices is not supported yet"
+                "borrowing a part of an array element at a runtime index is not supported yet; \
+                 borrow the element first, as in `&mut (&mut a[i]).x`"
                     .to_string(),
                 vec![self.current_span()],
             ));
@@ -656,6 +669,11 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         } else {
             label.map(vir::OldLabel::Label)
         };
+        // A snapshot of the base is read where the base existed, so its index
+        // is still held there.
+        if !matches!(base, MaybeLabelledPlace::Labelled(_)) {
+            self.check_index_locals_hold_values(place)?;
+        }
 
         // We don't want to unfold because for immutable refs we only use snapshot read/writes
         if place.is_shared_ref(self.pcg_ctxt()) || place.projects_shared_ref(self.pcg_ctxt()) {
@@ -673,12 +691,9 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             return Err(unsupported_opaque(place_ty.ty, self.current_span()));
         }
 
-        let guide = expansion.and_then(|expansion| expansion.guide());
-        // A labelled base is read at its label, where its index is still held.
-        if !matches!(base, MaybeLabelledPlace::Labelled(_)) {
-            self.check_no_dead_index_in_base(place, guide)?;
-        }
-        let index = guide.and_then(|guide| self.expansion_index(guide));
+        let index = expansion
+            .and_then(|expansion| expansion.guide())
+            .and_then(|guide| self.expansion_index(guide));
 
         let (stmts, frame) = match fold_or_unfold {
             FoldOrUnfold::Unfold => (
@@ -1112,6 +1127,9 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 locals: FxHashSet::default(),
             }
         });
+        let locals_without_value = self.locals_without_value(pcg);
+        let outer_locals_without_value =
+            std::mem::replace(&mut self.locals_without_value, locals_without_value);
         for action in actions.iter() {
             match action {
                 PcgAction::Borrow(action) => self.borrow_action(pcg, action, edge_to_loop)?,
@@ -1130,6 +1148,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 }
             }
         }
+        self.locals_without_value = outer_locals_without_value;
         Ok(())
     }
 
@@ -1383,7 +1402,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                     pcg::free_pcs::RepackOp::Collapse(collapse) => collapse.guide(),
                     _ => None,
                 };
-                self.check_no_dead_index_in_base(place, guide)?;
+                self.check_index_locals_hold_values(place)?;
                 let index = guide.and_then(|guide| self.expansion_index(guide));
                 if matches!(repack_op, pcg::free_pcs::RepackOp::Expand(..)) {
                     self.stmts(data.unfold(place_ty.variant_index, place_enc, index, None, None));
@@ -2679,10 +2698,10 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             }
             mir::TerminatorKind::Return => {
                 let current_fpcs = self.current_fpcs.take().unwrap();
-                let borrows = current_fpcs.statements.last().unwrap().states
-                    [EvalStmtPhase::PostMain]
-                    .borrow_pcg();
-                let wand_packages = self.package_wands(borrows)?;
+                let final_state =
+                    &current_fpcs.statements.last().unwrap().states[EvalStmtPhase::PostMain];
+                self.locals_without_value = self.locals_without_value(final_state);
+                let wand_packages = self.package_wands(final_state.borrow_pcg())?;
                 self.current_fpcs = Some(current_fpcs);
                 self.stmts(wand_packages);
 
