@@ -697,12 +697,12 @@ impl<'vir> TyUseImpureStruct<'vir> {
             .cast_to_caller_ctx(metadata.upcast_ty())
     }
 
-    /// The (Ref) address of the boxed `T` (the box's last field), read out of
-    /// the (folded) `Unique` field's predicate.
+    /// The (Ref) address of the boxed `T`, read out of the (folded) `Unique`
+    /// field's predicate.
     #[track_caller]
     pub fn box_address(&self, self_ref: vir::ExprRef<'vir>) -> vir::ExprRef<'vir> {
-        assert!(self.data.impure.box_data.is_some(), "expected box");
-        self.fields.last().unwrap().field_ref(self_ref)
+        let box_data = self.data.impure.box_data.expect("expected box");
+        self.fields[box_data.value_field].field_ref(self_ref)
     }
 
     fn apply_uninit_fold(&self, self_ref: vir::ExprRef<'vir>) -> Vec<vir::Stmt<'vir>> {
@@ -713,16 +713,15 @@ impl<'vir> TyUseImpureStruct<'vir> {
         });
         // The exchanged parts are stated at the types of the struct's own
         // parameters, so they are cast from the caller's types to those.
-        // A box's own fields (all but the boxed value, its last field, see
-        // `box_address`) are exchanged with their predicates; every other
-        // field with its token.
-        let first_uninit_field = match self.impure.box_data {
-            Some(_) => self.fields.len() - 1,
-            None => 0,
-        };
+        // A box's own fields are exchanged with their predicates; every
+        // other field, including the boxed value, with its token.
         let casts = self.fields.iter().enumerate().filter_map(|(idx, field)| {
             let field_ref = field.field_ref(self_ref);
-            if idx < first_uninit_field {
+            if self
+                .impure
+                .box_data
+                .is_some_and(|box_data| idx != box_data.value_field)
+            {
                 field.caster.cast_to_callee_ctx(field_ref)
             } else {
                 field.caster.cast_uninit_to_callee_ctx(field_ref)

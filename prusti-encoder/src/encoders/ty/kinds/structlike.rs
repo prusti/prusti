@@ -204,18 +204,15 @@ pub(crate) fn ty_impure_variant<'vir>(
     let mut parts = fields
         .iter()
         .zip(&field_accessors)
-        .zip(&data.fields)
-        .map(
-            |((field, TyImpureFieldData { ref_to_field_ref }), (_, pure_field))| {
-                let field_ref = ref_to_field_ref(ref_self, params.ty_exprs(), params.const_exprs());
-                let boxed_value = matches!(pure_field.ref_to_field_ref, TyPureFieldRef::Dynamic(_));
-                if box_data.is_some() && !boxed_value {
-                    field.ref_to_pred(builder.vcx, field_ref, None)
-                } else {
-                    field.uninit_pred(builder.vcx, field_ref)
-                }
-            },
-        )
+        .enumerate()
+        .map(|(idx, (field, TyImpureFieldData { ref_to_field_ref }))| {
+            let field_ref = ref_to_field_ref(ref_self, params.ty_exprs(), params.const_exprs());
+            if box_data.is_some_and(|(box_data, _)| idx != box_data.value_field) {
+                field.ref_to_pred(builder.vcx, field_ref, None)
+            } else {
+                field.uninit_pred(builder.vcx, field_ref)
+            }
+        })
         .collect::<Vec<_>>();
     parts.extend(enum_discr_pred);
     let uninit_fold = builder.inner.method(

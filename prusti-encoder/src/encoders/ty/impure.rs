@@ -71,6 +71,9 @@ pub struct TyImpureStructData<'vir> {
 #[derive(Debug, Clone, Copy)]
 pub struct TyImpureBoxData<'vir> {
     pub metadata: FunctionIdn<'vir, (vir::Ref, vir::ManyTyVal, vir::ManyCSnap), vir::PSnap>,
+    /// The index of the boxed value's field, the one with a dynamic address.
+    /// The other fields are the box's own (`Unique` and the allocator).
+    pub value_field: usize,
 }
 
 #[derive(Debug, Clone, Copy)]
