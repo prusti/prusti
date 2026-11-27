@@ -70,7 +70,18 @@ impl<'vir: 'a, 'a, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
             if capability.is_write()
                 && let Some(held) = state.place_capability(*place, self.pcg_ctxt())
             {
-                assert!(held >= CapabilityKind::Write, "{place:?} held at {held:?}");
+                if held
+                    .partial_cmp(&CapabilityKind::Write)
+                    .is_none_or(|order| order.is_lt())
+                {
+                    return Err(EncodeFullError::internal(
+                        format!(
+                            "{} is written in this loop but is only readable where the loop starts",
+                            self.place_in_message(*place)
+                        ),
+                        vec![self.current_span()],
+                    ));
+                }
                 *capability = held;
             }
         }

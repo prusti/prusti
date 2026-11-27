@@ -235,8 +235,8 @@ where
     pub deferred_join_stmts:
         FxHashMap<vir::CfgBlockLabel<'vir>, Vec<(mir::BasicBlock, Vec<vir::Stmt<'vir>>)>>,
     /// While the PCG actions of a statement or edge, or the wand packages at
-    /// the end of the body, are encoded: the locals that hold no value in the
-    /// PCG state they are encoded against. A place indexed by such a local is
+    /// the end of the body, are encoded: the `usize` locals that hold no value
+    /// in the PCG state they are encoded against. A place indexed by such a local is
     /// not supported (see the `Index` case of [Self::encode_place]).
     pub locals_without_value: FxHashSet<mir::Local>,
 
@@ -361,7 +361,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
 
     /// How an error message names `place`: by its source name, or as "a
     /// temporary" when it has none.
-    fn place_in_message(&self, place: Place<'vir>) -> String {
+    pub(crate) fn place_in_message(&self, place: Place<'vir>) -> String {
         match place.to_string(self.pcg_ctxt()) {
             PlaceDisplay::User(_, name) => format!("`{name}`"),
             PlaceDisplay::Temporary(_) => "a temporary".to_string(),
@@ -587,12 +587,14 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         Ok(())
     }
 
-    /// The locals that hold no value in `pcg`.
+    /// The `usize` locals, the only ones that can be runtime indices, that hold
+    /// no value in `pcg`.
     fn locals_without_value(&self, pcg: &Pcg<'_, 'vir>) -> FxHashSet<mir::Local> {
         self.local_decls
             .indices()
             .filter(|&local| {
-                !pcg.local_is_expanded(local)
+                self.local_decls[local].ty.is_usize()
+                    && !pcg.local_is_expanded(local)
                     && matches!(
                         pcg.place_capability(Place::from(mir::Place::from(local)), self.pcg_ctxt()),
                         None | Some(CapabilityKind::Write)
@@ -615,7 +617,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         if dead_index {
             return Err(EncodeFullError::unsupported(
                 "borrowing a part of an array element at a runtime index is not supported yet; \
-                 borrow the element first, as in `&mut (&mut a[i]).x`"
+                 borrow the element first, as in `&mut (&mut a[i]).x` or `&(&a[i]).x`"
                     .to_string(),
                 vec![self.current_span()],
             ));
