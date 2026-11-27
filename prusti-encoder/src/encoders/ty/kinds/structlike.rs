@@ -197,47 +197,43 @@ pub(crate) fn ty_impure_variant<'vir>(
     let variant_snap_expr = data.1.field_snaps_to_snap.call()(snap_args.as_slice());
 
     // The `$uninit` token of a struct stands for the `$uninit` tokens of its
-    // fields. A `Box` without a value still owns its allocation, so its token
-    // stands for the predicates of its fields other than the value (the last
-    // field) and the token of the value. An enum variant instead gets a method
-    // exchanging the discriminant's predicate and the field tokens for the
-    // enum's token.
+    // fields. A `Box` without a value no longer owns its heap slot (the field
+    // with a dynamic address): its token has no body, and a method exchanges
+    // the predicates of the box's own fields and the token of the boxed
+    // value, which are deallocated, for it. An enum variant also gets a
+    // method, exchanging the discriminant's predicate and the field tokens for
+    // the enum's token.
     let params = &builder.params;
-    let first_uninit_field = if box_data.is_some() {
-        fields.len() - 1
-    } else {
-        0
-    };
-    let mut field_uninits = fields
+    let mut parts = fields
         .iter()
         .zip(&field_accessors)
-        .enumerate()
-        .map(|(idx, (field, TyImpureFieldData { ref_to_field_ref }))| {
-            let field_ref = ref_to_field_ref(ref_self, params.ty_exprs(), params.const_exprs());
-            if idx < first_uninit_field {
-                field.ref_to_pred(builder.vcx, field_ref, None)
-            } else {
-                field.uninit_pred(builder.vcx, field_ref)
-            }
-        })
+        .zip(&data.fields)
+        .map(
+            |((field, TyImpureFieldData { ref_to_field_ref }), (_, pure_field))| {
+                let field_ref = ref_to_field_ref(ref_self, params.ty_exprs(), params.const_exprs());
+                let boxed_value = matches!(pure_field.ref_to_field_ref, TyPureFieldRef::Dynamic(_));
+                if box_data.is_some() && !boxed_value {
+                    field.ref_to_pred(builder.vcx, field_ref, None)
+                } else {
+                    field.uninit_pred(builder.vcx, field_ref)
+                }
+            },
+        )
         .collect::<Vec<_>>();
-    let uninit_exchange = match enum_discr_pred {
-        None => {
-            let body = builder.vcx.mk_conj(&field_uninits);
-            builder.set_uninit_body(body);
-            TyImpureUninitExchange::Fold(builder.ref_to_uninit)
-        }
-        Some(discr) => {
-            field_uninits.push(discr);
-            TyImpureUninitExchange::Method(builder.inner.method(
-                &format!("{prefix}$uninit_fold"),
-                (ref_self_decl.ty(), params.ty_args(), params.const_args()),
-                &[],
-                (ref_self_decl, params.ty_decls(), params.const_decls()),
-                &field_uninits,
-                &[builder.uninit_pred_expr(ref_self)],
-            ))
-        }
+    parts.extend(enum_discr_pred);
+    let uninit_exchange = if box_data.is_none() && enum_discr_pred.is_none() {
+        let body = builder.vcx.mk_conj(&parts);
+        builder.set_uninit_body(body);
+        TyImpureUninitExchange::Fold(builder.ref_to_uninit)
+    } else {
+        TyImpureUninitExchange::Method(builder.inner.method(
+            &format!("{prefix}$uninit_fold"),
+            (ref_self_decl.ty(), params.ty_args(), params.const_args()),
+            &[],
+            (ref_self_decl, params.ty_decls(), params.const_decls()),
+            &parts,
+            &[builder.uninit_pred_expr(ref_self)],
+        ))
     };
 
     Ok((

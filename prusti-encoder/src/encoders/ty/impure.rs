@@ -67,10 +67,11 @@ pub enum TyImpureUninitExchange<'vir> {
     /// The struct's token, whose body is the tokens of its parts: it is
     /// folded like the struct's predicate.
     Fold(PredicateIdn<'vir, (vir::Ref, vir::ManyTyVal, vir::ManyCSnap)>),
-    /// The method exchanging the predicate of the enum's discriminant and the
-    /// tokens of this variant's fields for the enum's token. The enum's token
-    /// cannot have these as its body, since an enum without a value has no
-    /// variant.
+    /// The method exchanging the parts for the token, which has no body: for
+    /// an enum variant, the predicate of the enum's discriminant and the
+    /// tokens of the variant's fields (an enum without a value has no
+    /// variant); for a `Box`, the predicates of its own fields and the token
+    /// of the boxed value (a box without a value has no heap slot).
     Method(MethodIdn<'vir, (vir::Ref, vir::ManyTyVal, vir::ManyCSnap)>),
 }
 

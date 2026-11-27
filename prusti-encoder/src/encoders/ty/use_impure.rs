@@ -717,8 +717,9 @@ impl<'vir> TyUseImpureStruct<'vir> {
         });
         // The exchanged parts are stated at the types of the struct's own
         // parameters, so they are cast from the caller's types to those.
-        // The fields of a box other than its value (the last field) keep their
-        // predicates; every other field holds its token.
+        // A box's own fields (all but the boxed value, its last field, see
+        // `box_address`) are exchanged with their predicates; every other
+        // field with its token.
         let first_uninit_field = match self.impure.box_data {
             Some(_) => self.fields.len() - 1,
             None => 0,
