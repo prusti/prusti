@@ -1531,9 +1531,6 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         pcg: &Pcg<'_, 'vir>,
         local: mir::Local,
     ) -> EncodeResult<'vir, (), E> {
-        if self.spec_blocks.spec_arms.is_spec_only_local(local) {
-            return Ok(());
-        }
         let not_borrowed = pcg.owned()[local]
             .expansions()
             .leaf_places(self.pcg_ctxt())
