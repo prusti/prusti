@@ -1112,7 +1112,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                 locals: FxHashSet::default(),
             }
         });
-        for (idx, action) in actions.iter().enumerate() {
+        for action in actions.iter() {
             match action {
                 PcgAction::Borrow(action) => self.borrow_action(pcg, action, edge_to_loop)?,
                 PcgAction::Owned(action) => {
@@ -1124,43 +1124,13 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                     {
                         continue;
                     }
-                    if let RepackOp::Weaken(weaken) = op
-                        && Self::in_unfolded_array_rest(actions, idx, weaken.place())
-                    {
-                        comment!(self, "[PCG] {op:?} (dropped with the array)");
-                    } else if !self.maybe_defer_join_weaken(op, pcg, deferral.as_mut())? {
+                    if !self.maybe_defer_join_weaken(op, pcg, deferral.as_mut())? {
                         self.pcg_repack(op, pcg)?
                     }
                 }
             }
         }
         Ok(())
-    }
-
-    /// Whether `place` is an array element (at a constant index) that a later
-    /// action in `actions` drops anyway: a collapse of the array at write
-    /// capability while it is unfolded at a different index, which drops all
-    /// elements but the unfolded one.
-    fn in_unfolded_array_rest(actions: &PcgActions<'vir>, idx: usize, place: Place<'vir>) -> bool {
-        let Some((array, mir::PlaceElem::ConstantIndex { offset, .. })) = place.last_projection()
-        else {
-            return false;
-        };
-        actions[idx + 1..].iter().any(|action| {
-            if let PcgAction::Owned(owned) = action
-                && let RepackOp::Collapse(collapse) = owned.kind()
-                && collapse.to() == array
-                && collapse.capability().is_write()
-                && let Some(RepackGuide::ConstantIndex(guide_elem, _)) = collapse.guide()
-                && let mir::PlaceElem::ConstantIndex {
-                    offset: unfolded, ..
-                } = guide_elem.into()
-            {
-                unfolded != offset
-            } else {
-                false
-            }
-        })
     }
 
     /// `stmts`, executed only if `cond` holds (if any).
@@ -1361,7 +1331,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                     // (e.g. a field, after all fields were moved out), the PCG
                     // must keep the parts separate instead of collapsing
                     // them into the place and expanding it again.
-                    let RepackOp::Collapse(collapse) = repack_op else {
+                    let RepackOp::Collapse(_) = repack_op else {
                         return Err(EncodeFullError::internal(
                             format!(
                                 "{} may have been moved out here, and tracking its parts \
@@ -1381,14 +1351,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                     let place_enc = self.encode_place(place)?;
                     let variant = place_enc.ty.variant_index;
                     let data = self.ty_use_impure(place_enc.ty.ty);
-                    // Values are moved out of array elements only at constant
-                    // indices, so only a constant-index guide can fold an
-                    // element's token; any other guide is unsupported below.
-                    let index = match collapse.guide() {
-                        Some(guide @ RepackGuide::ConstantIndex(..)) => self.expansion_index(guide),
-                        _ => None,
-                    };
-                    match data.uninit_fold(variant, place_enc.expr.expect_predicate(), index) {
+                    match data.uninit_fold(variant, place_enc.expr.expect_predicate()) {
                         Some(stmts) => self.stmts(stmts),
                         None if variant.is_none() && data.get_enumlike().is_some() => {
                             comment!(self, "{repack_op:?}: performed at the variant")

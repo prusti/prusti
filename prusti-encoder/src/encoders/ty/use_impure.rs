@@ -490,41 +490,21 @@ impl<'vir> TyData<'vir, UseImpureTyDatas> {
         })
     }
 
-    /// Statements exchanging the `$uninit` tokens of the place's fields for
-    /// the place's token. An array is folded at a constant index, which drops
-    /// its other elements. Returns `None` when there is no such exchange: for
+    /// Statements exchanging the `$uninit` tokens of the place's parts for
+    /// the place's token. Returns `None` when there is no such exchange: for
     /// an enum place that is not downcast to a variant, whose exchange happens
-    /// at the variant, and for an array folded at a non-constant index or a
-    /// type without fields such as an opaque type.
+    /// at the variant, and for a type without fields, e.g. an array (whose
+    /// elements are not separate places in the encoding) or an opaque type.
     pub fn uninit_fold(
         &self,
         variant: Option<abi::VariantIdx>,
         self_ref: vir::ExprRef<'vir>,
-        index: Option<vir::ExprCSnap<'vir>>,
     ) -> Option<Vec<vir::Stmt<'vir>>> {
         let struct_data = if let Some(variant) = variant {
             &self.expect_variant(variant).inner
         } else {
             match &self.specifics {
                 TySpecifics::StructLike(data) => data,
-                TySpecifics::ArrayLike(array) => {
-                    let index = index?;
-                    let call = (array.data.impure.method_uninit_fold_index)(
-                        index,
-                        self_ref,
-                        self.args.get_ty(),
-                        self.args.get_const(),
-                    );
-                    let call = vir::with_vcx(|vcx| vcx.alloc(vir::StmtData::new(vcx.alloc(call))));
-                    return Some(
-                        array
-                            .element_caster
-                            .cast_uninit_to_callee_ctx(array.ref_to_index_ref(self_ref, index))
-                            .into_iter()
-                            .chain([call])
-                            .collect(),
-                    );
-                }
                 _ => return None,
             }
         };

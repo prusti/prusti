@@ -87,10 +87,6 @@ pub struct TyImpureArrayData<'vir> {
     pub index_predicate: PredicateIdn<'vir, (vir::Ref, vir::CSnap, vir::ManyTyVal, vir::ManyCSnap)>,
     pub method_fold: vir::MethodIdn<'vir, (vir::CSnap, vir::Ref, vir::ManyTyVal, vir::ManyCSnap)>,
     pub method_unfold: vir::MethodIdn<'vir, (vir::CSnap, vir::Ref, vir::ManyTyVal, vir::ManyCSnap)>,
-    /// Folds an array unfolded at an index, whose element there holds no
-    /// value, into the array's `$uninit` token, dropping the other elements.
-    pub method_uninit_fold_index:
-        vir::MethodIdn<'vir, (vir::CSnap, vir::Ref, vir::ManyTyVal, vir::ManyCSnap)>,
 }
 
 #[derive(Debug, Clone, Copy)]
