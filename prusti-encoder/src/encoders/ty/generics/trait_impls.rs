@@ -2,6 +2,7 @@ use prusti_interface::PrustiError;
 use prusti_rustc_interface::{
     data_structures::fx::{FxHashSet, FxIndexMap},
     errors::MultiSpan,
+    hir::attrs::LangItem,
     middle::{mir, traits::specialization_graph, ty},
     span::def_id::DefId,
 };
@@ -16,7 +17,9 @@ use crate::encoders::{
     ty::{
         RustTy, RustTyDecomposition,
         generics::{
-            GArgs, GArgsCastEnc, GArgsTyEnc, GParams, GenericParamsEnc, r#trait::TraitEnc,
+            GArgs, GArgsCastEnc, GArgsTyEnc, GParams, GenericParamsEnc,
+            hrtb::{HrtbEnc, HrtbSkeleton},
+            r#trait::TraitEnc,
             trait_fn::TraitFnEnc,
         },
         lifted::TyConstructorEnc,
@@ -454,6 +457,37 @@ impl TraitImplEnc {
         let params = deps.require_dep::<GenericParamsEnc>(ctx)?;
         let mut checks = Vec::new();
 
+        // A higher-ranked clause is stated twice. Its instance at erased
+        // regions (stated below) follows from it and binds the parameters
+        // its projections determine. The predicate of `HrtbEnc` states the
+        // clause itself, which impl guards need, since the erased instance is
+        // weaker; `HrtbSkeleton::of` says which clauses get it. Clauses on
+        // `Sized`, `MetaSized` and `Pointee` are skipped: they do not depend
+        // on regions, so their erased instance is exact, and their facts come
+        // from `BuiltinImplEnc` rather than from impls.
+        for clause in clauses.iter() {
+            let kind = clause.kind();
+            let trait_did = match kind.skip_binder() {
+                ty::ClauseKind::Trait(pred) if pred.polarity == ty::PredicatePolarity::Positive => {
+                    pred.def_id()
+                }
+                ty::ClauseKind::Projection(pred) => pred.trait_def_id(tcx),
+                _ => continue,
+            };
+            if tcx.is_sizedness_trait(trait_did)
+                || tcx.is_lang_item(trait_did, LangItem::PointeeTrait)
+            {
+                continue;
+            }
+            let skeleton = HrtbSkeleton::of(ctx, kind)
+                .map_err(|msg| EncodeFullError::unsupported(msg, vec![]))?;
+            if let Some((skeleton, args)) = skeleton {
+                let holds = deps.require_ref::<HrtbEnc>(skeleton)?.holds;
+                let args = deps.require_dep::<GArgsTyEnc>(GArgs::new(ctx, args))?;
+                checks.push(holds(args.get_ty(), args.get_const()));
+            }
+        }
+
         let trait_preds = clauses
             .iter()
             .filter_map(ty::Clause::as_trait_clause)
@@ -587,12 +621,6 @@ impl TraitImplEnc {
         trigger: vir::ExprDyn<'vir>,
         body: vir::ExprBool<'vir>,
     ) -> Result<vir::ExprBool<'vir>, EncodeFullError<'vir, E>> {
-        let item_params = deps.require_dep::<GenericParamsEnc>(item_ctx)?;
-        let decl = |idx: u32| match item_params.map_idx(idx) {
-            Ok(idx) => item_params.ty_decls()[idx].upcast_ty(),
-            Err(idx) => item_params.const_decls()[idx].upcast_ty(),
-        };
-
         let trait_ref = vcx
             .tcx()
             .impl_trait_ref(impl_did)
@@ -601,6 +629,30 @@ impl TraitImplEnc {
         let pinned = item_ctx
             .rust_params()
             .rebase_onto(vcx.tcx(), impl_did, trait_ref.args);
+        Self::guarded_forall_pinned(vcx, deps, impl_ctx, item_ctx, pinned, extra, trigger, body)
+    }
+
+    /// `forall params :: {trigger} bounds ==> body` over the parameters of
+    /// `item_ctx`, where `bounds` are the where-clauses of `bounds_ctx`: the
+    /// parameters occurring in `pinned` are covered by `trigger`, and the
+    /// others are let-bound to the projections that determine them (see
+    /// [`Self::guarded_forall`]).
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn guarded_forall_pinned<'vir, E: TaskEncoder + 'vir + ?Sized>(
+        vcx: &'vir vir::VirCtxt<'vir>,
+        deps: &mut TaskEncoderDependencies<'vir, E>,
+        bounds_ctx: GParams<'vir>,
+        item_ctx: GParams<'vir>,
+        pinned: ty::GenericArgsRef<'vir>,
+        extra: &[vir::LocalDeclDyn<'vir>],
+        trigger: vir::ExprDyn<'vir>,
+        body: vir::ExprBool<'vir>,
+    ) -> Result<vir::ExprBool<'vir>, EncodeFullError<'vir, E>> {
+        let item_params = deps.require_dep::<GenericParamsEnc>(item_ctx)?;
+        let decl = |idx: u32| match item_params.map_idx(idx) {
+            Ok(idx) => item_params.ty_decls()[idx].upcast_ty(),
+            Err(idx) => item_params.const_decls()[idx].upcast_ty(),
+        };
 
         let mut bind_points = FxIndexMap::default();
         for arg in pinned.iter().flat_map(|arg| arg.walk()) {
@@ -615,7 +667,7 @@ impl TraitImplEnc {
         }
         let pinned_count = bind_points.len();
 
-        let bounds = Self::context_bounds(vcx, deps, impl_ctx, Some(&mut bind_points))?;
+        let bounds = Self::context_bounds(vcx, deps, bounds_ctx, Some(&mut bind_points))?;
         let body = if bounds.is_empty() {
             body
         } else {
@@ -778,7 +830,7 @@ pub(super) fn final_leaf_def(
 
 /// The Viper name of an impl. `idx` is only unique within a crate, so foreign
 /// impls need the crate name for disambiguation.
-fn impl_name<'vir>(vcx: &'vir vir::VirCtxt<'vir>, impl_did: DefId) -> &'vir str {
+pub(super) fn impl_name<'vir>(vcx: &'vir vir::VirCtxt<'vir>, impl_did: DefId) -> &'vir str {
     let tcx = vcx.tcx();
     let all_impls = tcx.trait_impls_in_crate(impl_did.krate);
     let idx = all_impls.iter().position(|did| *did == impl_did).unwrap();
