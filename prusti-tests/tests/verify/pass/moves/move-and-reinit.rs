@@ -175,3 +175,62 @@ fn struct_reassign_in_loop_read_after() {
     assert!(c.v == 2);
     prusti_refute!(false);
 }
+
+fn make() -> S {
+    S { v: 1 }
+}
+
+fn make_int() -> i32 {
+    1
+}
+
+// A temporary borrowed in the tail of an `if` or `match` arm lives until the
+// end of the function, but is allocated only in that arm. The join after the
+// arms ends its storage on the edge from that arm, while the reference to it
+// is still used.
+fn temporary_in_arm(c: bool) -> i32 {
+    let r = if c { &make_int() } else { &2 };
+    prusti_refute!(false);
+    *r
+}
+
+fn temporary_field_in_arm(c: bool) -> i32 {
+    let r: &i32 = if c { &make().v } else { &0 };
+    prusti_refute!(false);
+    *r
+}
+
+fn temporary_in_match_arm(o: Option<i32>) -> i32 {
+    let r: &S = match o {
+        Some(_) => &make(),
+        None => &S { v: 0 },
+    };
+    prusti_refute!(false);
+    r.v
+}
+
+fn mutable_temporary_in_arm(c: bool) -> i32 {
+    let r = if c { &mut make() } else { &mut S { v: 2 } };
+    r.v = 5;
+    prusti_refute!(false);
+    r.v
+}
+
+// The reference is not used after the join, so the temporary is no longer
+// borrowed there and holds a value that the join drops.
+fn unused_temporary_in_arm(c: bool) {
+    let _r = if c { &make() } else { &S { v: 2 } };
+    prusti_refute!(false);
+}
+
+fn temporary_in_arm_in_loop(c: bool) {
+    let mut i = 0;
+    while i < 3 {
+        body_invariant!(0 <= i && i < 3);
+        let r = if c { &make() } else { &S { v: 2 } };
+        let _v = r.v;
+        prusti_refute!(false);
+        i += 1;
+    }
+    prusti_refute!(false);
+}

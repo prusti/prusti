@@ -1339,7 +1339,7 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         }
 
         match repack_op {
-            RepackOp::StorageDead(local) => self.encode_storage_dead(pcg, *local),
+            RepackOp::StorageDead(local) => self.encode_join_storage_dead(pcg, *local),
             RepackOp::Expand(_) | RepackOp::Collapse(_) => {
                 let (place, capability_kind) = match repack_op {
                     RepackOp::Expand(expand) => (expand.from(), expand.capability()),
@@ -1484,15 +1484,10 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         );
     }
 
-    /// Releases the storage of `local`. This happens at a MIR `StorageDead`
-    /// statement, where `pcg` is the state before it, and at a `StorageDead`
-    /// op that the PCG places on an edge into a join block, where `pcg` is the
-    /// state at the end of the source block. A local without a value (write
+    /// Releases the storage of `local` at a MIR `StorageDead` statement, where
+    /// `pcg` is the state before it. A local without a value (write
     /// capability) holds its `$uninit` token; a local that is not allocated
-    /// holds nothing. On an edge, `pcg` is the state before the edge's ops, so
-    /// a value the edge drops before the `StorageDead` would still show as
-    /// held; the PCG emits no such edges, so any other state is an internal
-    /// error.
+    /// holds nothing. Any other state is an internal error.
     fn encode_storage_dead(
         &mut self,
         pcg: &Pcg<'_, 'vir>,
@@ -1517,6 +1512,47 @@ impl<'vir, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
                     vec![self.current_span()],
                 ));
             }
+        }
+        Ok(())
+    }
+
+    /// Releases the storage of `local` at a `StorageDead` op that the PCG
+    /// places on an edge into a join block, for a local allocated on only
+    /// some of the incoming paths. `pcg` is the state at the end of the
+    /// source block, before the edge's ops; those ops weaken every part of
+    /// `local` above write capability to write capability and collapse it.
+    /// If no part of `local` is borrowed, it then holds its `$uninit` token.
+    /// A part that is still borrowed (read capability, or none if mutably
+    /// lent) means that `local` outlives the join, as a temporary borrowed in
+    /// the tail of an `if` arm does, so nothing is released
+    /// (https://github.com/prusti/pcg/issues/249).
+    fn encode_join_storage_dead(
+        &mut self,
+        pcg: &Pcg<'_, 'vir>,
+        local: mir::Local,
+    ) -> EncodeResult<'vir, (), E> {
+        if self.spec_blocks.spec_arms.is_spec_only_local(local) {
+            return Ok(());
+        }
+        let not_borrowed = pcg.owned()[local]
+            .expansions()
+            .leaf_places(self.pcg_ctxt())
+            .into_iter()
+            .all(|leaf| {
+                matches!(
+                    pcg.place_capability(leaf.into(), self.pcg_ctxt()),
+                    Some(
+                        CapabilityKind::Exclusive
+                            | CapabilityKind::ShallowExclusive
+                            | CapabilityKind::Write
+                    )
+                )
+            });
+        if not_borrowed {
+            self.stmt(
+                self.vcx
+                    .mk_exhale_stmt(self.local_defs[local].impure_uninit),
+            );
         }
         Ok(())
     }
