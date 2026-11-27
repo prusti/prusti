@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["mir_borrowck"],"struct":["NoAnn","PrustiCompilerCalls"]};

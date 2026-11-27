@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["ArithOp"],"fn":["arith","neg"],"trait":["Arith","ExprApply","ExprQuote"]};

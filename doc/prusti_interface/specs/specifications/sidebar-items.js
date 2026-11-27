@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["SpecQuery"],"fn":["find_trait_method_substs"],"struct":["FunctionCallEncodingQuery","Specifications"]};
