@@ -57,22 +57,12 @@ pub struct TyImpureMutRefData<'vir> {
 pub struct TyImpureStructData<'vir> {
     /// The hardcoded extras when this struct is a `Box`.
     pub box_data: Option<TyImpureBoxData<'vir>>,
-    pub uninit_exchange: TyImpureUninitExchange<'vir>,
-}
-
-/// How the tokens of the parts of a struct, or of a variant, are exchanged for
-/// the token of the struct, or of the variant's enum.
-#[derive(Debug, Clone, Copy)]
-pub enum TyImpureUninitExchange<'vir> {
-    /// The struct's token, whose body is the tokens of its parts: it is
-    /// folded like the struct's predicate.
-    Fold(PredicateIdn<'vir, (vir::Ref, vir::ManyTyVal, vir::ManyCSnap)>),
-    /// The method exchanging the parts for the token, which has no body: for
-    /// an enum variant, the predicate of the enum's discriminant and the
-    /// tokens of the variant's fields (an enum without a value has no
-    /// variant); for a `Box`, the predicates of its own fields and the token
-    /// of the boxed value (a box without a value has no heap slot).
-    Method(MethodIdn<'vir, (vir::Ref, vir::ManyTyVal, vir::ManyCSnap)>),
+    /// Exchanges the parts of a place without a value for its `$uninit`
+    /// token: the tokens of the fields and, for an enum variant, the
+    /// predicate of the enum's discriminant (an enum without a value has no
+    /// variant). For a `Box`, its own fields are exchanged with their
+    /// predicates, since a box without a value has no heap slot.
+    pub uninit_fold: MethodIdn<'vir, (vir::Ref, vir::ManyTyVal, vir::ManyCSnap)>,
 }
 
 /// The hardcoded extras of a `Box`: the pointer metadata, read out of the
@@ -294,9 +284,6 @@ pub(crate) struct PredicateBuilder<'vir> {
     pub(super) ref_to_snap:
         FunctionIdn<'vir, (vir::Ref, vir::ManyTyVal, vir::ManyCSnap), vir::Snap>,
     pub(super) ref_to_uninit: PredicateIdn<'vir, (vir::Ref, vir::ManyTyVal, vir::ManyCSnap)>,
-    /// The body of the `$uninit` token predicate, if the token can be folded
-    /// from the tokens of the type's parts; see `set_uninit_body`.
-    uninit_body: Option<vir::ExprBool<'vir>>,
 
     pub(super) inner: PredicateBuilderInner<'vir>,
 }
@@ -348,7 +335,6 @@ impl<'vir> PredicateBuilder<'vir> {
             ref_to_pred,
             ref_to_snap,
             ref_to_uninit,
-            uninit_body: None,
             inner,
         }
     }
@@ -357,13 +343,6 @@ impl<'vir> PredicateBuilder<'vir> {
     pub(crate) fn uninit_pred_expr(&self, self_ref: vir::ExprRef<'vir>) -> vir::ExprBool<'vir> {
         let app = (self.ref_to_uninit)(self_ref, self.params.ty_exprs(), self.params.const_exprs());
         self.inner.vcx.mk_predicate_app_expr(app(None))
-    }
-
-    /// Makes the `$uninit` token of the type stand for `body`, the tokens (or
-    /// predicates) of its parts, so that the token is folded from them like
-    /// the type's predicate.
-    pub(crate) fn set_uninit_body(&mut self, body: vir::ExprBool<'vir>) {
-        assert!(self.uninit_body.replace(body).is_none());
     }
 
     fn mk_uninit_predicate(&mut self) {
@@ -376,7 +355,7 @@ impl<'vir> PredicateBuilder<'vir> {
         let predicate = self
             .inner
             .vcx
-            .mk_predicate(self.ref_to_uninit, params, self.uninit_body);
+            .mk_predicate(self.ref_to_uninit, params, None);
         self.inner.predicates.push(predicate);
     }
 

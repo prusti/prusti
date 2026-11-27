@@ -16,7 +16,7 @@ use super::{
     TyUseEnc, UseTyDatas,
     data::*,
     generics::{GArgCaster, GArgsTy},
-    impure::{ImpureTyDatas, TyImpureEnc, TyImpureUninitExchange},
+    impure::{ImpureTyDatas, TyImpureEnc},
     rust_ty::RustTySpecial,
 };
 
@@ -707,13 +707,9 @@ impl<'vir> TyUseImpureStruct<'vir> {
 
     fn apply_uninit_fold(&self, self_ref: vir::ExprRef<'vir>) -> Vec<vir::Stmt<'vir>> {
         let (args_ty, args_const) = (self.args.get_ty(), self.args.get_const());
-        let exchange = vir::with_vcx(|vcx| match self.impure.uninit_exchange {
-            TyImpureUninitExchange::Method(method) => vcx.alloc(vir::StmtData::new(
-                vcx.alloc(method(self_ref, args_ty, args_const)),
-            )),
-            TyImpureUninitExchange::Fold(ref_to_uninit) => {
-                vcx.mk_fold_stmt(ref_to_uninit(self_ref, args_ty, args_const)(None))
-            }
+        let exchange = vir::with_vcx(|vcx| {
+            let call = (self.impure.uninit_fold)(self_ref, args_ty, args_const);
+            vcx.alloc(vir::StmtData::new(vcx.alloc(call)))
         });
         // The exchanged parts are stated at the types of the struct's own
         // parameters, so they are cast from the caller's types to those.

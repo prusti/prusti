@@ -5,7 +5,6 @@ use crate::encoders::{
         data::{StructData, TyData},
         impure::{
             ImpureTyDatas, PredicateBuilder, TyImpureEnc, TyImpureFieldData, TyImpureStructData,
-            TyImpureUninitExchange,
         },
         pure::{
             AdtBuilder, PureTyDatas, TyPureEnc, TyPureFieldData, TyPureFieldRef, TyPureStructData,
@@ -196,13 +195,11 @@ pub(crate) fn ty_impure_variant<'vir>(
         .collect::<Vec<_>>();
     let variant_snap_expr = data.1.field_snaps_to_snap.call()(snap_args.as_slice());
 
-    // The `$uninit` token of a struct stands for the `$uninit` tokens of its
-    // fields. A `Box` without a value no longer owns its heap slot (the field
-    // with a dynamic address): its token has no body, and a method exchanges
-    // the predicates of the box's own fields and the token of the boxed
-    // value, which are deallocated, for it. An enum variant also gets a
-    // method, exchanging the discriminant's predicate and the field tokens for
-    // the enum's token.
+    // Collapsing a place without a value exchanges the `$uninit` tokens of its
+    // fields (and, for an enum variant, the discriminant's predicate) for its
+    // token. A `Box` without a value no longer owns its heap slot (the field
+    // with a dynamic address): the method also consumes the predicates of the
+    // box's own fields and the token of the boxed value, deallocating them.
     let params = &builder.params;
     let mut parts = fields
         .iter()
@@ -221,26 +218,20 @@ pub(crate) fn ty_impure_variant<'vir>(
         )
         .collect::<Vec<_>>();
     parts.extend(enum_discr_pred);
-    let uninit_exchange = if box_data.is_none() && enum_discr_pred.is_none() {
-        let body = builder.vcx.mk_conj(&parts);
-        builder.set_uninit_body(body);
-        TyImpureUninitExchange::Fold(builder.ref_to_uninit)
-    } else {
-        TyImpureUninitExchange::Method(builder.inner.method(
-            &format!("{prefix}$uninit_fold"),
-            (ref_self_decl.ty(), params.ty_args(), params.const_args()),
-            &[],
-            (ref_self_decl, params.ty_decls(), params.const_decls()),
-            &parts,
-            &[builder.uninit_pred_expr(ref_self)],
-        ))
-    };
+    let uninit_fold = builder.inner.method(
+        &format!("{prefix}$uninit_fold"),
+        (ref_self_decl.ty(), params.ty_args(), params.const_args()),
+        &[],
+        (ref_self_decl, params.ty_decls(), params.const_decls()),
+        &parts,
+        &[builder.uninit_pred_expr(ref_self)],
+    );
 
     Ok((
         StructData::new(
             TyImpureStructData {
                 box_data: box_data.map(|(box_data, _)| box_data),
-                uninit_exchange,
+                uninit_fold,
             },
             field_accessors,
         ),
