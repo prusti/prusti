@@ -57,6 +57,13 @@ pub struct TyImpureMutRefData<'vir> {
 pub struct TyImpureStructData<'vir> {
     /// The hardcoded extras when this struct is a `Box`.
     pub box_data: Option<TyImpureBoxData<'vir>>,
+    /// Exchanges the parts of a place without a value for its `$uninit`
+    /// token: the tokens of the fields and, for an enum variant, the
+    /// predicate of the enum's discriminant (an enum without a value has no
+    /// variant). For a `Box`, the predicates of its own fields (`Unique` and
+    /// the allocator) are consumed instead of their tokens, since a box
+    /// without a value owns no heap slot.
+    pub uninit_fold: MethodIdn<'vir, (vir::Ref, vir::ManyTyVal, vir::ManyCSnap)>,
 }
 
 /// The hardcoded extras of a `Box`: the pointer metadata, read out of the
@@ -65,6 +72,16 @@ pub struct TyImpureStructData<'vir> {
 #[derive(Debug, Clone, Copy)]
 pub struct TyImpureBoxData<'vir> {
     pub metadata: FunctionIdn<'vir, (vir::Ref, vir::ManyTyVal, vir::ManyCSnap), vir::PSnap>,
+    /// The index of the boxed value's field, the one with a dynamic address.
+    /// The other fields are the box's own (`Unique` and the allocator).
+    pub value_field: usize,
+}
+
+impl TyImpureBoxData<'_> {
+    /// Whether field `idx` is one of the box's own fields.
+    pub fn is_own_field(&self, idx: usize) -> bool {
+        idx != self.value_field
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -111,12 +128,19 @@ pub struct TyImpureRef<'vir> {
     pub ref_to_pred: PredicateIdn<'vir, (vir::Ref, vir::ManyTyVal, vir::ManyCSnap)>,
     /// Construct snapshot from Viper ref.
     pub ref_to_snap: FunctionIdn<'vir, (vir::Ref, vir::ManyTyVal, vir::ManyCSnap), vir::Snap>,
+    /// The `$uninit` token of a place of this type: the place is allocated but
+    /// holds no value. Every type has its own token predicate, so that
+    /// Silicon never has to tell the tokens of different types apart.
+    pub ref_to_uninit: PredicateIdn<'vir, (vir::Ref, vir::ManyTyVal, vir::ManyCSnap)>,
     /// Ref as first argument, followed by type parameters, followed by
     /// snapshot. Ensures predicate access to ref with snapshot value. This
     /// probably shouldn't be accessed directly, instead see
     /// `TyImpureEncLocalRef::apply_method_assign`.
     pub(super) method_assign:
         MethodIdn<'vir, (vir::Ref, vir::ManyTyVal, vir::ManyCSnap, vir::Snap)>,
+    /// Exchanges the place's predicate for its `$uninit` token; see
+    /// `apply_method_drop`.
+    pub(super) method_drop: MethodIdn<'vir, (vir::Ref, vir::ManyTyVal, vir::ManyCSnap)>,
 }
 
 impl<'vir> task_encoder::OutputRefAny for TyImpureRef<'vir> {}
@@ -161,25 +185,43 @@ impl TaskEncoder for TyImpureEnc {
             let ref_self_decl = builder.ref_self_decl();
             let ref_self = vcx.mk_local_ex(ref_self_decl);
 
-            // assign method
+            // assign method; consumes the `$uninit` token
             let value_decl = vcx.mk_local_decl("value", snapshot);
             let value = vcx.mk_local_ex(value_decl);
+            let uninit_pre = builder.uninit_pred_expr(ref_self);
             let method_assign = builder.inner.method(
                 "assign",
                 (ref_self_decl.ty(), builder.params.ty_args(), builder.params.const_args(), snapshot),
                 &[],
                 (ref_self_decl, builder.params.ty_decls(), builder.params.const_decls(), value_decl),
-                &[],
+                &[uninit_pre],
                 &[
                     vir::expr! { [builder.ref_to_pred](ref_self, [..[builder.params.ty_exprs()]], [..[builder.params.const_exprs()]]) },
                     vir::expr! { ([builder.ref_to_snap](ref_self, [..[builder.params.ty_exprs()]], [..[builder.params.const_exprs()]])) == (value) },
                 ],
             );
 
+            // drop method; the reverse of assign: gives up the value, keeping
+            // the allocation (no destructor runs). With the `$`, the method
+            // `p_S_$drop` cannot clash with the predicate of a type named
+            // `S_drop`.
+            let method_drop = builder.inner.method(
+                "$drop",
+                (ref_self_decl.ty(), builder.params.ty_args(), builder.params.const_args()),
+                &[],
+                (ref_self_decl, builder.params.ty_decls(), builder.params.const_decls()),
+                &[
+                    vir::expr! { [builder.ref_to_pred](ref_self, [..[builder.params.ty_exprs()]], [..[builder.params.const_exprs()]]) },
+                ],
+                &[uninit_pre],
+            );
+
             let data = TyImpureRef {
                 ref_to_pred: builder.ref_to_pred,
                 ref_to_snap: builder.ref_to_snap,
+                ref_to_uninit: builder.ref_to_uninit,
                 method_assign,
+                method_drop,
             };
             deps.emit_output_ref(*task_key, data)?;
 
@@ -215,6 +257,7 @@ impl TaskEncoder for TyImpureEnc {
                     super::kinds::builtin::ty_impure(builtin, deps, &mut builder)?,
                 ),
             };
+            builder.mk_uninit_predicate();
             let output = TyData::new(data, specifics).alloc();
 
             Ok((builder.inner.build(), output))
@@ -247,6 +290,7 @@ pub(crate) struct PredicateBuilder<'vir> {
     pub(super) ref_to_pred: PredicateIdn<'vir, (vir::Ref, vir::ManyTyVal, vir::ManyCSnap)>,
     pub(super) ref_to_snap:
         FunctionIdn<'vir, (vir::Ref, vir::ManyTyVal, vir::ManyCSnap), vir::Snap>,
+    pub(super) ref_to_uninit: PredicateIdn<'vir, (vir::Ref, vir::ManyTyVal, vir::ManyCSnap)>,
 
     pub(super) inner: PredicateBuilderInner<'vir>,
 }
@@ -288,14 +332,38 @@ impl<'vir> PredicateBuilder<'vir> {
         let args = (ref_self_decl.ty(), params.ty_args(), params.const_args());
         let ref_to_pred = inner.predicate_ident("", args);
         let ref_to_snap = inner.function_ident("snap", args, snapshot);
+        // With the `$`, the token predicate `p_S_$uninit` cannot clash with the
+        // predicate of a type named `S_uninit`.
+        let ref_to_uninit = inner.predicate_ident("$uninit", args);
 
         PredicateBuilder {
             params,
             snapshot,
             ref_to_pred,
             ref_to_snap,
+            ref_to_uninit,
             inner,
         }
+    }
+
+    /// The `$uninit` token of a place of the type being encoded.
+    pub(crate) fn uninit_pred_expr(&self, self_ref: vir::ExprRef<'vir>) -> vir::ExprBool<'vir> {
+        let app = (self.ref_to_uninit)(self_ref, self.params.ty_exprs(), self.params.const_exprs());
+        self.inner.vcx.mk_predicate_app_expr(app(None))
+    }
+
+    fn mk_uninit_predicate(&mut self) {
+        let ref_self_decl = self.ref_self_decl();
+        let params = (
+            ref_self_decl,
+            self.params.ty_decls(),
+            self.params.const_decls(),
+        );
+        let predicate = self
+            .inner
+            .vcx
+            .mk_predicate(self.ref_to_uninit, params, None);
+        self.inner.predicates.push(predicate);
     }
 
     pub(crate) fn csnap_type(&self) -> vir::TypeCSnap<'vir> {

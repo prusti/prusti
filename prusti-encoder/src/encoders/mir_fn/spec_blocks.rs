@@ -163,6 +163,12 @@ impl SpecArms {
         )
     }
 
+    /// Whether `local` is one of the [spec-only locals](Self::spec_only_locals),
+    /// which are not declared: nothing about them may be encoded.
+    pub fn is_spec_only_local(&self, local: mir::Local) -> bool {
+        self.spec_only_locals.contains(&local)
+    }
+
     fn new(
         body: &mir::Body<'_>,
         ghost: &GhostBlocks,

@@ -100,7 +100,7 @@ pub(crate) fn ty_impure<'vir>(
     deps: &mut TaskEncoderDependencies<'vir, TyImpureEnc>,
     builder: &mut PredicateBuilder<'vir>,
 ) -> Result<StructData<'vir, ImpureTyDatas>, EncodeFullError<'vir, TyImpureEnc>> {
-    let (data, _, snap_expr) = ty_impure_variant("", task_key, data, deps, builder)?;
+    let (data, _, snap_expr) = ty_impure_variant("", task_key, data, deps, builder, None)?;
 
     // Ref-to-snap
     builder.mk_snap_function(Some(snap_expr), &[]);
@@ -119,6 +119,10 @@ pub(crate) fn ty_impure_variant<'vir>(
     data: &StructData<'vir, (RustTyDatas, PureTyDatas)>,
     deps: &mut TaskEncoderDependencies<'vir, TyImpureEnc>,
     builder: &mut PredicateBuilder<'vir>,
+    // For an enum variant, the predicate of the enum's discriminant, which
+    // collapsing the variant into the enum's `$uninit` token takes besides
+    // the field tokens; `None` for a struct.
+    enum_discr_pred: Option<vir::ExprBool<'vir>>,
 ) -> Result<ImpureVariant<'vir>, EncodeFullError<'vir, TyImpureEnc>> {
     let fields = data
         .fields
@@ -191,10 +195,40 @@ pub(crate) fn ty_impure_variant<'vir>(
         .collect::<Vec<_>>();
     let variant_snap_expr = data.1.field_snaps_to_snap.call()(snap_args.as_slice());
 
+    // Collapsing a place without a value exchanges the `$uninit` tokens of its
+    // fields (and, for an enum variant, the discriminant's predicate) for its
+    // token. A `Box` without a value no longer owns its heap slot (the field
+    // with a dynamic address): the method also consumes the predicates of the
+    // box's own fields and the token of the boxed value, deallocating them.
+    let params = &builder.params;
+    let mut parts = fields
+        .iter()
+        .zip(&field_accessors)
+        .enumerate()
+        .map(|(idx, (field, TyImpureFieldData { ref_to_field_ref }))| {
+            let field_ref = ref_to_field_ref(ref_self, params.ty_exprs(), params.const_exprs());
+            if box_data.is_some_and(|(box_data, _)| box_data.is_own_field(idx)) {
+                field.ref_to_pred(builder.vcx, field_ref, None)
+            } else {
+                field.uninit_pred(builder.vcx, field_ref)
+            }
+        })
+        .collect::<Vec<_>>();
+    parts.extend(enum_discr_pred);
+    let uninit_fold = builder.inner.method(
+        &format!("{prefix}$uninit_fold"),
+        (ref_self_decl.ty(), params.ty_args(), params.const_args()),
+        &[],
+        (ref_self_decl, params.ty_decls(), params.const_decls()),
+        &parts,
+        &[builder.uninit_pred_expr(ref_self)],
+    );
+
     Ok((
         StructData::new(
             TyImpureStructData {
                 box_data: box_data.map(|(box_data, _)| box_data),
+                uninit_fold,
             },
             field_accessors,
         ),

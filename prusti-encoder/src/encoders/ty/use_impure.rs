@@ -390,6 +390,20 @@ impl<'vir> TyUseImpureData<'vir> {
         ))))
     }
 
+    /// Generates a call to `method_drop`, exchanging the place's predicate for
+    /// its `$uninit` token.
+    pub fn apply_method_drop<'tcx>(
+        &self,
+        vcx: &'vir vir::VirCtxt<'tcx>,
+        self_ref: vir::ExprRef<'vir>,
+    ) -> vir::Stmt<'vir> {
+        vcx.alloc(vir::StmtData::new(vcx.alloc((self.impure.method_drop)(
+            self_ref,
+            self.args.get_ty(),
+            self.args.get_const(),
+        ))))
+    }
+
     /// Constructs the Viper predicate application expression.
     pub fn ref_to_pred<'tcx>(
         &self,
@@ -421,6 +435,16 @@ impl<'vir> TyUseImpureData<'vir> {
 
     pub fn snapshot(&self) -> vir::TypeSnap<'vir> {
         self.impure.ref_to_snap.result()
+    }
+
+    /// The `$uninit` token of a place of this type.
+    pub fn uninit_pred<'tcx>(
+        &self,
+        vcx: &'vir vir::VirCtxt<'tcx>,
+        self_ref: vir::ExprRef<'vir>,
+    ) -> vir::ExprBool<'vir> {
+        let app = (self.impure.ref_to_uninit)(self_ref, self.args.get_ty(), self.args.get_const());
+        vcx.mk_predicate_app_expr(app(None))
     }
 }
 
@@ -464,6 +488,28 @@ impl<'vir> TyData<'vir, UseImpureTyDatas> {
             },
             _ => Vec::new(),
         })
+    }
+
+    /// Statements exchanging the `$uninit` tokens of the place's parts for
+    /// the place's token. Returns `None` when there is no such exchange: for
+    /// an enum place that is not downcast to a variant, whose exchange happens
+    /// at the variant, and for a type that is not struct-like, e.g. an array
+    /// (whose elements are not separate places in the encoding) or an opaque
+    /// type.
+    pub fn uninit_fold(
+        &self,
+        variant: Option<abi::VariantIdx>,
+        self_ref: vir::ExprRef<'vir>,
+    ) -> Option<Vec<vir::Stmt<'vir>>> {
+        let struct_data = if let Some(variant) = variant {
+            &self.expect_variant(variant).inner
+        } else {
+            match &self.specifics {
+                TySpecifics::StructLike(data) => data,
+                _ => return None,
+            }
+        };
+        Some(struct_data.apply_uninit_fold(self_ref))
     }
 
     /// Fold the predicate (including generic casts).
@@ -632,12 +678,37 @@ impl<'vir> TyUseImpureStruct<'vir> {
             .cast_to_caller_ctx(metadata.upcast_ty())
     }
 
-    /// The (Ref) address of the boxed `T` (the box's last field), read out of
-    /// the (folded) `Unique` field's predicate.
+    /// The (Ref) address of the boxed `T`, read out of the (folded) `Unique`
+    /// field's predicate.
     #[track_caller]
     pub fn box_address(&self, self_ref: vir::ExprRef<'vir>) -> vir::ExprRef<'vir> {
-        assert!(self.data.impure.box_data.is_some(), "expected box");
-        self.fields.last().unwrap().field_ref(self_ref)
+        let box_data = self.data.impure.box_data.expect("expected box");
+        self.fields[box_data.value_field].field_ref(self_ref)
+    }
+
+    fn apply_uninit_fold(&self, self_ref: vir::ExprRef<'vir>) -> Vec<vir::Stmt<'vir>> {
+        let (args_ty, args_const) = (self.args.get_ty(), self.args.get_const());
+        let exchange = vir::with_vcx(|vcx| {
+            let call = (self.impure.uninit_fold)(self_ref, args_ty, args_const);
+            vcx.alloc(vir::StmtData::new(vcx.alloc(call)))
+        });
+        // The exchanged parts are stated at the types of the struct's own
+        // parameters, so they are cast from the caller's types to those.
+        // A box's own fields are exchanged with their predicates; every
+        // other field, including the boxed value, with its token.
+        let casts = self.fields.iter().enumerate().filter_map(|(idx, field)| {
+            let field_ref = field.field_ref(self_ref);
+            if self
+                .impure
+                .box_data
+                .is_some_and(|box_data| box_data.is_own_field(idx))
+            {
+                field.caster.cast_to_callee_ctx(field_ref)
+            } else {
+                field.caster.cast_uninit_to_callee_ctx(field_ref)
+            }
+        });
+        casts.chain([exchange]).collect()
     }
 
     fn ref_to_pred_app(

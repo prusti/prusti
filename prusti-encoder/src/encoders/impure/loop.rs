@@ -61,7 +61,30 @@ impl<'vir: 'a, 'a, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         // `reported` lists a place after the places it extends. Where the PCG unpacks a
         // reference at the head, the places behind it are encoded through the reference's
         // snapshot, so the invariant must hold the reference first.
-        let reported = cfpcs.loop_invariant_place_capabilities(loop_place_usages, ctxt);
+        let mut reported = cfpcs.loop_invariant_place_capabilities(loop_place_usages, ctxt);
+        // A place the loop writes has write capability in the loop, but the
+        // PCG drops its value only right before the write, so at the loop head
+        // it still has the capability it had before the loop. The invariant
+        // uses that capability.
+        for (place, capability) in reported.places.iter_mut() {
+            if capability.is_write()
+                && let Some(held) = state.place_capability(*place, self.pcg_ctxt())
+            {
+                if held
+                    .partial_cmp(&CapabilityKind::Write)
+                    .is_none_or(|order| order.is_lt())
+                {
+                    return Err(EncodeFullError::internal(
+                        format!(
+                            "{} is written in this loop but is only readable where the loop starts",
+                            self.place_in_message(*place)
+                        ),
+                        vec![self.current_span()],
+                    ));
+                }
+                *capability = held;
+            }
+        }
 
         // A place behind a shared reference has no predicate of its own: its value is
         // part of the snapshot of the first shared reference on its path from the local.
@@ -70,8 +93,13 @@ impl<'vir: 'a, 'a, 'enc, E: TaskEncoder> ImpureEncVisitor<'vir, 'enc, E> {
         // if the PCG reports one for it (it is listed before the places behind it).
         let mut held_places: Vec<(Place<'vir>, CapabilityKind)> = Vec::new();
         for (&place, &capability) in &reported.places {
+            if self.spec_blocks.spec_arms.is_spec_only_local(place.local) {
+                continue;
+            }
             if capability.is_write() {
-                continue; // No permissions are encoded for places with write capabilities currently
+                // A place without a value holds its `$uninit` token.
+                inv.push(self.place_uninit(place)?);
+                continue;
             }
             let place = place
                 .iter_projections()

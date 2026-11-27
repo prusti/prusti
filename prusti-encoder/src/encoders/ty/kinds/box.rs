@@ -126,7 +126,12 @@ pub(super) fn mk_impure_box_data<'vir>(
     let unique_snap = fields[0].ref_to_snap(unique_ref).downcast_ty();
     let unique_pred = fields[0].ref_to_pred(builder.vcx, unique_ref, None);
     let pure = data.1.box_data.unwrap();
-    let TyPureFieldRef::Dynamic(address_access) = data.fields.last().unwrap().1.ref_to_field_ref
+    let value_field = data
+        .fields
+        .iter()
+        .position(|field| matches!(field.1.ref_to_field_ref, TyPureFieldRef::Dynamic(_)))
+        .unwrap();
+    let TyPureFieldRef::Dynamic(address_access) = data.fields[value_field].1.ref_to_field_ref
     else {
         unreachable!()
     };
@@ -150,5 +155,11 @@ pub(super) fn mk_impure_box_data<'vir>(
         &[],
         Some(pure.metadata_access.call()(unique_snap)),
     );
-    (TyImpureBoxData { metadata }, address)
+    (
+        TyImpureBoxData {
+            metadata,
+            value_field,
+        },
+        address,
+    )
 }

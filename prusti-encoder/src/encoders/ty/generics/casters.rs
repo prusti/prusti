@@ -40,8 +40,18 @@ impl PurityCasters for Pure {
 }
 
 impl PurityCasters for Impure {
-    type MakeGeneric<'vir> = MethodIdn<'vir, (vir::Ref, vir::ManyTyVal, vir::ManyCSnap)>;
+    type MakeGeneric<'vir> = ImpureCast<'vir>;
     type MakeConcrete<'vir> = MethodIdn<'vir, (vir::Ref, vir::ManyTyVal, vir::ManyCSnap)>;
+}
+
+/// The impure cast to the generic type: a method exchanging the predicate of
+/// a place for its generic counterpart (`value`), and one doing the same for
+/// the place's `$uninit` token (`uninit`). Tokens are only cast where a
+/// callee takes them, so they are never cast back to the concrete type.
+#[derive(Debug, Clone, Copy)]
+pub struct ImpureCast<'vir> {
+    pub(super) value: MethodIdn<'vir, (vir::Ref, vir::ManyTyVal, vir::ManyCSnap)>,
+    pub(super) uninit: MethodIdn<'vir, (vir::Ref, vir::ManyTyVal, vir::ManyCSnap)>,
 }
 
 impl<'vir, P: PurityCasters> task_encoder::OutputRefAny for GArgCasters<'vir, P> {}
@@ -338,10 +348,18 @@ impl TaskEncoder for CastersEnc<Impure> {
                 (vir::TYPE_REF, generics.ty_args(), generics.const_args()),
             );
 
+            let make_generic_uninit_ident = MethodIdn::new(
+                vir::vir_format_identifier!(vcx, "make_generic_{base_name}_$uninit"),
+                (vir::TYPE_REF, generics.ty_args(), generics.const_args()),
+            );
+
             deps.emit_output_ref(
                 *task_key,
                 GArgCasters {
-                    make_generic: make_generic_ident,
+                    make_generic: ImpureCast {
+                        value: make_generic_ident,
+                        uninit: make_generic_uninit_ident,
+                    },
                     make_concrete: make_concrete_ident,
                 },
             )?;
@@ -409,7 +427,26 @@ impl TaskEncoder for CastersEnc<Impure> {
                 vcx.alloc_slice(&[concrete_predicate, make_concrete_same_snap]),
                 None,
             );
-            Ok((vec![make_generic, make_concrete], ()))
+
+            let concrete_uninit = vcx.mk_predicate_app_expr((predicate_ref.ref_to_uninit)(
+                self_expr,
+                generics.ty_exprs(),
+                generics.const_exprs(),
+            )(None));
+            let generic_uninit = vcx.mk_predicate_app_expr((generic_ref.ref_to_uninit)(
+                self_expr,
+                &[lifted_ty_expr],
+                &[],
+            )(None));
+            let make_generic_uninit = vcx.mk_method(
+                make_generic_uninit_ident,
+                decls,
+                &[],
+                vcx.alloc_slice(&[concrete_uninit]),
+                vcx.alloc_slice(&[generic_uninit]),
+                None,
+            );
+            Ok((vec![make_generic, make_concrete, make_generic_uninit], ()))
         })
     }
 

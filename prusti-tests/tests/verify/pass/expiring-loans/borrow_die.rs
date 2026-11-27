@@ -25,20 +25,6 @@ fn test7(y: F, z: F, b: bool) {
     consume_F(z);
 }
 
-fn test6(y: F, z: F, b: bool) {
-    let mut y = y;
-    let mut z = z;
-    let mut x;
-    if b {
-        x = &mut y;
-        consume_F(z);
-    } else {
-        x = &mut z;
-        consume_F(y);
-    }
-    let f = &mut x.f;
-}
-
 fn test1(x: &mut F) {
     let y = x;
     let z = y;

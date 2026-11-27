@@ -1,4 +1,4 @@
-use pcg::borrow_pcg::FunctionData;
+use pcg::{borrow_pcg::FunctionData, utils::HasBorrowCheckerCtxt};
 use prusti_interface::PrustiError;
 use prusti_rustc_interface::{middle::mir, span::def_id::DefId};
 use task_encoder::{
@@ -40,6 +40,8 @@ impl<'vir> MethodCallEncOutput<'vir> {
         let mut stmts: Vec<_> = generics
             .filter_map(|(arg, caster)| caster.cast_to_callee_ctx(arg))
             .collect();
+        // The callee requires the `$uninit` token of the return place.
+        stmts.extend(self.output.cast_uninit_to_callee_ctx(ret));
 
         args.insert(0, ret);
         let call = (self.method.method_ref)(&args, self.ty_args.get_ty(), self.ty_args.get_const())
@@ -228,6 +230,8 @@ impl TaskEncoder for MethodEnc {
                     pres.push(arg_defs[arg_idx].impure_pred);
                 }
             }
+            // The caller allocates the return place.
+            pres.push(arg_defs[mir::RETURN_PLACE].impure_uninit);
             posts.push(arg_defs[mir::RETURN_PLACE].impure_pred);
 
             // ..
@@ -281,9 +285,8 @@ impl TaskEncoder for MethodEnc {
             // Trusted functions, call stubs, external functions and trait
             // functions without a default implementation have no body to
             // encode; only their contract is emitted.
-            let blocks = if let Some(body_with_facts) =
-                crate::encoders::impure_body_with_facts(def_id)
-            {
+            let body_with_facts = crate::encoders::impure_body_with_facts(def_id);
+            let blocks = if let Some(body_with_facts) = body_with_facts {
                 let body = &body_with_facts.body;
                 let local_defs = deps.require_dep_spanned::<MirLocalDefEnc>(
                     MirLocalDefEncTask::Local {
@@ -304,6 +307,9 @@ impl TaskEncoder for MethodEnc {
                     // extra blocks: Start, End
                     2 + block_count,
                 );
+                // Locals that are always live have no `StorageLive`, so they
+                // get their `$uninit` token here.
+                let always_live = pcg_ctxt.bc_ctxt().always_live_locals();
                 let mut start_stmts = TraitImplEnc::assume_context_bounds(vcx, deps, params)?;
                 for local in (arg_count..body.local_decls.len()).map(mir::Local::from) {
                     // Spec-only locals have no definition.
@@ -313,7 +319,10 @@ impl TaskEncoder for MethodEnc {
                     let name_p = local_def.local.name;
                     start_stmts.push(
                         vcx.mk_local_decl_stmt(vir::vir_local_decl! { vcx; [name_p] : Ref }, None),
-                    )
+                    );
+                    if always_live.contains(local) {
+                        start_stmts.push(vcx.mk_inhale_stmt(local_def.impure_uninit));
+                    }
                 }
                 // This will be overwritten later.
                 encoded_blocks.push(vcx.mk_cfg_block(
@@ -347,6 +356,9 @@ impl TaskEncoder for MethodEnc {
                     call_labels: Default::default(),
                     wandless_calls: Default::default(),
                     from_to_vars: Default::default(),
+                    deferred_join_stmts: Default::default(),
+                    locals_without_value: Default::default(),
+                    entry_vars: Default::default(),
 
                     current_block: None,
                     current_block_pres: None,
@@ -368,6 +380,12 @@ impl TaskEncoder for MethodEnc {
                                 .from_to_vars
                                 .decls()
                                 .map(|v| vcx.mk_local_decl_stmt(v, Some(vcx.mk_bool::<false>()))),
+                        );
+                        start_stmts.extend(
+                            visitor
+                                .entry_vars
+                                .decls()
+                                .map(|v| vcx.mk_local_decl_stmt(v, None)),
                         );
                         visitor.encoded_blocks[0] = vcx.mk_cfg_block(
                             &vir::CfgBlockLabelData::Start,
